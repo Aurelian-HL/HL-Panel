@@ -200,7 +200,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             checks.append('native host probe works without Nezha in inventory and group')
             assert install(token).returncode != 0
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
-            request('POST','/agent/enroll', {'enrollment_token':token,'hostname':'reused',
+            request('POST','/agent/enroll', {'token':token,'hostname':'reused',
                     'platform':'linux','architecture':'amd64','agent_version':args.version}, 401)
             checks.append('repeat install preserves identity and used token cannot enroll again')
 
