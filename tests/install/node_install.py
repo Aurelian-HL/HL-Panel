@@ -354,10 +354,18 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             finally:
                 sys.argv = saved_args
             checks.append('verified node upgrade and binary rollback preserve identity and real forwarding')
+            limits = run(['systemctl','show','hl-panel-edge-agent',
+                          '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
+            assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits
+            checks.append('controlled updates retain systemd automatic crash rate limits')
+            # Separate operator restart scenarios from the expired-token fault
+            # and repeated install/update/rollback starts in the same minute.
+            assert run(['systemctl','reset-failed','hl-panel-edge-agent']).returncode == 0
             assert run(['systemctl','restart','hl-panel-edge-agent']).returncode == 0
             wait_for(real_clients)
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
             control.terminate(); control.wait(timeout=15)
+            assert run(['systemctl','reset-failed','hl-panel-edge-agent']).returncode == 0
             assert run(['systemctl','restart','hl-panel-edge-agent']).returncode == 0
             wait_for(real_clients)
             checks.append('restart keeps node identity and restores forwarding while panel is unavailable')

@@ -62,6 +62,14 @@ def active():
     raise UpdateError('节点新版本未启动')
 
 
+def start_service():
+    # Enrollment retries and a failed candidate can exhaust systemd's burst.
+    # Clear that history only for this explicit, controlled start; automatic
+    # crash restarts still retain the unit's normal rate limit.
+    run(['systemctl', 'reset-failed', SERVICE])
+    run(['systemctl', 'start', SERVICE])
+
+
 def rollback(backup):
     private_credentials()
     backup = backup.resolve()
@@ -77,7 +85,7 @@ def rollback(backup):
         install(backup/name,ROOT/name)
     install(backup/'update-node.py',ROOT/'update-node.py')
     install(backup/'update.py',ROOT/'update.py')
-    run(['systemctl','start',SERVICE])
+    start_service()
     active()
     print('[HL-panel 节点更新] 已恢复旧程序，身份、状态和流量账本保留。')
 
@@ -145,14 +153,14 @@ def main():
                 install(release/source,ROOT/name)
             for name in ('update-node.py','update.py'):
                 install(release/'deploy'/name,ROOT/name)
-            run(['systemctl','start',SERVICE])
+            start_service()
             active()
             require(digest(STATE/'credentials.json')==credential,'节点身份发生变化')
         except Exception:
             if (backup/'manifest.json').is_file():
                 rollback(backup)
             else:
-                run(['systemctl','start',SERVICE])
+                start_service()
             raise
         print('[HL-panel 节点更新] 程序已更新；请回面板核对在线、版本和真实转发。')
         print('备份：'+str(backup))
