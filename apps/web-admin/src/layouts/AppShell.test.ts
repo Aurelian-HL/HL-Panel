@@ -13,6 +13,11 @@ vi.mock('@/stores/site', () => ({
 
 import AppShell from './AppShell.vue'
 
+vi.mock('@/api/releases', async (original) => ({
+  ...await original<typeof import('@/api/releases')>(),
+  checkVersion: vi.fn().mockResolvedValue({ state: 'up_to_date', current_version: 'v0.1.5' }),
+}))
+
 describe('AppShell navigation', () => {
   it('opens only the probe in a new tab without changing the panel route', async () => {
     const router = createRouter({

@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Activity, ChevronDown, Home, LogOut, Menu, Network, Radar, ServerCog, Settings, User, Users, UsersRound, X } from '@lucide/vue'
 import { authStore } from '@/stores/auth'
 import { siteStore } from '@/stores/site'
+import VersionNotice from '@/components/VersionNotice.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -54,6 +55,6 @@ function onNavigationClick(path: string): void {
         <div v-show="managementOpen" class="nav-management"><RouterLink v-for="item in management" :key="item.path" :to="item.path"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span></RouterLink></div>
       </nav>
     </aside>
-    <section class="workspace"><main class="page-content"><RouterView /></main></section>
+    <section class="workspace"><main class="page-content"><VersionNotice /><RouterView /></main></section>
   </div>
 </template>

@@ -62,7 +62,8 @@ jobs:
         run: |
           go test ./...
           go vet ./...
-          bash -n install.sh deploy/install.sh deploy/enable-domain-tls.sh
+          bash -n install.sh update.sh deploy/install.sh deploy/update.sh deploy/enable-domain-tls.sh
+          python3 -m py_compile deploy/update.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
       - name: Build web admin
         working-directory: apps/web-admin
@@ -88,6 +89,8 @@ jobs:
           deployment_files=(
             deploy/README.md
             deploy/install.sh
+            deploy/update.sh
+            deploy/update.py
             deploy/enable-domain-tls.sh
             deploy/edge-agent/enroll.sh
             deploy/edge-agent/install.sh
@@ -150,8 +153,44 @@ jobs:
           path: |
             fresh-install.log
             fresh-install-result.json
+  safe-update:
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/checkout@v4
+        with:
+          ref: v0.1.5
+          path: baseline-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Install the previous official version on a disposable VM
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/baseline"
+          for file in hl-panel-linux-amd64.tar.gz hl-panel-linux-amd64.tar.gz.sha256; do
+            curl -fsSL --retry 2 "https://github.com/Aurelian-HL/HL-Panel/releases/download/v0.1.5/$file" -o "$RUNNER_TEMP/baseline/$file"
+          done
+          (cd "$RUNNER_TEMP/baseline" && sha256sum --check hl-panel-linux-amd64.tar.gz.sha256)
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 baseline-source/tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/baseline" --version v0.1.5 --credentials default
+      - name: Verify data-preserving update and real database rollback
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/preserve_update.py --archive-directory "$RUNNER_TEMP/candidate" --previous-version v0.1.5 --version "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: preserve-update
+          path: |
+            fresh-install.log
+            preserve-update-result.json
   publish:
-    needs: [release, fresh-install]
+    needs: [release, fresh-install, safe-update]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

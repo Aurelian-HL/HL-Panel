@@ -18,6 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/releases"
 	controlusage "github.com/hongle/hl-panel/internal/control/usage"
 	usagememory "github.com/hongle/hl-panel/internal/control/usage/memory"
 )
@@ -36,7 +37,7 @@ func TestInitialPasswordRequiresDurableChangeBeforeBusinessAccess(t *testing.T) 
 		return httpapi.New(auth.NewService(s, audit.NewService(s), time.Now, time.Hour),
 			enrollment.NewService(s, time.Now, time.Hour), nodes.NewService(s, time.Now, time.Minute),
 			groups.NewService(s, time.Now), endpoints.NewService(s, time.Now), generations.NewService(s, time.Now),
-			slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithUsage(controlusage.NewService(usagememory.New(), loopbackPolicy{limit: 100}, time.Now)))
+			slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithReleases(releases.New("development")), httpapi.WithUsage(controlusage.NewService(usagememory.New(), loopbackPolicy{limit: 100}, time.Now)))
 	}
 	handler := makeHandler(store)
 	var login auth.LoginResult
@@ -66,6 +67,8 @@ func TestInitialPasswordRequiresDurableChangeBeforeBusinessAccess(t *testing.T) 
 		}
 	}
 	requestJSON(t, handler, http.MethodGet, "/api/v1/auth/me", login.AccessToken, nil, http.StatusOK)
+	requestJSON(t, handler, http.MethodGet, "/api/v1/system/version", "", nil, http.StatusUnauthorized)
+	requestJSON(t, handler, http.MethodGet, "/api/v1/system/version", login.AccessToken, nil, http.StatusOK)
 	for _, input := range []map[string]string{
 		{"current_password": "wrong", "new_password": "replacement-secret"},
 		{"current_password": auth.DefaultPassword, "new_password": auth.DefaultPassword},

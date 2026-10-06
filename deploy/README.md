@@ -10,7 +10,7 @@
 2. 推送 `v*` 标签。GitHub Actions 会运行 Go 与管理端测试，构建 Linux amd64
    程序，生成文件摘要；默认账号和自定义账号分别在全新临时 Linux 虚拟机安装，
    验证真实 PostgreSQL/systemd/Nginx、改密、会话撤销、重启持久化和 IP HTTPS。
-   两组全新安装测试通过后，才发布 `hl-panel-linux-amd64.tar.gz` 与 SHA256 文件。
+   全新安装及旧版本保数据升级、失败回滚测试通过后，才发布 `hl-panel-linux-amd64.tar.gz` 与 SHA256 文件。
 3. 在新主机执行以下命令：
 
 ```sh
@@ -72,16 +72,22 @@ IP HTTPS 只在这个独立端口设置默认 TLS 站点，可接收不发送 SN
 
 DNS 生效后，在主机运行：
 
+### 后续绑定域名
+
 若首次安装时未填写域名，先由 root 在 `/etc/hl-panel/domain.conf` 中将
 `DOMAIN` 改为自己的域名，并同步将 `/etc/nginx/sites-available/hl-panel.conf`
 里的 `hl-panel.invalid` 替换为该域名；运行 `nginx -t` 通过后 reload Nginx。
 安装时已填写域名则无需此步骤。
+
+小白操作：运行 `nano /etc/hl-panel/domain.conf`，只修改 `DOMAIN` 的值，保留引号及其他行；按 Ctrl+O、回车保存，Ctrl+X 退出。再运行 `nano /etc/nginx/sites-available/hl-panel.conf`，将其中 `hl-panel.invalid` 改为同一个域名，保存退出。执行 `nginx -t && systemctl reload nginx`，通过后再申请证书。不要修改 IP 端口、私钥路径或其他站点。修改前请复制这两个文件留作备份。
 
 ```sh
 sudo hl-panel-enable-domain-tls
 ```
 
 可选传入通知邮箱：`sudo hl-panel-enable-domain-tls --email admin@example.com`。
+成功启用证书后会启动 `certbot.timer`；若系统未提供该定时器，会提示自行配置定期续期。可用 `systemctl status certbot.timer --no-pager` 检查，并用 `certbot renew --dry-run` 验证续期。DNS 后来生效不会自动触发第一次签发，请运行上述命令。
+
 Certbot 续期后只替换 HL-panel 自己的证书，并在 Nginx 配置检查通过后 reload。
 IP HTTPS 入口会继续保留，所选端口保存在 `/etc/hl-panel/domain.conf`，
 TLS helper 会输出包含端口的实际 IP 地址。
@@ -112,8 +118,19 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 仅供本机使用。登录请求由 Nginx 按
 来源 IP 限速。管理员密码、数据库密码和 TLS 私钥不进入 release 包或 Git。
 
-一键安装仅用于首次建立空实例，不用于升级或迁移。升级需要另行制作明确的
-备份、校验、切换和回滚流程；不要重复运行首次安装器覆盖现有实例。
+## 保留数据更新与回滚
+
+首次安装建立空实例；不要用安装器覆盖已有实例。已有实例由 root 运行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update.sh | bash
+```
+
+新版安装也提供 `hl-panel-update`，支持 `--check` 或 `--version vX.Y.Z`。更新只接受该仓库的正式发布，拒绝降级与非标准数据库。更新前下载并校验归档，服务在下载期间继续运行；随后暂停本面板，使用 pg_dump 备份并验证清单，迁移、切换程序、启动并核验实际版本。配置、域名、证书和密码保持不变。
+
+备份在 `/var/backups/hl-panel/` 的独立 root 私有目录；终端显示实际路径。包含数据库 dump、配置与状态归档、文件摘要和独立回滚工具。新版本失败会自动 pg_restore 数据库并启动上一版本。人工回滚执行该备份目录下的 `rollback.sh`；会恢复备份时刻的数据，先另行保存升级后的新增数据。更新工具只支持安装器创建的本机 PostgreSQL，不修改其他应用，不提供远程 root 执行接口。
+
+面板自动检查 GitHub 正式版本。落后 1～2 个版本允许暂缓同版本 24 小时，落后 3 个及以上持续提醒并提供 GitHub 入口；网络错误显示未核实，不视为最新。
 
 管理员密码遗失时，主机运维可在备份数据库后使用本地维护命令
 `control-api reset-admin-password USERNAME`，从标准输入提供密码，并加载私有

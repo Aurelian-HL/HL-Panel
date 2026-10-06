@@ -19,6 +19,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/targetprobe"
@@ -56,6 +57,7 @@ type API struct {
 	diagnostics       *diagnostics.Service
 	nezha             *nezhamonitor.Service
 	targetProbe       *targetprobe.Service
+	releases          *releases.Service
 }
 
 func WithTargetProbe(service *targetprobe.Service) Option {
@@ -139,6 +141,9 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
 	mux.HandleFunc("GET /api/v1/auth/me", api.requireAdministratorSession(api.currentAdministrator))
+	if api.releases != nil {
+		mux.HandleFunc("GET /api/v1/system/version", api.requireAdministratorSession(api.checkVersion))
+	}
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
 	mux.HandleFunc("GET /api/v1/nodes", api.requireAdministrator(api.listNodes))

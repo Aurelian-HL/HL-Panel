@@ -30,6 +30,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/targetprobe"
@@ -148,6 +149,7 @@ func run(logger *slog.Logger) error {
 		usage.WithLegacyRuleMetadataProvider(usage.NewLegacyRuleMetadataProvider(deploymentreceipts.Repository(store))),
 	)
 	options := []httpapi.Option{
+		httpapi.WithReleases(releases.New(platformVersion)),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),

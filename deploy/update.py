@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""Root-only, fixed-origin release updates; preserves configuration and data."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import platform
+from pathlib import Path, PurePosixPath
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+from datetime import datetime, timezone
+import urllib.parse
+import urllib.request
+
+ROOT = Path('/opt/hl-panel')
+CONFIG = Path('/etc/hl-panel')
+STATE = Path('/var/lib/hl-panel')
+SERVICE = 'hl-panel-control-api.service'
+API = 'https://api.github.com/repos/Aurelian-HL/HL-Panel'
+REPO = 'https://github.com/Aurelian-HL/HL-Panel'
+TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
+
+
+class UpdateError(RuntimeError):
+    pass
+
+
+def require(value, message):
+    if not value:
+        raise UpdateError(message)
+
+
+def run(arguments, *, output=None, input_file=None):
+    result = subprocess.run(arguments, stdin=input_file, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE)
+    require(result.returncode == 0, '命令失败：' + Path(arguments[0]).name + '；未输出私有配置，请查看服务日志。')
+    return result.stdout if output is None else None
+
+
+def request(url, limit=2*1024*1024):
+    # Every URL is constructed from the fixed repository. GitHub asset redirects
+    # carry no authentication headers and retain standard TLS verification.
+    req = urllib.request.Request(url, headers={'User-Agent': 'HL-panel-updater', 'Accept': 'application/vnd.github+json'})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as response:
+                data = response.read(limit+1)
+            require(len(data)<=limit, '下载内容超过允许大小')
+            return data
+        except (OSError, urllib.error.URLError):
+            if attempt == 1:
+                raise UpdateError('无法下载 GitHub 正式发布；尚未切换程序，请稍后重试。') from None
+
+
+def version_tuple(value):
+    match = TAG.fullmatch(value)
+    require(match is not None, '仅支持 v数字.数字.数字 的正式版本')
+    return tuple(int(part) for part in match.groups())
+
+
+def private_regular(path):
+    require(path.is_file() and not path.is_symlink(), '缺少受管配置：' + str(path))
+    info = path.stat()
+    require(info.st_uid == 0 and not (info.st_mode & 0o022), '配置必须归 root 所有且不能被其他用户修改')
+
+
+def configuration():
+    private_regular(CONFIG/'control-api.env')
+    values = {}
+    for line in (CONFIG/'control-api.env').read_text().splitlines():
+        if not line or line.startswith('#'):
+            continue
+        key, value = line.split('=',1)
+        parts = shlex.split(value)
+        require(len(parts)<=1, '服务配置格式无效')
+        values[key] = parts[0] if parts else ''
+    require(values.get('CONTROL_ALLOW_VOLATILE_STORE') == 'false', '更新只支持持久化 PostgreSQL 实例')
+    require(values.get('CONTROL_DATABASE_URL_FILE') == str(CONFIG/'database-url'), '不支持非受管数据库路径')
+    private_regular(CONFIG/'database-url')
+    dsn = urllib.parse.urlsplit((CONFIG/'database-url').read_text().strip())
+    require(dsn.scheme in ('postgres','postgresql') and dsn.hostname in ('127.0.0.1','localhost') and dsn.port in (None,5432), '自动更新仅支持安装器创建的本机 PostgreSQL；未修改任何数据')
+    database = urllib.parse.unquote(dsn.path.lstrip('/'))
+    require(database == 'hl_panel_control', '数据库不属于受管 HL-panel 实例')
+    listen = values.get('CONTROL_LISTEN_ADDRESS','')
+    require(re.fullmatch(r'127\.0\.0\.1:[0-9]{1,5}',listen), 'API 监听配置无效')
+    return database, 'http://' + listen
+
+
+def current_info(origin):
+    # Never proxy local health requests to an external system proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(origin+'/api/v1/public/site-info',timeout=5) as response:
+        return json.load(response)
+
+
+def healthy(origin, version):
+    for _ in range(30):
+        try:
+            if current_info(origin).get('platform_version') == version:
+                run(['systemctl','is-active','--quiet',SERVICE])
+                return
+        except (OSError, ValueError, UpdateError):
+            pass
+        time.sleep(1)
+    raise UpdateError('新版本启动或版本核验失败')
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream,'sha256').hexdigest()
+
+
+def extract_verified(archive, destination):
+    with tarfile.open(archive,'r:gz') as source:
+        names = set()
+        total = 0
+        for entry in source.getmembers():
+            name = entry.name.removeprefix('./').rstrip('/')
+            if name in ('','.') and entry.isdir():
+                continue
+            parts = PurePosixPath(name)
+            require(name and not parts.is_absolute() and all(part not in ('','.','..') for part in name.split('/')) and ':' not in name and '\\' not in name, '安装包路径不安全')
+            require(entry.isfile() or entry.isdir(), '安装包不允许链接或特殊文件')
+            require(name not in names,'安装包包含重复路径')
+            names.add(name)
+            total += entry.size
+            require(total<=1024*1024*1024, '安装包解压大小过大')
+        source.extractall(destination,filter='data') if sys.version_info >= (3,12) else source.extractall(destination)
+    manifest = destination/'SHA256SUMS'
+    require(manifest.is_file(),'安装包缺少文件摘要')
+    verified = set()
+    for line in manifest.read_text().splitlines():
+        expected, name = line.split('  ',1)
+        name = name.removeprefix('./')
+        require(re.fullmatch('[0-9a-f]{64}',expected) and name in names and name not in verified,'文件摘要格式无效')
+        path = destination/name
+        require(path.is_file() and digest(path)==expected,'安装包文件摘要校验失败')
+        verified.add(name)
+    files={str(path.relative_to(destination)) for path in destination.rglob('*') if path.is_file()}
+    require(files==verified|{'SHA256SUMS'},'安装包包含未校验文件')
+    for asset in ('bin/control-api','bin/usage-migrate','bin/edge-agent','web-admin/index.html','deploy/update.py'):
+        require(asset in verified,'安装包缺少必需资产：'+asset)
+    for path in destination.rglob('*'):
+        path.chmod(0o755 if path.is_dir() or str(path.relative_to(destination)).startswith('bin/') else 0o644)
+    # The updater's private umask must not make the release root inaccessible
+    # to the unprivileged service and Nginx users.
+    destination.chmod(0o755)
+
+
+def switch(target):
+    pending=ROOT/('.next-current-'+str(os.getpid()))
+    require(not pending.exists() and not pending.is_symlink(),'更新链接已被占用')
+    pending.symlink_to(target)
+    pending.replace(ROOT/'current')
+
+
+def rollback(backup):
+    backup=backup.resolve()
+    require(backup.parent==Path('/var/backups/hl-panel') and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
+    private_regular(backup/'update-state.json')
+    state=json.loads((backup/'update-state.json').read_text())
+    old=Path(state['previous_target'])
+    require(old.parent==ROOT/'releases' and (old/'bin/control-api').is_file(),'旧版本路径无效')
+    database,origin=configuration()
+    require(digest(backup/'database.dump')==state['database_sha256'],'数据库备份摘要不一致，拒绝恢复')
+    run(['systemctl','stop',SERVICE])
+    with (backup/'database.dump').open('rb') as stream:
+        run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
+    switch(old)
+    run(['systemctl','start',SERVICE])
+    healthy(origin,state['previous_version'])
+    print('[HL-panel 更新] 已恢复升级前程序和数据库。')
+
+
+def main():
+    parser=argparse.ArgumentParser(description='保留数据更新 HL-panel；不会重装或重置管理员密码')
+    parser.add_argument('--version',default='latest')
+    parser.add_argument('--check',action='store_true')
+    parser.add_argument('--rollback',type=Path)
+    args=parser.parse_args()
+    require(os.geteuid()==0,'请使用 root 执行')
+    require(platform.machine() in ('x86_64','amd64'),'自动更新仅支持 Linux amd64')
+    os.umask(0o077)
+    # One updater at a time, including a manual rollback.
+    require(ROOT.is_dir() and not ROOT.is_symlink() and ROOT.stat().st_uid==0 and not ROOT.stat().st_mode&0o022,'未找到 root 管理的 HL-panel 程序目录')
+    descriptor=os.open(ROOT/'.update.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'a') as lock:
+        try:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise UpdateError('已有更新任务运行，请勿重复执行') from None
+        if args.rollback:
+            rollback(args.rollback)
+            return
+        require((ROOT/'current').is_symlink(),'未发现现有 HL-panel；请使用全新安装命令')
+        previous=(ROOT/'current').resolve()
+        require(previous.parent==ROOT/'releases','当前程序不在受管发布目录')
+        database,origin=configuration()
+        run(['systemctl','is-active','--quiet',SERVICE])
+        old_version=current_info(origin)['platform_version']
+        version_tuple(old_version)
+        target=args.version
+        if target=='latest':
+            target=json.loads(request(API+'/releases/latest'))['tag_name']
+        target_version=version_tuple(target)
+        metadata=json.loads(request(API+'/releases/tags/'+target))
+        require(metadata.get('tag_name')==target and not metadata.get('draft') and not metadata.get('prerelease') and metadata.get('published_at'),'目标不是 GitHub 正式发布')
+        if args.check:
+            print(json.dumps({'current_version':old_version,'target_version':target,'update_available':target_version>version_tuple(old_version)}))
+            return
+        if target_version==version_tuple(old_version):
+            print('[HL-panel 更新] 已是目标正式版本，无需更新。')
+            return
+        require(target_version>version_tuple(old_version),'不允许降级；请使用对应备份中的回滚命令')
+        updater=Path('/usr/local/sbin/hl-panel-update')
+        if updater.exists() or updater.is_symlink():
+            private_regular(updater)
+            require('# Managed by HL-panel.' in updater.read_text(),'更新命令路径已被其他程序占用')
+        stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+os.urandom(3).hex()
+        backup=Path('/var/backups/hl-panel')/(target+'-'+stamp)
+        backup.mkdir(parents=True,mode=0o700)
+        backup.parent.chmod(0o700)
+        print('[HL-panel 更新] 本次备份目录：'+str(backup),flush=True)
+        archive=backup/'release.tar.gz'
+        base=REPO+'/releases/download/'+target+'/'
+        assets={item['name'] for item in metadata.get('assets',[])}
+        require({'hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256'}<=assets,'发布包不完整')
+        print('[HL-panel 更新] 下载同标签安装包，当前服务继续运行。',flush=True)
+        archive.write_bytes(request(base+'hl-panel-linux-amd64.tar.gz',256*1024*1024))
+        checksum=request(base+'hl-panel-linux-amd64.tar.gz.sha256',4096).decode().strip().split()
+        require(len(checksum)==2 and checksum[1]=='hl-panel-linux-amd64.tar.gz' and re.fullmatch('[0-9a-f]{64}',checksum[0]),'发布包摘要格式无效')
+        require(digest(archive)==checksum[0],'发布包 SHA256 校验失败')
+        destination=ROOT/'releases'/(target+'-'+stamp)
+        destination.mkdir(mode=0o755)
+        extract_verified(archive,destination)
+        # Configuration, Nginx, service identities, domains and TLS remain intact.
+        # Runtime/schema changes are handled by the verified new binaries.
+        with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
+            saved.add(CONFIG,arcname='etc/hl-panel')
+            if STATE.is_dir():
+                saved.add(STATE,arcname='var/lib/hl-panel')
+        stopped=False
+        try:
+            print('[HL-panel 更新] 暂停本面板，备份数据库；账号、规则和证书全部保留。',flush=True)
+            run(['systemctl','stop',SERVICE])
+            stopped=True
+            with (backup/'database.dump').open('wb') as stream:
+                run(['runuser','-u','postgres','--','pg_dump','-Fc','--dbname='+database],output=stream)
+            require((backup/'database.dump').stat().st_size>0,'数据库备份为空')
+            with (backup/'database-manifest.txt').open('wb') as stream:
+                run(['pg_restore','--list',str(backup/'database.dump')],output=stream)
+            state={'previous_target':str(previous),'previous_version':old_version,'target_version':target,
+                   'database_sha256':digest(backup/'database.dump'),'config_sha256':digest(backup/'config-state.tar.gz'),
+                   'release_sha256':checksum[0],'created_at_utc':datetime.now(timezone.utc).isoformat()}
+            (backup/'update-state.json').write_text(json.dumps(state,indent=2)+'\n')
+            shutil.copyfile(__file__,backup/'rollback.py')
+            (backup/'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 '+shlex.quote(str(backup/'rollback.py'))+' --rollback '+shlex.quote(str(backup))+'\n')
+            (backup/'rollback.sh').chmod(0o700)
+            print('[HL-panel 更新] 手动回滚命令：bash '+str(backup/'rollback.sh'),flush=True)
+            run([str(destination/'bin/usage-migrate'),'apply','-dsn-file',str(CONFIG/'database-url')])
+            run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
+            switch(destination)
+            run(['systemctl','start',SERVICE])
+            healthy(origin,target)
+        except Exception:
+            if (backup/'update-state.json').is_file():
+                print('[HL-panel 更新] 新版本未通过检查，正在恢复升级前程序与数据库。',flush=True)
+                rollback(backup)
+            elif stopped:
+                run(['systemctl','start',SERVICE])
+            raise
+        updater.write_text(WRAPPER)
+        updater.chmod(0o755)
+        print('[HL-panel 更新] 成功：'+old_version+' → '+target)
+        print('备份目录：'+str(backup))
+        print('回滚命令：bash '+str(backup/'rollback.sh'))
+        print('账号、已修改密码、规则、数据库、域名与证书均保留；请刷新面板。')
+
+
+if __name__=='__main__':
+    try:
+        main()
+    except UpdateError as error:
+        print('[HL-panel 更新] 错误：'+str(error),file=sys.stderr)
+        sys.exit(1)
+    except Exception:
+        print('[HL-panel 更新] 操作失败；未输出私有数据。请核对备份目录与面板服务状态。',file=sys.stderr)
+        sys.exit(1)

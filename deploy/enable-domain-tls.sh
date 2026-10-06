@@ -161,4 +161,10 @@ fi
 HOOK_TMP=""
 ACTIVATION_DONE=true
 
+if systemctl cat certbot.timer >/dev/null 2>&1; then
+  systemctl enable --now certbot.timer
+else
+  printf '[HL-panel TLS] 提醒：未找到 certbot.timer，请配置定期 certbot renew。\n' >&2
+fi
+
 printf '[HL-panel TLS] 已启用 https://%s/，IP 入口：https://%s:%s/。\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT"
