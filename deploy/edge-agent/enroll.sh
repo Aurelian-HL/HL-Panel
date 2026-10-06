@@ -58,6 +58,9 @@ unset token
 chown root:root /etc/hl-panel/edge-agent-enrollment.env
 chmod 0600 /etc/hl-panel/edge-agent-enrollment.env
 systemctl enable hl-panel-edge-agent.service
+# An expired token can exhaust the unit's bounded automatic restart budget.
+# A new explicit enrollment attempt must clear that failure before starting.
+systemctl reset-failed hl-panel-edge-agent.service
 systemctl start hl-panel-edge-agent.service
 attempt=0
 while [ "$attempt" -lt 30 ]; do

@@ -270,6 +270,17 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 control.terminate(); control.wait(timeout=15)
             control_log.close()
 finally:
+    # Include sanitized service diagnostics even when installation fails early.
+    credential_file = Path('/var/lib/hl-panel-edge/credentials.json')
+    if credential_file.is_file():
+        try:
+            value = json.loads(credential_file.read_text()).get('node_credential')
+            if value:
+                secrets.append(value)
+        except (OSError, ValueError):
+            pass
+    run(['systemctl', 'show', 'hl-panel-edge-agent', '--property=ActiveState,SubState,Result,NRestarts'])
+    run(['journalctl', '-u', 'hl-panel-edge-agent', '-n', '100', '--no-pager'])
     Path('node-install.log').write_text('\n'.join(transcript))
     Path('node-install-result.json').write_text(json.dumps({'checks':checks},indent=2)+'\n')
 print(json.dumps({'status':'passed','checks':checks},indent=2))
