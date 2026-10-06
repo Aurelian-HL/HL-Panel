@@ -11,6 +11,11 @@ on:
         required: true
         default: v0.1.1
         type: string
+      verification_only:
+        description: Repeat all installation and forwarding checks without publishing again
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -224,6 +229,7 @@ jobs:
             node-install-result.json
   publish:
     needs: [release, fresh-install, safe-update, node-install]
+    if: ${{ inputs.verification_only != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
