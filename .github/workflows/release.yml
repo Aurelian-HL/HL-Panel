@@ -72,6 +72,7 @@ jobs:
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
+          python3 tests/install/test_node_update.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |

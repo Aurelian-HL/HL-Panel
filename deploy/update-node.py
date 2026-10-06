@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import json
 import os
+import pwd
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,6 +20,19 @@ CONFIG = Path('/etc/hl-panel/edge-agent.json')
 STATE = Path('/var/lib/hl-panel-edge')
 SERVICE = 'hl-panel-edge-agent.service'
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
+
+
+def private_credentials():
+    # systemd runs the agent as hl-edge; its atomically written state belongs
+    # to that account, while executable files and configuration remain root-owned.
+    account = pwd.getpwnam('hl-edge')
+    require(STATE.is_dir() and not STATE.is_symlink(), '节点状态目录不安全')
+    info = STATE.stat()
+    require(info.st_uid == account.pw_uid and not info.st_mode & 0o077, '节点状态目录必须归专用服务账号所有且保持私有')
+    path = STATE/'credentials.json'
+    require(path.is_file() and not path.is_symlink(), '缺少受管节点身份')
+    info = path.stat()
+    require(info.st_uid == account.pw_uid and not info.st_mode & 0o077, '节点身份必须归专用服务账号所有且保持私有')
 
 
 def run(args):
@@ -49,6 +63,7 @@ def active():
 
 
 def rollback(backup):
+    private_credentials()
     backup = backup.resolve()
     require(backup.parent == Path('/var/backups/hl-panel-node') and backup.stat().st_uid == 0 and not backup.stat().st_mode & 0o077,
         '不是 root 私有的节点备份目录')
@@ -74,7 +89,7 @@ def main():
     args=parser.parse_args()
     require(os.geteuid()==0 and sys.platform=='linux', '请在 Linux 节点机使用 root 运行')
     private_regular(CONFIG)
-    private_regular(STATE/'credentials.json')
+    private_credentials()
     require(ROOT.is_dir() and not ROOT.is_symlink() and ROOT.stat().st_uid==0 and not ROOT.stat().st_mode&0o022,'程序目录不安全')
     fd=os.open(ROOT/'.node-update.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'a') as lock:
