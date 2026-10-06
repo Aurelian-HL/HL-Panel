@@ -4,6 +4,7 @@ import { Check, Clipboard, LoaderCircle } from '@lucide/vue'
 
 import { api, type EnrollmentTokenResponse } from '@/api'
 import BaseModal from '@/components/BaseModal.vue'
+import NodeInstallInstructions from './NodeInstallInstructions.vue'
 import { toast } from '@/composables/toast'
 import { displayError, formatDateTime } from '@/lib/displayFormatters'
 
@@ -54,7 +55,7 @@ onBeforeUnmount(() => { issuedToken.value = null })
 </script>
 
 <template>
-  <BaseModal title="注册节点" width="small" :close-disabled="submitting" @close="close">
+  <BaseModal title="注册节点" :width="issuedToken ? 'large' : 'small'" :close-disabled="submitting" @close="close">
     <form v-if="!issuedToken" id="enrollment-token-form" class="form-stack ny-compact-form" @submit.prevent="createToken">
       <label class="field">
         <span>节点标识</span>
@@ -74,6 +75,7 @@ onBeforeUnmount(() => { issuedToken.value = null })
 
     <div v-else class="form-stack">
       <div><h3>注册令牌已生成</h3><p>{{ issuedToken.name }} · {{ formatDateTime(issuedToken.expires_at) }} 到期</p></div>
+      <NodeInstallInstructions :token="issuedToken.token" />
       <div class="secret-value">
         <code>{{ issuedToken.token }}</code>
         <button class="button button--secondary" type="button" @click="copyToken">

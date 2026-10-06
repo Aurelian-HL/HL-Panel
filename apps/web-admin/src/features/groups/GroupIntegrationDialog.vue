@@ -5,6 +5,7 @@ import { Clipboard, KeyRound, LoaderCircle, RefreshCw, Trash2 } from '@lucide/vu
 import { api, type DeviceGroup, type DeviceGroupMember, type EnrollmentTokenResponse, type PendingEnrollmentToken } from '@/api'
 import { probeApi, type ProbeMember, type ProbeUpstreamStatus } from '@/api/probe'
 import BaseModal from '@/components/BaseModal.vue'
+import NodeInstallInstructions from '@/features/enrollment/NodeInstallInstructions.vue'
 import { displayError, formatDateTime } from '@/lib/displayFormatters'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
@@ -179,12 +180,13 @@ onMounted(() => {
           <p v-else-if="probeStatus !== 'ok'" class="integration-warning">哪吒监控当前不可用；仍可签发组令牌，但暂不关联监控节点。</p>
           <p v-else-if="!availableProbeServers.length" class="form-note">没有可关联的哪吒机器；已关联或已预留令牌的机器不会重复列出。</p>
           <p v-if="selectedNezhaId !== ''" class="integration-note">选中的哪吒 Agent 已负责主机监控；这枚令牌用于安装和注册独立的 HL 转发 Agent。注册成功后才建立关联。</p>
-          <p v-if="mode !== 'offline'" class="integration-warning">当前版本尚未发布可验证的在线安装器，页面不会生成未经验证的远程执行命令。请先生成令牌，再按 Agent 部署手册安装。</p>
-          <p v-else class="integration-note">离线部署需要先准备 Agent 二进制、配置文件和本地环境变量；本页只负责发放一次性令牌，不会在服务器上执行远程命令。</p>
+          <p class="integration-note">生成令牌后会显示一条完整安装命令，包含令牌、HL Agent、主机探针、Xray 和 GOST，无需分开安装。</p>
+          <p v-if="mode === 'overseas'" class="integration-note">海外节点使用同一安装流程；注册后再配置入口、出口和线路，安装不会自动开通专线。</p>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </template>
         <template v-else>
           <div class="integration-panel__heading"><KeyRound :size="18" /><div><h3>注册令牌已生成</h3><p>{{ token.name }} · {{ formatDateTime(token.expires_at) }} 到期</p></div></div>
+          <NodeInstallInstructions :offline="mode === 'offline'" :token="token.token" />
           <div class="secret-value"><code>{{ token.token }}</code><button class="button button--secondary" type="button" @click="copy"><Clipboard :size="15" />{{ copied ? '已复制' : '复制令牌' }}</button></div>
           <p class="integration-warning">关闭后无法再次查看。该令牌已绑定 {{ group.name }}{{ issuedNezhaId ? ` 和哪吒 #${issuedNezhaId}` : '' }}；当前仅为待注册，HL Agent 注册成功后才自动入组{{ issuedNezhaId ? '并关联哪吒监控' : '' }}。</p>
           <button class="button button--secondary" type="button" @click="issueAnother"><KeyRound :size="15" />为下一台机器发令牌</button>

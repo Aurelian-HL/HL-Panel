@@ -4,6 +4,17 @@ import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, 
 import { completeProbeSample } from '@/test/fixtures/probe'
 
 describe('probe measurement formatting', () => {
+  it('keeps native HL probes live without a Nezha upstream and expires after 90 seconds', () => {
+    const member = { ...completeProbeSample.items[0]!, source: 'hl' as const, link_status: 'native' as const }
+    const sampledAt = Date.parse(member.sampled_at!)
+    for (const upstream of ['disabled', 'unavailable'] as const) {
+      expect(hasLiveProbeReading(member, upstream, sampledAt + 90_000)).toBe(true)
+      expect(monitorStatus(member, upstream, sampledAt + 90_000).text).toBe('在线')
+      expect(hasLiveProbeReading(member, upstream, sampledAt + 90_001)).toBe(false)
+      expect(monitorStatus(member, upstream, sampledAt + 90_001).text).toBe('采样过期')
+      expect(monitorStatus({ ...member, online: false }, upstream, sampledAt).text).toBe('离线')
+    }
+  })
   it('keeps invalid and negative readings out of the interface', () => {
     for (const invalid of [-1, NaN, Infinity, -Infinity]) {
       expect(formatBytes(invalid)).toBe('未采集')

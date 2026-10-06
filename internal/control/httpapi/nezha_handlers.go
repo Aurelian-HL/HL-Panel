@@ -3,6 +3,7 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -48,6 +49,21 @@ func (api *API) listNezhaGroupMonitoring(writer http.ResponseWriter, request *ht
 			// Fetch retains explicit links, but never exposes upstream errors or credentials.
 		}
 	}
+	views, err := api.nodes.List(request.Context())
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	selected := views[:0]
+	for _, view := range views {
+		for _, id := range nodeIDs {
+			if view.ID == id {
+				selected = append(selected, view)
+				break
+			}
+		}
+	}
+	items = nezhamonitor.MergeNative(items, selected, time.Now())
 	writeJSON(writer, http.StatusOK, struct {
 		Items          []nezhamonitor.Item `json:"items"`
 		UpstreamStatus string              `json:"upstream_status"`
@@ -66,6 +82,12 @@ func (api *API) listNezhaInventory(writer http.ResponseWriter, request *http.Req
 			items = []nezhamonitor.Item{}
 		}
 	}
+	views, err := api.nodes.List(request.Context())
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	items = nezhamonitor.MergeNative(items, views, time.Now())
 	writeJSON(writer, http.StatusOK, struct {
 		Items          []nezhamonitor.Item `json:"items"`
 		UpstreamStatus string              `json:"upstream_status"`

@@ -110,8 +110,8 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
     <Teleport to="body">
       <div v-if="openMenuGroup" ref="menuElement" class="integration-menu__items" :style="menuStyle" role="menu" @keydown.esc="closeIntegrationMenu">
         <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'online')">自动探测线路（安装器待发布）</button>
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'overseas')">海外主线路（安装器待发布）</button>
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'offline')">离线部署令牌</button>
+        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'overseas')">海外节点安装</button>
+        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'offline')">离线部署</button>
         <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'config')">查看节点记录（调试用）</button>
       </div>
     </Teleport>

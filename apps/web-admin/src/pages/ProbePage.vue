@@ -60,8 +60,7 @@ const ungroupedMembers = computed(() => {
 })
 
 function sumOnlineSpeed(items: typeof members.value, field: 'net_in_speed_bytes_per_second' | 'net_out_speed_bytes_per_second'): number | undefined {
-  if (upstreamStatus.value !== 'ok') return undefined
-  const online = items.filter((member) => member.link_status !== 'unlinked' && member.online === true)
+  const online = items.filter((member) => hasLiveProbeReading(member, upstreamStatus.value, now.value))
   if (!online.length || online.some((member) => !hasLiveProbeReading(member, upstreamStatus.value, now.value) || member[field] === undefined)) return undefined
   return online.reduce((sum, member) => sum + (member[field] ?? 0), 0)
 }
@@ -204,8 +203,8 @@ onUnmounted(() => {
         <div class="probe-overview__metrics"><div><span>成员</span><strong>{{ response ? counts.all : '未采集' }}</strong></div><div><span>在线</span><strong>{{ response && upstreamStatus === 'ok' ? counts.online : '未采集' }}</strong></div><div><span>下行速率</span><strong>{{ inboundSpeed }}</strong></div><div><span>上行速率</span><strong>{{ outboundSpeed }}</strong></div></div>
       </section>
       <p v-if="selectedGroup" class="probe-group-context">{{ selectedGroup.name }} · {{ selectedGroup.kind === 'EXIT' ? '出口组' : '入口组' }} · {{ selectedGroup.member_count }} 位设备组成员</p>
-      <p v-if="response?.upstream_status === 'disabled'" class="inline-warning">哪吒连接尚未配置。成员仍会列出，主机指标暂不可用。</p>
-      <p v-else-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用，以下成员不代表实时主机状态。</p>
+      <p v-if="response?.upstream_status === 'disabled'" class="inline-warning">哪吒连接未配置。HL 主机探针独立工作，注册后的节点会通过心跳上报指标。</p>
+      <p v-else-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
       <p v-if="groupsError" class="inline-warning">设备组读取失败，分组列表可能不完整：{{ groupsError }}</p>
       <p v-if="groupMembersError" class="inline-warning">设备组成员读取失败，无法设置权重：{{ groupMembersError }}</p>
       <p v-if="settingsError" class="inline-warning">{{ settingsError }}</p>
@@ -214,7 +213,7 @@ onUnmounted(() => {
       <StatePanel v-if="monitoringLoading && !response" state="loading" title="正在读取探针采样" />
       <StatePanel v-else-if="monitoringError && !response" state="error" title="探针数据加载失败" :message="monitoringError" @retry="loadMonitoring" />
       <StatePanel v-else-if="response && !members.length && upstreamStatus === 'unavailable'" state="error" title="哪吒服务当前不可用" message="暂时无法读取机器清单。" @retry="loadMonitoring" />
-      <StatePanel v-else-if="response && !members.length && upstreamStatus === 'disabled'" state="empty" title="尚未配置哪吒连接" />
+      <StatePanel v-else-if="response && !members.length && upstreamStatus === 'disabled'" state="empty" title="尚未注册节点" />
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">

@@ -6,6 +6,10 @@ param(
 
     [string] $WebDistDirectory = 'apps/web-admin/dist',
 
+    [string] $Version = 'development',
+
+    [string] $PythonExecutable = 'python',
+
     [string] $ZipPath
 )
 
@@ -71,15 +75,24 @@ try {
     )
     foreach ($target in $targets) {
         $outputPath = Join-Path $stagePath ('bin/{0}' -f $target.Name)
-        & $goCommand.Source build -trimpath -o $outputPath $target.Package
+        $buildFlags = @('-trimpath')
+        if ($target.Name -eq 'control-api') { $buildFlags += @('-ldflags', "-X main.platformVersion=$Version") }
+        if ($target.Name -eq 'edge-agent') { $buildFlags += @('-ldflags', "-X github.com/hongle/hl-panel/internal/agent/config.DefaultAgentVersion=$Version") }
+        & $goCommand.Source build @buildFlags -o $outputPath $target.Package
         if ($LASTEXITCODE -ne 0) {
             throw "go build failed for $($target.Name) with exit code $LASTEXITCODE"
         }
     }
+    & $PythonExecutable (Join-Path $PSScriptRoot 'fetch-node-engines.py') $stagePath
+    if ($LASTEXITCODE -ne 0) { throw 'pinned node engine download or verification failed' }
 
     $deploymentFiles = @(
         'README.md',
         'install.sh',
+        'install-node.sh',
+        'fetch-node-engines.py',
+        'update.sh',
+        'update.py',
         'enable-domain-tls.sh',
         'edge-agent\enroll.sh',
         'edge-agent\install.sh',
@@ -110,7 +123,7 @@ try {
         Sort-Object FullName |
         ForEach-Object {
             $relative = $_.FullName.Substring($stagePath.Length + 1) -replace '\\', '/'
-            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             '{0}  {1}' -f $hash, $relative
         }
     Set-Content -LiteralPath $manifestPath -Value $manifestLines -Encoding ascii

@@ -62,9 +62,11 @@ jobs:
         run: |
           go test ./...
           go vet ./...
-          bash -n install.sh update.sh deploy/install.sh deploy/update.sh deploy/enable-domain-tls.sh
+          bash -n install.sh install-node.sh update.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh
+          sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh
           python3 -m py_compile deploy/update.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
+          python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |
@@ -84,11 +86,18 @@ jobs:
           build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG -X main.platformBuildTime=$build_time" -o "$release/bin/control-api" ./apps/control-api
           go build -trimpath -o "$release/bin/usage-migrate" ./apps/usage-migrate
-          go build -trimpath -o "$release/bin/edge-agent" ./apps/edge-agent
+          go build -trimpath -ldflags "-X github.com/hongle/hl-panel/internal/agent/config.DefaultAgentVersion=$RELEASE_TAG" -o "$release/bin/edge-agent" ./apps/edge-agent
+          python3 deploy/fetch-node-engines.py "$release"
+          "$release/bin/xray" version
+          "$release/bin/gost" -V
+          # Real engines and loopback clients, no production services.
+          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -v ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md
             deploy/install.sh
+            deploy/install-node.sh
+            deploy/fetch-node-engines.py
             deploy/update.sh
             deploy/update.py
             deploy/enable-domain-tls.sh
@@ -189,8 +198,32 @@ jobs:
           path: |
             fresh-install.log
             preserve-update-result.json
+  node-install:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Verify complete node installation and real forwarding on a disposable VM
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-install
+          path: |
+            node-install.log
+            node-install-result.json
   publish:
-    needs: [release, fresh-install, safe-update]
+    needs: [release, fresh-install, safe-update, node-install]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

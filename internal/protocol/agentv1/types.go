@@ -34,10 +34,11 @@ type EnrollmentResponse struct {
 }
 
 type ResourceSnapshot struct {
-	LogicalCPUs       int    `json:"logical_cpus"`
-	GoMaxProcs        int    `json:"go_max_procs"`
-	MemoryAllocBytes  uint64 `json:"memory_alloc_bytes"`
-	MemorySystemBytes uint64 `json:"memory_system_bytes"`
+	Host              *HostSnapshot `json:"host,omitempty"`
+	LogicalCPUs       int           `json:"logical_cpus"`
+	GoMaxProcs        int           `json:"go_max_procs"`
+	MemoryAllocBytes  uint64        `json:"memory_alloc_bytes"`
+	MemorySystemBytes uint64        `json:"memory_system_bytes"`
 }
 
 type HeartbeatRequest struct {

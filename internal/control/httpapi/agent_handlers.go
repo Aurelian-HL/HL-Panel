@@ -22,6 +22,9 @@ func (api *API) heartbeat(writer http.ResponseWriter, request *http.Request, nod
 		"memory_alloc_bytes":  input.Resources.MemoryAllocBytes,
 		"memory_system_bytes": input.Resources.MemorySystemBytes,
 	}
+	if input.Resources.Host != nil {
+		resources["host"] = input.Resources.Host
+	}
 	_, err := api.nodes.RecordHeartbeat(request.Context(), node.ID, nodes.Heartbeat{
 		Hostname:                 input.Hostname,
 		Platform:                 input.Platform,

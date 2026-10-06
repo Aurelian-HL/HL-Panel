@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+set +x
 
 if [ "$(id -u)" -ne 0 ]; then
   echo 'Run as root on the target node.' >&2
@@ -21,17 +22,23 @@ if [ -e /etc/hl-panel/edge-agent-enrollment.env ]; then
   echo 'An enrollment token file already exists; inspect the previous attempt first.' >&2
   exit 1
 fi
-if [ ! -t 0 ]; then
-  echo 'Enrollment requires a local interactive terminal; the token is never a command argument.' >&2
-  exit 1
+if [ -n "${HL_INSTALL_ENROLLMENT_TOKEN:-}" ]; then
+  token=$HL_INSTALL_ENROLLMENT_TOKEN
+  unset HL_INSTALL_ENROLLMENT_TOKEN
+else
+  if [ ! -t 0 ]; then
+    echo 'Use the node installation command containing a token, or an interactive terminal.' >&2
+    exit 1
+  fi
+  printf 'One-use group token: ' >&2
+  stty -echo
+  trap 'stty echo' 0
+  trap 'exit 130' HUP INT TERM
+  IFS= read -r token
+  stty echo
+  trap - 0 HUP INT TERM
+  printf '\n' >&2
 fi
-printf 'One-use group token: ' >&2
-stty -echo
-trap 'stty echo' EXIT HUP INT TERM
-IFS= read -r token
-stty echo
-trap - EXIT HUP INT TERM
-printf '\n' >&2
 case "$token" in
   ''|*[!A-Za-z0-9_-]*) echo 'Invalid token.' >&2; exit 2 ;;
 esac
@@ -44,6 +51,7 @@ cleanup_enrollment() {
   fi
 }
 trap cleanup_enrollment 0
+trap 'exit 130' HUP INT TERM
 umask 077
 printf 'NYVP_ENROLLMENT_TOKEN=%s\n' "$token" > /etc/hl-panel/edge-agent-enrollment.env
 unset token

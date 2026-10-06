@@ -96,7 +96,33 @@ ACME 挑战文件放在独立 `/var/lib/hl-panel-acme/`，由 root 管理且目�
 权限为 0750；不会向 Nginx 开放私有状态，也不会将其加入 `hlpanel` 组。
 安装器拒绝覆盖已有 ACME 路径，失败回滚仅移除本轮新建的受管目录。
 
-## 安装位置与运维命令
+## 节点一键安装
+
+入口和出口节点使用独立的 `install-node.sh`。在面板设备组的“节点对接”弹窗生成并复制完整安装命令，在目标节点的 root 终端执行即可。命令包含所选组的一次性令牌及面板 HTTPS 地址，自动安装 Agent、HL 主机探针、Xray、GOST，注册入组并启用开机自启；没有第二次输入令牌或分开安装引擎的步骤。
+
+引擎随正式安装包分发：Xray v26.3.27、GOST v3.3.1-nightly.20260922，来源与锁定摘要见包内 `licenses/node-engines.json`。混合模式只在面板下发有效配置后启动对应引擎。服务使用 hl-edge 账号，默认监听端口需不低于 1024，不调整其他服务、防火墙或系统转发规则。
+
+程序在 `/opt/hl-panel/edge-agent`，引擎在 `/opt/hl-panel/node-engines/`，配置在 `/etc/hl-panel/edge-agent.json`，私有状态在 `/var/lib/hl-panel-edge/`。注册成功后删除一次性令牌环境文件，后续使用节点凭据；重复安装拒绝替换身份。注册失败会停止服务并删除一次性文件，生成新的同版本命令可继续；若期间发布了新版本，添加 `--version vX.Y.Z` 指定最初安装版本。
+
+### 节点离线安装
+
+在可访问 GitHub 的机器，从 Releases 下载同版本 `hl-panel-linux-amd64.tar.gz` 和 `.sha256`，从同标签源码取得 `deploy/install-node.sh`，将三个文件放在节点同一目录。也可从已校验的正式归档提取该脚本。无需节点访问 GitHub，但节点必须能通过 HTTPS 连接面板，并预装 python3、CA 证书和 systemd。
+
+在面板生成一次性令牌，替换以下三个占位值，执行一条命令：
+
+```sh
+bash install-node.sh --version vX.Y.Z --panel-url https://panel.example.com --token '替换为面板令牌' --archive ./hl-panel-linux-amd64.tar.gz --sha256 ./hl-panel-linux-amd64.tar.gz.sha256
+```
+
+命令包含秘密，勿分享或写入公开日志，执行后清除对应历史记录。程序包会进行归档 SHA256、完整文件清单及路径安全校验，失败时不会继续安装。
+
+### 节点与面板证书
+
+推荐使用已绑定域名、具有可信 HTTPS 证书的面板地址。IP 自签名入口必须通过受信任的渠道取得 **公开证书 / CA 文件**，核对来源后上传节点，将 `--ca-file /root/panel-ca.pem` 添加到完整安装命令中；地址必须与证书 SAN 匹配。安装器校验 CA 并复制为 hl-edge 可读的受管文件，不需要私钥。证书替换后需更新信任文件。不要使用 `curl -k` 或关闭 Agent 的证书校验。
+
+主机 CPU、内存、根磁盘、运行时间、连接数和网络读数由 HL Agent 独立上报，不要求哪吒。CPU 和网络速率需要两次采样；未取得的读数显示未采集。主机网络计量包括非回环接口流量，不能当作客户计费流量；业务计量仍来自相应引擎。
+
+## 面板安装位置与运维命令
 
 ```text
 /opt/hl-panel/                 程序及不可变 release

@@ -4,7 +4,8 @@ export type ProbeUpstreamStatus = 'disabled' | 'ok' | 'unavailable'
 
 export interface ProbeMember {
   node_id: string
-  link_status: 'linked' | 'unlinked' | 'unmanaged'
+  link_status: 'linked' | 'unlinked' | 'unmanaged' | 'native'
+  source?: 'hl' | 'nezha'
   nezha_server_id?: number
   online?: boolean
   name?: string
@@ -67,13 +68,15 @@ export function parseProbeGroupResponse(value: unknown): ProbeGroupResponse {
   const items = body.items.map((raw, index): ProbeMember => {
     const item = object(raw, `探针成员 ${index}`)
     if (typeof item.node_id !== 'string' || !item.node_id) throw new Error(`探针成员 ${index} 缺少节点 ID`)
-    if (item.link_status !== 'linked' && item.link_status !== 'unlinked' && item.link_status !== 'unmanaged') throw new Error(`探针成员 ${index} 关联状态无效`)
+    if (!['linked', 'unlinked', 'unmanaged', 'native'].includes(item.link_status as string)) throw new Error(`探针成员 ${index} 关联状态无效`)
+    if (item.source !== undefined && item.source !== 'hl' && item.source !== 'nezha') throw new Error('探针来源无效')
     if (item.online !== undefined && typeof item.online !== 'boolean') throw new Error(`探针成员 ${index} 在线状态无效`)
     const nezhaServerID = optionalNumber(item.nezha_server_id, '哪吒服务器 ID')
     if (nezhaServerID !== undefined && (!Number.isSafeInteger(nezhaServerID) || nezhaServerID < 1)) throw new Error('哪吒服务器 ID 无效')
     return {
       node_id: item.node_id,
-      link_status: item.link_status,
+      link_status: item.link_status as ProbeMember['link_status'],
+      source: item.source as ProbeMember['source'],
       nezha_server_id: nezhaServerID,
       online: item.online as boolean | undefined,
       name: optionalText(item.name, '节点名称'),

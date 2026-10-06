@@ -20,6 +20,7 @@ import (
 const maxResponseBytes = 2 << 20
 
 type Item struct {
+	Source                    string     `json:"source,omitempty"`
 	NodeID                    string     `json:"node_id"`
 	NezhaServerID             *uint64    `json:"nezha_server_id,omitempty"`
 	LinkStatus                string     `json:"link_status"`

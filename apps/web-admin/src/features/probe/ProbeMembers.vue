@@ -94,7 +94,7 @@ const uptimeDetails = (member: ProbeMember) => [
 
     <Teleport to="body">
       <div v-if="hovered" id="probe-status-tooltip" class="probe-status-tooltip" role="tooltip" :style="{ left: `${tooltipPosition.left}px`, top: `${tooltipPosition.top}px` }">
-        <div><b>编号:</b> {{ hovered.nezha_server_id ?? '未关联' }}</div>
+        <div><b>编号:</b> {{ hovered.nezha_server_id ?? (hovered.source === 'hl' ? 'HL 探针' : '未关联') }}</div>
         <div><b>OS:</b> {{ [hovered.host_platform, hovered.host_platform_version].filter(Boolean).join('_') || '未采集' }}</div>
         <div><b>架构:</b> {{ collected(hovered.host_architecture) }}</div>
         <div><b>节点端版本:</b> {{ collected(hovered.agent_version) }}</div>

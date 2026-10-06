@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/hongle/hl-panel/internal/agent/hostprobe"
 	"log/slog"
 	"os"
 	goruntime "runtime"
@@ -487,6 +488,7 @@ func resourceSnapshot() agentv1.ResourceSnapshot {
 	var memory goruntime.MemStats
 	goruntime.ReadMemStats(&memory)
 	return agentv1.ResourceSnapshot{
+		Host:              hostprobe.Snapshot(),
 		LogicalCPUs:       goruntime.NumCPU(),
 		GoMaxProcs:        goruntime.GOMAXPROCS(0),
 		MemoryAllocBytes:  memory.Alloc,

@@ -20,7 +20,6 @@ import (
 
 const (
 	DefaultEnrollmentTokenEnvironment = "NYVP_ENROLLMENT_TOKEN"
-	DefaultAgentVersion               = "dev"
 	CredentialFileName                = "credentials.json"
 	StateFileName                     = "state.json"
 	UsageJournalFileName              = "usage-journal.json"
@@ -33,6 +32,9 @@ const (
 	EngineModeGOST                    = "gost"
 	EngineModeMixed                   = "mixed"
 )
+
+// Overridden by the release build; configuration may explicitly override it.
+var DefaultAgentVersion = "dev"
 
 type Duration time.Duration
 

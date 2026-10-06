@@ -19,21 +19,45 @@ written once with private permissions and is never logged. Subsequent runs use
 that credential and preserve the last-known-good configuration while the
 control plane is unreachable.
 
-## Systemd installation on a dedicated node
+## One-command installation on a dedicated node
+
+Use the complete command generated in the device group's node integration
+dialog. It already contains the one-use group token and panel HTTPS origin.
+The official `install-node.sh` installs the Agent, native host probe, pinned
+Xray and GOST binaries, enrolls into that group, and enables the systemd
+service. No separate engine or probe installation is required. See
+[the operator manual](../../deploy/README.md#节点一键安装) for offline installation
+and explicit CA trust when using a self-signed IP endpoint.
+
+The installed configuration uses `mixed` with both auto-start flags enabled.
+Valid rules from the panel are required before engine processes start; no
+business rules are created by the installer. The low-privilege service uses
+ports above 1023 and does not change firewall rules or other services.
+The command contains a one-use secret: do not share it and clear its shell
+history entry after running it. Enrollment deletes the temporary token file;
+subsequent starts use the private persisted identity. An existing enrolled
+identity is never overwritten.
+
+The native Linux probe reads host CPU, memory, root filesystem, network,
+uptime and connection counts without an external dashboard. Unknown metrics
+remain absent. CPU and network speed become available after two samples.
+Host traffic is separate from per-customer engine accounting.
+
+## Low-level developer installation
 
 Build `./apps/edge-agent` for the node architecture and transfer the binary,
 `deploy/systemd/hl-panel-edge-agent.service`, and the two scripts in
 `deploy/edge-agent/` to that node using a trusted channel. On the node run:
 
 ```sh
-sh install.sh ./edge-agent ./hl-panel-edge-agent.service https://xzf.hongle.cc
+sh install.sh ./edge-agent ./hl-panel-edge-agent.service https://panel.example.com
 sh enroll.sh
 ```
 
 The installer accepts an optional explicit engine configuration:
 
 ```sh
-sh install.sh ./edge-agent ./hl-panel-edge-agent.service https://xzf.hongle.cc \
+sh install.sh ./edge-agent ./hl-panel-edge-agent.service https://panel.example.com \
   xray /usr/local/bin/xray '' false
 ```
 

@@ -95,11 +95,18 @@ cleanup() {
   fi
 }
 trap cleanup 0
+trap 'exit 130' HUP INT TERM
 if ! id hl-edge >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/hl-panel-edge --shell /usr/sbin/nologin hl-edge
 fi
-install -d -m 0755 -o root -g root /opt/hl-panel
-install -d -m 0750 -o root -g hl-edge /etc/hl-panel
+if [ ! -d /opt/hl-panel ]; then install -d -m 0755 -o root -g root /opt/hl-panel; fi
+if [ ! -d /etc/hl-panel ]; then install -d -m 0750 -o root -g hl-edge /etc/hl-panel; fi
+# Permit hl-edge to traverse an existing panel config directory without changing
+# its owner/group or exposing the panel's private files.
+if ! runuser -u hl-edge -- test -x /etc/hl-panel; then
+  echo 'Existing /etc/hl-panel is inaccessible to hl-edge; use a separate node VPS.' >&2
+  exit 1
+fi
 install -d -m 0700 -o hl-edge -g hl-edge /var/lib/hl-panel-edge
 created_binary=1
 install -m 0755 -o root -g root "$binary" /opt/hl-panel/edge-agent
