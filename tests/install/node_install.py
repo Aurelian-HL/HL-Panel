@@ -220,7 +220,9 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             gost_port, socks_port = unused_port(), unused_port()
             gost_config = {'services':[{'name':'isolated-forward','addr':f'127.0.0.1:{gost_port}',
                 'handler':{'type':'tcp'},'listener':{'type':'tcp'},
-                'forwarder':{'nodes':[{'name':'marker','addr':f'127.0.0.1:{target_port}'}]}}]}
+                'metadata':{'enableStats':True},
+                'forwarder':{'nodes':[{'name':'marker','addr':f'127.0.0.1:{target_port}'}],
+                             'selector':{'strategy':'round','maxFails':1,'failTimeout':30000000000}}}]}
             request('POST', f"/device-groups/{group['id']}/generations",
                     {'engine':'gost','config':gost_config,'idempotency_key':'installed-gost'}, 201)
             second = request('POST','/device-groups',{'name':'isolated Xray','kind':'ENTRY',
@@ -232,6 +234,17 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 'outbounds':[{'tag':'direct','protocol':'freedom'}]}
             request('POST',f"/device-groups/{second['id']}/generations",
                     {'engine':'xray','config':xray_config,'idempotency_key':'installed-xray'},201)
+
+            def desired_applied():
+                node = request('GET','/nodes')['items'][0]
+                generation = node['desired_generation']
+                if node['last_apply_status'] == 'failed' and node['last_apply_generation'] == generation:
+                    raise RuntimeError('Node rejected the current forwarding generation; inspect sanitized service diagnostics')
+                assert generation > 0 and node['applied_generation'] == generation
+                return True
+
+            wait_for(desired_applied)
+            checks.append('both engine fragments pass validation and the desired generation is acknowledged')
 
             def receive_exact(connection, size):
                 result = b''
