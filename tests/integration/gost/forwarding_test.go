@@ -69,7 +69,7 @@ func verifiedGOST(t *testing.T) string {
 	t.Helper()
 	binary := os.Getenv("NYVP_GOST_BINARY")
 	if binary == "" {
-		t.Skip("set NYVP_GOST_BINARY to a verified local GOST 3.3.1 executable")
+		t.Skip("set NYVP_GOST_BINARY to a verified local GOST 3.3.1 or v3.3.1-nightly.20260922 executable")
 	}
 	if !filepath.IsAbs(binary) {
 		t.Fatal("NYVP_GOST_BINARY must be absolute")
@@ -81,8 +81,9 @@ func verifiedGOST(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, binary, "-V").Output()
-	if err != nil || !strings.HasPrefix(string(version), "gost 3.3.1 (") {
-		t.Fatalf("real engine integration requires GOST 3.3.1: %v", err)
+	versionText := string(version)
+	if err != nil || !(strings.HasPrefix(versionText, "gost 3.3.1 (") || strings.HasPrefix(versionText, "gost v3.3.1-nightly.20260922 (")) {
+		t.Fatalf("real engine integration requires GOST 3.3.1 or pinned v3.3.1-nightly.20260922: %v", err)
 	}
 	t.Log(strings.TrimSpace(string(version)))
 	return binary
