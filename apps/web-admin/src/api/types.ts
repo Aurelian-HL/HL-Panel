@@ -9,6 +9,7 @@ export interface Administrator {
   display_name: string
   role: string
   created_at?: string
+  must_change_password?: boolean
 }
 
 export interface LoginRequest {

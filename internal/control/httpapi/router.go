@@ -11,6 +11,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/diagnostics"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
@@ -137,8 +138,8 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
-	mux.HandleFunc("GET /api/v1/auth/me", api.requireAdministrator(api.currentAdministrator))
-	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministrator(api.changeAdministratorPassword))
+	mux.HandleFunc("GET /api/v1/auth/me", api.requireAdministratorSession(api.currentAdministrator))
+	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
 	mux.HandleFunc("GET /api/v1/nodes", api.requireAdministrator(api.listNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{node_id}/credential/rotate", api.requireAdministrator(api.rotateNodeCredential))
@@ -195,12 +196,25 @@ func (api *API) authorizeUsageAdministrator(request *http.Request) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if session.MustChangePassword {
+		return "", faults.ErrPasswordChangeRequired
+	}
 	return session.AdminID, nil
 }
 
 type administratorHandler func(http.ResponseWriter, *http.Request, auth.Session)
 
 func (api *API) requireAdministrator(next administratorHandler) http.HandlerFunc {
+	return api.requireAdministratorSession(func(writer http.ResponseWriter, request *http.Request, session auth.Session) {
+		if session.MustChangePassword {
+			writeJSON(writer, http.StatusForbidden, problemEnvelope{Error: problem{Code: "password_change_required", Message: "请先在个人中心修改初始密码"}})
+			return
+		}
+		next(writer, request, session)
+	})
+}
+
+func (api *API) requireAdministratorSession(next administratorHandler) http.HandlerFunc {
 	return func(writer http.ResponseWriter, request *http.Request) {
 		rawToken := bearerToken(request.Header.Get("Authorization"))
 		session, err := api.auth.Authenticate(request.Context(), rawToken)

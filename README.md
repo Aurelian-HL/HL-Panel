@@ -3,6 +3,34 @@
 本项目的目标是构建独立的 NY 网络转发控制面板：支持 VLESS + Reality + Vision / TCP
 入口、设备组转发和故障切换。项目由 `Aurelian-HL/HL-Panel` 持续维护，欢迎反馈问题。
 
+## 一键全新安装
+
+在全新 Debian 12/Ubuntu 22.04 或更新版本的 Linux amd64 VPS 上以 root 执行：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh | bash
+```
+
+安装时可以设置管理员账号、密码。账号、密码直接回车使用 **`admin / 123456`**；
+默认密码登录后必须到 **个人中心 → 修改密码**，修改前其他管理操作被服务端限制。
+自定义密码需为 8 到 256 个字符，隐藏输入和确认，不会写入日志。
+
+默认域名 `hlpanel.hongle.cc`。其他用户请指定自己的域名：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh \
+  | bash -s -- --domain panel.example.com --admin-username myadmin
+```
+
+域名未绑定到本机时会提醒，并提供 `https://<本机公网IPv4>:8443/` 临时入口
+（自签名证书）。不修改 DNS、防火墙或其他面板。安装创建全新的空数据库；
+已安装的实例会拒绝重复安装，不用于迁移或升级。
+
+入口自动选择最新正式 Release，再下载**同一标签**的安装脚本和安装包，校验
+SHA256。仅修改 main 源码不会改变已发布安装包；安装相关变更必须通过测试、
+发布新的不可变标签后才进入一键安装。可用 `--version v0.1.5` 固定版本。
+完整参数、域名证书和运维说明见 [部署手册](deploy/README.md)。
+
 独立重构中的网络控制平台。保留 NY 的非商业用户、授权、设备组和规则工作流，新增 VLESS + Reality + Vision 入口；Go 控制面与节点 Agent、Vue 3 管理端/客户界面、独立连接网关分模块部署，不依赖现有运营后台或旧 NY 的运行接口。客户业务交付仍由现有运营后台负责，不作为 HL-panel 模块。
 
 **当前试运行版本尚未达到 NY 完整业务重构目标。** 用户/用户组、入口出口设备组、管理端和客户登录、规则控制面流程已接入；真实 Agent 自动下发、设备组网关动态配置、完整 VLESS 真实流量、NY 正式导入和跨机转发仍未闭环。后续按 [NY 业务验收基线](docs/ny-rebuild-acceptance-20261002.md) 推进；历史缺口见 [源码核查](docs/implementation-gap-20261002.md)。

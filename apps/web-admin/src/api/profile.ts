@@ -4,6 +4,7 @@ export interface CurrentAdministrator {
   id: string
   username: string
   created_at: string
+  must_change_password?: boolean
 }
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')

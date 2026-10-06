@@ -5,6 +5,8 @@ REPOSITORY="${HL_PANEL_REPOSITORY:-Aurelian-HL/HL-Panel}"
 VERSION="latest"
 DOMAIN="hlpanel.hongle.cc"
 ADMIN_USERNAME="admin"
+ADMIN_USERNAME_EXPLICIT=false
+ADMIN_DEFAULT_PASSWORD=false
 EMAIL=""
 PUBLIC_IP=""
 API_PORT="8080"
@@ -60,6 +62,8 @@ usage() {
   -h, --help          显示帮助
 
 安装只创建 HL-panel 独立实例，不导入或删除其他面板数据。
+安装会询问管理员账号、密码；回车采用 admin / 123456。
+使用默认密码时首次登录必须在个人中心修改；自定义密码至少 8 个字符。
 EOF
 }
 
@@ -71,7 +75,7 @@ while (($#)); do
     --public-ip) (($# >= 2)) || fail "--public-ip 缺少参数"; PUBLIC_IP="$2"; shift 2 ;;
     --api-port) (($# >= 2)) || fail "--api-port 缺少参数"; API_PORT="$2"; shift 2 ;;
     --ip-https-port) (($# >= 2)) || fail "--ip-https-port 缺少参数"; IP_HTTPS_PORT="$2"; shift 2 ;;
-    --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; shift 2 ;;
+    --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; ADMIN_USERNAME_EXPLICIT=true; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "未知参数：$1" ;;
@@ -301,13 +305,25 @@ find_nginx_name_conflicts() {
   done <<< "$1"
 }
 
-read -r -s -p "设置 HL-panel 管理员密码：" ADMIN_PASSWORD </dev/tty
+if [[ "$ADMIN_USERNAME_EXPLICIT" != true ]]; then
+  read -r -p "设置 HL-panel 管理员账号 [admin]：" ADMIN_USERNAME_INPUT </dev/tty
+  ADMIN_USERNAME="${ADMIN_USERNAME_INPUT:-admin}"
+  unset ADMIN_USERNAME_INPUT
+fi
+[[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9._@-]{1,128}$ ]] || fail "管理员账号仅支持字母、数字、点、下划线、@ 和连字符"
+read -r -s -p "设置 HL-panel 管理员密码 [回车使用 123456]：" ADMIN_PASSWORD </dev/tty
 printf '\n' >/dev/tty
-read -r -s -p "再次输入管理员密码：" ADMIN_PASSWORD_CONFIRM </dev/tty
-printf '\n' >/dev/tty
-[[ -n "$ADMIN_PASSWORD" ]] || fail "管理员密码不能为空"
-[[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]] || fail "两次输入的管理员密码不一致"
-unset ADMIN_PASSWORD_CONFIRM
+if [[ -z "$ADMIN_PASSWORD" || "$ADMIN_PASSWORD" == "123456" ]]; then
+  ADMIN_PASSWORD="123456"
+  ADMIN_DEFAULT_PASSWORD=true
+  log "初始密码：123456；首次登录后必须在个人中心修改密码"
+else
+  ((${#ADMIN_PASSWORD} >= 8 && ${#ADMIN_PASSWORD} <= 256)) || fail "自定义管理员密码需为 8 到 256 个字符"
+  read -r -s -p "再次输入管理员密码：" ADMIN_PASSWORD_CONFIRM </dev/tty
+  printf '\n' >/dev/tty
+  [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]] || fail "两次输入的管理员密码不一致"
+  unset ADMIN_PASSWORD_CONFIRM
+fi
 
 ROLLBACK_REQUIRED=true
 INSTALL_ROOT_CREATED=false
@@ -347,7 +363,7 @@ cleanup() {
       fi
     fi
     if [[ "$DB_ROLE_CREATED" == true ]]; then
-      if runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = 'hl_panel_app'" 2>/dev/null | grep -Fqx "HL-panel installer $RUN_ID"; then
+      if [[ -n "$DB_OWNERSHIP_TOKEN" ]] && runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = 'hl_panel_app'" 2>/dev/null | grep -Fqx "HL-panel installer $DB_OWNERSHIP_TOKEN"; then
         runuser -u postgres -- dropuser --if-exists hl_panel_app >/dev/null 2>&1 || log "警告：本次新建角色 hl_panel_app 未能自动删除"
       fi
     fi
@@ -591,5 +607,9 @@ HL-panel 安装完成
   API 本机监听：127.0.0.1:$API_PORT
   服务：hl-panel-control-api.service
 
-管理员密码未写入安装日志；请妥善保存你刚才输入的密码。
 EOF
+if [[ "$ADMIN_DEFAULT_PASSWORD" == true ]]; then
+  printf '  初始密码：123456\n  首次登录后必须到个人中心修改密码（新密码至少 8 个字符）。\n'
+else
+  printf '  密码：安装时设置的自定义密码（隐藏，不写入日志）。\n'
+fi

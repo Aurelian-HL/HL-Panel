@@ -45,8 +45,16 @@ var platformBuildTime string
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if len(os.Args) > 1 {
+		if os.Args[1] == "reset-admin-password" && len(os.Args) == 3 {
+			if err := resetAdministratorPassword(os.Args[2], os.Stdin); err != nil {
+				logger.Error("administrator password reset failed", "error", err)
+				os.Exit(1)
+			}
+			logger.Info("administrator password reset; all existing sessions revoked")
+			return
+		}
 		if os.Args[1] != "hash-password" || len(os.Args) != 2 {
-			logger.Error("usage: control-api [hash-password]")
+			logger.Error("usage: control-api [hash-password | reset-admin-password USERNAME]")
 			os.Exit(2)
 		}
 		if err := hashPasswordFromReader(os.Stdin, os.Stdout); err != nil {
@@ -93,10 +101,11 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	store, closeStore, err := openRepository(context.Background(), configuration, auth.Administrator{
-		ID:           administratorID,
-		Username:     configuration.AdministratorUsername,
-		PasswordHash: configuration.AdministratorPasswordHash,
-		CreatedAt:    now,
+		ID:                 administratorID,
+		Username:           configuration.AdministratorUsername,
+		PasswordHash:       configuration.AdministratorPasswordHash,
+		CreatedAt:          now,
+		MustChangePassword: auth.IsDefaultPasswordHash(configuration.AdministratorPasswordHash),
 	})
 	if err != nil {
 		return err

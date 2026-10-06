@@ -18,6 +18,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release_ref.outputs.tag }}
+      commit: ${{ steps.release_ref.outputs.commit }}
     steps:
       - name: Resolve existing release tag
         id: release_ref
@@ -59,6 +62,8 @@ jobs:
         run: |
           go test ./...
           go vet ./...
+          bash -n install.sh deploy/install.sh deploy/enable-domain-tls.sh
+          python3 -m py_compile tests/install/fresh_install.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |
@@ -107,16 +112,63 @@ jobs:
           tar -C "$release" -czf "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz" .
           cd "$RUNNER_TEMP"
           sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256
-      - name: Publish GitHub release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: |
+            ${{ runner.temp }}/hl-panel-linux-amd64.tar.gz
+            ${{ runner.temp }}/hl-panel-linux-amd64.tar.gz.sha256
+  fresh-install:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        credentials: [default, custom]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Install and exercise a new isolated instance
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          CREDENTIALS: ${{ matrix.credentials }}
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true \
+            python3 tests/install/fresh_install.py \
+            --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG" \
+            --credentials "$CREDENTIALS"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fresh-install-${{ matrix.credentials }}
+          path: |
+            fresh-install.log
+            fresh-install-result.json
+  publish:
+    needs: [release, fresh-install]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Publish GitHub release only after fresh installation passes
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
           tag="$RELEASE_TAG"
           gh release create "$tag" \
-            "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz" \
-            "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/candidate/hl-panel-linux-amd64.tar.gz" \
+            "$RUNNER_TEMP/candidate/hl-panel-linux-amd64.tar.gz.sha256" \
             --title "HL-panel $tag" \
             --verify-tag \
             --generate-notes

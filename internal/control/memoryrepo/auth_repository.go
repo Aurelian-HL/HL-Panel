@@ -31,7 +31,7 @@ func (s *Store) AdministratorByID(_ context.Context, id string) (auth.Administra
 	return auth.Administrator{}, faults.ErrNotFound
 }
 
-func (s *Store) UpdateAdministratorPassword(_ context.Context, id string, expectedHash, newHash []byte, event audit.Event) error {
+func (s *Store) UpdateAdministratorPassword(_ context.Context, id string, expectedHash, newHash []byte, mustChangePassword bool, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for username, admin := range s.adminsByUsername {
@@ -42,6 +42,7 @@ func (s *Store) UpdateAdministratorPassword(_ context.Context, id string, expect
 			return faults.ErrConflict
 		}
 		admin.PasswordHash = append([]byte(nil), newHash...)
+		admin.MustChangePassword = mustChangePassword
 		s.adminsByUsername[username] = admin
 		for hash, session := range s.sessionsByHash {
 			if session.AdminID == id {

@@ -51,7 +51,7 @@ func TestAdministratorProfileAndPasswordChange(t *testing.T) {
 	if profile.User.ID != "adm_profile" || profile.User.Username != "admin" || !profile.User.CreatedAt.Equal(now) {
 		t.Fatalf("unexpected profile: %+v", profile.User)
 	}
-	if bytes.Contains(body, []byte("password")) || bytes.Contains(body, []byte("hash")) {
+	if bytes.Contains(body, []byte("password_hash")) || bytes.Contains(body, []byte("PasswordHash")) || bytes.Contains(body, []byte(oldPassword)) {
 		t.Fatal("profile leaked password material")
 	}
 	requestJSON(t, handler, http.MethodPut, "/api/v1/auth/password", login.AccessToken, map[string]string{"current_password": "wrong", "new_password": newPassword}, http.StatusBadRequest)

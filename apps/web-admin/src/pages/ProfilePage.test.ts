@@ -24,6 +24,14 @@ beforeEach(() => {
 })
 
 describe('ProfilePage', () => {
+  it('explains the initial password requirement returned by the server', async () => {
+    mocked.current.mockResolvedValueOnce({ id: 'adm-1', username: 'admin', created_at: '2026-10-03T00:00:00Z', must_change_password: true })
+    const wrapper = mount(ProfilePage)
+    await flushPromises()
+    expect(wrapper.get('[aria-label="首次登录修改密码"]').text()).toContain('请先在下方修改密码')
+    expect(wrapper.get('input[autocomplete="new-password"]').attributes('minlength')).toBe('8')
+    wrapper.unmount()
+  })
   it('shows the authenticated server identity', async () => {
     const wrapper = mount(ProfilePage)
     await flushPromises()

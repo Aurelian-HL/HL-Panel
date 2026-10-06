@@ -24,7 +24,7 @@ func (s *Service) CurrentAdministrator(ctx context.Context, adminID string) (Adm
 	if err != nil {
 		return AdministratorView{}, err
 	}
-	return AdministratorView{ID: admin.ID, Username: admin.Username, CreatedAt: admin.CreatedAt}, nil
+	return AdministratorView{ID: admin.ID, Username: admin.Username, CreatedAt: admin.CreatedAt, MustChangePassword: admin.MustChangePassword}, nil
 }
 
 func (s *Service) ChangePassword(ctx context.Context, adminID, currentPassword, newPassword string) error {
@@ -49,7 +49,7 @@ func (s *Service) ChangePassword(ctx context.Context, adminID, currentPassword, 
 	if err != nil {
 		return err
 	}
-	return s.repository.UpdateAdministratorPassword(ctx, adminID, admin.PasswordHash, newHash, event)
+	return s.repository.UpdateAdministratorPassword(ctx, adminID, admin.PasswordHash, newHash, false, event)
 }
 
 func NewService(repository Repository, auditService *audit.Service, now func() time.Time, sessionTTL time.Duration) *Service {
@@ -98,9 +98,10 @@ func (s *Service) Login(ctx context.Context, username, password string) (LoginRe
 		AccessToken: rawToken,
 		ExpiresAt:   session.ExpiresAt,
 		User: AdministratorView{
-			ID:        admin.ID,
-			Username:  admin.Username,
-			CreatedAt: admin.CreatedAt,
+			ID:                 admin.ID,
+			Username:           admin.Username,
+			CreatedAt:          admin.CreatedAt,
+			MustChangePassword: admin.MustChangePassword,
 		},
 	}, nil
 }
@@ -116,5 +117,10 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Session, e
 		}
 		return Session{}, err
 	}
+	admin, err := s.repository.AdministratorByID(ctx, session.AdminID)
+	if err != nil {
+		return Session{}, faults.ErrUnauthorized
+	}
+	session.MustChangePassword = admin.MustChangePassword
 	return session, nil
 }

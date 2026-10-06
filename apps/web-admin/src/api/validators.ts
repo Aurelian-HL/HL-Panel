@@ -43,6 +43,11 @@ function numberValue(value: unknown, name: string): number {
   return value
 }
 
+function booleanValue(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw new ContractError(`${name} 必须是布尔值`)
+  return value
+}
+
 function optionalText(value: unknown, name: string): string {
   return value === undefined || value === null ? '' : text(value, name)
 }
@@ -142,6 +147,7 @@ export function parseLoginResponse(value: unknown): LoginResponse {
       display_name: optionalText(user.display_name, 'user.display_name') || text(user.username, 'user.username'),
       role: optionalText(user.role, 'user.role') || 'administrator',
       created_at: optionalText(user.created_at, 'user.created_at'),
+      must_change_password: user.must_change_password === undefined ? false : booleanValue(user.must_change_password, 'user.must_change_password'),
     },
   }
 }

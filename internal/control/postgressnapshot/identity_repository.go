@@ -28,9 +28,9 @@ func (s *Store) AdministratorByID(ctx context.Context, id string) (auth.Administ
 	})
 }
 
-func (s *Store) UpdateAdministratorPassword(ctx context.Context, id string, expectedHash, newHash []byte, event audit.Event) error {
+func (s *Store) UpdateAdministratorPassword(ctx context.Context, id string, expectedHash, newHash []byte, mustChangePassword bool, event audit.Event) error {
 	return mutate(ctx, s, func(state *memoryrepo.Store) error {
-		return state.UpdateAdministratorPassword(ctx, id, expectedHash, newHash, event)
+		return state.UpdateAdministratorPassword(ctx, id, expectedHash, newHash, mustChangePassword, event)
 	})
 }
 

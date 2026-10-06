@@ -28,7 +28,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 15
+const SnapshotVersion = 16
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -72,10 +72,11 @@ func validPersistedIdentity(value string) bool {
 // These private DTOs deliberately preserve hashes hidden by public JSON models.
 // Snapshot bytes are confidential database records, never an API response.
 type storedAdministrator struct {
-	ID           string
-	Username     string
-	PasswordHash []byte
-	CreatedAt    time.Time
+	ID                 string
+	Username           string
+	PasswordHash       []byte
+	CreatedAt          time.Time
+	MustChangePassword bool
 }
 
 type storedCustomer struct {

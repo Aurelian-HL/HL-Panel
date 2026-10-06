@@ -8,24 +8,35 @@
 
 1. 将源码推送到 `Aurelian-HL/HL-Panel`。
 2. 推送 `v*` 标签。GitHub Actions 会运行 Go 与管理端测试，构建 Linux amd64
-   程序，生成文件摘要，再发布 `hl-panel-linux-amd64.tar.gz` 与 SHA256 文件。
+   程序，生成文件摘要；默认账号和自定义账号分别在全新临时 Linux 虚拟机安装，
+   验证真实 PostgreSQL/systemd/Nginx、改密、会话撤销、重启持久化和 IP HTTPS。
+   两组全新安装测试通过后，才发布 `hl-panel-linux-amd64.tar.gz` 与 SHA256 文件。
 3. 在新主机执行以下命令：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/deploy/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh \
   | sudo bash -s -- --domain hlpanel.hongle.cc
 ```
 
-安装器默认读取该仓库的最新发布。也可以通过 `--repo OWNER/REPOSITORY` 切换仓库，
-通过 `--version TAG` 固定版本。安装器提示时在终端输入并确认初始管理员密码。
-输入不会显示在屏幕上，不会写入日志；密码哈希保存在 root 管理的服务配置文件中。
+入口默认读取该仓库的最新正式发布，固定标签后下载同标签的安装器和归档，避免
+main 脚本与旧安装包混用。也可以通过 `--repo OWNER/REPOSITORY` 切换仓库，
+通过 `--version TAG` 固定版本。源码更新要推送 GitHub；安装行为更新必须经测试
+后发布新标签，不覆盖已发布标签或归档。
+
+安装会询问账号与密码，支持自定义账号（也可用 `--admin-username NAME`）。
+直接回车采用 **admin / 123456**，安装结束明确显示默认凭据与改密提示。
+默认密码账号首次登录只能读取个人资料和修改密码，其他管理员 API 返回 403；
+页面自动转到个人中心。新密码至少 8 个字符，成功后撤销该管理员全部会话，
+使用新密码重新登录。安装时设置非默认自定义密码则可正常进入面板；自定义密码
+隐藏输入并要求确认，不显示、不写入日志。密码仅以 PBKDF2-SHA256 哈希存储。
+初始配置只在创建空数据库时生效；后续重启不会覆盖已修改的管理员密码。
 
 API 默认只监听 `127.0.0.1:8080`。如果主机已有服务占用 8080，请使用
 `--api-port 8081` 等空闲端口；安装器会在创建文件或运行 apt 之前检查 IPv4/IPv6
 TCP 监听端口，有冲突就拒绝安装，不会停止或修改原有服务。例如：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/deploy/install.sh \
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh \
   | sudo bash -s -- --domain hlpanel.hongle.cc --api-port 8081
 ```
 
@@ -98,3 +109,10 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 
 一键安装仅用于首次建立空实例，不用于升级或迁移。升级需要另行制作明确的
 备份、校验、切换和回滚流程；不要重复运行首次安装器覆盖现有实例。
+
+管理员密码遗失时，主机运维可在备份数据库后使用本地维护命令
+`control-api reset-admin-password USERNAME`，从标准输入提供密码，并加载私有
+服务配置。该命令要求持久化数据库，记录审计，原子修改密码并撤销全部管理员
+会话；设回 `123456` 会重新要求首登改密，不提供远程免认证重置接口。
+v0.1.5 写入快照格式 16，读取兼容旧格式；回退旧二进制必须同时恢复升级前
+数据库备份，不能仅切换程序链接。

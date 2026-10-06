@@ -51,7 +51,10 @@ router.beforeEach((to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.name === 'login' && authStore.isAuthenticated.value) {
-    return { name: 'overview' }
+    return { name: authStore.user.value?.must_change_password ? 'userinfo' : 'overview' }
+  }
+  if (authStore.isAuthenticated.value && authStore.user.value?.must_change_password && to.name !== 'userinfo') {
+    return { name: 'userinfo' }
   }
   return true
 })

@@ -63,7 +63,7 @@ async function submit(): Promise<void> {
         <label class="ny-login-field">
           <span class="sr-only">管理员账号</span>
           <UserRound :size="16" aria-hidden="true" />
-          <input v-model="username" autocomplete="username" inputmode="text" maxlength="80" autofocus placeholder="账号" />
+          <input v-model="username" autocomplete="username" inputmode="text" maxlength="128" autofocus placeholder="账号" />
         </label>
         <label class="ny-login-field">
           <span class="sr-only">密码</span>

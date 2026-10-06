@@ -91,6 +91,10 @@ func (handler *Handler) ingest(writer http.ResponseWriter, request *http.Request
 
 func (handler *Handler) query(writer http.ResponseWriter, request *http.Request) {
 	if _, err := handler.authorizeAdmin(request); err != nil {
+		if errors.Is(err, faults.ErrPasswordChangeRequired) {
+			writeProblem(writer, http.StatusForbidden, "password_change_required", "请先在个人中心修改初始密码")
+			return
+		}
 		writer.Header().Set("WWW-Authenticate", "Bearer")
 		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
 		return
@@ -149,6 +153,10 @@ func (handler *Handler) recordEnforcementResult(writer http.ResponseWriter, requ
 func (handler *Handler) revokeEnforcement(writer http.ResponseWriter, request *http.Request) {
 	administratorID, err := handler.authorizeAdmin(request)
 	if err != nil || administratorID == "" {
+		if errors.Is(err, faults.ErrPasswordChangeRequired) {
+			writeProblem(writer, http.StatusForbidden, "password_change_required", "请先在个人中心修改初始密码")
+			return
+		}
 		writer.Header().Set("WWW-Authenticate", "Bearer")
 		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
 		return
