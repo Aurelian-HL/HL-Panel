@@ -25,7 +25,7 @@ func (repository *Repository) ReplayLegacy(ctx context.Context, report usage.Rep
 	if !exists {
 		return usage.IngestResult{}, false, nil
 	}
-	if !usage.LegacyReplayMatches(stored.Event, report) {
+	if !usage.RuleReplayMatches(stored.Event, report) {
 		return usage.IngestResult{}, false, usage.ErrIdempotencyConflict
 	}
 	totals, err := customerTotals(ctx, tx, stored.Event.CustomerID)

@@ -177,16 +177,18 @@ func (source *XrayStatsSource) CollectUsage(ctx context.Context, window Collecti
 	}
 	deltas := make(map[string]int64, len(current))
 	for name, value := range current {
-		previous, exists := source.last[name]
-		if !exists || value < previous {
-			// New stat or Xray reset: establish a baseline and do not charge
-			// the pre-existing bytes to this reporting window.
+		previous := source.last[name]
+		if value < previous {
+			// A decreased counter indicates a reset. New counters after the
+			// initial sample are lazy stats and must include their first bytes.
 			deltas[name] = 0
 			continue
 		}
 		deltas[name] = value - previous
 	}
-	source.last = current
+	for name, value := range current {
+		source.last[name] = value
+	}
 	return buildXrayDeltas(current, deltas, window.EndedAt), nil
 }
 

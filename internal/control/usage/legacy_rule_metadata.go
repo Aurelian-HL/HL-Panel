@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
@@ -159,14 +160,14 @@ func hasLegacyVLESSInboundTag(input deploymentreceipts.Input, ruleID string) boo
 			continue
 		}
 		matching++
-		if fragment.Engine != agentv1.EngineXray || !hasXrayInboundTag(fragment.Config, wantTag) {
+		if fragment.Engine != agentv1.EngineXray || !hasXrayInboundTag(fragment.Config, wantTag, input.Rule) {
 			return false
 		}
 	}
 	return matching == 1
 }
 
-func hasXrayInboundTag(raw json.RawMessage, expected string) bool {
+func hasXrayInboundTag(raw json.RawMessage, expected string, rule forwarding.Rule) bool {
 	var config struct {
 		Inbounds []struct {
 			Tag string `json:"tag"`
@@ -177,6 +178,25 @@ func hasXrayInboundTag(raw json.RawMessage, expected string) bool {
 	}
 	for _, inbound := range config.Inbounds {
 		if inbound.Tag == expected {
+			return true
+		}
+		encoded, ok := strings.CutPrefix(inbound.Tag, "vless-reality-"+rule.ID+"--")
+		if !ok {
+			continue
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			continue
+		}
+		var metadata struct {
+			RuleID       string `json:"rule_id"`
+			CustomerID   string `json:"customer_id"`
+			EntryGroupID string `json:"entry_group_id"`
+			ExitGroupID  string `json:"exit_group_id"`
+			Protocol     string `json:"protocol"`
+		}
+		if json.Unmarshal(decoded, &metadata) == nil && metadata.RuleID == rule.ID && metadata.CustomerID == rule.CustomerID &&
+			metadata.EntryGroupID == rule.EntryGroupID && metadata.ExitGroupID == rule.ExitGroupID && metadata.Protocol == string(rule.Protocol) {
 			return true
 		}
 	}

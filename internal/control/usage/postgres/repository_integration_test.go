@@ -80,6 +80,39 @@ type integrationPolicies struct {
 	err   error
 }
 
+type managedMetadata struct {
+	metadata usage.LegacyRuleMetadata
+	err      error
+}
+
+func (provider *managedMetadata) ResolveLegacyRuleUsageMetadata(context.Context, string, string) (usage.LegacyRuleMetadata, error) {
+	return provider.metadata, provider.err
+}
+
+func TestPostgreSQLManagedReplayRetainsMultiplierAfterRuleChanges(t *testing.T) {
+	db := isolatedUsageDatabase(t)
+	repository := New(db)
+	provider := &managedMetadata{metadata: usage.LegacyRuleMetadata{RuleID: "rule-one", CustomerID: "customer-one", EntryGroup: "entry-one", ExitGroup: "exit-one", Protocol: "tcp", EntryMultiplierMicros: 2 * usage.MultiplierScale, ExitMultiplierMicros: 1500000}}
+	service := usage.NewService(repository, integrationPolicies{}, nil, usage.WithLegacyRuleMetadataProvider(provider))
+	report := integrationReport(1)
+	report.OccurredAt = report.OccurredAt.Add(123456789 * time.Nanosecond)
+	report.PeriodEndedAt = report.OccurredAt
+	got, err := service.Ingest(context.Background(), report)
+	if err != nil || got.Event.ChargedBytes != 300 {
+		t.Fatalf("trusted billing=%+v error=%v", got, err)
+	}
+	provider.metadata.EntryMultiplierMicros = 0
+	provider.err = errors.New("rule is no longer applied")
+	replayed, err := service.Ingest(context.Background(), report)
+	if err != nil || !replayed.Replayed || replayed.Event.ChargedBytes != 300 || replayed.CustomerTotals.ChargedBytes != 300 {
+		t.Fatalf("stored multiplier replay=%+v error=%v", replayed, err)
+	}
+	report.CustomerID = "forged"
+	if _, err := service.Ingest(context.Background(), report); !errors.Is(err, usage.ErrIdempotencyConflict) {
+		t.Fatalf("forged replay error=%v", err)
+	}
+}
+
 func (policies integrationPolicies) UsagePolicy(_ context.Context, customerID string) (usage.CustomerPolicy, error) {
 	if policies.err != nil {
 		return usage.CustomerPolicy{}, policies.err

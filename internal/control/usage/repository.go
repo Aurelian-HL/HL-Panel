@@ -17,7 +17,7 @@ type Repository interface {
 }
 
 // LegacyReplayRepository recognizes an exact retry of an already-ingested
-// legacy report before current rule metadata is resolved. This keeps a lost
+// rule report (legacy or full format) before current metadata is resolved. This keeps a lost
 // acknowledgement from blocking the agent journal after rule state changes.
 type LegacyReplayRepository interface {
 	ReplayLegacy(context.Context, Report) (IngestResult, bool, error)

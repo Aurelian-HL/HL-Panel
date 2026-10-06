@@ -50,7 +50,7 @@ func NewService(repository Repository, policies CustomerPolicyProvider, now func
 }
 
 func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult, error) {
-	if strings.TrimSpace(input.LegacyRuleID) != "" {
+	if strings.TrimSpace(input.LegacyRuleID) != "" || service.legacyRuleMetadata != nil {
 		if repository, ok := service.repository.(LegacyReplayRepository); ok {
 			result, replayed, err := repository.ReplayLegacy(ctx, input)
 			if err != nil {
@@ -61,8 +61,14 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 			}
 		}
 	}
-	if err := service.resolveLegacyRuleMetadata(ctx, &input); err != nil {
-		return IngestResult{}, err
+	if strings.TrimSpace(input.LegacyRuleID) != "" {
+		if err := service.resolveLegacyRuleMetadata(ctx, &input); err != nil {
+			return IngestResult{}, err
+		}
+	} else if service.legacyRuleMetadata != nil {
+		if err := service.resolveManagedRuleMetadata(ctx, &input); err != nil {
+			return IngestResult{}, err
+		}
 	}
 	normalized, err := normalizeReport(input)
 	if err != nil {
@@ -134,6 +140,38 @@ func LegacyReplayMatches(event Event, report Report) bool {
 
 func samePostgresTimestamp(left, right time.Time) bool {
 	return left.Truncate(time.Microsecond).Equal(right.Truncate(time.Microsecond))
+}
+
+// RuleReplayMatches preserves the stored multiplier snapshot for both report
+// formats. Full-format ownership and byte fields must still match exactly;
+// agent multipliers are ignored because the server owns billing policy.
+func RuleReplayMatches(event Event, report Report) bool {
+	if strings.TrimSpace(report.LegacyRuleID) != "" {
+		return LegacyReplayMatches(event, report)
+	}
+	if strings.TrimSpace(report.CustomerID) != event.CustomerID || strings.TrimSpace(report.RuleID) != event.RuleID ||
+		strings.TrimSpace(report.EntryGroupID) != event.EntryGroupID || strings.TrimSpace(report.ExitGroupID) != event.ExitGroupID ||
+		strings.ToLower(strings.TrimSpace(report.Protocol)) != event.Protocol || report.CustomerActualBytes != report.RuleActualBytes {
+		return false
+	}
+	report.LegacyRuleID = event.RuleID
+	report.CustomerID, report.EntryGroupID, report.ExitGroupID, report.Protocol = "", "", "", ""
+	return LegacyReplayMatches(event, report)
+}
+
+func (service *Service) resolveManagedRuleMetadata(ctx context.Context, report *Report) error {
+	metadata, err := service.legacyRuleMetadata.ResolveLegacyRuleUsageMetadata(ctx, report.NodeID, report.RuleID)
+	if err != nil {
+		return err
+	}
+	if report.RuleID != metadata.RuleID || report.CustomerID != metadata.CustomerID ||
+		report.EntryGroupID != metadata.EntryGroup || report.ExitGroupID != metadata.ExitGroup ||
+		strings.ToLower(strings.TrimSpace(report.Protocol)) != metadata.Protocol || report.CustomerActualBytes != report.RuleActualBytes {
+		return fmt.Errorf("%w: usage metadata does not match the verified rule", faults.ErrValidation)
+	}
+	report.EntryMultiplierMicros = metadata.EntryMultiplierMicros
+	report.ExitMultiplierMicros = metadata.ExitMultiplierMicros
+	return nil
 }
 
 func (service *Service) resolveLegacyRuleMetadata(ctx context.Context, report *Report) error {

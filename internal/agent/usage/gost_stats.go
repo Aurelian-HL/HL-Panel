@@ -134,15 +134,19 @@ func (source *GOSTStatsSource) CollectUsage(ctx context.Context, window Collecti
 	}
 	deltas := make([]CounterDelta, 0, len(current))
 	for ruleID, value := range current {
-		previous, exists := source.last[ruleID]
-		if !exists || value < previous {
+		previous := source.last[ruleID]
+		// GOST creates service counters lazily on the first connection. After
+		// a successful initial sample, a newly appearing counter starts at zero.
+		if value < previous {
 			continue
 		}
 		if increment := value - previous; increment > 0 {
 			deltas = append(deltas, CounterDelta{RuleID: ruleID, LegacyRuleID: ruleID, OccurredAt: window.EndedAt, RuleActualBytes: increment, CustomerActualBytes: increment, EntryMultiplierMicros: 1_000_000, ExitMultiplierMicros: 1_000_000})
 		}
 	}
-	source.last = current
+	for ruleID, value := range current {
+		source.last[ruleID] = value
+	}
 	return deltas, nil
 }
 

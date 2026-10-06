@@ -75,6 +75,45 @@ func TestXrayStatsSourceUsesCumulativeDeltasAndBaseline(t *testing.T) {
 	}
 }
 
+func TestXrayFirstTrafficAfterEmptySampleSurvivesCollectionRollback(t *testing.T) {
+	client := &statsClientStub{responses: []*xraystatsproto.QueryStatsResponse{{}, statsResponse(statsTagForTest(t), 84, 2490569)}}
+	source := NewXrayStatsSourceWithClient(client, nil)
+	_, _ = source.CollectUsage(context.Background(), usageWindow())
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := source.BeginCollection(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := source.CollectUsage(context.Background(), usageWindow())
+		if err != nil || len(got) != 1 || got[0].RuleActualBytes != 2490653 {
+			t.Fatalf("first transfer, attempt %d: %v %v", attempt, got, err)
+		}
+		if attempt == 0 {
+			source.RollbackCollection()
+		} else {
+			source.CommitCollection()
+		}
+	}
+	if got, err := source.CollectUsage(context.Background(), usageWindow()); err != nil || len(got) != 0 {
+		t.Fatalf("same counters counted twice: %v %v", got, err)
+	}
+}
+
+func TestXrayPartialSampleDoesNotForgetOtherRuleCounters(t *testing.T) {
+	tag := statsTagForTest(t)
+	client := &statsClientStub{responses: []*xraystatsproto.QueryStatsResponse{
+		statsResponse(tag, 100, 20),
+		{Stat: []*xraystatsproto.Stat{{Name: "outbound>>>other>>>traffic>>>uplink", Value: 50}}},
+		statsResponse(tag, 125, 35),
+	}}
+	source := NewXrayStatsSourceWithClient(client, nil)
+	_, _ = source.CollectUsage(context.Background(), usageWindow())
+	_, _ = source.CollectUsage(context.Background(), usageWindow())
+	got, err := source.CollectUsage(context.Background(), usageWindow())
+	if err != nil || len(got) != 1 || got[0].RuleActualBytes != 40 {
+		t.Fatalf("reappearing stats must use preserved cursor: %v %v", got, err)
+	}
+}
+
 func TestDecodeStatsTagExtractsLegacyRuleID(t *testing.T) {
 	metadata, ok := decodeStatsTag("vless-reality-fwd_rule-legacy")
 	if !ok {
@@ -197,8 +236,8 @@ func TestXrayStatsSourceSkipsInvalidMetadataAndEmptyResponses(t *testing.T) {
 	if deltas, err := source.CollectUsage(context.Background(), usageWindow()); err != nil || len(deltas) != 0 {
 		t.Fatalf("empty baseline = %#v, %v", deltas, err)
 	}
-	if deltas, err := source.CollectUsage(context.Background(), usageWindow()); err != nil || len(deltas) != 0 {
-		t.Fatalf("valid response baseline = %#v, %v", deltas, err)
+	if deltas, err := source.CollectUsage(context.Background(), usageWindow()); err != nil || len(deltas) != 1 || deltas[0].RuleActualBytes != 8 {
+		t.Fatalf("first traffic after empty baseline = %#v, %v", deltas, err)
 	}
 	if deltas, err := source.CollectUsage(context.Background(), usageWindow()); err != nil || len(deltas) != 1 || deltas[0].RuleActualBytes != 8 {
 		t.Fatalf("invalid metadata handling = %#v, %v", deltas, err)

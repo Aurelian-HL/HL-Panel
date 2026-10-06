@@ -62,6 +62,43 @@ func TestGOSTStatsSourceUsesCumulativeServiceDeltas(t *testing.T) {
 	}
 }
 
+func TestGOSTFirstTrafficAfterEmptySampleSurvivesCollectionRollback(t *testing.T) {
+	server, _ := gostServer(t, "gost_services 1\n", gostPayload(84, 2490569))
+	source := sourceForServer(t, server)
+	if got, err := source.CollectUsage(context.Background(), gostWindow()); err != nil || len(got) != 0 {
+		t.Fatalf("empty initial sample: %v %v", got, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := source.BeginCollection(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := source.CollectUsage(context.Background(), gostWindow())
+		if err != nil || len(got) != 1 || got[0].RuleActualBytes != 2490653 {
+			t.Fatalf("first transfer, attempt %d: %v %v", attempt, got, err)
+		}
+		if attempt == 0 {
+			source.RollbackCollection()
+		} else {
+			source.CommitCollection()
+		}
+	}
+	if got, err := source.CollectUsage(context.Background(), gostWindow()); err != nil || len(got) != 0 {
+		t.Fatalf("same counters counted twice: %v %v", got, err)
+	}
+}
+
+func TestGOSTPartialSampleDoesNotForgetOtherRuleCounters(t *testing.T) {
+	other := "gost_service_transfer_input_bytes_total{service=\"forward-rule-2\"} 20\n"
+	server, _ := gostServer(t, gostPayload(100, 0)+other, other, gostPayload(125, 0)+other)
+	source := sourceForServer(t, server)
+	_, _ = source.CollectUsage(context.Background(), gostWindow())
+	_, _ = source.CollectUsage(context.Background(), gostWindow())
+	got, err := source.CollectUsage(context.Background(), gostWindow())
+	if err != nil || len(got) != 1 || got[0].RuleActualBytes != 25 {
+		t.Fatalf("reappearing rule must use preserved cursor: %v %v", got, err)
+	}
+}
+
 func TestGOSTStatsSourceIgnoresUnmanagedServices(t *testing.T) {
 	server, _ := gostServer(t,
 		"gost_service_transfer_input_bytes_total{service=\"other-service\"} 900\n"+

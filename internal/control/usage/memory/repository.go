@@ -141,7 +141,7 @@ func (repository *Repository) ReplayLegacy(_ context.Context, report usage.Repor
 	if !exists {
 		return usage.IngestResult{}, false, nil
 	}
-	if !usage.LegacyReplayMatches(stored, report) {
+	if !usage.RuleReplayMatches(stored, report) {
 		return usage.IngestResult{}, false, usage.ErrIdempotencyConflict
 	}
 	return usage.IngestResult{
