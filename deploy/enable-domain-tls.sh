@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 CONFIG_FILE="/etc/hl-panel/domain.conf"
+ACME_WEBROOT="/var/lib/hl-panel-acme"
 EMAIL=""
 RENEWED_LINEAGE=""
 
@@ -57,6 +58,7 @@ if [[ -n "$RENEWED_LINEAGE" ]]; then
   [[ "$RENEWED_LINEAGE" == "$LIVE_DIR" ]] || fail "续期 lineage 不属于当前 HL-panel 安装"
   [[ -s "$RENEWED_LINEAGE/fullchain.pem" && -s "$RENEWED_LINEAGE/privkey.pem" ]] || fail "续期 lineage 缺少证书或私钥"
 else
+  [[ -d "$ACME_WEBROOT" && ! -L "$ACME_WEBROOT" ]] || fail "未找到独立 ACME 公共目录：$ACME_WEBROOT"
   command -v python3 >/dev/null 2>&1 || fail "缺少 python3；请先安装 python3 后重试"
   DNS_A_RECORDS="$(resolve_domain_records A)" || fail "$DOMAIN 的 A 记录查询失败，未申请证书"
   DNS_AAAA_RECORDS="$(resolve_domain_records AAAA)" || fail "$DOMAIN 的 AAAA 记录查询失败，未申请证书"
@@ -65,11 +67,11 @@ else
   if [[ -e "$RENEWAL_CONFIG" ]]; then
     awk -F= -v domain="$DOMAIN" '$1 == "domains" { value=$2; gsub(/[[:space:]]/, "", value); if (value == domain) found=1 } END { exit !found }' "$RENEWAL_CONFIG" || fail "同名 Certbot lineage 的域名不匹配"
     grep -Eq '^authenticator *= *webroot[[:space:]]*$' "$RENEWAL_CONFIG" || fail "同名 Certbot lineage 不是 HL-panel webroot 配置"
-    grep -Fqx "webroot_path = /var/lib/hl-panel/acme-webroot" "$RENEWAL_CONFIG" || fail "同名 Certbot lineage 使用了其他 webroot"
+    grep -Fqx "webroot_path = $ACME_WEBROOT" "$RENEWAL_CONFIG" || fail "同名 Certbot lineage 使用了其他 webroot"
   elif [[ -e "$LIVE_DIR" || -L "$LIVE_DIR" ]]; then
     fail "Certbot lineage 路径已被占用，但找不到 HL-panel renewal 配置"
   else
-    CERTBOT=(certbot certonly --webroot -w /var/lib/hl-panel/acme-webroot --cert-name "$CERT_NAME" -d "$DOMAIN" --non-interactive --agree-tos)
+    CERTBOT=(certbot certonly --webroot -w "$ACME_WEBROOT" --cert-name "$CERT_NAME" -d "$DOMAIN" --non-interactive --agree-tos)
     if [[ -n "$EMAIL" ]]; then
       CERTBOT+=(--email "$EMAIL")
     else

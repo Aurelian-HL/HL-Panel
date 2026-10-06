@@ -61,13 +61,18 @@ sudo hl-panel-enable-domain-tls
 可选传入通知邮箱：`sudo hl-panel-enable-domain-tls --email admin@example.com`。
 Certbot 续期后只替换 HL-panel 自己的证书，并在 Nginx 配置检查通过后 reload。
 IP HTTPS 入口会继续保留。
+ACME 挑战文件放在独立 `/var/lib/hl-panel-acme/`，由 root 管理且目录权限为
+0755，供 Nginx 读取。服务私有状态 `/var/lib/hl-panel/` 仍由 `hlpanel` 管理、
+权限为 0750；不会向 Nginx 开放私有状态，也不会将其加入 `hlpanel` 组。
+安装器拒绝覆盖已有 ACME 路径，失败回滚仅移除本轮新建的受管目录。
 
 ## 安装位置与运维命令
 
 ```text
 /opt/hl-panel/                 程序及不可变 release
 /etc/hl-panel/                 数据库连接、服务配置和 TLS 文件
-/var/lib/hl-panel/             服务状态和 ACME webroot
+/var/lib/hl-panel/             私有服务状态（hlpanel:hlpanel，0750）
+/var/lib/hl-panel-acme/        公共 ACME webroot（root:root，0755）
 hl-panel-control-api.service   控制面 API
 ```
 

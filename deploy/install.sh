@@ -13,7 +13,7 @@ CONFIG_DIR="/etc/hl-panel"
 STATE_DIR="/var/lib/hl-panel"
 NGINX_AVAILABLE="/etc/nginx/sites-available/hl-panel.conf"
 NGINX_ENABLED="/etc/nginx/sites-enabled/hl-panel.conf"
-ACME_WEBROOT="/var/lib/hl-panel/acme-webroot"
+ACME_WEBROOT="/var/lib/hl-panel-acme"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK_DIR=""
 
@@ -136,6 +136,7 @@ id hlpanel >/dev/null 2>&1 && fail "系统账号 hlpanel 已存在；安装器�
 [[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || fail "$INSTALL_ROOT 已存在；为保护现有数据，安装器不会覆盖它"
 [[ ! -e "$CONFIG_DIR" && ! -L "$CONFIG_DIR" ]] || fail "$CONFIG_DIR 已存在；为保护现有配置，安装器不会覆盖它"
 [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]] || fail "$STATE_DIR 已存在；为保护现有数据，安装器不会覆盖它"
+[[ ! -e "$ACME_WEBROOT" && ! -L "$ACME_WEBROOT" ]] || fail "$ACME_WEBROOT 已存在；为保护现有文件，安装器不会覆盖它"
 [[ ! -e "$NGINX_AVAILABLE" && ! -L "$NGINX_AVAILABLE" && ! -e "$NGINX_ENABLED" && ! -L "$NGINX_ENABLED" ]] || fail "检测到已有 HL-panel Nginx 配置，未做任何覆盖"
 [[ ! -e /etc/systemd/system/hl-panel-control-api.service && ! -L /etc/systemd/system/hl-panel-control-api.service ]] || fail "检测到已有 HL-panel 服务，未做任何覆盖"
 for existing_path in \
@@ -297,6 +298,7 @@ ROLLBACK_REQUIRED=true
 INSTALL_ROOT_CREATED=false
 CONFIG_DIR_CREATED=false
 STATE_DIR_CREATED=false
+ACME_WEBROOT_CREATED=false
 USER_CREATED=false
 DB_ROLE_CREATED=false
 DB_CREATE_STARTED=false
@@ -336,6 +338,7 @@ cleanup() {
     fi
     if [[ "$CONFIG_DIR_CREATED" == true ]]; then rm -rf -- "$CONFIG_DIR"; fi
     if [[ "$STATE_DIR_CREATED" == true ]]; then rm -rf -- "$STATE_DIR"; fi
+    if [[ "$ACME_WEBROOT_CREATED" == true ]]; then rm -rf -- "$ACME_WEBROOT"; fi
     if [[ "$INSTALL_ROOT_CREATED" == true ]]; then rm -rf -- "$INSTALL_ROOT"; fi
     if [[ "$USER_CREATED" == true ]]; then userdel hlpanel >/dev/null 2>&1 || true; fi
   fi
@@ -491,6 +494,10 @@ chmod 0644 "$CONFIG_DIR/tls/domain-certificates/self-signed/fullchain.pem"
 CERTBOT_CERT_NAME="hl-panel-${DOMAIN//./-}-$RUN_ID"
 ln -s "$CONFIG_DIR/tls/domain-certificates/self-signed" "$CONFIG_DIR/tls/domain-current"
 
+mkdir "$ACME_WEBROOT"
+ACME_WEBROOT_CREATED=true
+chown root:root "$ACME_WEBROOT"
+chmod 0755 "$ACME_WEBROOT"
 install -d -o root -g root -m 0755 "$ACME_WEBROOT/.well-known/acme-challenge"
 install_new_file "$FINAL_RELEASE/deploy/nginx/conf.d/hl-panel-rate-limit.conf" /etc/nginx/conf.d/hl-panel-rate-limit.conf root root 0644
 install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-security-headers.conf" /etc/nginx/snippets/hl-panel-security-headers.conf root root 0644

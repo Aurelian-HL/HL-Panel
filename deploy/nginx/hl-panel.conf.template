@@ -5,7 +5,7 @@ server {
     server_tokens off;
 
     location ^~ /.well-known/acme-challenge/ {
-        root /var/lib/hl-panel/acme-webroot;
+        root /var/lib/hl-panel-acme;
         default_type text/plain;
         try_files $uri =404;
     }
