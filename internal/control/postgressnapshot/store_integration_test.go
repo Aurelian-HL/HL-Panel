@@ -106,10 +106,10 @@ func TestPostgreSQLRestartPreservesIdentityRoutingAuditAndIdempotency(t *testing
 	require(s.CreateDeviceGroup(ctx, groups.DeviceGroup{ID: "group-one", Name: "isolated-group", Kind: groups.KindEdge, SelectionPolicy: endpoints.SelectionWeightedRoundRobin, CreatedAt: now}, event))
 	_, _, err = s.UpsertGroupMember(ctx, groups.Member{GroupID: "group-one", NodeID: "node-one", Weight: 3, CreatedAt: now, UpdatedAt: now}, event)
 	require(err)
-	poolInput := endpoints.CreatePoolInput{ID: "pool-one", Name: "isolated", GroupID: "group-one", Mode: endpoints.ModeSingleServiceEndpoint, Protocol: "vless", Hostname: "edge.example.test", Port: 443, SelectionPolicy: endpoints.SelectionWeightedRoundRobin, IdempotencyKey: "pool-key", RequestSHA256: "pool-request-hash", CreatedAt: now}
+	poolInput := endpoints.CreatePoolInput{ID: "pool-one", Name: "isolated", GroupID: "group-one", Mode: endpoints.ModeSingleServiceEndpoint, Protocol: "vless", Hostname: "edge.example.test", Port: 443, SelectionPolicy: endpoints.SelectionWeightedRoundRobin, IdempotencyKey: "pool-key", RequestSHA256: "pool-request-hash", CreatedBy: admin.ID, CreatedAt: now}
 	_, _, err = s.CreateEndpointPool(ctx, poolInput, event)
 	require(err)
-	memberInput := endpoints.AddMemberInput{PoolID: "pool-one", GroupID: "group-one", NodeID: "node-one", Weight: 3, IdempotencyKey: "member-key", RequestSHA256: "member-request-hash", CreatedAt: now}
+	memberInput := endpoints.AddMemberInput{PoolID: "pool-one", GroupID: "group-one", NodeID: "node-one", Weight: 3, IdempotencyKey: "member-key", RequestSHA256: "member-request-hash", CreatedBy: admin.ID, CreatedAt: now}
 	_, _, err = s.AddEndpointPoolMember(ctx, memberInput, event)
 	require(err)
 	revisionInput := generations.CreateGroupRevisionInput{ID: "revision-one", GroupID: "group-one", Engine: agentv1.EngineXray, Config: json.RawMessage(`{"inbounds":[],"outbounds":[]}`), ConfigSHA256: "revision-hash", RequestSHA256: "revision-request-hash", IdempotencyKey: "revision-key", CreatedBy: admin.ID, CreatedAt: now}
