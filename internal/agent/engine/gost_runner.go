@@ -52,10 +52,17 @@ func NewExecGOSTRunner(binaryPath string) (*ExecGOSTRunner, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, binaryPath, "-V").Output()
-	if err != nil || !strings.HasPrefix(string(version), "gost 3.3.1 (") {
-		return nil, errors.New("gost binary must be version 3.3.1")
+	if err != nil || !IsSupportedGOSTVersion(string(version)) {
+		return nil, errors.New("gost binary must be version 3.3.1 or pinned v3.3.1-nightly.20260922")
 	}
 	return &ExecGOSTRunner{binaryPath: binaryPath}, nil
+}
+
+// IsSupportedGOSTVersion accepts only versions verified with the native compiler
+// and process adapter. The pinned upstream nightly is distributed in releases.
+func IsSupportedGOSTVersion(output string) bool {
+	return strings.HasPrefix(output, "gost 3.3.1 (") ||
+		strings.HasPrefix(output, "gost v3.3.1-nightly.20260922 (")
 }
 
 func (r *ExecGOSTRunner) Test(ctx context.Context, configPath string) error {

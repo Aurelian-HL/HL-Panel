@@ -233,14 +233,23 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             request('POST',f"/device-groups/{second['id']}/generations",
                     {'engine':'xray','config':xray_config,'idempotency_key':'installed-xray'},201)
 
+            def receive_exact(connection, size):
+                result = b''
+                while len(result) < size:
+                    block = connection.recv(size - len(result))
+                    if not block:
+                        raise OSError('Loopback client connection ended before complete response')
+                    result += block
+                return result
+
             def real_clients():
                 with socket.create_connection(('127.0.0.1',gost_port),timeout=3) as s:
-                    assert s.recv(4096) == marker
+                    assert receive_exact(s, len(marker)) == marker
                 with socket.create_connection(('127.0.0.1',socks_port),timeout=3) as s:
-                    s.sendall(b'\x05\x01\x00'); assert s.recv(2) == b'\x05\x00'
+                    s.sendall(b'\x05\x01\x00'); assert receive_exact(s, 2) == b'\x05\x00'
                     s.sendall(b'\x05\x01\x00\x01\x7f\x00\x00\x01'+target_port.to_bytes(2,'big'))
-                    reply = s.recv(10); assert len(reply) == 10 and reply[:2] == b'\x05\x00'
-                    assert s.recv(4096) == marker
+                    reply = receive_exact(s, 10); assert reply[:2] == b'\x05\x00'
+                    assert receive_exact(s, len(marker)) == marker
                 return True
 
             wait_for(real_clients)

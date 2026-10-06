@@ -102,7 +102,8 @@ adapter rejects mixed Xray/GOST bundles; it never silently drops the other
 engine's fragments.
 
 For a dedicated direct TCP forwarding node, set `engine_mode: "gost"` and an
-absolute `gost_binary_path` pointing to the verified GOST 3.3.1 executable.
+absolute `gost_binary_path` pointing to the verified GOST 3.3.1 executable or
+the bundled, pinned upstream v3.3.1-nightly.20260922 executable.
 `gost_auto_start` defaults to `false`; enabling it explicitly lets this agent
 own one local GOST process. The adapter accepts only structured GOST direct
 TCP fragments and rejects Xray or mixed bundles. Staging a configuration with

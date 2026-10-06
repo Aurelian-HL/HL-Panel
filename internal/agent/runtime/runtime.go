@@ -290,13 +290,13 @@ func (a *Agent) HeartbeatOnce(ctx context.Context) error {
 
 func (a *Agent) engineVersions() map[string]string {
 	if a.engineMode == config.EngineModeMixed {
-		return map[string]string{"node-bundle": "mixed-process-adapter", "xray": "configured", "gost": "3.3.1"}
+		return map[string]string{"node-bundle": "mixed-process-adapter", "xray": "configured", "gost": "configured"}
 	}
 	if a.engineMode == config.EngineModeXray {
 		return map[string]string{"node-bundle": "xray-process-adapter", "xray": "configured"}
 	}
 	if a.engineMode == config.EngineModeGOST {
-		return map[string]string{"node-bundle": "gost-process-adapter", "gost": "3.3.1"}
+		return map[string]string{"node-bundle": "gost-process-adapter", "gost": "configured"}
 	}
 	return map[string]string{"node-bundle": "dry-run-file-adapter"}
 }

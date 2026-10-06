@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/agent/engine"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 )
@@ -81,8 +82,7 @@ func verifiedGOST(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, binary, "-V").Output()
-	versionText := string(version)
-	if err != nil || !(strings.HasPrefix(versionText, "gost 3.3.1 (") || strings.HasPrefix(versionText, "gost v3.3.1-nightly.20260922 (")) {
+	if err != nil || !engine.IsSupportedGOSTVersion(string(version)) {
 		t.Fatalf("real engine integration requires GOST 3.3.1 or pinned v3.3.1-nightly.20260922: %v", err)
 	}
 	t.Log(strings.TrimSpace(string(version)))
