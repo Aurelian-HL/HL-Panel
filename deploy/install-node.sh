@@ -9,14 +9,15 @@ archive=""
 checksum=""
 enrollment_token=""
 ca_file=""
+node_address=""
 while (($#)); do
   case "$1" in
-    --repo|--version|--panel-url|--archive|--sha256|--token|--ca-file)
+    --repo|--version|--panel-url|--archive|--sha256|--token|--ca-file|--node-address)
       (($# >= 2)) || { echo "缺少参数值：$1" >&2; exit 2; }
       case "$1" in
         --repo) repository="$2" ;; --version) version="$2" ;; --panel-url) origin="$2" ;;
         --archive) archive="$2" ;; --sha256) checksum="$2" ;;
-        --token) enrollment_token="$2" ;; --ca-file) ca_file="$2" ;;
+        --token) enrollment_token="$2" ;; --ca-file) ca_file="$2" ;; --node-address) node_address="$2" ;;
       esac
       shift 2 ;;
     *) echo '未知参数，请使用文档中的节点安装命令。' >&2; exit 2 ;;
@@ -46,6 +47,32 @@ else
   command -v python3 >/dev/null || { echo '离线模式需要预装 python3。' >&2; exit 1; }
   [[ -f "$archive" && -f "$checksum" ]] || { echo '离线安装必须同时提供 --archive 和 --sha256 文件。' >&2; exit 2; }
 fi
+# Public address is separate from the operating-system hostname.
+if [[ -z "$node_address" ]]; then
+  for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
+    candidate=$(curl -4 --fail --silent --show-error --connect-timeout 5 --max-time 10 "$endpoint" 2>/dev/null || true)
+    if python3 - "$candidate" <<'PY'
+import ipaddress,sys
+try:
+    address=ipaddress.IPv4Address(sys.argv[1].strip())
+    assert address.is_global
+except (ValueError,AssertionError): sys.exit(1)
+PY
+    then node_address="${candidate//$'\n'/}"; break; fi
+  done
+fi
+[[ -n "$node_address" ]] || { echo '无法自动识别节点公网地址；在原命令末尾添加 --node-address 节点公网IP 重试。未修改节点。' >&2; exit 1; }
+node_address=$(python3 - "$node_address" <<'PY'
+import ipaddress,re,sys
+value=sys.argv[1].strip()
+try: print(ipaddress.ip_address(value)); sys.exit(0)
+except ValueError: pass
+value=value.lower().rstrip('.')
+if len(value)>253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',s) for s in value.split('.')):
+    raise SystemExit('节点地址须为一个 IP 或域名，不含协议、端口或路径')
+print(value)
+PY
+)
 python3 - "$origin" "$ca_file" <<'PY'
 import ssl, sys, urllib.parse
 try:
@@ -181,6 +208,17 @@ os.chown(name, p.stat().st_uid, p.stat().st_gid); os.chmod(name,0o640)
 os.replace(name,p)
 PY
 fi
+python3 - "$node_address" <<'PY'
+import json,os,pathlib,tempfile
+p=pathlib.Path('/etc/hl-panel/edge-agent.json'); c=json.loads(p.read_text())
+# Keep an unfinished enrollment attempt stable, including its dial address.
+if c.get('dial_host') and c['dial_host'] != __import__('sys').argv[1]:
+    raise SystemExit('已有注册配置的节点地址不同；使用原 --node-address 重试')
+c['dial_host']=__import__('sys').argv[1]
+fd,name=tempfile.mkstemp(dir=p.parent)
+with os.fdopen(fd,'w') as f: f.write(json.dumps(c)+'\n')
+os.chown(name,p.stat().st_uid,p.stat().st_gid); os.chmod(name,0o640); os.replace(name,p)
+PY
 echo '[HL-panel 节点] 自动注册并启用开机自启…'
 HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh
 unset enrollment_token

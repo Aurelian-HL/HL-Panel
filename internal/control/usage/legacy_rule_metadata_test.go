@@ -46,7 +46,7 @@ func TestLegacyRuleMetadataRequiresCurrentAppliedMembershipAndTag(t *testing.T) 
 				if err != nil {
 					t.Fatal(err)
 				}
-				if metadata != (LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp"}) {
+				if metadata != (LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp", EntryMultiplierMicros: MultiplierScale, ExitMultiplierMicros: MultiplierScale}) {
 					t.Fatalf("resolved metadata = %#v", metadata)
 				}
 				return
@@ -81,7 +81,7 @@ func TestLegacyRuleMetadataRequiresCurrentAppliedGOSTService(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if metadata != (LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp"}) {
+				if metadata != (LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp", EntryMultiplierMicros: MultiplierScale, ExitMultiplierMicros: MultiplierScale}) {
 					t.Fatalf("resolved metadata = %#v", metadata)
 				}
 				return
@@ -120,7 +120,7 @@ func TestLegacyUsageReportCannotSupplyRuleMetadata(t *testing.T) {
 }
 
 func TestIngestResolvesLegacyRuleMetadataBeforeLedgerWrite(t *testing.T) {
-	metadata := LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp"}
+	metadata := LegacyRuleMetadata{RuleID: "rule-1", CustomerID: "customer-1", EntryGroup: "entry-1", ExitGroup: "exit-1", Protocol: "tcp", EntryMultiplierMicros: MultiplierScale, ExitMultiplierMicros: MultiplierScale}
 	provider := &fixedLegacyRuleProvider{metadata: metadata}
 	repository := &stubRepository{}
 	service := NewService(repository, stubPolicies{policy: CustomerPolicy{CustomerID: "customer-1"}}, time.Now,

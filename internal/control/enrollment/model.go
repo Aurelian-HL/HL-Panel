@@ -44,6 +44,7 @@ type EnrollInput struct {
 	RawToken         string
 	EnrollmentSecret string
 	Hostname         string
+	DialHost         string
 	Platform         string
 	Architecture     string
 	AgentVersion     string

@@ -81,7 +81,7 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 		if input.AllowReplay && found && now.Before(token.UsedAt.Add(24*time.Hour)) &&
 			node.CredentialHash == input.CredentialHash && s.nodesByCredential[input.CredentialHash] == node.ID &&
 			node.Hostname == input.Node.Hostname && node.Platform == input.Node.Platform &&
-			node.Architecture == input.Node.Architecture {
+			node.Architecture == input.Node.Architecture && node.DialHost == input.Node.DialHost {
 			return cloneNode(node), nil
 		}
 		return nodes.Node{}, faults.ErrAlreadyUsed
@@ -115,7 +115,11 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 	s.nodes[node.ID] = node
 	s.nodesByCredential[input.CredentialHash] = node.ID
 	if token.GroupID != "" {
-		if _, _, err := s.upsertGroupMemberLocked(groups.Member{GroupID: token.GroupID, NodeID: node.ID, DialHost: node.Hostname, Weight: 100, Priority: 0, CreatedAt: now, UpdatedAt: now}); err != nil {
+		dialHost := node.DialHost
+		if dialHost == "" {
+			dialHost = node.Hostname
+		}
+		if _, _, err := s.upsertGroupMemberLocked(groups.Member{GroupID: token.GroupID, NodeID: node.ID, DialHost: dialHost, Weight: 100, Priority: 0, CreatedAt: now, UpdatedAt: now}); err != nil {
 			delete(s.nodes, node.ID)
 			delete(s.nodesByCredential, input.CredentialHash)
 			return nodes.Node{}, err

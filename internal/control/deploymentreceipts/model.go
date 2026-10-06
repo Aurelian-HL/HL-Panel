@@ -7,6 +7,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/generations"
+	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -28,6 +29,8 @@ const (
 // Input is an atomic, read-only snapshot. CurrentConfig and ApplyResults must
 // come from the same node state as Node; a historical generation is not enough.
 type Input struct {
+	EntryNetwork       *groupconfig.GroupNetwork                      `json:"-"`
+	ExitNetwork        *groupconfig.GroupNetwork                      `json:"-"`
 	Rule               forwarding.Rule                                `json:"-"`
 	Node               nodes.Node                                     `json:"-"`
 	ActiveMember       bool                                           `json:"-"`

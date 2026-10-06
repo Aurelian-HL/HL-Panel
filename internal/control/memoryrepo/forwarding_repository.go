@@ -10,6 +10,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
@@ -434,6 +435,36 @@ func (s *Store) updatedVLESSSOCKS5Upstream(rule, previous forwarding.Rule, passw
 }
 
 func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
+	item = s.forwardingBaseViewLocked(item)
+	if item.EffectiveIngressProtocol() != forwarding.IngressTCP || item.Protocol != forwarding.ProtocolTCP || item.Paused ||
+		(item.Status != forwarding.StatusPendingActivation && item.Status != forwarding.StatusActive) {
+		return item
+	}
+	count := 0
+	deployed := true
+	for nodeID, member := range s.membersByGroup[item.EntryGroupID] {
+		if member.RetiredAt != nil {
+			continue
+		}
+		count++
+		input, err := s.ruleNodeDeploymentInputLocked(item.ID, nodeID)
+		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
+			deployed = false
+			break
+		}
+	}
+	item.Deployed = deployed && count > 0
+	if item.Deployed {
+		item.Status = forwarding.StatusActive
+		item.ActivationReason = ""
+	} else {
+		item.Status = forwarding.StatusPendingActivation
+		item.ActivationReason = item.PendingActivationReason()
+	}
+	return item
+}
+
+func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	customer := s.customers[item.CustomerID]
 	item = cloneForwardingRule(item)
 	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}

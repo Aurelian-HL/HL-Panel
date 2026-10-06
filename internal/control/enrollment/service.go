@@ -15,6 +15,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/idgen"
 	"github.com/hongle/hl-panel/internal/securetoken"
+	"github.com/hongle/hl-panel/internal/serviceaddress"
 )
 
 type Service struct {
@@ -127,6 +128,9 @@ func (s *Service) Enroll(ctx context.Context, input EnrollInput) (EnrollResult, 
 	if err := validateNodeIdentity(input); err != nil {
 		return EnrollResult{}, err
 	}
+	if input.DialHost != "" {
+		input.DialHost, _ = serviceaddress.NormalizeHost(input.DialHost)
+	}
 	now := s.now().UTC()
 	nodeID, err := idgen.New("nod")
 	if err != nil {
@@ -154,6 +158,7 @@ func (s *Service) Enroll(ctx context.Context, input EnrollInput) (EnrollResult, 
 	node := nodes.Node{
 		ID:             nodeID,
 		Hostname:       strings.TrimSpace(input.Hostname),
+		DialHost:       strings.TrimSpace(input.DialHost),
 		Platform:       strings.TrimSpace(input.Platform),
 		Architecture:   strings.TrimSpace(input.Architecture),
 		AgentVersion:   strings.TrimSpace(input.AgentVersion),
@@ -212,6 +217,11 @@ func validateNodeIdentity(input EnrollInput) error {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" || len(trimmed) > 255 {
 			return fmt.Errorf("%w: %s must contain 1 to 255 characters", faults.ErrValidation, name)
+		}
+	}
+	if input.DialHost != "" {
+		if _, err := serviceaddress.NormalizeHost(input.DialHost); err != nil {
+			return fmt.Errorf("%w: invalid dial_host: %v", faults.ErrValidation, err)
 		}
 	}
 	if len(input.Capabilities) > 128 {

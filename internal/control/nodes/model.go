@@ -6,6 +6,7 @@ type Node struct {
 	ID                  string            `json:"id"`
 	Name                string            `json:"name"`
 	Hostname            string            `json:"hostname"`
+	DialHost            string            `json:"dial_host,omitempty"`
 	NezhaServerID       uint64            `json:"nezha_server_id,omitempty"`
 	Platform            string            `json:"platform"`
 	Architecture        string            `json:"architecture"`

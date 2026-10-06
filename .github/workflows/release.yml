@@ -67,9 +67,9 @@ jobs:
         run: |
           go test ./...
           go vet ./...
-          bash -n install.sh install-node.sh update.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh
+          bash -n install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh
           sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh
-          python3 -m py_compile deploy/update.py tests/install/preserve_update.py
+          python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
       - name: Build web admin
@@ -105,6 +105,9 @@ jobs:
             deploy/fetch-node-engines.py
             deploy/update.sh
             deploy/update.py
+            deploy/update-node.py
+            deploy/configure-reality.sh
+            deploy/configure-reality.py
             deploy/enable-domain-tls.sh
             deploy/edge-agent/enroll.sh
             deploy/edge-agent/install.sh

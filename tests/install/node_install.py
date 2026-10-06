@@ -7,6 +7,7 @@ TLS, systemd, probes, engine processes and client traffic are real.
 import argparse
 import base64
 import hashlib
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -15,6 +16,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -201,7 +203,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
 
             def install(token, ca=cert):
                 return run(['bash', str(repo / 'install-node.sh'), '--panel-url', origin,
-                            '--token', token, '--ca-file', str(ca)], env=install_env, timeout=420)
+                            '--token', token, '--ca-file', str(ca), '--node-address', '127.0.0.1'], env=install_env, timeout=420)
 
             expired = issue(1)
             time.sleep(2)
@@ -326,6 +328,32 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
 
             wait_for(real_clients)
             checks.append('installed GOST and Xray forward real loopback client traffic simultaneously')
+            # Run the real updater on this disposable VM; redirect only official
+            # release downloads to the fully verified candidate archive.
+            sys.path.insert(0, str(repo / 'deploy'))
+            spec = importlib.util.spec_from_file_location('node_updater', repo / 'deploy/update-node.py')
+            node_updater = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(node_updater)
+            candidate = args.archive_directory.resolve()
+            metadata = {'tag_name':args.version, 'draft':False, 'prerelease':False, 'published_at':'2026-01-01T00:00:00Z'}
+            def candidate_request(url, limit=2*1024*1024):
+                if '/releases/tags/' in url: return json.dumps(metadata).encode()
+                return (candidate / url.rsplit('/',1)[1]).read_bytes()
+            node_updater.request = candidate_request
+            saved_args = sys.argv
+            try:
+                sys.argv = ['update-node.py','--version',args.version]
+                node_updater.main()
+                wait_for(real_clients)
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+                backups = sorted(Path('/var/backups/hl-panel-node').glob('update-*'))
+                assert backups
+                node_updater.rollback(backups[-1])
+                wait_for(real_clients)
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+            finally:
+                sys.argv = saved_args
+            checks.append('verified node upgrade and binary rollback preserve identity and real forwarding')
             assert run(['systemctl','restart','hl-panel-edge-agent']).returncode == 0
             wait_for(real_clients)
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest

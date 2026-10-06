@@ -60,6 +60,7 @@ func (api *API) enrollNode(writer http.ResponseWriter, request *http.Request) {
 		RawToken:         input.EnrollmentToken,
 		EnrollmentSecret: input.EnrollmentSecret,
 		Hostname:         input.Hostname,
+		DialHost:         input.DialHost,
 		Platform:         input.Platform,
 		Architecture:     input.Architecture,
 		AgentVersion:     input.AgentVersion,

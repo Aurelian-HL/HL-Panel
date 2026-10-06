@@ -22,6 +22,8 @@ type MixedProcessAdapter struct {
 	mu         sync.Mutex
 	expectXray bool
 	expectGOST bool
+	usageXray  bool
+	usageGOST  bool
 }
 
 func NewMixedProcessAdapter(xray *XrayProcessAdapter, gost *GOSTProcessAdapter) (*MixedProcessAdapter, error) {
@@ -91,6 +93,8 @@ func (a *MixedProcessAdapter) Commit(ctx context.Context, prepared PreparedConfi
 	}
 	a.mu.Lock()
 	a.expectXray, a.expectGOST = false, false
+	_, a.usageXray = prepared.components[agentv1.EngineXray]
+	_, a.usageGOST = prepared.components[agentv1.EngineGOST]
 	a.mu.Unlock()
 	if part, ok := prepared.components[agentv1.EngineXray]; ok {
 		if err := a.xray.Commit(ctx, part); err != nil {
@@ -147,6 +151,11 @@ func (a *MixedProcessAdapter) Rollback(ctx context.Context, previous *PreparedCo
 	}
 	a.mu.Lock()
 	a.expectXray, a.expectGOST = false, false
+	a.usageXray, a.usageGOST = false, false
+	if previous != nil {
+		_, a.usageXray = previous.components[agentv1.EngineXray]
+		_, a.usageGOST = previous.components[agentv1.EngineGOST]
+	}
 	a.mu.Unlock()
 	var firstErr error
 	for _, engine := range []agentv1.Engine{agentv1.EngineXray, agentv1.EngineGOST} {
@@ -173,6 +182,19 @@ func (a *MixedProcessAdapter) Rollback(ctx context.Context, previous *PreparedCo
 		a.mu.Unlock()
 	}
 	return firstErr
+}
+
+func (a *MixedProcessAdapter) ExpectsEngine(engine agentv1.Engine) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch engine {
+	case agentv1.EngineXray:
+		return a.usageXray
+	case agentv1.EngineGOST:
+		return a.usageGOST
+	default:
+		return false
+	}
 }
 
 func (a *MixedProcessAdapter) ActiveEngineMode() string {

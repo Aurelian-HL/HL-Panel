@@ -137,7 +137,7 @@ func TestIngestRejectsNegativeBytesInvalidMultiplierAndOverflow(t *testing.T) {
 		want   error
 	}{
 		{name: "negative", mutate: func(report *Report) { report.RuleActualBytes = -1 }, want: ErrNegativeBytes},
-		{name: "zero multiplier", mutate: func(report *Report) { report.EntryMultiplierMicros = 0 }, want: ErrInvalidMultiplier},
+		{name: "negative multiplier", mutate: func(report *Report) { report.EntryMultiplierMicros = -1 }, want: ErrInvalidMultiplier},
 		{name: "overflow", mutate: func(report *Report) {
 			report.CustomerActualBytes = math.MaxInt64
 			report.EntryMultiplierMicros = MaxMultiplierMicros

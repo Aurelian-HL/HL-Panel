@@ -25,10 +25,16 @@ func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deployment
 	}
 	member, memberExists := s.membersByGroup[rule.EntryGroupID][nodeID]
 	input := deploymentreceipts.Input{
-		Rule:         cloneForwardingRule(s.forwardingViewLocked(rule)),
+		Rule:         cloneForwardingRule(s.forwardingBaseViewLocked(rule)),
 		Node:         cloneNode(node),
 		ActiveMember: memberExists && member.RetiredAt == nil,
 		ApplyResults: make(map[agentv1.ApplyPhase]generations.ApplyResult),
+	}
+	if network, ok := s.groupNetworks[rule.EntryGroupID]; ok {
+		input.EntryNetwork = &network
+	}
+	if network, ok := s.groupNetworks[rule.ExitGroupID]; ok {
+		input.ExitNetwork = &network
 	}
 	if node.DesiredGeneration > 0 {
 		attempt := s.applyAttemptsByNode[nodeID][node.DesiredGeneration]

@@ -167,4 +167,10 @@ else
   printf '[HL-panel TLS] 提醒：未找到 certbot.timer，请配置定期 certbot renew。\n' >&2
 fi
 
+# Configure the panel's own verified TLS target once; renewals preserve custom targets.
+if [[ -z "$RENEWED_LINEAGE" && -x /usr/local/sbin/hl-panel-configure-reality ]] && ! grep -q '^CONTROL_REALITY_SERVER_NAME=.' /etc/hl-panel/control-api.env; then
+  if ! /usr/local/sbin/hl-panel-configure-reality "$DOMAIN"; then
+    printf '[HL-panel TLS] 证书已启用，但 Reality 目标核验失败；稍后运行 hl-panel-configure-reality 域名 重试。\n' >&2
+  fi
+fi
 printf '[HL-panel TLS] 已启用 https://%s/，IP 入口：https://%s:%s/。\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT"

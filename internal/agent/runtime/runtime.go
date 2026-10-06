@@ -50,6 +50,7 @@ type Agent struct {
 
 type Options struct {
 	UsageSource         usageagent.CounterSource
+	EngineUsageSources  map[agentv1.Engine]usageagent.CounterSource
 	EnforcementExecutor usageagent.AccessExecutor
 }
 
@@ -121,6 +122,24 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 			return nil, err
 		}
 	}
+	if len(options.EngineUsageSources) > 0 {
+		var sources []usageagent.CounterSource
+		for _, kind := range []agentv1.Engine{agentv1.EngineXray, agentv1.EngineGOST} {
+			source := options.EngineUsageSources[kind]
+			if source == nil {
+				continue
+			}
+			if expected, ok := adapter.(interface{ ExpectsEngine(agentv1.Engine) bool }); ok {
+				engineKind := kind
+				source = usageagent.ConditionalSource{Source: source, Expected: func() bool { return expected.ExpectsEngine(engineKind) }}
+			}
+			sources = append(sources, source)
+		}
+		options.UsageSource, err = usageagent.NewMultiSource(sources...)
+		if err != nil {
+			return nil, err
+		}
+	}
 	bootID := ""
 	if options.UsageSource != nil {
 		journal, err := usageagent.NewJournalStore(cfg.UsageJournalPath()).Prepare(time.Now().UTC())
@@ -151,10 +170,10 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 }
 
 func validateUsageOptions(cfg config.Config, options Options) error {
-	if options.UsageSource == nil && options.EnforcementExecutor == nil {
+	if options.UsageSource == nil && len(options.EngineUsageSources) == 0 && options.EnforcementExecutor == nil {
 		return nil
 	}
-	if options.UsageSource != nil && cfg.EngineMode != config.EngineModeXray && cfg.EngineMode != config.EngineModeGOST && cfg.EngineMode != config.EngineModeMixed {
+	if (options.UsageSource != nil || len(options.EngineUsageSources) > 0) && cfg.EngineMode != config.EngineModeXray && cfg.EngineMode != config.EngineModeGOST && cfg.EngineMode != config.EngineModeMixed {
 		return errors.New("usage collection requires an Xray or GOST engine")
 	}
 	if options.EnforcementExecutor != nil && (cfg.EngineMode != config.EngineModeXray && cfg.EngineMode != config.EngineModeMixed || !cfg.XrayAutoStart) {
@@ -254,6 +273,7 @@ func (a *Agent) enroll(ctx context.Context) (state.Credentials, error) {
 		EnrollmentToken:  token,
 		EnrollmentSecret: secret,
 		Hostname:         a.cfg.Hostname,
+		DialHost:         a.cfg.DialHost,
 		Platform:         goruntime.GOOS,
 		Architecture:     goruntime.GOARCH,
 		AgentVersion:     a.cfg.AgentVersion,

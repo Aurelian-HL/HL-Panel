@@ -65,6 +65,7 @@ type Config struct {
 	CAFile                string   `json:"ca_file,omitempty"`
 	AgentVersion          string   `json:"agent_version,omitempty"`
 	Hostname              string   `json:"hostname,omitempty"`
+	DialHost              string   `json:"dial_host,omitempty"`
 	EnrollmentTokenEnv    string   `json:"enrollment_token_env,omitempty"`
 	Capabilities          []string `json:"capabilities,omitempty"`
 	EngineMode            string   `json:"engine_mode,omitempty"`

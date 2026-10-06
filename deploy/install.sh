@@ -166,6 +166,7 @@ for existing_path in \
   /etc/nginx/snippets/hl-panel-app-locations.conf \
   /usr/local/sbin/hl-panel-enable-domain-tls \
   /usr/local/sbin/hl-panel-update \
+  /usr/local/sbin/hl-panel-configure-reality \
   /etc/letsencrypt/renewal-hooks/deploy/hl-panel-copy-certificate; do
   [[ ! -e "$existing_path" && ! -L "$existing_path" ]] || fail "检测到已有 HL-panel 文件 $existing_path，未做任何覆盖"
 done
@@ -560,6 +561,7 @@ chown root:root "$CONFIG_DIR/domain.conf"
 chmod 0600 "$CONFIG_DIR/domain.conf"
 install_new_file "$FINAL_RELEASE/deploy/enable-domain-tls.sh" /usr/local/sbin/hl-panel-enable-domain-tls root root 0755
 install_new_file "$FINAL_RELEASE/deploy/update.sh" /usr/local/sbin/hl-panel-update root root 0755
+install_new_file "$FINAL_RELEASE/deploy/configure-reality.sh" /usr/local/sbin/hl-panel-configure-reality root root 0755
 
 TEMP_LINK="$INSTALL_ROOT/.current-$RUN_ID"
 ln -s "$FINAL_RELEASE" "$TEMP_LINK"

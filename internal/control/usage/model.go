@@ -80,11 +80,13 @@ type CustomerPolicy struct {
 // to the authenticated node. Agent-supplied customer and group IDs are never
 // used to fill an old stats tag.
 type LegacyRuleMetadata struct {
-	RuleID      string
-	CustomerID  string
-	EntryGroup  string
-	ExitGroup   string
-	Protocol    string
+	EntryMultiplierMicros int64
+	ExitMultiplierMicros  int64
+	RuleID                string
+	CustomerID            string
+	EntryGroup            string
+	ExitGroup             string
+	Protocol              string
 }
 
 type LegacyRuleMetadataProvider interface {

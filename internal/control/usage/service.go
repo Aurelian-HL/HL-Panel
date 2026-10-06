@@ -123,7 +123,7 @@ func LegacyReplayMatches(event Event, report Report) bool {
 		EntryGroupID: event.EntryGroupID, ExitGroupID: event.ExitGroupID, Protocol: event.Protocol,
 		OccurredAt: report.OccurredAt, PeriodStartedAt: report.PeriodStartedAt, PeriodEndedAt: report.PeriodEndedAt,
 		RuleActualBytes: report.RuleActualBytes, CustomerActualBytes: report.RuleActualBytes,
-		EntryMultiplierMicros: MultiplierScale, ExitMultiplierMicros: MultiplierScale,
+		EntryMultiplierMicros: event.EntryMultiplierMicros, ExitMultiplierMicros: event.ExitMultiplierMicros,
 	})
 	if err != nil {
 		return false
@@ -166,8 +166,8 @@ func (service *Service) resolveLegacyRuleMetadata(ctx context.Context, report *R
 	report.ExitGroupID = metadata.ExitGroup
 	report.Protocol = metadata.Protocol
 	report.CustomerActualBytes = report.RuleActualBytes
-	report.EntryMultiplierMicros = MultiplierScale
-	report.ExitMultiplierMicros = MultiplierScale
+	report.EntryMultiplierMicros = metadata.EntryMultiplierMicros
+	report.ExitMultiplierMicros = metadata.ExitMultiplierMicros
 	report.LegacyRuleID = ""
 	return nil
 }
@@ -383,7 +383,7 @@ func chargedBytes(actual, entryMicros, exitMicros int64) (int64, error) {
 }
 
 func validMultiplier(value int64) bool {
-	return value > 0 && value <= MaxMultiplierMicros
+	return value >= 0 && value <= MaxMultiplierMicros
 }
 
 func reportFingerprint(report Report) (string, error) {

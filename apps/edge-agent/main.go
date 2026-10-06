@@ -12,6 +12,7 @@ import (
 	"github.com/hongle/hl-panel/internal/agent/config"
 	agentruntime "github.com/hongle/hl-panel/internal/agent/runtime"
 	"github.com/hongle/hl-panel/internal/agent/usage"
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 		logger.Error("load edge-agent configuration", "error", err)
 		os.Exit(2)
 	}
-	var statsSources []usage.CounterSource
+	statsSources := make(map[agentv1.Engine]usage.CounterSource)
 	var closers []interface{ Close() error }
 	// Accounting reads the local Xray StatsService independently of process
 	// ownership. Xray may be supervised by systemd instead of this Agent; the
@@ -36,7 +37,7 @@ func main() {
 			logger.Error("initialize Xray StatsService source", "error", err)
 			os.Exit(2)
 		}
-		statsSources = append(statsSources, statsSource)
+		statsSources[agentv1.EngineXray] = statsSource
 		closers = append(closers, statsSource)
 	}
 	if cfg.EngineMode == config.EngineModeGOST || cfg.EngineMode == config.EngineModeMixed {
@@ -49,23 +50,10 @@ func main() {
 			logger.Error("initialize GOST stats source", "error", err)
 			os.Exit(2)
 		}
-		statsSources = append(statsSources, statsSource)
+		statsSources[agentv1.EngineGOST] = statsSource
 		closers = append(closers, statsSource)
 	}
-	var usageSource usage.CounterSource
-	if len(statsSources) == 1 {
-		usageSource = statsSources[0]
-	} else if len(statsSources) > 1 {
-		usageSource, err = usage.NewMultiSource(statsSources...)
-		if err != nil {
-			for _, closer := range closers {
-				_ = closer.Close()
-			}
-			logger.Error("initialize combined stats source", "error", err)
-			os.Exit(2)
-		}
-	}
-	agent, err := agentruntime.NewWithOptions(cfg, logger, agentruntime.Options{UsageSource: usageSource})
+	agent, err := agentruntime.NewWithOptions(cfg, logger, agentruntime.Options{EngineUsageSources: statsSources})
 	if err != nil {
 		for _, closer := range closers {
 			_ = closer.Close()

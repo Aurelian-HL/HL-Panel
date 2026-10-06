@@ -23,6 +23,7 @@ type EnrollmentRequest struct {
 	EnrollmentToken  string   `json:"token"`
 	EnrollmentSecret string   `json:"enrollment_secret,omitempty"`
 	Hostname         string   `json:"hostname"`
+	DialHost         string   `json:"dial_host,omitempty"`
 	Platform         string   `json:"platform"`
 	Architecture     string   `json:"architecture"`
 	AgentVersion     string   `json:"agent_version"`

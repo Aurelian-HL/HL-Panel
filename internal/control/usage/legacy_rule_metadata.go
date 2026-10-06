@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/hongle/hl-panel/internal/control/groupconfig"
+	"math"
 	"strings"
 
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
@@ -56,11 +58,34 @@ func (provider appliedRuleMetadataProvider) ResolveLegacyRuleUsageMetadata(ctx c
 	default:
 		return LegacyRuleMetadata{}, fmt.Errorf("%w: legacy rule engine is unsupported", faults.ErrValidation)
 	}
+	entryMultiplier, err := networkMultiplier(input.EntryNetwork)
+	if err != nil {
+		return LegacyRuleMetadata{}, err
+	}
+	exitMultiplier := MultiplierScale
+	if input.Rule.EgressMode == forwarding.EgressExitGroup {
+		exitMultiplier, err = networkMultiplier(input.ExitNetwork)
+		if err != nil {
+			return LegacyRuleMetadata{}, err
+		}
+	}
 	return LegacyRuleMetadata{
+		EntryMultiplierMicros: entryMultiplier, ExitMultiplierMicros: exitMultiplier,
 		RuleID: ruleID, CustomerID: input.Rule.CustomerID,
 		EntryGroup: input.Rule.EntryGroupID, ExitGroup: input.Rule.ExitGroupID,
 		Protocol: string(input.Rule.Protocol),
 	}, nil
+}
+
+func networkMultiplier(network *groupconfig.GroupNetwork) (int64, error) {
+	if network == nil {
+		return MultiplierScale, nil
+	}
+	value := network.TrafficMultiplier
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 1000 {
+		return 0, ErrInvalidMultiplier
+	}
+	return int64(math.Round(value * float64(MultiplierScale))), nil
 }
 
 // hasLegacyGOSTService proves that the current GOST fragment contains the
