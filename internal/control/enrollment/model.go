@@ -41,12 +41,13 @@ type PendingToken struct {
 }
 
 type EnrollInput struct {
-	RawToken     string
-	Hostname     string
-	Platform     string
-	Architecture string
-	AgentVersion string
-	Capabilities []string
+	RawToken         string
+	EnrollmentSecret string
+	Hostname         string
+	Platform         string
+	Architecture     string
+	AgentVersion     string
+	Capabilities     []string
 }
 
 type EnrollResult struct {
@@ -58,6 +59,7 @@ type ConsumeInput struct {
 	TokenHash      string
 	Node           nodes.Node
 	CredentialHash string
+	AllowReplay    bool
 }
 
 type RevokeInput struct {

@@ -2,7 +2,9 @@ package enrollment
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -134,6 +136,21 @@ func (s *Service) Enroll(ctx context.Context, input EnrollInput) (EnrollResult, 
 	if err != nil {
 		return EnrollResult{}, err
 	}
+	if input.EnrollmentSecret != "" {
+		secret, decodeErr := hex.DecodeString(input.EnrollmentSecret)
+		if decodeErr != nil || len(secret) != 32 || hex.EncodeToString(secret) != input.EnrollmentSecret {
+			return EnrollResult{}, fmt.Errorf("%w: invalid enrollment recovery secret", faults.ErrValidation)
+		}
+		// Domain-separated identities let the same private attempt recover a lost
+		// response. The server retains only the ordinary credential hash.
+		derive := func(domain string) []byte {
+			mac := hmac.New(sha256.New, secret)
+			mac.Write([]byte("hl-panel/enrollment/" + domain + "/v1\x00" + input.RawToken))
+			return mac.Sum(nil)
+		}
+		nodeID = "nod_" + hex.EncodeToString(derive("node-id")[:16])
+		rawCredential = "node_" + base64.RawURLEncoding.EncodeToString(derive("credential"))
+	}
 	node := nodes.Node{
 		ID:             nodeID,
 		Hostname:       strings.TrimSpace(input.Hostname),
@@ -156,6 +173,7 @@ func (s *Service) Enroll(ctx context.Context, input EnrollInput) (EnrollResult, 
 		TokenHash:      securetoken.Hash(input.RawToken),
 		Node:           node,
 		CredentialHash: securetoken.Hash(rawCredential),
+		AllowReplay:    input.EnrollmentSecret != "",
 	}, now, event)
 	if err != nil {
 		return EnrollResult{}, err

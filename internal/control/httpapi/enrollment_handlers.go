@@ -57,12 +57,13 @@ func (api *API) enrollNode(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	result, err := api.enrollment.Enroll(request.Context(), enrollment.EnrollInput{
-		RawToken:     input.EnrollmentToken,
-		Hostname:     input.Hostname,
-		Platform:     input.Platform,
-		Architecture: input.Architecture,
-		AgentVersion: input.AgentVersion,
-		Capabilities: input.Capabilities,
+		RawToken:         input.EnrollmentToken,
+		EnrollmentSecret: input.EnrollmentSecret,
+		Hostname:         input.Hostname,
+		Platform:         input.Platform,
+		Architecture:     input.Architecture,
+		AgentVersion:     input.AgentVersion,
+		Capabilities:     input.Capabilities,
 	})
 	if err != nil {
 		writeProblem(writer, request, err)

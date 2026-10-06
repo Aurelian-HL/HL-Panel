@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 set +x
-# Installs only the HL node agent. Never installs a panel or changes other agents.
+# Installs the HL node agent, native probe and both bundled forwarding engines.
 repository="Aurelian-HL/HL-Panel"
 version=""
 origin=""

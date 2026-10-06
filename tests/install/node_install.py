@@ -7,6 +7,7 @@ TLS, systemd, probes, engine processes and client traffic are real.
 import argparse
 import base64
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -74,8 +75,59 @@ try:
                     '-keyout', str(key), '-out', str(cert), '-days', '1',
                     '-subj', '/CN=HL isolated node test', '-addext', 'subjectAltName=IP:127.0.0.1']).returncode == 0
         port = unused_port()
-        origin = f'https://127.0.0.1:{port}'
+        control_origin = f'https://127.0.0.1:{port}'
         context = ssl.create_default_context(cafile=str(cert))
+        fault_state = {'enabled': False, 'enroll_calls': 0, 'lost_response': False,
+                       'attempts': [], 'panel_versions': []}
+
+        class NodeProxy(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def forward(self):
+                body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                enroll = self.path == '/api/v1/agent/enroll' and fault_state['enabled']
+                if enroll:
+                    recovery = json.loads(body)['enrollment_secret']
+                    secrets.append(recovery)
+                    fault_state['attempts'].append(recovery)
+                    fault_state['enroll_calls'] += 1
+                    if fault_state['enroll_calls'] <= 2:
+                        self.send_response(503)
+                        self.end_headers()
+                        return
+                headers = {name: self.headers[name] for name in ('Content-Type', 'Authorization') if name in self.headers}
+                req = urllib.request.Request(control_origin + self.path,
+                    body if body else None, headers, method=self.command)
+                try:
+                    response = urllib.request.urlopen(req, context=context, timeout=10)
+                except urllib.error.HTTPError as error:
+                    response = error
+                with response:
+                    data = response.read()
+                    if self.path == '/api/v1/public/site-info':
+                        fault_state['panel_versions'].append(json.loads(data)['platform_version'])
+                    if enroll and fault_state['enroll_calls'] == 3:
+                        assert response.code == 201, 'Fault injection did not consume the real token'
+                        fault_state['lost_response'] = True
+                        self.close_connection = True
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        return
+                    self.send_response(response.code)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+
+            do_GET = forward
+            do_POST = forward
+
+        proxy = ThreadingHTTPServer(('127.0.0.1', 0), NodeProxy)
+        proxy_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        proxy_tls.load_cert_chain(str(cert), str(key))
+        proxy.socket = proxy_tls.wrap_socket(proxy.socket, server_side=True)
+        threading.Thread(target=proxy.serve_forever, daemon=True).start()
+        origin = f'https://127.0.0.1:{proxy.server_port}'
         password = 'isolated-' + os.urandom(24).hex()
         secrets.append(password)
         hash_result = run([str(release / 'bin/control-api'), 'hash-password'], input=password + '\n')
@@ -98,7 +150,7 @@ try:
             headers = {'Content-Type': 'application/json'}
             if admin_token:
                 headers['Authorization'] = 'Bearer ' + admin_token
-            req = urllib.request.Request(origin + '/api/v1' + route,
+            req = urllib.request.Request(control_origin + '/api/v1' + route,
                                          json.dumps(data).encode() if data is not None else None,
                                          headers, method=method)
             try:
@@ -162,7 +214,14 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode != 0
             checks.append('expired token stops service and removes one-use secret')
             token = issue()
+            fault_state['enabled'] = True
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
+            assert fault_state['enroll_calls'] == 4 and fault_state['lost_response']
+            assert len(set(fault_state['attempts'])) == 1
+            assert fault_state['panel_versions'] and set(fault_state['panel_versions']) == {args.version}
+            assert not Path('/var/lib/hl-panel-edge/enrollment-attempt.json').exists()
+            checks.append('panel version selects installer and package from the same release tag')
+            checks.append('automatic retry recovers two real HTTP 503 failures and a consumed-token response loss without duplicate nodes')
             credential_path = Path('/var/lib/hl-panel-edge/credentials.json')
             credential = json.loads(credential_path.read_text())
             secrets.append(credential['node_credential'])
@@ -279,6 +338,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert all(secret not in journal for secret in secrets), 'Secret leaked in node journal'
             checks.append('service journal contains no enrollment or persistent credentials')
         finally:
+            proxy.shutdown()
+            proxy.server_close()
             if control.poll() is None:
                 control.terminate(); control.wait(timeout=15)
             control_log.close()

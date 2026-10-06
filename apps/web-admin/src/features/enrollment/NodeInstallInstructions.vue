@@ -39,7 +39,7 @@ async function copyCommand() {
     <h3>返回面板确认在线</h3>
     <p>安装会注册 HL Agent、启用开机自启，并上报 CPU、主机内存、根磁盘、网络和连接数。约 30 秒后刷新设备组和探针；CPU 与速率从第二次采样开始显示。</p>
     <p>引擎已配置为 mixed 并允许自动启动；面板下发有效转发规则后启动相应进程。安装不会自行创建业务规则或开通专线。已有哪吒无需重装，关联是可选项。</p>
-    <details><summary>安装失败或没有上线</summary><p>检查节点能否连接面板 HTTPS、证书是否可信。失败后可重跑同一命令继续注册；已注册机器不会被覆盖。</p><pre><code>systemctl status hl-panel-edge-agent --no-pager
+    <details><summary>安装失败或没有上线</summary><p>下载和短暂连接失败会自动重试，注册最多等待 90 秒。失败后保留安装与恢复状态，检查网络和 HTTPS 证书后重跑同一命令；仅令牌过期或失效时重新生成。安装版本默认跟随当前面板，已注册机器保留原身份。</p><pre><code>systemctl status hl-panel-edge-agent --no-pager
 journalctl -u hl-panel-edge-agent -n 50 --no-pager</code></pre><p>纯 IP 自签名证书需先安装可信 CA，不能关闭证书校验。不要分享包含注册凭据的文件。</p></details>
     <a :href="`${nodeRepository}/releases/latest`" target="_blank" rel="noopener noreferrer">查看官方安装包与版本</a>
   </section>

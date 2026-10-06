@@ -74,6 +74,16 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 		return nodes.Node{}, faults.ErrUnauthorized
 	}
 	if token.UsedAt != nil {
+		// Possession of the token alone never permits a second registration.
+		// Only the original private attempt and unchanged identity can recover
+		// its response, for 24 hours after the first successful transaction.
+		node, found := s.nodes[input.Node.ID]
+		if input.AllowReplay && found && now.Before(token.UsedAt.Add(24*time.Hour)) &&
+			node.CredentialHash == input.CredentialHash && s.nodesByCredential[input.CredentialHash] == node.ID &&
+			node.Hostname == input.Node.Hostname && node.Platform == input.Node.Platform &&
+			node.Architecture == input.Node.Architecture {
+			return cloneNode(node), nil
+		}
 		return nodes.Node{}, faults.ErrAlreadyUsed
 	}
 	if token.RevokedAt != nil {

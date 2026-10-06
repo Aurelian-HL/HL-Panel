@@ -29,6 +29,15 @@ service. No separate engine or probe installation is required. See
 [the operator manual](../../deploy/README.md#节点一键安装) for offline installation
 and explicit CA trust when using a self-signed IP endpoint.
 
+The online entry point selects the panel's running release by default and uses
+the same tag for the installer and package. Enrollment retries transient network
+and server failures for up to 90 seconds during installation. Before the first
+request, the Agent saves a private 0600 recovery attempt without the raw token.
+If the successful response is lost, the same attempt can recover its identity
+within 24 hours without creating a second node. Failed installation preserves
+that attempt; rerun the original command after resolving the failure. Successful
+registration removes recovery material and the one-use token environment file.
+
 The installed configuration uses `mixed` with both auto-start flags enabled.
 Valid rules from the panel are required before engine processes start; no
 business rules are created by the installer. The low-privilege service uses

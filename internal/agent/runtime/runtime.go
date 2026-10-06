@@ -199,6 +199,9 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := a.credential.ClearEnrollmentAttempt(); err != nil {
+		return fmt.Errorf("remove completed enrollment attempt: %w", err)
+	}
 	a.nodeID = credentials.NodeID
 	a.nodeSecret = credentials.NodeCredential
 	reconcilerInstance, err := reconciler.New(a.state, a.adapter, a.client, a.nodeSecret)
@@ -243,13 +246,18 @@ func (a *Agent) enroll(ctx context.Context) (state.Credentials, error) {
 	if token == "" {
 		return state.Credentials{}, fmt.Errorf("enrollment token environment variable %q is empty", a.cfg.EnrollmentTokenEnv)
 	}
+	secret, err := a.credential.EnrollmentSecret(a.cfg.ControlPlaneURL, token)
+	if err != nil {
+		return state.Credentials{}, fmt.Errorf("prepare enrollment recovery: %w", err)
+	}
 	response, err := a.client.Enroll(ctx, agentv1.EnrollmentRequest{
-		EnrollmentToken: token,
-		Hostname:        a.cfg.Hostname,
-		Platform:        goruntime.GOOS,
-		Architecture:    goruntime.GOARCH,
-		AgentVersion:    a.cfg.AgentVersion,
-		Capabilities:    append([]string(nil), a.cfg.Capabilities...),
+		EnrollmentToken:  token,
+		EnrollmentSecret: secret,
+		Hostname:         a.cfg.Hostname,
+		Platform:         goruntime.GOOS,
+		Architecture:     goruntime.GOARCH,
+		AgentVersion:     a.cfg.AgentVersion,
+		Capabilities:     append([]string(nil), a.cfg.Capabilities...),
 	})
 	if err != nil {
 		return state.Credentials{}, fmt.Errorf("enroll node: %w", err)
@@ -352,7 +360,7 @@ func (a *Agent) requireOwnedXray() error {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	if err := a.Bootstrap(ctx); err != nil {
+	if err := a.bootstrapWithRetry(ctx); err != nil {
 		return err
 	}
 	probe, err := probeecho.Listen(a.cfg.ProtocolProbeEchoPort)

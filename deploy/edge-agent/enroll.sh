@@ -63,7 +63,7 @@ systemctl enable hl-panel-edge-agent.service
 systemctl reset-failed hl-panel-edge-agent.service
 systemctl start hl-panel-edge-agent.service
 attempt=0
-while [ "$attempt" -lt 30 ]; do
+while [ "$attempt" -lt 90 ]; do
   if [ -s /var/lib/hl-panel-edge/credentials.json ]; then
     rm /etc/hl-panel/edge-agent-enrollment.env
     systemctl restart hl-panel-edge-agent.service
@@ -72,8 +72,14 @@ while [ "$attempt" -lt 30 ]; do
     echo 'HL edge-agent credential persisted and service running; the one-use token file was removed.'
     exit 0
   fi
+  if systemctl is-failed --quiet hl-panel-edge-agent.service; then
+    break
+  fi
   attempt=$((attempt + 1))
+  if [ $((attempt % 15)) -eq 0 ]; then
+    echo '[HL-panel 节点] 正在等待注册确认；短暂连接失败会自动重试。'
+  fi
   sleep 1
 done
-echo 'Enrollment not confirmed within 30 seconds. Service stopped and token file removed; inspect journalctl and issue a fresh token.' >&2
+echo '[HL-panel 节点] 注册未确认，服务已停止，一次性令牌文件已移除。安装与恢复状态保留；检查网络后重跑同一命令。仅令牌过期或失效时重新生成。' >&2
 exit 1

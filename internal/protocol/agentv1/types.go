@@ -20,12 +20,13 @@ const (
 )
 
 type EnrollmentRequest struct {
-	EnrollmentToken string   `json:"token"`
-	Hostname        string   `json:"hostname"`
-	Platform        string   `json:"platform"`
-	Architecture    string   `json:"architecture"`
-	AgentVersion    string   `json:"agent_version"`
-	Capabilities    []string `json:"capabilities"`
+	EnrollmentToken  string   `json:"token"`
+	EnrollmentSecret string   `json:"enrollment_secret,omitempty"`
+	Hostname         string   `json:"hostname"`
+	Platform         string   `json:"platform"`
+	Architecture     string   `json:"architecture"`
+	AgentVersion     string   `json:"agent_version"`
+	Capabilities     []string `json:"capabilities"`
 }
 
 type EnrollmentResponse struct {
