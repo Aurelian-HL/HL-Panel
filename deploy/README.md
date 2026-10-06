@@ -20,6 +20,18 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/deploy/in
 通过 `--version TAG` 固定版本。安装器提示时在终端输入并确认初始管理员密码。
 输入不会显示在屏幕上，不会写入日志；密码哈希保存在 root 管理的服务配置文件中。
 
+API 默认只监听 `127.0.0.1:8080`。如果主机已有服务占用 8080，请使用
+`--api-port 8081` 等空闲端口；安装器会在创建文件或运行 apt 之前检查 IPv4/IPv6
+TCP 监听端口，有冲突就拒绝安装，不会停止或修改原有服务。例如：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/deploy/install.sh \
+  | sudo bash -s -- --domain hlpanel.hongle.cc --api-port 8081
+```
+
+服务配置、HL-panel 独立 Nginx 代理和本机健康检查会统一使用所选端口。
+`--api-port` 仅允许 1 到 65535 的十进制整数，API 始终只绑定 loopback。
+
 仅 Debian/Ubuntu apt 系统和 Linux amd64 提供一键流程。安装器先确认 HL-panel
 目录、服务、数据库角色及数据库名称没有被占用，再下载固定 release 并校验归档
 摘要和归档内文件摘要。随后安装 Nginx、Certbot、PostgreSQL 与必要工具，创建
@@ -62,7 +74,10 @@ journalctl -u hl-panel-control-api.service -n 100 --no-pager
 curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ```
 
-API 只监听 `127.0.0.1:8080`，PostgreSQL 仅供本机使用。登录请求由 Nginx 按
+以上健康检查使用默认端口；若安装时指定 `--api-port 8081`，应改为
+`http://127.0.0.1:8081/healthz`，实际监听地址保存在
+`/etc/hl-panel/control-api.env`。API 只监听所选 `127.0.0.1` 端口，PostgreSQL
+仅供本机使用。登录请求由 Nginx 按
 来源 IP 限速。管理员密码、数据库密码和 TLS 私钥不进入 release 包或 Git。
 
 一键安装仅用于首次建立空实例，不用于升级或迁移。升级需要另行制作明确的

@@ -7,6 +7,7 @@ DOMAIN="hlpanel.hongle.cc"
 ADMIN_USERNAME="admin"
 EMAIL=""
 PUBLIC_IP=""
+API_PORT="8080"
 INSTALL_ROOT="/opt/hl-panel"
 CONFIG_DIR="/etc/hl-panel"
 STATE_DIR="/var/lib/hl-panel"
@@ -22,7 +23,7 @@ fail() { printf '[HL-panel] 错误：%s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'EOF'
 用法：install.sh [--repo OWNER/REPOSITORY] [--version TAG|latest]
-                 [--domain DOMAIN] [--public-ip IPv4]
+                 [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
                  [--admin-username NAME] [--email EMAIL]
 
 选项：
@@ -30,6 +31,7 @@ usage() {
   --version           发布标签；默认 latest
   --domain            面板域名；默认 hlpanel.hongle.cc
   --public-ip         指定本机公网 IPv4；自动检测失败时必须提供
+  --api-port          API 本机监听端口；默认 8080，已有服务占用时可指定 8081
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   -h, --help          显示帮助
@@ -44,6 +46,7 @@ while (($#)); do
     --version) (($# >= 2)) || fail "--version 缺少参数"; VERSION="$2"; shift 2 ;;
     --domain) (($# >= 2)) || fail "--domain 缺少参数"; DOMAIN="$2"; shift 2 ;;
     --public-ip) (($# >= 2)) || fail "--public-ip 缺少参数"; PUBLIC_IP="$2"; shift 2 ;;
+    --api-port) (($# >= 2)) || fail "--api-port 缺少参数"; API_PORT="$2"; shift 2 ;;
     --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -51,7 +54,25 @@ while (($#)); do
   esac
 done
 
+[[ "$API_PORT" =~ ^[0-9]{1,5}$ ]] || fail "--api-port 必须是 1 到 65535 的十进制 TCP 端口"
+API_PORT="$((10#$API_PORT))"
+((API_PORT >= 1 && API_PORT <= 65535)) || fail "--api-port 必须是 1 到 65535 的十进制 TCP 端口"
+check_api_port_available() {
+  local port_hex occupied
+  local socket_files=(/proc/net/tcp)
+  [[ -r /proc/net/tcp ]] || fail "无法读取本机 TCP 监听状态；未执行安装"
+  if [[ -r /proc/net/tcp6 ]]; then socket_files+=(/proc/net/tcp6); fi
+  printf -v port_hex '%04X' "$API_PORT"
+  occupied="$(awk -v port_hex="$port_hex" '
+    $4 == "0A" {
+      split($2, address, ":")
+      if (toupper(address[2]) == port_hex) { print $2; exit }
+    }
+  ' "${socket_files[@]}")" || fail "读取本机 TCP 监听状态失败；未执行安装"
+  [[ -z "$occupied" ]] || fail "TCP 端口 $API_PORT 已被其他服务监听；不会停止现有服务，请用 --api-port 指定空闲端口（例如 8081）"
+}
 [[ $EUID -eq 0 ]] || fail "请使用 root 运行，例如 curl ... | sudo bash"
+check_api_port_available
 command -v flock >/dev/null 2>&1 || fail "缺少 flock；请先安装 util-linux"
 exec {INSTALL_LOCK_FD}>/run/lock/hl-panel-install.lock
 flock -n "$INSTALL_LOCK_FD" || fail "检测到另一份 HL-panel 安装正在运行"
@@ -414,7 +435,7 @@ chmod 0640 "$CONFIG_DIR/customer-password-fingerprint-key"
 ADMIN_HASH="$(printf '%s\n' "$ADMIN_PASSWORD" | "$FINAL_RELEASE/bin/control-api" hash-password)"
 unset ADMIN_PASSWORD
 cat > "$WORK_DIR/control-api.env" <<EOF
-CONTROL_LISTEN_ADDRESS=127.0.0.1:8080
+CONTROL_LISTEN_ADDRESS=127.0.0.1:$API_PORT
 CONTROL_ALLOW_INSECURE_HTTP=false
 CONTROL_ALLOW_VOLATILE_STORE=false
 CONTROL_DATABASE_URL_FILE=$CONFIG_DIR/database-url
@@ -453,7 +474,10 @@ ln -s "$CONFIG_DIR/tls/domain-certificates/self-signed" "$CONFIG_DIR/tls/domain-
 install -d -o root -g root -m 0755 "$ACME_WEBROOT/.well-known/acme-challenge"
 install_new_file "$FINAL_RELEASE/deploy/nginx/conf.d/hl-panel-rate-limit.conf" /etc/nginx/conf.d/hl-panel-rate-limit.conf root root 0644
 install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-security-headers.conf" /etc/nginx/snippets/hl-panel-security-headers.conf root root 0644
-install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-api-proxy.conf" /etc/nginx/snippets/hl-panel-api-proxy.conf root root 0644
+sed -e "s|http://127.0.0.1:8080;|http://127.0.0.1:$API_PORT;|" \
+  "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-api-proxy.conf" > "$WORK_DIR/hl-panel-api-proxy.conf"
+grep -Fxq "proxy_pass http://127.0.0.1:$API_PORT;" "$WORK_DIR/hl-panel-api-proxy.conf" || fail "HL-panel API 代理端口渲染失败"
+install_new_file "$WORK_DIR/hl-panel-api-proxy.conf" /etc/nginx/snippets/hl-panel-api-proxy.conf root root 0644
 install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-app-locations.conf" /etc/nginx/snippets/hl-panel-app-locations.conf root root 0644
 sed -e "s|__HL_PANEL_DOMAIN__|$DOMAIN|g" -e "s|__HL_PANEL_IP__|$PUBLIC_IP|g" \
   "$FINAL_RELEASE/deploy/nginx/hl-panel.conf.template" > "$WORK_DIR/hl-panel.conf"
@@ -472,11 +496,14 @@ ln -s "$FINAL_RELEASE" "$TEMP_LINK"
 mv -Tf "$TEMP_LINK" "$INSTALL_ROOT/current"
 systemctl daemon-reload
 nginx -t
+check_api_port_available
 systemctl enable --now hl-panel-control-api.service
 
-log "等待 API 本机健康检查"
+log "等待 API 本机健康检查（127.0.0.1:$API_PORT）"
 for attempt in {1..20}; do
-  if curl --fail --silent --show-error http://127.0.0.1:8080/healthz >/dev/null; then break; fi
+  if systemctl is-active --quiet hl-panel-control-api.service \
+    && curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "http://127.0.0.1:$API_PORT/healthz" >/dev/null \
+    && systemctl is-active --quiet hl-panel-control-api.service; then break; fi
   if ((attempt == 20)); then
     systemctl --no-pager --full status hl-panel-control-api.service || true
     fail "API 未通过本机健康检查"
@@ -513,6 +540,7 @@ HL-panel 安装完成
   域名：$DOMAIN
   管理员：$ADMIN_USERNAME
   IP 入口：https://$PUBLIC_IP/
+  API 本机监听：127.0.0.1:$API_PORT
   服务：hl-panel-control-api.service
 
 管理员密码未写入安装日志；请妥善保存你刚才输入的密码。

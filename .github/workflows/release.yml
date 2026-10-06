@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release tag to build
+        required: true
+        default: v0.1.1
+        type: string
 
 permissions:
   contents: write
@@ -12,7 +19,33 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve existing release tag
+        id: release_ref
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          if [[ ! "$tag" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
+            echo 'Release tag must start with v and a digit and contain only letters, digits, dots, underscores, or hyphens.' >&2
+            exit 1
+          fi
+          remote_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref')
+          if [[ "$remote_ref" != "refs/tags/$tag" ]]; then
+            echo 'The requested release tag does not exist in this repository.' >&2
+            exit 1
+          fi
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')
+          if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'The release tag did not resolve to a commit.' >&2
+            exit 1
+          fi
+          printf 'tag=%s\ncommit=%s\n' "$tag" "$commit" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release_ref.outputs.commit }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -74,10 +107,13 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
         run: |
-          tag="$GITHUB_REF_NAME"
+          set -euo pipefail
+          tag="$RELEASE_TAG"
           gh release create "$tag" \
             "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz" \
             "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz.sha256" \
             --title "HL-panel $tag" \
+            --verify-tag \
             --generate-notes
