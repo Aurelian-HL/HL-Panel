@@ -63,12 +63,32 @@ func clearRuntimeEnvironment(t *testing.T) {
 		"CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_FILE",
 		"CONTROL_REALITY_SERVER_NAME",
 		"CONTROL_REALITY_DESTINATION",
+		"CONTROL_PROTOCOL_PROBE_XRAY_BINARY",
+		"CONTROL_PROTOCOL_PROBE_ECHO_PORT",
+		"CONTROL_PROTOCOL_PROBE_INTERVAL",
 		"CONTROL_NEZHA_DASHBOARD_URL",
 		"CONTROL_NEZHA_PAT_FILE",
 		"CONTROL_NEZHA_NODE_MAP_FILE",
 		"CONTROL_NEZHA_TIMEOUT",
 	} {
 		t.Setenv(name, "")
+	}
+}
+
+func TestRuntimeConfigProbeUsesBundledXrayAndPreservesOverride(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_PASSWORD", "explicit-local-secret")
+	t.Setenv("CONTROL_ALLOW_VOLATILE_STORE", "true")
+	setCustomerFingerprintKey(t)
+	config, err := loadRuntimeConfig()
+	if err != nil || config.ProtocolProbeXrayBinary != "/opt/hl-panel/current/bin/xray" {
+		t.Fatalf("fresh install must use its bundled probe engine: %q, %v", config.ProtocolProbeXrayBinary, err)
+	}
+	t.Setenv("CONTROL_PROTOCOL_PROBE_XRAY_BINARY", "/opt/custom/xray")
+	config, err = loadRuntimeConfig()
+	if err != nil || config.ProtocolProbeXrayBinary != "/opt/custom/xray" {
+		t.Fatalf("explicit probe engine override was lost: %q, %v", config.ProtocolProbeXrayBinary, err)
 	}
 }
 

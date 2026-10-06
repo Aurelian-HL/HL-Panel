@@ -104,7 +104,7 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 	if err != nil {
 		return runtimeConfig{}, fmt.Errorf("parse automatic Reality target: %w", err)
 	}
-	configuration.ProtocolProbeXrayBinary = envOrDefault("CONTROL_PROTOCOL_PROBE_XRAY_BINARY", "/opt/hl-panel/xray")
+	configuration.ProtocolProbeXrayBinary = envOrDefault("CONTROL_PROTOCOL_PROBE_XRAY_BINARY", "/opt/hl-panel/current/bin/xray")
 	configuration.ProtocolProbeEchoPort, err = strconv.Atoi(envOrDefault("CONTROL_PROTOCOL_PROBE_ECHO_PORT", fmt.Sprint(protocolprobe.DefaultEchoPort)))
 	if err != nil || configuration.ProtocolProbeEchoPort < 1 || configuration.ProtocolProbeEchoPort > 65535 {
 		return runtimeConfig{}, fmt.Errorf("CONTROL_PROTOCOL_PROBE_ECHO_PORT must be between 1 and 65535")
