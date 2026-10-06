@@ -119,6 +119,38 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
 </template>
 
 <style scoped>
+.group-inventory { min-width: 0; }
+.group-table-wrap { display: block; }
+.group-table { width: 100%; min-width: 0; table-layout: fixed; }
+.group-table th:first-child { width: 22%; }
+.group-table th:nth-child(2) { width: 12%; }
+.group-table th:nth-child(3) { width: 24%; }
+.group-table th:nth-child(4) { width: 16%; }
+.group-table th:last-child { width: 26%; }
+.group-table .business-row-actions { flex-wrap: wrap; justify-content: flex-end; white-space: normal; }
+.group-table .business-row-actions .button { flex: 0 0 auto; }
+.group-inventory .table-primary, .group-inventory .table-secondary { white-space: normal; overflow-wrap: anywhere; }
+.group-inventory .resource-name { min-width: 0; }
+.group-inventory .resource-name strong, .group-inventory .resource-name small { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.group-inventory .mobile-resource-list { display: none; }
+.group-mobile-card { min-width: 0; padding: 16px; border: 1px solid var(--gray-200); border-radius: 7px; background: var(--white); }
+.group-mobile-card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.group-mobile-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--gray-100); }
+.group-mobile-card dl div { min-width: 0; }
+.group-mobile-card dl div:last-child { grid-column: 1 / -1; }
+.group-mobile-card dt { display: flex; align-items: center; gap: 4px; color: var(--gray-500); font-size: 11px; }
+.group-mobile-card dd { margin-top: 4px; color: var(--gray-800); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.group-mobile-card footer { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 18px; }
+.group-mobile-card footer > .integration-menu, .group-mobile-card footer .button { width: 100%; min-width: 0; }
+@media (max-width: 1300px) {
+  .group-table-wrap { display: none; }
+  .group-inventory .mobile-resource-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+}
+@media (max-width: 760px) {
+  .group-inventory .mobile-resource-list { grid-template-columns: 1fr; gap: 10px; }
+  .group-mobile-card { padding: 13px; border-radius: 4px; box-shadow: none; }
+  .group-mobile-card footer { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 .integration-menu { position: relative; display: inline-flex; }
 .integration-menu__toggle { gap: 6px; }
 .integration-menu__items { position: fixed; z-index: 90; display: grid; max-height: calc(100vh - 24px); overflow-y: auto; padding: 5px; border: 1px solid var(--gray-200); background: var(--white, #fff); box-shadow: 0 10px 24px rgb(15 31 55 / 14%); }

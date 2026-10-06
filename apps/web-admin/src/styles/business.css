@@ -96,25 +96,12 @@
 .advanced-action { margin-top: 8px; text-align: right; font-size: 11px; color: var(--gray-600); }
 .advanced-action summary { cursor: pointer; padding: 3px; }
 .advanced-action .button { font-size: 11px; margin-top: 4px; }
-.group-inventory .group-table { min-width: 0; table-layout: fixed; }
-.group-inventory .group-table th:first-child { width: 26%; }
-.group-inventory .group-table th:nth-child(2) { width: 14%; }
-.group-inventory .group-table th:last-child { width: 210px; }
-.group-inventory .table-primary { overflow-wrap: anywhere; white-space: normal; }
-.group-inventory .resource-name { min-width: 0; }
-.group-inventory .resource-name strong { white-space: normal; overflow-wrap: anywhere; }
 .primary-nav { overflow-y: auto; }
 .primary-nav a:last-child { margin-top: 16px; border-top: 1px solid rgba(255,255,255,.08); border-radius: 0 0 6px 6px; }
 .mobile-nav-toggle, .mobile-navigation-backdrop { display: none; }
 @media (max-width: 1300px) and (min-width: 761px) {
-  .business-desktop, .group-inventory .group-table-wrap { display: none; }
-  .business-mobile, .group-inventory .mobile-resource-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  .group-inventory .mobile-resource-card { min-width: 0; padding: 16px; border: 1px solid var(--gray-200); border-radius: 7px; background: white; }
-  .group-inventory .mobile-resource-card > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-  .group-inventory .mobile-resource-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--gray-100); }
-  .group-inventory .mobile-resource-card dt { color: var(--gray-500); font-size: 11px; }
-  .group-inventory .mobile-resource-card dd { margin-top: 4px; color: var(--gray-800); font-size: 12px; overflow-wrap: anywhere; }
-  .group-inventory .mobile-resource-card footer { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .business-desktop { display: none; }
+  .business-mobile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 }
 @media (max-width: 760px) {
   .app-shell { padding-bottom: 0; }
@@ -138,7 +125,6 @@
   .target-row .field input { padding: 8px; }
   .target-row .icon-button { width: 32px; height: 36px; }
   .target-list { padding: 10px; }
-  .group-inventory .mobile-resource-card dd { white-space: normal; overflow-wrap: anywhere; }
   .choice-list__options { max-height: 200px; }
   .route-mode-selector { overflow: visible; }
   .route-mode-selector button { min-height: 50px; flex: 1 1 0; }
@@ -182,8 +168,6 @@
 .rule-table th:nth-child(7) { width: 105px; }
 .rule-table th:nth-child(8) { width: 82px; }
 .rule-table th:last-child { width: 205px; }
-.group-inventory .group-table { min-width: 940px; }
-.group-inventory .group-table th:last-child { width: 190px; }
 .choice-list__options button { border-radius: 4px; box-shadow: none; }
 .primary-nav a:last-child { margin-top: 0; border-top: 0; border-radius: 4px; }
 .button--danger { border-color: #d84a4a; background: #fff; color: #bd2f2f; }
@@ -194,14 +178,14 @@
 
 @media (max-width: 1300px) and (min-width: 761px) {
   .toolbar { align-items: center; flex-direction: row; }
-  .business-desktop, .group-inventory .group-table-wrap { display: block; }
-  .business-mobile, .group-inventory .mobile-resource-list { display: none; }
+  .business-desktop { display: block; }
+  .business-mobile { display: none; }
 }
 
 @media (max-width: 1100px) and (min-width: 761px) {
   .rule-inventory .business-desktop { display: none; }
   .rule-inventory .business-mobile { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  .customer-table, .user-group-table, .rule-table, .group-inventory .group-table { min-width: 0; }
+  .customer-table, .user-group-table, .rule-table { min-width: 0; }
   .rule-table th:first-child { width: 5%; }
   .rule-table th:nth-child(2) { width: 12%; }
   .rule-table th:nth-child(3) { width: 13%; }
@@ -230,9 +214,9 @@
   .primary-nav > a, .nav-section-toggle, .nav-management a { width: 100%; min-height: 40px; justify-content: flex-start; flex-direction: row; padding: 9px 13px; font-size: 14px; }
   .primary-nav > a span, .nav-management a span { display: inline; }
   .nav-management { padding-left: 12px; }
-  .business-desktop, .group-inventory .group-table-wrap { display: none; }
-  .business-mobile, .group-inventory .mobile-resource-list { display: flex; flex-direction: column; gap: 10px; }
-  .business-card, .group-inventory .mobile-resource-card { padding: 13px; border-radius: 4px; box-shadow: none; }
+  .business-desktop { display: none; }
+  .business-mobile { display: flex; flex-direction: column; gap: 10px; }
+  .business-card { padding: 13px; border-radius: 4px; box-shadow: none; }
   .business-card dl { gap: 12px; margin-top: 13px; padding-top: 12px; }
   .business-card footer { margin-top: 13px; }
   .rule-batch-toolbar { align-items: stretch; }
