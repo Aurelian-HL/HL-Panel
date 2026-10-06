@@ -67,15 +67,18 @@ os.execv(os.environ['HL_PANEL_REAL_CURL'], ['curl', *values])
                        HL_PANEL_CANDIDATE_TAG=args.version,
                        HL_PANEL_CANDIDATE_META=str(work / 'release.json'),
                        HL_PANEL_REAL_CURL=real_curl)
-    command = ['bash', str(repository / 'install.sh'), '--domain', 'hl-panel-smoke.invalid',
+    command = ['bash', str(repository / 'install.sh'),
                '--public-ip', '8.8.8.8', '--api-port', '19991', '--ip-https-port', '19443']
+    if custom:
+        command.extend(['--domain', 'hl-panel-smoke.invalid'])
     pid, terminal = pty.fork()
     if pid == 0:
         os.execve('/bin/bash', command, environment)
     transcript = ''
     prompt_buffer = ''
     answered = set()
-    prompts = [('设置 HL-panel 管理员账号 [admin]：', username if custom else ''),
+    prompts = [('设置面板域名 [回车使用 IP 访问]：', ''),
+               ('设置 HL-panel 管理员账号 [admin]：', username if custom else ''),
                ('设置 HL-panel 管理员密码 [回车使用 123456]：', password if custom else ''),
                ('再次输入管理员密码：', password)]
     deadline = time.monotonic() + 900

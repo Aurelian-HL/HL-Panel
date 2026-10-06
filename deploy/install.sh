@@ -3,7 +3,8 @@ set -Eeuo pipefail
 
 REPOSITORY="${HL_PANEL_REPOSITORY:-Aurelian-HL/HL-Panel}"
 VERSION="latest"
-DOMAIN="hlpanel.hongle.cc"
+DOMAIN="hl-panel.invalid"
+DOMAIN_EXPLICIT=false
 ADMIN_USERNAME="admin"
 ADMIN_USERNAME_EXPLICIT=false
 ADMIN_DEFAULT_PASSWORD=false
@@ -53,7 +54,7 @@ usage() {
 选项：
   --repo              GitHub 仓库；默认 Aurelian-HL/HL-Panel
   --version           发布标签；默认 latest
-  --domain            面板域名；默认 hlpanel.hongle.cc
+  --domain            面板域名；未指定时询问，回车使用 IP 入口
   --public-ip         指定本机公网 IPv4；自动检测失败时必须提供
   --api-port          API 本机监听端口；默认 8080，已有服务占用时可指定 8081
   --ip-https-port     IP HTTPS 独立监听端口；默认 8443，不得使用 80、443 或 API 端口
@@ -71,7 +72,7 @@ while (($#)); do
   case "$1" in
     --repo) (($# >= 2)) || fail "--repo 缺少参数"; REPOSITORY="$2"; shift 2 ;;
     --version) (($# >= 2)) || fail "--version 缺少参数"; VERSION="$2"; shift 2 ;;
-    --domain) (($# >= 2)) || fail "--domain 缺少参数"; DOMAIN="$2"; shift 2 ;;
+    --domain) (($# >= 2)) || fail "--domain 缺少参数"; DOMAIN="$2"; DOMAIN_EXPLICIT=true; shift 2 ;;
     --public-ip) (($# >= 2)) || fail "--public-ip 缺少参数"; PUBLIC_IP="$2"; shift 2 ;;
     --api-port) (($# >= 2)) || fail "--api-port 缺少参数"; API_PORT="$2"; shift 2 ;;
     --ip-https-port) (($# >= 2)) || fail "--ip-https-port 缺少参数"; IP_HTTPS_PORT="$2"; shift 2 ;;
@@ -305,6 +306,12 @@ find_nginx_name_conflicts() {
   done <<< "$1"
 }
 
+if [[ "$DOMAIN_EXPLICIT" != true ]]; then
+  read -r -p "设置面板域名 [回车使用 IP 访问]：" DOMAIN_INPUT </dev/tty
+  DOMAIN="${DOMAIN_INPUT:-hl-panel.invalid}"
+  unset DOMAIN_INPUT
+fi
+[[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || fail "域名格式无效"
 if [[ "$ADMIN_USERNAME_EXPLICIT" != true ]]; then
   read -r -p "设置 HL-panel 管理员账号 [admin]：" ADMIN_USERNAME_INPUT </dev/tty
   ADMIN_USERNAME="${ADMIN_USERNAME_INPUT:-admin}"
@@ -578,6 +585,9 @@ systemctl enable --now nginx
 systemctl reload nginx
 ROLLBACK_REQUIRED=false
 
+if [[ "$DOMAIN" == "hl-panel.invalid" ]]; then
+  log "未设置域名；使用 IP 入口 https://$PUBLIC_IP:$IP_HTTPS_PORT/（自签名证书）"
+else
 log "检测域名解析；只在 A 记录指向本机时尝试签发证书"
 DNS_MATCH=false
 DNS_LOOKUP_OK=true
@@ -596,12 +606,16 @@ else
   log "当前 IP 入口：https://$PUBLIC_IP:$IP_HTTPS_PORT/（使用自签名证书）"
   log "DNS 指向本机后运行：hl-panel-enable-domain-tls"
 fi
+fi
+
+DOMAIN_DISPLAY="$DOMAIN"
+[[ "$DOMAIN" != "hl-panel.invalid" ]] || DOMAIN_DISPLAY="未设置（使用 IP 入口）"
 
 cat <<EOF
 
 HL-panel 安装完成
   版本：$RELEASE_ID
-  域名：$DOMAIN
+  域名：$DOMAIN_DISPLAY
   管理员：$ADMIN_USERNAME
   IP 入口：https://$PUBLIC_IP:$IP_HTTPS_PORT/
   API 本机监听：127.0.0.1:$API_PORT

@@ -9,7 +9,6 @@
 Flux 值得参考的是完整的操作链条、字段组织和结果反馈。它不是 NY 的等价源码，也没有证据表明本次读取的版本具备 NY 全部功能。本次对前后端业务目录检索未发现 VLESS 或设备组/权重实现，因此不能把 Flux 本身当作用户要求的最终产品。
 
 - 参考仓库：`https://github.com/bqlpfy/flux-panel`。
-- 本地只读目录：`C:/Users/hf/Documents/Codex/2026-10-01/c-users-hf-documents-codex-2026-2/work/flux-panel-review`。
 - 实际 `git rev-parse HEAD`：`9b5ccdb1f428454695bd81c034324aaa58eb91b8`。
 - 根目录 `LICENSE:1` 为 Apache License 2.0；`vite-frontend/LICENSE:1` 为 MIT，标注 Next UI。应分别尊重适用许可证，不能把整个仓库简单视为同一许可证。
 - 本次未复制 Flux 代码、界面资产或引入 React。新项目保持 Go + Vue 3。
@@ -140,4 +139,4 @@ Flux 有独立限速模板，绑定隧道并供用户授权使用。节点上报
 
 已实际读取并检索上述源码、SQL、许可证与新项目现有路由/导航；已核对 Git revision。本文是原创分析文档，未编译、运行或登录 Flux，未声称已验证 Flux 线上行为。本文没有实现任何新业务功能，也没有对服务器做变更。
 
-新项目当前路由证据：[router.ts](C:/Users/hf/Documents/Codex/2026-10-01/c-users-hf-documents-codex-2026-2/outputs/ny-vless-platform/apps/web-admin/src/router.ts:6)。参考源码路径均相对于第 1 节给出的绝对目录，行号对应上述固定 revision。
+新项目当前路由证据：[router.ts](../apps/web-admin/src/router.ts)。参考源码路径均相对于参考仓库根目录，行号对应上述固定 revision。

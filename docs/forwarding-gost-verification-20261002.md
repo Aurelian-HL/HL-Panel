@@ -20,7 +20,7 @@
 - 构建模块版本：`v0.0.0-20260922140655-e9fab9587288`，不是声称下载了同名发行资产。
 - `gost -V`：`gost 3.3.1 (go1.27.1 windows/amd64)`。
 - `github.com/go-gost/x`：`v0.17.2`。
-- 二进制：`C:/Users/hf/Documents/Codex/2026-10-01/c-users-hf-documents-codex-2026-2/work/toolchains/gost-v3.3.1.exe`。
+- 二进制：`C:/tools/gost/gost.exe`。
 - SHA256：`76046FB3987A058BBE147F64338D6C9C77E5E49F1497822C707305AD478DF750`。
 
 默认 Go 模块代理连接超时后，仅对本次构建进程设置 `GOPROXY=https://goproxy.cn`。保留 Go 模块校验，没有修改全局 Go 配置或项目依赖。
@@ -28,8 +28,8 @@
 ## 实际执行结果
 
 ```powershell
-$env:NYVP_GOST_BINARY='C:/Users/hf/Documents/Codex/2026-10-01/c-users-hf-documents-codex-2026-2/work/toolchains/gost-v3.3.1.exe'
-& 'C:/Users/hf/Documents/Codex/2026-10-01/c-users-hf-documents-codex-2026-2/work/toolchains/go1.27.1/go/bin/go.exe' test ./internal/control/forwarding/... ./internal/control/groupconfig ./internal/control/httpapi ./tests/integration/gost -count=1 -v
+$env:NYVP_GOST_BINARY='C:/tools/gost/gost.exe'
+go test ./internal/control/forwarding/... ./internal/control/groupconfig ./internal/control/httpapi ./tests/integration/gost -count=1 -v
 ```
 
 以上五个包通过。HTTP 新增五个业务测试，覆盖客户组、客户、网络配置、自动分配端口、保存、编辑、暂停、恢复、401、幂等重复提交、CAS、端口冲突、规则额度、客户禁用/到期、双重出口授权、密码不回显及留空不重置、失败修改不产生部分写入。

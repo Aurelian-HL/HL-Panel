@@ -1,7 +1,7 @@
 # HL-panel 一键全新安装
 
-此流程面向一台全新 Debian 12/Ubuntu x86_64 主机。当前安装目标域名为
-`hlpanel.hongle.cc`。安装会创建新的 PostgreSQL 空数据库，不导入旧面板、
+此流程面向一台全新 Debian 12/Ubuntu x86_64 主机。安装时填写自己的域名，
+或直接回车使用 IP 入口。安装会创建新的 PostgreSQL 空数据库，不导入旧面板、
 旧 NY 或任何备份，也不会修改 DNS、停用网络组件或清理其他应用。
 
 ## 发布与安装
@@ -15,7 +15,7 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh \
-  | sudo bash -s -- --domain hlpanel.hongle.cc
+  | sudo bash -s -- --domain panel.example.com
 ```
 
 入口默认读取该仓库的最新正式发布，固定标签后下载同标签的安装器和归档，避免
@@ -37,7 +37,7 @@ TCP 监听端口，有冲突就拒绝安装，不会停止或修改原有服务�
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.sh \
-  | sudo bash -s -- --domain hlpanel.hongle.cc --api-port 8081
+  | sudo bash -s -- --domain panel.example.com --api-port 8081
 ```
 
 服务配置、HL-panel 独立 Nginx 代理和本机健康检查会统一使用所选端口。
@@ -54,7 +54,7 @@ Nginx，启动 API 并检查本机健康接口。
 
 ## 域名与 IP 入口
 
-安装器不会改 DNS。它检查 `hlpanel.hongle.cc` 的 A 和 AAAA 记录：只有 A 记录
+安装器不会改 DNS。它检查所填写域名的 A 和 AAAA 记录：只有 A 记录
 全部指向本机公网 IPv4 且没有 AAAA 记录时，才会申请正式证书。
 解析按 IPv4/IPv6 地址族分别查询，不将 IPv4 映射地址误判为 AAAA。临时 DNS
 故障或其他查询错误会阻止证书申请；只有明确无该地址族记录才按空记录处理。
@@ -71,6 +71,11 @@ IP HTTPS 只在这个独立端口设置默认 TLS 站点，可接收不发送 SN
 私网地址误报为公网入口。
 
 DNS 生效后，在主机运行：
+
+若首次安装时未填写域名，先由 root 在 `/etc/hl-panel/domain.conf` 中将
+`DOMAIN` 改为自己的域名，并同步将 `/etc/nginx/sites-available/hl-panel.conf`
+里的 `hl-panel.invalid` 替换为该域名；运行 `nginx -t` 通过后 reload Nginx。
+安装时已填写域名则无需此步骤。
 
 ```sh
 sudo hl-panel-enable-domain-tls
