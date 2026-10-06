@@ -16,6 +16,7 @@ import (
 )
 
 var ErrCounterSourceUnavailable = errors.New("usage counter source is not configured")
+var ErrCounterReadFailed = errors.New("usage counters could not be read")
 
 type CollectionWindow struct {
 	StartedAt time.Time
@@ -65,6 +66,7 @@ type Reporter struct {
 	nodeID         string
 	nodeCredential string
 	maxBatch       int
+	generation     func() (agentv1.NodeConfigGeneration, error)
 	now            func() time.Time
 	mu             sync.Mutex
 }
@@ -89,6 +91,28 @@ func NewReporter(store *JournalStore, source CounterSource, sender Sender, nodeI
 		return nil, err
 	}
 	return &Reporter{store: store, source: source, sender: sender, nodeID: nodeID, nodeCredential: nodeCredential, maxBatch: maxBatch, now: now}, nil
+}
+
+func (reporter *Reporter) SetGenerationProvider(provider func() (agentv1.NodeConfigGeneration, error)) {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	reporter.generation = provider
+}
+
+// CollectOnce journals final old-process counters even while delivery is
+// unavailable. Configuration changes never discard pending reports.
+func (reporter *Reporter) CollectOnce(ctx context.Context) error {
+	reporter.mu.Lock()
+	defer reporter.mu.Unlock()
+	journal, err := reporter.store.Load()
+	if err != nil {
+		return err
+	}
+	if len(journal.Pending)+reporter.maxBatch > maxPendingItems {
+		return errors.New("usage journal is full")
+	}
+	_, err = reporter.collect(ctx, journal)
+	return err
 }
 
 func (reporter *Reporter) FlushOnce(ctx context.Context) error {
@@ -157,9 +181,17 @@ func (reporter *Reporter) collect(ctx context.Context, journal Journal) (Journal
 }
 
 func (reporter *Reporter) collectWindow(ctx context.Context, journal Journal, window CollectionWindow, endedAt time.Time) (Journal, error) {
+	var generation agentv1.NodeConfigGeneration
+	if reporter.generation != nil {
+		var err error
+		generation, err = reporter.generation()
+		if err != nil {
+			return Journal{}, err
+		}
+	}
 	deltas, err := reporter.source.CollectUsage(ctx, window)
 	if err != nil {
-		return Journal{}, err
+		return Journal{}, fmt.Errorf("%w: %w", ErrCounterReadFailed, err)
 	}
 	if len(deltas) > reporter.maxBatch {
 		return Journal{}, fmt.Errorf("usage source returned %d records, maximum is %d", len(deltas), reporter.maxBatch)
@@ -173,13 +205,14 @@ func (reporter *Reporter) collectWindow(ctx context.Context, journal Journal, wi
 		if err != nil {
 			return Journal{}, fmt.Errorf("usage record %d: %w", index, err)
 		}
+		report.ConfigGeneration = generation
 		reports[index] = report
 	}
 	return reporter.store.update(func(current *Journal) error {
-		if len(current.Pending) != 0 || current.BootID != journal.BootID || current.NextSequence != journal.NextSequence || !current.LastCollectedAt.Equal(journal.LastCollectedAt) {
+		if len(current.Pending) != len(journal.Pending) || current.BootID != journal.BootID || current.NextSequence != journal.NextSequence || !current.LastCollectedAt.Equal(journal.LastCollectedAt) {
 			return errors.New("usage journal changed during collection")
 		}
-		current.Pending = reports
+		current.Pending = append(current.Pending, reports...)
 		current.NextSequence += int64(len(reports))
 		current.LastCollectedAt = endedAt
 		current.UpdatedAt = endedAt

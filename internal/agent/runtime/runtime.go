@@ -41,6 +41,7 @@ type Agent struct {
 	bootID         string
 	logger         *slog.Logger
 	bootstrapMu    sync.Mutex
+	usageApplyMu   sync.Mutex
 	usageSource    usageagent.CounterSource
 	accessExecutor usageagent.AccessExecutor
 	usageReporter  *usageagent.Reporter
@@ -128,6 +129,16 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 			source := options.EngineUsageSources[kind]
 			if source == nil {
 				continue
+			}
+			switch kind {
+			case agentv1.EngineXray:
+				if xrayAdapter != nil {
+					source = &usageagent.EpochSource{Source: source, Epoch: xrayAdapter.CounterEpoch}
+				}
+			case agentv1.EngineGOST:
+				if gostAdapter != nil {
+					source = &usageagent.EpochSource{Source: source, Epoch: gostAdapter.CounterEpoch}
+				}
 			}
 			if expected, ok := adapter.(interface{ ExpectsEngine(agentv1.Engine) bool }); ok {
 				engineKind := kind
@@ -238,6 +249,9 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 			return fmt.Errorf("initialize usage reporter: %w", err)
 		}
 	}
+	if a.usageReporter != nil {
+		a.usageReporter.SetGenerationProvider(a.usageGeneration)
+	}
 	if a.accessExecutor != nil {
 		a.enforcement, err = usageagent.NewEnforcementReconciler(a.client, a.accessExecutor, a.nodeSecret)
 		if err != nil {
@@ -343,7 +357,7 @@ func (a *Agent) DesiredOnce(ctx context.Context) (bool, error) {
 	if desired == nil {
 		return false, nil
 	}
-	if err := a.reconciler.Apply(ctx, *desired); err != nil {
+	if err := a.applyWithUsage(ctx, *desired); err != nil {
 		return true, err
 	}
 	return true, nil
@@ -356,7 +370,7 @@ func (a *Agent) UsageOnce(ctx context.Context) error {
 	if a.usageReporter == nil {
 		return usageagent.ErrCounterSourceUnavailable
 	}
-	return a.usageReporter.FlushOnce(ctx)
+	return a.flushUsage(ctx)
 }
 
 func (a *Agent) EnforcementOnce(ctx context.Context) (bool, error) {
@@ -422,7 +436,7 @@ func (a *Agent) usageLoop(ctx context.Context) error {
 	}
 	backoff := reconciler.NewBackoff(a.cfg.Backoff)
 	return runPeriodic(ctx, interval, backoff, func(callContext context.Context) error {
-		return a.usageReporter.FlushOnce(callContext)
+		return a.flushUsage(callContext)
 	}, func(err error) { a.logger.Warn("usage reporting failed", "error", err) })
 }
 
@@ -469,8 +483,10 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 		if key == failedKey {
 			return nil
 		}
-		if err := a.reconciler.Apply(callContext, *desired); err != nil {
-			failedKey = key
+		if err := a.applyWithUsage(callContext, *desired); err != nil {
+			if !errors.Is(err, errUsageBeforeApply) {
+				failedKey = key
+			}
 			return err
 		}
 		failedKey = ""

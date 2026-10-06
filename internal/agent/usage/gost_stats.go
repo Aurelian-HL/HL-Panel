@@ -353,3 +353,12 @@ func validMetricLabelName(value string) bool {
 	}
 	return true
 }
+
+// ResetCounters is called for a known new process, whose counters start at
+// zero. This includes first traffic before the first periodic sample.
+func (s *GOSTStatsSource) ResetCounters() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = make(map[string]int64)
+	s.initialized = true
+}

@@ -160,7 +160,7 @@ func RuleReplayMatches(event Event, report Report) bool {
 }
 
 func (service *Service) resolveManagedRuleMetadata(ctx context.Context, report *Report) error {
-	metadata, err := service.legacyRuleMetadata.ResolveLegacyRuleUsageMetadata(ctx, report.NodeID, report.RuleID)
+	metadata, err := service.ruleMetadataForReport(ctx, report, report.RuleID)
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func (service *Service) resolveLegacyRuleMetadata(ctx context.Context, report *R
 	if service.legacyRuleMetadata == nil {
 		return errorsUnavailable()
 	}
-	metadata, err := service.legacyRuleMetadata.ResolveLegacyRuleUsageMetadata(ctx, report.NodeID, ruleID)
+	metadata, err := service.ruleMetadataForReport(ctx, report, ruleID)
 	if err != nil {
 		return err
 	}
@@ -315,6 +315,9 @@ func (service *Service) RequestRevoke(ctx context.Context, administratorID, deci
 }
 
 func normalizeReport(input Report) (Report, error) {
+	// The generation is a verified lookup hint, not an accounting field.
+	// Preserve existing ledger fingerprints and replay semantics.
+	input.ConfigGeneration = 0
 	input.NodeID = strings.TrimSpace(input.NodeID)
 	input.BootID = strings.TrimSpace(input.BootID)
 	input.CustomerID = strings.TrimSpace(input.CustomerID)

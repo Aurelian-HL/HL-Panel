@@ -96,6 +96,7 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 	if heartbeat.CurrentAppliedGeneration > node.DesiredGeneration {
 		return nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
 	}
+	previousNode := node
 	node.BootID = heartbeat.BootID
 	node.Hostname = heartbeat.Hostname
 	node.Platform = heartbeat.Platform
@@ -110,6 +111,13 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 		node.LastApplyStatus = heartbeat.LastApplyStatus
 	}
 	s.nodes[nodeID] = node
+	if nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) {
+		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
+			s.nodes[nodeID] = previousNode
+			return nodes.Node{}, err
+		}
+		node = s.nodes[nodeID]
+	}
 	s.appendAuditLocked(event)
 	return cloneNode(node), nil
 }

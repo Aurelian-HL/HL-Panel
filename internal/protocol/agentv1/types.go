@@ -71,7 +71,22 @@ type ConfigurationBundle struct {
 	Fragments     []ConfigurationFragment `json:"fragments"`
 }
 
+// UsageMetadata is compiled by the control plane, never accepted from an
+// operator's engine JSON. It snapshots ownership and billing for this bundle.
+type UsageMetadata struct {
+	RuleID                string `json:"rule_id"`
+	CustomerID            string `json:"customer_id"`
+	EntryGroupID          string `json:"entry_group_id"`
+	ExitGroupID           string `json:"exit_group_id"`
+	Protocol              string `json:"protocol"`
+	EntryMultiplierMicros int64  `json:"entry_multiplier_micros"`
+	ExitMultiplierMicros  int64  `json:"exit_multiplier_micros"`
+}
+
+const CapabilityUsageGeneration = "usage-config-generation-v1"
+
 type ConfigurationFragment struct {
+	Usage         *UsageMetadata  `json:"usage,omitempty"`
 	GroupID       string          `json:"group_id"`
 	GroupRevision GroupRevision   `json:"group_generation"`
 	Engine        Engine          `json:"engine"`
@@ -133,22 +148,23 @@ const (
 // UsageReport is an immutable accounting interval. The control plane derives
 // charged bytes and authenticates NodeID against the bearer credential.
 type UsageReport struct {
-	NodeID                string    `json:"node_id"`
-	BootID                string    `json:"boot_id"`
-	Sequence              int64     `json:"sequence"`
-	LegacyRuleID          string    `json:"legacy_rule_id,omitempty"`
-	CustomerID            string    `json:"customer_id"`
-	RuleID                string    `json:"rule_id"`
-	EntryGroupID          string    `json:"entry_group_id"`
-	ExitGroupID           string    `json:"exit_group_id"`
-	Protocol              string    `json:"protocol"`
-	OccurredAt            time.Time `json:"occurred_at"`
-	PeriodStartedAt       time.Time `json:"period_started_at"`
-	PeriodEndedAt         time.Time `json:"period_ended_at"`
-	RuleActualBytes       int64     `json:"rule_actual_bytes"`
-	CustomerActualBytes   int64     `json:"customer_actual_bytes"`
-	EntryMultiplierMicros int64     `json:"entry_multiplier_micros"`
-	ExitMultiplierMicros  int64     `json:"exit_multiplier_micros"`
+	ConfigGeneration      NodeConfigGeneration `json:"config_generation,omitempty"`
+	NodeID                string               `json:"node_id"`
+	BootID                string               `json:"boot_id"`
+	Sequence              int64                `json:"sequence"`
+	LegacyRuleID          string               `json:"legacy_rule_id,omitempty"`
+	CustomerID            string               `json:"customer_id"`
+	RuleID                string               `json:"rule_id"`
+	EntryGroupID          string               `json:"entry_group_id"`
+	ExitGroupID           string               `json:"exit_group_id"`
+	Protocol              string               `json:"protocol"`
+	OccurredAt            time.Time            `json:"occurred_at"`
+	PeriodStartedAt       time.Time            `json:"period_started_at"`
+	PeriodEndedAt         time.Time            `json:"period_ended_at"`
+	RuleActualBytes       int64                `json:"rule_actual_bytes"`
+	CustomerActualBytes   int64                `json:"customer_actual_bytes"`
+	EntryMultiplierMicros int64                `json:"entry_multiplier_micros"`
+	ExitMultiplierMicros  int64                `json:"exit_multiplier_micros"`
 }
 
 type UsageAcknowledgement struct {

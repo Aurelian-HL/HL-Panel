@@ -52,6 +52,18 @@ type Status struct {
 	Reason               Reason         `json:"reason"`
 }
 
+// HistoricalInput is accounting evidence only. It must never be used as a
+// claim that a rule is currently deployed or a node is currently healthy.
+type HistoricalInput struct {
+	Config       generations.NodeConfigGeneration
+	AttemptID    string
+	Invalidated  bool
+	ApplyResults map[agentv1.ApplyPhase]generations.ApplyResult
+}
+type HistoricalRepository interface {
+	UsageConfigInput(context.Context, string, int64) (HistoricalInput, error)
+}
+
 type Repository interface {
 	RuleNodeDeploymentInput(context.Context, string, string) (Input, error)
 }

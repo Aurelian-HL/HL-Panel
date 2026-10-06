@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/probeecho"
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
 const (
@@ -157,7 +158,7 @@ func (c *Config) setDefaults() {
 	if c.Hostname == "" {
 		c.Hostname, _ = os.Hostname()
 	}
-	c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityNodeBundleV1, CapabilityDryRunFileAdapter))
+	c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityNodeBundleV1, CapabilityDryRunFileAdapter, agentv1.CapabilityUsageGeneration))
 	if c.EngineMode == "" {
 		c.EngineMode = EngineModeDryRun
 	}

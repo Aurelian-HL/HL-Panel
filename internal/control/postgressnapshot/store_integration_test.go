@@ -171,6 +171,11 @@ func TestPostgreSQLRestartPreservesIdentityRoutingAuditAndIdempotency(t *testing
 	if desired.ConfigSHA256 != configuration.ConfigSHA256 {
 		t.Fatal("node config was not preserved")
 	}
+	historical, err := reopened.UsageConfigInput(ctx, "node-one", configuration.Generation)
+	require(err)
+	if !bytes.Equal(historical.Config.Config, configuration.Config) || historical.ApplyResults[agentv1.ApplyPhaseCommit].ID != "apply-one" {
+		t.Fatal("historical accounting configuration or receipt lost across restart")
+	}
 	afterAudit, err := reopened.AuditEvents(ctx)
 	require(err)
 	if len(afterAudit) != len(beforeAudit) {

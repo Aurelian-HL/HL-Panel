@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -39,6 +40,28 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	forwardingFragments, err := s.compileForwardingFragmentsLocked(nodeID)
 	if err != nil {
 		return generations.NodeConfigGeneration{}, false, err
+	}
+	if nodeSupportsUsageGeneration(s.nodes[nodeID]) {
+		for i := range forwardingFragments {
+			ruleID := strings.TrimPrefix(strings.TrimPrefix(forwardingFragments[i].GroupID, generations.ForwardingVLESSFragmentPrefix), generations.ForwardingGOSTFragmentPrefix)
+			rule, exists := s.forwardRules[ruleID]
+			if !exists {
+				return generations.NodeConfigGeneration{}, false, fmt.Errorf("compiled usage rule is missing")
+			}
+			entry := int64(agentv1.UsageMultiplierScale)
+			exit := int64(agentv1.UsageMultiplierScale)
+			if n, ok := s.groupNetworks[rule.EntryGroupID]; ok {
+				entry = int64(math.Round(n.TrafficMultiplier * float64(agentv1.UsageMultiplierScale)))
+			}
+			if rule.EgressMode == forwarding.EgressExitGroup {
+				if n, ok := s.groupNetworks[rule.ExitGroupID]; ok {
+					exit = int64(math.Round(n.TrafficMultiplier * float64(agentv1.UsageMultiplierScale)))
+				}
+			}
+			forwardingFragments[i].Usage = &agentv1.UsageMetadata{RuleID: rule.ID, CustomerID: rule.CustomerID,
+				EntryGroupID: rule.EntryGroupID, ExitGroupID: rule.ExitGroupID, Protocol: string(rule.Protocol),
+				EntryMultiplierMicros: entry, ExitMultiplierMicros: exit}
+		}
 	}
 	fragments = append(fragments, forwardingFragments...)
 	if len(fragments) == 0 && s.nodes[nodeID].DesiredGeneration == 0 {
@@ -350,4 +373,13 @@ func eligibleForGOSTDirect(rule forwarding.Rule) bool {
 // desired configuration generation.
 func forwardingRuleCompilableStatus(status forwarding.Status) bool {
 	return status == forwarding.StatusPendingActivation || status == forwarding.StatusActive
+}
+
+func nodeSupportsUsageGeneration(node nodes.Node) bool {
+	for _, capability := range node.Capabilities {
+		if capability == agentv1.CapabilityUsageGeneration {
+			return true
+		}
+	}
+	return false
 }

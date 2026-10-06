@@ -308,3 +308,12 @@ func validateStatsAddress(address string) error {
 	}
 	return nil
 }
+
+// ResetCounters is called for a known new process, whose counters start at
+// zero. This includes first traffic before the first periodic sample.
+func (s *XrayStatsSource) ResetCounters() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.last = make(map[string]int64)
+	s.initialized = true
+}

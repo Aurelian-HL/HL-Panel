@@ -28,8 +28,9 @@ type GOSTProcessAdapter struct {
 	runner     GOSTRunner
 	autoStart  bool
 
-	mu      sync.Mutex
-	process GOSTProcess
+	counterEpoch uint64
+	mu           sync.Mutex
+	process      GOSTProcess
 }
 
 func NewGOSTProcessAdapter(options GOSTAdapterOptions) (*GOSTProcessAdapter, error) {
@@ -249,6 +250,7 @@ func (a *GOSTProcessAdapter) startLocked(ctx context.Context, path string) (GOST
 	if err != nil || process == nil || !process.Running() {
 		return nil, ErrGOSTStart
 	}
+	a.counterEpoch++
 	return process, nil
 }
 
@@ -273,4 +275,11 @@ func (a *GOSTProcessAdapter) restartPrevious(ctx context.Context, restart bool) 
 	}
 	a.process = started
 	return nil
+}
+
+// CounterEpoch changes only when this adapter starts a new owned process.
+func (a *GOSTProcessAdapter) CounterEpoch() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.counterEpoch
 }

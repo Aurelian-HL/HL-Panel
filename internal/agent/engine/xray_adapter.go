@@ -68,8 +68,9 @@ type XrayProcessAdapter struct {
 	runner     XrayRunner
 	autoStart  bool
 
-	mu      sync.Mutex
-	process XrayProcess
+	counterEpoch uint64
+	mu           sync.Mutex
+	process      XrayProcess
 }
 
 // NewXrayProcessAdapter constructs an adapter rooted at private absolute
@@ -340,6 +341,7 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 	if process == nil {
 		return nil, ErrXrayStart
 	}
+	a.counterEpoch++
 	return process, nil
 }
 
@@ -675,4 +677,11 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(value)
+}
+
+// CounterEpoch changes only when this adapter starts a new owned process.
+func (a *XrayProcessAdapter) CounterEpoch() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.counterEpoch
 }

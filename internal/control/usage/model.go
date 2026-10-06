@@ -36,22 +36,23 @@ func (scope Scope) Valid() bool {
 // agent. ChargedBytes is never accepted from the node; the control plane
 // derives it from CustomerActualBytes and the two multiplier snapshots.
 type Report struct {
-	NodeID                string    `json:"node_id"`
-	BootID                string    `json:"boot_id"`
-	Sequence              int64     `json:"sequence"`
-	LegacyRuleID          string    `json:"legacy_rule_id,omitempty"`
-	CustomerID            string    `json:"customer_id"`
-	RuleID                string    `json:"rule_id"`
-	EntryGroupID          string    `json:"entry_group_id"`
-	ExitGroupID           string    `json:"exit_group_id"`
-	Protocol              string    `json:"protocol"`
-	OccurredAt            time.Time `json:"occurred_at"`
-	PeriodStartedAt       time.Time `json:"period_started_at"`
-	PeriodEndedAt         time.Time `json:"period_ended_at"`
-	RuleActualBytes       int64     `json:"rule_actual_bytes"`
-	CustomerActualBytes   int64     `json:"customer_actual_bytes"`
-	EntryMultiplierMicros int64     `json:"entry_multiplier_micros"`
-	ExitMultiplierMicros  int64     `json:"exit_multiplier_micros"`
+	ConfigGeneration      agentv1.NodeConfigGeneration `json:"config_generation,omitempty"`
+	NodeID                string                       `json:"node_id"`
+	BootID                string                       `json:"boot_id"`
+	Sequence              int64                        `json:"sequence"`
+	LegacyRuleID          string                       `json:"legacy_rule_id,omitempty"`
+	CustomerID            string                       `json:"customer_id"`
+	RuleID                string                       `json:"rule_id"`
+	EntryGroupID          string                       `json:"entry_group_id"`
+	ExitGroupID           string                       `json:"exit_group_id"`
+	Protocol              string                       `json:"protocol"`
+	OccurredAt            time.Time                    `json:"occurred_at"`
+	PeriodStartedAt       time.Time                    `json:"period_started_at"`
+	PeriodEndedAt         time.Time                    `json:"period_ended_at"`
+	RuleActualBytes       int64                        `json:"rule_actual_bytes"`
+	CustomerActualBytes   int64                        `json:"customer_actual_bytes"`
+	EntryMultiplierMicros int64                        `json:"entry_multiplier_micros"`
+	ExitMultiplierMicros  int64                        `json:"exit_multiplier_micros"`
 }
 
 type Event struct {
@@ -87,6 +88,10 @@ type LegacyRuleMetadata struct {
 	EntryGroup            string
 	ExitGroup             string
 	Protocol              string
+}
+
+type GenerationRuleMetadataProvider interface {
+	ResolveRuleUsageMetadataAt(context.Context, string, string, agentv1.NodeConfigGeneration, time.Time) (LegacyRuleMetadata, error)
 }
 
 type LegacyRuleMetadataProvider interface {
