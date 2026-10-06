@@ -133,7 +133,8 @@ for backup in backups:
     assert backup.stat().st_mode&0o077==0
     subprocess.run(['pg_restore','--list',str(backup/'database.dump')],stdout=subprocess.DEVNULL,check=True)
     subprocess.run(['bash','-n',str(backup/'rollback.sh')],check=True)
-Path('preserve-update-result.json').write_text(json.dumps({
+report = Path('preserve-update-result.json')
+report.write_text(json.dumps({
     'previous_version':args.previous_version,'version':args.version,
     'real_postgresql_systemd_nginx':True,'corrupt_archive_rejected_before_stop':True,
     'failed_upgrade_restores_database_and_binary':True,'successful_upgrade':True,
@@ -141,4 +142,7 @@ Path('preserve-update-result.json').write_text(json.dumps({
     'configuration_and_certificates_preserved':True,'verified_database_backups':len(backups),
     'same_version_no_op':True,
 },indent=2)+'\n')
+# The root updater intentionally sets umask 077. This report contains only
+# public test outcomes; allow the unprivileged Actions uploader to read it.
+report.chmod(0o644)
 print('PRESERVE_UPDATE_ACCEPTED')
