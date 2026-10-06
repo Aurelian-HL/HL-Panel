@@ -20,6 +20,26 @@ WORK_DIR=""
 log() { printf '[HL-panel] %s\n' "$*"; }
 fail() { printf '[HL-panel] 错误：%s\n' "$*" >&2; exit 1; }
 
+resolve_domain_records() {
+  python3 - "$DOMAIN" "$1" <<'PY'
+import socket
+import sys
+
+domain, record_type = sys.argv[1:]
+family = socket.AF_INET if record_type == "A" else socket.AF_INET6
+try:
+    # Explicit family and flags=0 prevent synthesizing IPv4-mapped AAAA records.
+    answers = socket.getaddrinfo(domain, None, family, socket.SOCK_STREAM, 0, 0)
+except socket.gaierror as error:
+    no_records = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+    if error.errno not in no_records:
+        print(f"[HL-panel DNS] {domain} {record_type} 查询失败：{error}", file=sys.stderr)
+        sys.exit(1)
+    answers = []
+print("\n".join(sorted({answer[4][0] for answer in answers})))
+PY
+}
+
 usage() {
   cat <<'EOF'
 用法：install.sh [--repo OWNER/REPOSITORY] [--version TAG|latest]
@@ -332,9 +352,9 @@ export DEBIAN_FRONTEND=noninteractive
 log "安装运行依赖"
 apt-get update
 if command -v nginx >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar certbot postgresql postgresql-client
+  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client
 else
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar nginx-light certbot postgresql postgresql-client
+  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-light certbot postgresql postgresql-client
 fi
 systemctl enable --now postgresql
 check_database_names
@@ -518,9 +538,10 @@ ROLLBACK_REQUIRED=false
 
 log "检测域名解析；只在 A 记录指向本机时尝试签发证书"
 DNS_MATCH=false
-DNS_A_RECORDS="$(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u || true)"
-DNS_AAAA_RECORDS="$(getent ahostsv6 "$DOMAIN" | awk '{print $1}' | sort -u || true)"
-if [[ "$DNS_A_RECORDS" == "$PUBLIC_IP" && -z "$DNS_AAAA_RECORDS" ]]; then DNS_MATCH=true; fi
+DNS_LOOKUP_OK=true
+if ! DNS_A_RECORDS="$(resolve_domain_records A)"; then DNS_LOOKUP_OK=false; fi
+if ! DNS_AAAA_RECORDS="$(resolve_domain_records AAAA)"; then DNS_LOOKUP_OK=false; fi
+if [[ "$DNS_LOOKUP_OK" == true && "$DNS_A_RECORDS" == "$PUBLIC_IP" && -z "$DNS_AAAA_RECORDS" ]]; then DNS_MATCH=true; fi
 if [[ "$DNS_MATCH" == true ]]; then
   if /usr/local/sbin/hl-panel-enable-domain-tls --email "$EMAIL"; then
     log "域名证书已启用"
@@ -528,6 +549,7 @@ if [[ "$DNS_MATCH" == true ]]; then
     log "域名证书申请未成功；已保留 IP HTTPS 入口，可之后运行 hl-panel-enable-domain-tls 重试"
   fi
 else
+  if [[ "$DNS_LOOKUP_OK" != true ]]; then log "提醒：DNS 查询失败，未申请域名证书；解析恢复后可重试"; fi
   log "提醒：$DOMAIN 的 A 记录必须全部指向本机 $PUBLIC_IP，且不能存在未经核对的 AAAA 记录；本次未修改 DNS，也未申请证书"
   log "当前可用入口：https://$PUBLIC_IP/（浏览器会提示自签名证书，需要确认后继续）"
   log "DNS 指向本机后运行：hl-panel-enable-domain-tls"

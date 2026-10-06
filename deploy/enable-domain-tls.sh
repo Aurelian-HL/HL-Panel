@@ -6,6 +6,27 @@ EMAIL=""
 RENEWED_LINEAGE=""
 
 fail() { printf '[HL-panel TLS] 错误：%s\n' "$*" >&2; exit 1; }
+
+resolve_domain_records() {
+  python3 - "$DOMAIN" "$1" <<'PY'
+import socket
+import sys
+
+domain, record_type = sys.argv[1:]
+family = socket.AF_INET if record_type == "A" else socket.AF_INET6
+try:
+    # Explicit family and flags=0 prevent synthesizing IPv4-mapped AAAA records.
+    answers = socket.getaddrinfo(domain, None, family, socket.SOCK_STREAM, 0, 0)
+except socket.gaierror as error:
+    no_records = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+    if error.errno not in no_records:
+        print(f"[HL-panel DNS] {domain} {record_type} 查询失败：{error}", file=sys.stderr)
+        sys.exit(1)
+    answers = []
+print("\n".join(sorted({answer[4][0] for answer in answers})))
+PY
+}
+
 while (($#)); do
   case "$1" in
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
@@ -36,8 +57,9 @@ if [[ -n "$RENEWED_LINEAGE" ]]; then
   [[ "$RENEWED_LINEAGE" == "$LIVE_DIR" ]] || fail "续期 lineage 不属于当前 HL-panel 安装"
   [[ -s "$RENEWED_LINEAGE/fullchain.pem" && -s "$RENEWED_LINEAGE/privkey.pem" ]] || fail "续期 lineage 缺少证书或私钥"
 else
-  DNS_A_RECORDS="$(getent ahostsv4 "$DOMAIN" | awk '{print $1}' | sort -u || true)"
-  DNS_AAAA_RECORDS="$(getent ahostsv6 "$DOMAIN" | awk '{print $1}' | sort -u || true)"
+  command -v python3 >/dev/null 2>&1 || fail "缺少 python3；请先安装 python3 后重试"
+  DNS_A_RECORDS="$(resolve_domain_records A)" || fail "$DOMAIN 的 A 记录查询失败，未申请证书"
+  DNS_AAAA_RECORDS="$(resolve_domain_records AAAA)" || fail "$DOMAIN 的 AAAA 记录查询失败，未申请证书"
   [[ "$DNS_A_RECORDS" == "$PUBLIC_IP" && -z "$DNS_AAAA_RECORDS" ]] || fail "$DOMAIN 必须只有指向 $PUBLIC_IP 的 A 记录，且不能存在未经核对的 AAAA 记录"
 
   if [[ -e "$RENEWAL_CONFIG" ]]; then
