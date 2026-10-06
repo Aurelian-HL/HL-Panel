@@ -41,8 +41,8 @@ type Request struct {
 func DefaultSettings() Settings {
 	return Settings{
 		ID:         GlobalSettingsID,
-		SiteName:   "XZPanel",
-		PanelTitle: "线路管理面板",
+		SiteName:   "HL-panel",
+		PanelTitle: "HL-panel",
 		Theme:      ThemeClassic,
 	}
 }

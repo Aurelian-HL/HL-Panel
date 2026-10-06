@@ -42,7 +42,7 @@ func TestSiteSettingsAndAnnouncementsPublicProjection(t *testing.T) {
 		Version  string              `json:"platform_version"`
 	}
 	decodeResponse(t, requestJSON(t, handler, http.MethodGet, "/api/v1/public/site-info", "", nil, http.StatusOK), &defaults)
-	if defaults.Settings.SiteName != "XZPanel" || defaults.Version != "test-version" {
+	if defaults.Settings.SiteName != "HL-panel" || defaults.Settings.PanelTitle != "HL-panel" || defaults.Version != "test-version" {
 		t.Fatalf("unexpected defaults: %+v", defaults)
 	}
 	requestJSON(t, handler, http.MethodGet, "/api/v1/site-settings", "", nil, http.StatusUnauthorized)

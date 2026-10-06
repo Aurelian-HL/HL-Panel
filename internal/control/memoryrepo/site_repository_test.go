@@ -77,7 +77,7 @@ func TestSnapshotVersionFourUpgradesSiteDefaults(t *testing.T) {
 		t.Fatalf("legacy v4 snapshot rejected: %v", err)
 	}
 	settings, err := restored.SiteSettings(context.Background())
-	if err != nil || settings.SiteName != "XZPanel" || settings.Revision != 0 {
+	if err != nil || settings.SiteName != "HL-panel" || settings.PanelTitle != "HL-panel" || settings.Revision != 0 {
 		t.Fatalf("legacy defaults missing: %+v %v", settings, err)
 	}
 	items, err := restored.ListAnnouncements(context.Background())

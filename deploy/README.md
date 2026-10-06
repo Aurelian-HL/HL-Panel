@@ -31,6 +31,9 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/deploy/in
 
 服务配置、HL-panel 独立 Nginx 代理和本机健康检查会统一使用所选端口。
 `--api-port` 仅允许 1 到 65535 的十进制整数，API 始终只绑定 loopback。
+IP HTTPS 使用独立端口 `8443`，可用 `--ip-https-port 9443` 等空闲端口调整。
+两项端口参数都会规范化十进制输入并预检 IPv4/IPv6 TCP 监听冲突。
+IP HTTPS 端口不得为 80、443 或 API 端口；检测到监听冲突时不会接管已有端口。
 
 仅 Debian/Ubuntu apt 系统和 Linux amd64 提供一键流程。安装器先确认 HL-panel
 目录、服务、数据库角色及数据库名称没有被占用，再下载固定 release 并校验归档
@@ -47,7 +50,11 @@ Nginx，启动 API 并检查本机健康接口。
 安装器会安装 Python 3 作为该检查的运行依赖。
 
 如果域名尚未解析到新主机，安装结束时会提醒需要修改的 A 记录，并提供
-`https://<公网IPv4>/` 入口。IP 证书为本机生成的自签名证书，浏览器会显示证书
+`https://<公网IPv4>:8443/` 入口（若指定 `--ip-https-port`，使用指定端口）。
+IP HTTPS 只在这个独立端口设置默认 TLS 站点，可接收不发送 SNI 的 IP 直连，
+不改变已有 443 默认站点。IP 的 HTTP 入口会跳转到对应 IP HTTPS 端口；
+域名 HTTPS 仍使用 443。请在主机供应商安全组中允许所选 IP HTTPS TCP 端口；
+安装器不会修改防火墙或安全组。IP 证书为本机生成的自签名证书，浏览器会显示证书
 警告；它用于临时直连，不等同于受信任的域名证书。若无法自动确认公网 IPv4，
 请在执行命令时传入 `--public-ip <公网IPv4>`。安装器不会把 `hostname -I` 的
 私网地址误报为公网入口。
@@ -60,7 +67,8 @@ sudo hl-panel-enable-domain-tls
 
 可选传入通知邮箱：`sudo hl-panel-enable-domain-tls --email admin@example.com`。
 Certbot 续期后只替换 HL-panel 自己的证书，并在 Nginx 配置检查通过后 reload。
-IP HTTPS 入口会继续保留。
+IP HTTPS 入口会继续保留，所选端口保存在 `/etc/hl-panel/domain.conf`，
+TLS helper 会输出包含端口的实际 IP 地址。
 ACME 挑战文件放在独立 `/var/lib/hl-panel-acme/`，由 root 管理且目录权限为
 0755，供 Nginx 读取。服务私有状态 `/var/lib/hl-panel/` 仍由 `hlpanel` 管理、
 权限为 0750；不会向 Nginx 开放私有状态，也不会将其加入 `hlpanel` 组。

@@ -68,12 +68,15 @@ jobs:
           npm run build
       - name: Build release archive
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/hl-panel-release"
           mkdir -p "$release/bin" "$release/web-admin" "$release/deploy"
           export CGO_ENABLED=0 GOOS=linux GOARCH=amd64
-          go build -trimpath -o "$release/bin/control-api" ./apps/control-api
+          build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG -X main.platformBuildTime=$build_time" -o "$release/bin/control-api" ./apps/control-api
           go build -trimpath -o "$release/bin/usage-migrate" ./apps/usage-migrate
           go build -trimpath -o "$release/bin/edge-agent" ./apps/edge-agent
           cp -R apps/web-admin/dist/. "$release/web-admin/"

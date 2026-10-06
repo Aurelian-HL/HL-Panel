@@ -44,6 +44,12 @@ done
 source "$CONFIG_FILE"
 [[ "${DOMAIN:-}" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || fail "安装配置中的域名无效"
 [[ "${PUBLIC_IP:-}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail "安装配置中的 IP 无效"
+# Existing installations without this value used 443; new installations save
+# their dedicated IP HTTPS port in domain.conf.
+IP_HTTPS_PORT="${IP_HTTPS_PORT:-443}"
+[[ "$IP_HTTPS_PORT" =~ ^[0-9]{1,5}$ ]] || fail "安装配置中的 IP HTTPS 端口无效"
+IP_HTTPS_PORT="$((10#$IP_HTTPS_PORT))"
+((IP_HTTPS_PORT >= 1 && IP_HTTPS_PORT <= 65535)) || fail "安装配置中的 IP HTTPS 端口无效"
 [[ "${CERTBOT_CERT_NAME:-}" =~ ^[A-Za-z0-9.-]{1,200}$ ]] || fail "安装配置中的 Certbot lineage 名称无效"
 
 TLS_DIR="/etc/hl-panel/tls"
@@ -155,4 +161,4 @@ fi
 HOOK_TMP=""
 ACTIVATION_DONE=true
 
-printf '[HL-panel TLS] 已启用 https://%s/，IP 入口保持不变。\n' "$DOMAIN"
+printf '[HL-panel TLS] 已启用 https://%s/，IP 入口：https://%s:%s/。\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT"

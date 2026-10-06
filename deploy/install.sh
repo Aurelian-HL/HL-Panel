@@ -8,6 +8,7 @@ ADMIN_USERNAME="admin"
 EMAIL=""
 PUBLIC_IP=""
 API_PORT="8080"
+IP_HTTPS_PORT="8443"
 INSTALL_ROOT="/opt/hl-panel"
 CONFIG_DIR="/etc/hl-panel"
 STATE_DIR="/var/lib/hl-panel"
@@ -44,6 +45,7 @@ usage() {
   cat <<'EOF'
 用法：install.sh [--repo OWNER/REPOSITORY] [--version TAG|latest]
                  [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
+                 [--ip-https-port PORT]
                  [--admin-username NAME] [--email EMAIL]
 
 选项：
@@ -52,6 +54,7 @@ usage() {
   --domain            面板域名；默认 hlpanel.hongle.cc
   --public-ip         指定本机公网 IPv4；自动检测失败时必须提供
   --api-port          API 本机监听端口；默认 8080，已有服务占用时可指定 8081
+  --ip-https-port     IP HTTPS 独立监听端口；默认 8443，不得使用 80、443 或 API 端口
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   -h, --help          显示帮助
@@ -67,6 +70,7 @@ while (($#)); do
     --domain) (($# >= 2)) || fail "--domain 缺少参数"; DOMAIN="$2"; shift 2 ;;
     --public-ip) (($# >= 2)) || fail "--public-ip 缺少参数"; PUBLIC_IP="$2"; shift 2 ;;
     --api-port) (($# >= 2)) || fail "--api-port 缺少参数"; API_PORT="$2"; shift 2 ;;
+    --ip-https-port) (($# >= 2)) || fail "--ip-https-port 缺少参数"; IP_HTTPS_PORT="$2"; shift 2 ;;
     --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -74,25 +78,36 @@ while (($#)); do
   esac
 done
 
-[[ "$API_PORT" =~ ^[0-9]{1,5}$ ]] || fail "--api-port 必须是 1 到 65535 的十进制 TCP 端口"
-API_PORT="$((10#$API_PORT))"
-((API_PORT >= 1 && API_PORT <= 65535)) || fail "--api-port 必须是 1 到 65535 的十进制 TCP 端口"
-check_api_port_available() {
-  local port_hex occupied
+normalize_port() {
+  local option="$1" value="$2" port
+  [[ "$value" =~ ^[0-9]{1,5}$ ]] || fail "$option 必须是 1 到 65535 的十进制 TCP 端口"
+  port="$((10#$value))"
+  ((port >= 1 && port <= 65535)) || fail "$option 必须是 1 到 65535 的十进制 TCP 端口"
+  printf '%d\n' "$port"
+}
+API_PORT="$(normalize_port --api-port "$API_PORT")"
+IP_HTTPS_PORT="$(normalize_port --ip-https-port "$IP_HTTPS_PORT")"
+((IP_HTTPS_PORT != 80 && IP_HTTPS_PORT != 443)) || fail "--ip-https-port 不得使用 80 或 443；请使用独立端口（默认 8443）"
+((IP_HTTPS_PORT != API_PORT)) || fail "--ip-https-port 不得与 --api-port 相同"
+check_tcp_port_available() {
+  local port="$1" option="$2" example="$3" port_hex occupied
   local socket_files=(/proc/net/tcp)
   [[ -r /proc/net/tcp ]] || fail "无法读取本机 TCP 监听状态；未执行安装"
   if [[ -r /proc/net/tcp6 ]]; then socket_files+=(/proc/net/tcp6); fi
-  printf -v port_hex '%04X' "$API_PORT"
+  printf -v port_hex '%04X' "$port"
   occupied="$(awk -v port_hex="$port_hex" '
     $4 == "0A" {
       split($2, address, ":")
       if (toupper(address[2]) == port_hex) { print $2; exit }
     }
   ' "${socket_files[@]}")" || fail "读取本机 TCP 监听状态失败；未执行安装"
-  [[ -z "$occupied" ]] || fail "TCP 端口 $API_PORT 已被其他服务监听；不会停止现有服务，请用 --api-port 指定空闲端口（例如 8081）"
+  [[ -z "$occupied" ]] || fail "TCP 端口 $port 已被其他服务监听；不会停止现有服务，请用 $option 指定空闲端口（例如 $example）"
 }
+check_api_port_available() { check_tcp_port_available "$API_PORT" --api-port 8081; }
+check_ip_https_port_available() { check_tcp_port_available "$IP_HTTPS_PORT" --ip-https-port 9443; }
 [[ $EUID -eq 0 ]] || fail "请使用 root 运行，例如 curl ... | sudo bash"
 check_api_port_available
+check_ip_https_port_available
 command -v flock >/dev/null 2>&1 || fail "缺少 flock；请先安装 util-linux"
 exec {INSTALL_LOCK_FD}>/run/lock/hl-panel-install.lock
 flock -n "$INSTALL_LOCK_FD" || fail "检测到另一份 HL-panel 安装正在运行"
@@ -406,6 +421,8 @@ RELEASE_DIR="$WORK_DIR/release"
 [[ -s "$RELEASE_DIR/web-admin/index.html" ]] || fail "release 缺少管理端页面"
 [[ -f "$RELEASE_DIR/SHA256SUMS" ]] || fail "release 缺少 SHA256SUMS"
 (cd "$RELEASE_DIR" && sha256sum --check --status SHA256SUMS) || fail "release 内部文件校验失败"
+grep -Fq '__HL_PANEL_IP_HTTPS_PORT__' "$RELEASE_DIR/deploy/nginx/hl-panel.conf.template" \
+  || fail "所选 release 不支持独立 IP HTTPS 端口；请使用包含此功能的新版 release 和同标签 install.sh"
 
 log "创建 HL-panel 独立目录和服务账号"
 useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin hlpanel
@@ -507,13 +524,14 @@ grep -Fxq "proxy_pass http://127.0.0.1:$API_PORT;" "$WORK_DIR/hl-panel-api-proxy
 install_new_file "$WORK_DIR/hl-panel-api-proxy.conf" /etc/nginx/snippets/hl-panel-api-proxy.conf root root 0644
 install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-app-locations.conf" /etc/nginx/snippets/hl-panel-app-locations.conf root root 0644
 sed -e "s|__HL_PANEL_DOMAIN__|$DOMAIN|g" -e "s|__HL_PANEL_IP__|$PUBLIC_IP|g" \
+  -e "s|__HL_PANEL_IP_HTTPS_PORT__|$IP_HTTPS_PORT|g" \
   "$FINAL_RELEASE/deploy/nginx/hl-panel.conf.template" > "$WORK_DIR/hl-panel.conf"
 install_new_file "$WORK_DIR/hl-panel.conf" "$NGINX_AVAILABLE" root root 0644
 if ! ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"; then fail "Nginx 启用路径在安装期间被占用：$NGINX_ENABLED"; fi
 OWNED_SYMLINKS["$NGINX_ENABLED"]="$NGINX_AVAILABLE"
 install_new_file "$FINAL_RELEASE/deploy/systemd/hl-panel-control-api.service" /etc/systemd/system/hl-panel-control-api.service root root 0644
 SYSTEMD_UNIT_CREATED=true
-printf 'DOMAIN=%s\nPUBLIC_IP=%s\nCERTBOT_CERT_NAME=%s\n' "$DOMAIN" "$PUBLIC_IP" "$CERTBOT_CERT_NAME" > "$CONFIG_DIR/domain.conf"
+printf 'DOMAIN=%s\nPUBLIC_IP=%s\nIP_HTTPS_PORT=%s\nCERTBOT_CERT_NAME=%s\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT" "$CERTBOT_CERT_NAME" > "$CONFIG_DIR/domain.conf"
 chown root:root "$CONFIG_DIR/domain.conf"
 chmod 0600 "$CONFIG_DIR/domain.conf"
 install_new_file "$FINAL_RELEASE/deploy/enable-domain-tls.sh" /usr/local/sbin/hl-panel-enable-domain-tls root root 0755
@@ -524,6 +542,7 @@ mv -Tf "$TEMP_LINK" "$INSTALL_ROOT/current"
 systemctl daemon-reload
 nginx -t
 check_api_port_available
+check_ip_https_port_available
 systemctl enable --now hl-panel-control-api.service
 
 log "等待 API 本机健康检查（127.0.0.1:$API_PORT）"
@@ -558,7 +577,7 @@ if [[ "$DNS_MATCH" == true ]]; then
 else
   if [[ "$DNS_LOOKUP_OK" != true ]]; then log "提醒：DNS 查询失败，未申请域名证书；解析恢复后可重试"; fi
   log "提醒：$DOMAIN 的 A 记录必须全部指向本机 $PUBLIC_IP，且不能存在未经核对的 AAAA 记录；本次未修改 DNS，也未申请证书"
-  log "当前可用入口：https://$PUBLIC_IP/（浏览器会提示自签名证书，需要确认后继续）"
+  log "当前 IP 入口：https://$PUBLIC_IP:$IP_HTTPS_PORT/（使用自签名证书）"
   log "DNS 指向本机后运行：hl-panel-enable-domain-tls"
 fi
 
@@ -568,7 +587,7 @@ HL-panel 安装完成
   版本：$RELEASE_ID
   域名：$DOMAIN
   管理员：$ADMIN_USERNAME
-  IP 入口：https://$PUBLIC_IP/
+  IP 入口：https://$PUBLIC_IP:$IP_HTTPS_PORT/
   API 本机监听：127.0.0.1:$API_PORT
   服务：hl-panel-control-api.service
 
