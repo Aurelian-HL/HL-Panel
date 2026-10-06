@@ -1,0 +1,83 @@
+name: HL-panel release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web-admin/package-lock.json
+      - name: Verify Go
+        run: |
+          go test ./...
+          go vet ./...
+      - name: Build web admin
+        working-directory: apps/web-admin
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Build release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/hl-panel-release"
+          mkdir -p "$release/bin" "$release/web-admin" "$release/deploy"
+          export CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+          go build -trimpath -o "$release/bin/control-api" ./apps/control-api
+          go build -trimpath -o "$release/bin/usage-migrate" ./apps/usage-migrate
+          go build -trimpath -o "$release/bin/edge-agent" ./apps/edge-agent
+          cp -R apps/web-admin/dist/. "$release/web-admin/"
+          deployment_files=(
+            deploy/README.md
+            deploy/install.sh
+            deploy/enable-domain-tls.sh
+            deploy/edge-agent/enroll.sh
+            deploy/edge-agent/install.sh
+            deploy/env/control-api.env.example
+            deploy/nginx/hl-panel.conf.template
+            deploy/nginx/conf.d/hl-panel-rate-limit.conf
+            deploy/nginx/snippets/hl-panel-api-proxy.conf
+            deploy/nginx/snippets/hl-panel-app-locations.conf
+            deploy/nginx/snippets/hl-panel-security-headers.conf
+            deploy/systemd/hl-panel-control-api.service
+            deploy/systemd/hl-panel-edge-agent.service
+          )
+          for source_file in "${deployment_files[@]}"; do
+            mkdir -p "$release/$(dirname "$source_file")"
+            cp "$source_file" "$release/$source_file"
+          done
+          (
+            cd "$release"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+          tar -C "$release" -czf "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz" .
+          cd "$RUNNER_TEMP"
+          sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          gh release create "$tag" \
+            "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz" \
+            "$RUNNER_TEMP/hl-panel-linux-amd64.tar.gz.sha256" \
+            --title "HL-panel $tag" \
+            --generate-notes

@@ -1,0 +1,22 @@
+.node-status-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 20px; padding: 7px 11px; border-bottom: 1px solid var(--gray-200); color: var(--gray-600); font-size: 12px; }
+.node-status-summary strong { margin-left: 3px; color: var(--gray-950); font-weight: 700; }
+.node-table { min-width: 1160px; }
+.node-inspect { white-space: nowrap; }
+.node-details { display: grid; gap: 20px; }
+.node-details__status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; color: var(--gray-600); font-size: 12px; overflow-wrap: anywhere; }
+.node-details section + section { padding-top: 16px; border-top: 1px solid var(--gray-200); }
+.node-details h3 { margin: 0 0 12px; color: var(--gray-950); font-size: 14px; }
+.node-details__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; margin: 0; }
+.node-details__grid div { min-width: 0; }
+.node-details__grid dt { margin-bottom: 4px; color: var(--gray-600); font-size: 11px; }
+.node-details__grid dd { margin: 0; color: var(--gray-950); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.node-details__grid dd small { display: block; margin-top: 2px; color: var(--gray-600); font-size: 11px; font-weight: 400; }
+.node-details__identifier { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px !important; }
+.node-details__note, .node-details__empty { margin: 10px 0 0; color: var(--gray-600); font-size: 11px; line-height: 1.6; }
+.node-details__sample-state { margin: 0 0 12px; color: var(--green-700); font-size: 11px; }
+.node-details__sample-state--stale { color: var(--amber-700); }
+.node-mobile-card dd { white-space: normal; }
+.node-mobile-card dd small { display: block; margin-top: 3px; color: var(--gray-600); font-size: 11px; font-weight: 400; }
+.node-mobile-card dd small.text-warning { color: var(--amber-700); }
+.node-mobile-card footer { display: flex; justify-content: flex-end; margin-top: 12px; }
+@media (max-width: 600px) { .node-details__grid { grid-template-columns: 1fr; } .node-status-summary { gap: 7px 14px; } }

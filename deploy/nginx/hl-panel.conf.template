@@ -1,0 +1,56 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __HL_PANEL_DOMAIN__;
+    server_tokens off;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/hl-panel/acme-webroot;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __HL_PANEL_IP__;
+    server_tokens off;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __HL_PANEL_DOMAIN__;
+    server_tokens off;
+
+    ssl_certificate /etc/hl-panel/tls/domain-current/fullchain.pem;
+    ssl_certificate_key /etc/hl-panel/tls/domain-current/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:hl_panel_tls:1m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    include /etc/nginx/snippets/hl-panel-app-locations.conf;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __HL_PANEL_IP__;
+    server_tokens off;
+
+    ssl_certificate /etc/hl-panel/tls/ip-fullchain.pem;
+    ssl_certificate_key /etc/hl-panel/tls/ip-privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:hl_panel_tls:1m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    include /etc/nginx/snippets/hl-panel-app-locations.conf;
+}

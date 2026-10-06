@@ -1,0 +1,8 @@
+listen_host: 127.0.0.1
+listen_port: 8008
+force_auth: true
+enable_mcp: false
+memory:
+  go_mem_limit_mb: 128
+tsdb:
+  max_memory_mb: 64

@@ -1,0 +1,27 @@
+{
+  "control_plane_url": "https://control.example",
+  "data_dir": "/var/lib/ny-vless-agent",
+  "ca_file": "/etc/ny-vless-agent/control-plane-ca.pem",
+  "agent_version": "0.1.0",
+  "enrollment_token_env": "NYVP_ENROLLMENT_TOKEN",
+  "engine_mode": "dry_run",
+  "xray_binary_path": "",
+  "xray_auto_start": false,
+  "xray_api_address": "127.0.0.1:10085",
+  "xray_stats_api_address": "127.0.0.1:10085",
+  "gost_binary_path": "",
+  "gost_auto_start": false,
+  "heartbeat_interval": "20s",
+  "desired_poll_interval": "10s",
+  "usage_report_interval": "30s",
+  "enforcement_poll_interval": "10s",
+  "protocol_probe_echo_port": 19090,
+  "usage_max_batch": 500,
+  "request_timeout": "15s",
+  "backoff": {
+    "initial": "1s",
+    "maximum": "1m",
+    "multiplier": 2,
+    "jitter_fraction": 0.2
+  }
+}

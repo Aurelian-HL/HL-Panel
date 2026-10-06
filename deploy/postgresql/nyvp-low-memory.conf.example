@@ -1,0 +1,21 @@
+# Starting point for this isolated Debian 12 / PostgreSQL 15 trial host (~701 MiB).
+# Inspect effective settings and back up PostgreSQL configuration before use.
+# Install as /etc/postgresql/15/main/conf.d/nyvp-low-memory.conf only when that
+# include directory is enabled. Restarting PostgreSQL is required for some keys.
+# This is not a benchmarked production capacity guarantee.
+listen_addresses = '127.0.0.1'
+password_encryption = 'scram-sha-256'
+max_connections = 20
+shared_buffers = '32MB'
+effective_cache_size = '128MB'
+work_mem = '1MB'
+maintenance_work_mem = '16MB'
+autovacuum_max_workers = 2
+autovacuum_work_mem = '8MB'
+wal_buffers = '4MB'
+min_wal_size = '80MB'
+max_wal_size = '256MB'
+max_parallel_workers_per_gather = 0
+jit = off
+# Preserve PostgreSQL durability defaults: never disable fsync,
+# synchronous_commit, or full_page_writes to reduce memory usage.

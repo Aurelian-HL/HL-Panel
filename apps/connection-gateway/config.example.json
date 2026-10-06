@@ -1,0 +1,16 @@
+{
+  "listen_address": "127.0.0.1:8443",
+  "allow_non_loopback": false,
+  "selection_policy": "weighted_round_robin",
+  "membership_file": "/etc/ny-vless-platform/gateway-membership.json",
+  "membership_refresh_interval": "1s",
+  "dial_timeout": "10s",
+  "tcp_reachability": {
+    "enabled": false,
+    "interval": "5s",
+    "timeout": "1s",
+    "failure_threshold": 3,
+    "success_threshold": 2,
+    "max_concurrency": 32
+  }
+}

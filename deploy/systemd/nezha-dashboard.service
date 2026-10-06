@@ -1,0 +1,25 @@
+[Unit]
+Description=Nezha Dashboard for HL-panel monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nezha
+Group=nezha
+WorkingDirectory=/opt/nezha/dashboard
+ExecStart=/opt/nezha/dashboard/dashboard-linux-amd64 -c /opt/nezha/dashboard/data/config.yaml -db /opt/nezha/dashboard/data/sqlite.db -memory.allowedBytes=32MiB
+Restart=on-failure
+RestartSec=5s
+MemoryAccounting=yes
+MemoryMax=192M
+MemorySwapMax=128M
+CPUQuota=50%
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/nezha/dashboard/data
+
+[Install]
+WantedBy=multi-user.target

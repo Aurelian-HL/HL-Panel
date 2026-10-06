@@ -1,0 +1,23 @@
+[Unit]
+Description=Nezha Agent for HL-panel monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nezha
+Group=nezha
+ExecStart=/opt/nezha/agent/nezha-agent -c /etc/nezha-agent/config.yaml
+Restart=on-failure
+RestartSec=5s
+MemoryAccounting=yes
+MemoryMax=96M
+CPUQuota=25%
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/nezha-agent
+
+[Install]
+WantedBy=multi-user.target

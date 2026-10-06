@@ -1,0 +1,65 @@
+.system-settings-page { max-width: 1180px; }
+.settings-section { border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; }
+.settings-section > header { display: flex; min-height: 66px; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--ny-border); }
+.settings-section > header > div { min-width: 0; flex: 1; }
+.settings-section > header h3 { color: #29384a; font-size: 15px; }
+.settings-section > header p { margin-top: 3px; color: var(--ny-muted); font-size: 12px; }
+.settings-section__icon { display: grid; width: 34px; height: 34px; flex: 0 0 34px; place-items: center; border-radius: 4px; background: var(--ny-blue-soft); color: var(--ny-blue); }
+.settings-form { display: grid; gap: 15px; padding: 18px; }
+.settings-form > footer { display: flex; justify-content: flex-end; padding-top: 3px; }
+.announcement-table { min-width: 760px; }
+.announcement-table th:first-child { width: 38%; }
+.announcement-table th:nth-child(2) { width: 90px; }
+.announcement-table th:nth-child(3) { width: 220px; }
+.announcement-table th:nth-child(4) { width: 90px; }
+.announcement-table th:last-child { width: 78px; }
+.announcement-preview { display: -webkit-box; margin-top: 4px; overflow: hidden; line-height: 1.5; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.toggle-field { display: inline-flex; align-items: center; gap: 8px; color: #4c5868; font-size: 13px; }
+.toggle-field input { width: 16px; height: 16px; accent-color: var(--ny-blue); }
+.site-welcome, .site-announcements, .site-details { border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; }
+.site-welcome { padding: 24px; }
+.site-welcome h2 { color: #29384a; font-size: 20px; }
+.site-welcome strong { display: block; margin-top: 22px; color: #27313f; font-size: 17px; }
+.site-welcome p { margin-top: 16px; color: #465366; font-size: 14px; }
+.site-welcome a { display: inline-block; margin-top: 10px; color: var(--ny-blue); font-size: 13px; }
+.site-announcements { padding: 0 0 14px; }
+.site-announcements > h3 { padding: 14px 18px; border-bottom: 1px solid var(--ny-border); color: #344153; font-size: 15px; }
+.site-announcement { margin: 14px 18px 0; padding: 13px 15px; border-left: 4px solid var(--ny-blue); background: #f7fafc; }
+.site-announcement--warning { border-left-color: #b18022; background: #fcf8ee; }
+.site-announcement--maintenance { border-left-color: #a43b3b; background: #fdf4f4; }
+.site-announcement strong { color: #2d3b4d; font-size: 13px; }
+.site-announcement p { margin-top: 7px; color: #5e6a79; font-size: 13px; line-height: 1.7; white-space: pre-wrap; }
+.site-details { overflow: hidden; }
+.site-details details + details { border-top: 1px solid var(--ny-border); }
+.site-details summary { padding: 13px 18px; color: #3f4c5e; font-size: 13px; font-weight: 600; cursor: pointer; }
+.site-details dl { display: grid; gap: 10px; padding: 0 18px 16px; }
+.site-details dl div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; }
+.site-details dt { color: var(--ny-muted); font-size: 12px; }
+.site-details dd { color: #465366; font-size: 12px; overflow-wrap: anywhere; }
+.profile-page { max-width: 900px; }
+.profile-section { border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; }
+.profile-section > header { display: flex; align-items: center; gap: 9px; min-height: 52px; padding: 12px 18px; border-bottom: 1px solid var(--ny-border); color: #315576; }
+.profile-section h3 { color: #29384a; font-size: 15px; font-weight: 650; }
+.profile-details { display: grid; margin: 0; }
+.profile-details > div { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 12px; padding: 13px 18px; border-bottom: 1px solid #edf0f3; font-size: 13px; }
+.profile-details > div:last-child { border-bottom: 0; }
+.profile-details dt { color: var(--ny-muted); }
+.profile-details dd { min-width: 0; color: #29384a; overflow-wrap: anywhere; }
+.profile-password-form { display: grid; max-width: 480px; gap: 13px; padding: 18px; }
+.profile-password-form .field { display: grid; }
+.profile-password-form footer { display: flex; justify-content: flex-end; }
+.profile-visibility { display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 0; background: transparent; color: var(--ny-blue); font-size: 12px; cursor: pointer; }
+@media (max-width: 760px) {
+  .settings-section > header { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
+  .settings-section > header .button { width: 100%; }
+  .settings-form { padding: 13px; }
+  .settings-form .field-grid { grid-template-columns: 1fr; }
+  .settings-form > footer .button { width: 100%; }
+  .announcement-management .table-wrap { display: block; margin: 0; border: 0; }
+  .site-welcome { padding: 18px 15px; }
+  .site-announcement { margin-right: 13px; margin-left: 13px; }
+  .site-details dl div { grid-template-columns: 1fr; gap: 3px; }
+  .profile-details > div { grid-template-columns: 1fr; gap: 3px; padding: 12px 14px; }
+  .profile-password-form { max-width: none; padding: 14px; }
+  .profile-password-form footer .button { width: 100%; }
+}

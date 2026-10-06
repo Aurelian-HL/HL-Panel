@@ -1,0 +1,19 @@
+{
+  "revision": 1,
+  "endpoints": [
+    {
+      "id": "node-a",
+      "address": "127.0.0.1:11001",
+      "weight": 1,
+      "status": "ready",
+      "health_lease_expires_at": "2099-01-01T00:00:00Z"
+    },
+    {
+      "id": "node-b",
+      "address": "127.0.0.1:11002",
+      "weight": 2,
+      "status": "draining",
+      "health_lease_expires_at": "2099-01-01T00:00:00Z"
+    }
+  ]
+}

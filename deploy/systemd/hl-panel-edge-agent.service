@@ -1,0 +1,41 @@
+[Unit]
+Description=HL-panel edge agent
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=hl-edge
+Group=hl-edge
+UMask=0077
+EnvironmentFile=-/etc/hl-panel/edge-agent-enrollment.env
+ExecStartPre=/usr/bin/test -x /opt/hl-panel/edge-agent
+ExecStart=/opt/hl-panel/edge-agent -config /etc/hl-panel/edge-agent.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+StateDirectory=hl-panel-edge
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
