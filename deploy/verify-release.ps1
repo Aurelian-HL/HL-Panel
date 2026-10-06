@@ -46,7 +46,11 @@ foreach ($forbidden in @('deploy/deploy', 'deploy/deploy-current')) {
 
 function Normalize-ManifestPath([string] $value) {
     $normalized = $value.Trim() -replace '\\', '/'
-    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized.StartsWith('/') -or $normalized -match '(^|/)\.\.?(/|$)') {
+    # GNU sha256sum preserves the leading ./ emitted by find.
+    if ($normalized.StartsWith('./')) {
+        $normalized = $normalized.Substring(2)
+    }
+    if ([string]::IsNullOrWhiteSpace($normalized) -or $normalized.StartsWith('/') -or $normalized.Contains(':') -or $normalized -match '(^|/)\.\.?(/|$)') {
         throw "invalid path in SHA256SUMS: $value"
     }
     return $normalized
