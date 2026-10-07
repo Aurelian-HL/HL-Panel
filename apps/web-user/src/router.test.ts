@@ -10,7 +10,7 @@ describe('customer routes', () => {
     expect(router.resolve('/').name).toBe('home')
   })
 
-  it('does not expose unfinished tunnel or LookingGlass placeholders', () => {
+  it('does not expose unfinished tunnel placeholders', () => {
     expect(router.resolve('/device_group').matched[0]?.path).toBe('/:pathMatch(.*)*')
     expect(router.resolve('/looking_glass').matched[0]?.path).toBe('/:pathMatch(.*)*')
   })

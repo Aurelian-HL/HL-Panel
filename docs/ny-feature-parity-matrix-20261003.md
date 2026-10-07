@@ -40,11 +40,11 @@ commercial or notification subsystem.
 | Node enrollment | Online/offline installer, offline package, token rotation, config preview | Signed enrollment, least privilege credential, versioned desired/apply state | One-time enrollment exists; installer incomplete |
 | Node status | Group filter, online count, address/region, traffic/speed, CPU/load/RAM/disk, connections, uptime, version, sync | Authenticated telemetry with expiry and protocol health; upgrade/delete/weight changes audited | Heartbeat inventory is partial |
 | Restricted operations | Diagnostics and controlled upgrades | Fixed allow-list tasks, no arbitrary shell, full audit and timeout | Required replacement for NY WebSSH |
-| LookingGlass | Authorized device/server tree and ping target | Validated IP/domain, bounded execution, hidden-address policy, audited task | Missing |
+| LookingGlass | Removed from the current HL-panel scope | No public route, API, configuration, or diagnostic task remains | Removed by product decision |
 | Customer-owned exit | Customer-scoped single-end device group and onboarding | Enabled only by site policy and user permission; cannot affect other customers | Missing |
-| Traffic statistics | Site, customer, rule, device group, today/yesterday and range queries | Deduplicate by node/boot/sequence; store actual and charged traffic separately | In implementation |
+| Traffic statistics | Standalone statistics page and range queries are removed; forwarding rules retain rule-level usage and quota enforcement | Preserve the underlying usage ledger and limit enforcement without a separate statistics surface | Standalone UI removed by product decision |
 | Limits | Customer/rule speed, IP and connection limits; expiry and quota | Per-entry enforcement; user/rule limits combine; UDP limitation visible; exhaustion withdraws service | Stored fields only, no enforcement |
-| Site settings | Site name, registration policy, challenge policy, customer-owned exit, LookingGlass, diagnostic address hiding, theme, desktop/mobile background, notice | Validated settings affect actual public/customer/admin views | In implementation |
+| Site settings | Site name, registration policy, challenge policy, customer-owned exit, theme, desktop/mobile background, notice | Validated settings affect actual public/customer/admin views | In implementation |
 | Dashboard | Today/yesterday traffic, users, online devices, rule sync and traffic queue, user/node rankings | Definitions and collection timestamps visible; no excluded commercial metrics | Basic node counts only |
 | Import/migration | Legacy text and versioned JSON preview/import/export, NY snapshot mapping and rollback | Read-only source, schema evidence, idempotent commit, reconciliation and rollback | Structure preflight only |
 

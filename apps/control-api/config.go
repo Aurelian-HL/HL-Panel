@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
-	"github.com/hongle/hl-panel/internal/control/diagnostics"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
@@ -32,7 +31,6 @@ type runtimeConfig struct {
 	AdministratorPasswordHash      []byte
 	CustomerPasswordFingerprintKey []byte
 	GatewayPoolTokens              map[string]string
-	LookingGlassTargets            []diagnostics.Target
 	RealityDefaults                forwarding.RealityDefaults
 	ProtocolProbeXrayBinary        string
 	ProtocolProbeEchoPort          int
@@ -92,10 +90,6 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 	configuration.GatewayPoolTokens, err = loadGatewayPoolTokens(strings.TrimSpace(os.Getenv("CONTROL_GATEWAY_CREDENTIALS_FILE")))
 	if err != nil {
 		return runtimeConfig{}, err
-	}
-	configuration.LookingGlassTargets, err = diagnostics.ParseTargets(os.Getenv("CONTROL_LOOKINGGLASS_TARGETS"))
-	if err != nil {
-		return runtimeConfig{}, fmt.Errorf("parse CONTROL_LOOKINGGLASS_TARGETS: %w", err)
 	}
 	configuration.RealityDefaults, err = forwarding.NormalizeRealityDefaults(forwarding.RealityDefaults{
 		ServerName:  os.Getenv("CONTROL_REALITY_SERVER_NAME"),

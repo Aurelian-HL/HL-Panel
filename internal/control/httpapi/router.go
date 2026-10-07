@@ -8,7 +8,6 @@ import (
 	"github.com/hongle/hl-panel/internal/control/announcements"
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/customers"
-	"github.com/hongle/hl-panel/internal/control/diagnostics"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -54,7 +53,6 @@ type API struct {
 	platformInfo      PlatformInfo
 	usage             usagehttpapi.Service
 	gatewayMembership *gatewaymembership.Handler
-	diagnostics       *diagnostics.Service
 	nezha             *nezhamonitor.Service
 	targetProbe       *targetprobe.Service
 	releases          *releases.Service
@@ -66,10 +64,6 @@ func WithTargetProbe(service *targetprobe.Service) Option {
 
 func WithNezha(service *nezhamonitor.Service) Option {
 	return func(api *API) { api.nezha = service }
-}
-
-func WithDiagnostics(service *diagnostics.Service) Option {
-	return func(api *API) { api.diagnostics = service }
 }
 
 func WithRuleGroups(service *rulegroups.Service) Option {
@@ -148,10 +142,6 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
 	mux.HandleFunc("GET /api/v1/nodes", api.requireAdministrator(api.listNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{node_id}/credential/rotate", api.requireAdministrator(api.rotateNodeCredential))
-	if api.diagnostics != nil {
-		mux.HandleFunc("GET /api/v1/diagnostics/targets", api.requireAdministrator(api.listDiagnosticTargets))
-		mux.HandleFunc("POST /api/v1/diagnostics/run", api.requireAdministrator(api.runDiagnostic))
-	}
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", api.requireAdministrator(api.issueEnrollmentToken))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens/{token_id}/revoke", api.requireAdministrator(api.revokeEnrollmentToken))
 	mux.HandleFunc("GET /api/v1/device-groups", api.requireAdministrator(api.listDeviceGroups))

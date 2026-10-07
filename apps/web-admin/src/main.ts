@@ -7,6 +7,5 @@ import './styles/business.css'
 import './styles/nodes.css'
 import './styles/probe.css'
 import './styles/site.css'
-import './styles/diagnostics.css'
 
 createApp(App).use(router).mount('#app')

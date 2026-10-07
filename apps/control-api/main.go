@@ -20,7 +20,6 @@ import (
 	"github.com/hongle/hl-panel/internal/control/customerapi"
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
-	"github.com/hongle/hl-panel/internal/control/diagnostics"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -155,7 +154,6 @@ func run(logger *slog.Logger) error {
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
 		httpapi.WithUsage(usageService),
-		httpapi.WithDiagnostics(diagnostics.NewService(configuration.LookingGlassTargets, auditService, nil, nil, time.Now)),
 		httpapi.WithNezha(configuration.Nezha),
 		httpapi.WithTargetProbe(targetprobe.New(targetprobe.DefaultTimeout)),
 	}

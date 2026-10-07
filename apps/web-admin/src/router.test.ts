@@ -28,4 +28,9 @@ describe('admin routes', () => {
   it('redirects the obsolete endpoint page to the rule workflow', () => {
     expect(router.resolve('/endpoint-pools').matched.at(-1)?.redirect).toBe('/forward-rules')
   })
+  it('does not expose removed traffic statistics or LookingGlass pages', () => {
+    expect(router.resolve('/traffic').matched.at(-1)?.redirect).toBe('/overview')
+    expect(router.resolve('/lookingglass').matched.at(-1)?.redirect).toBe('/overview')
+    expect(router.getRoutes().some((route) => route.name === 'traffic' || route.name === 'lookingglass')).toBe(false)
+  })
 })

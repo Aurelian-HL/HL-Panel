@@ -14,9 +14,7 @@ const CustomersPage = () => import('@/pages/CustomersPage.vue')
 const UserGroupsPage = () => import('@/pages/UserGroupsPage.vue')
 const ForwardRulesPage = () => import('@/pages/ForwardRulesPage.vue')
 const RuleGroupsPage = () => import('@/pages/RuleGroupsPage.vue')
-const TrafficPage = () => import('@/pages/TrafficPage.vue')
 const SystemSettingsPage = () => import('@/pages/SystemSettingsPage.vue')
-const LookingGlassPage = () => import('@/pages/LookingGlassPage.vue')
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -31,12 +29,10 @@ export const router = createRouter({
         { path: 'userinfo', name: 'userinfo', component: ProfilePage },
         { path: 'forward-rules', name: 'forward-rules', component: ForwardRulesPage },
         { path: 'rule-groups', name: 'rule-groups', component: RuleGroupsPage },
-        { path: 'traffic', name: 'traffic', component: TrafficPage },
         { path: 'system-settings', name: 'system-settings', component: SystemSettingsPage },
         { path: 'customers', name: 'customers', component: CustomersPage },
         { path: 'user-groups', name: 'user-groups', component: UserGroupsPage },
         { path: 'nodes', name: 'nodes', component: NodesPage },
-        { path: 'lookingglass', name: 'lookingglass', component: LookingGlassPage },
         { path: 'device-groups', name: 'device-groups', component: DeviceGroupsPage },
         { path: 'endpoint-pools', redirect: '/forward-rules' },
       ],
