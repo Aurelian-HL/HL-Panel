@@ -29,3 +29,28 @@ func TestNativeMetricsPersistedProjectionAndOffline(t *testing.T) {
 		t.Fatal("credential leaked")
 	}
 }
+
+func TestNativeAddressFallbackAndGeographyPreservation(t *testing.T) {
+	for _, test := range []struct {
+		name, reported, observed, dial, upstreamIP, wantIP, wantCountry string
+	}{
+		{"reported", "8.8.8.8", "1.1.1.1", "9.9.9.9", "8.8.8.8", "8.8.8.8", "US"},
+		{"observed", "", "1.1.1.1", "9.9.9.9", "8.8.8.8", "1.1.1.1", ""},
+		{"registered", "", "", "9.9.9.9", "9.9.9.9", "9.9.9.9", "US"},
+		{"private", "10.1.2.3", "1.1.1.1", "node.example.test", "8.8.8.8", "1.1.1.1", ""},
+		{"no public address", "10.1.2.3", "127.0.0.1", "node.example.test", "8.8.8.8", "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			items := MergeNative([]Item{{NodeID: "node", LinkStatus: "linked", IPv4: test.upstreamIP, CountryCode: "US"}}, []nodes.View{{Node: nodes.Node{
+				ID: "node", DialHost: test.dial, Resources: map[string]any{"host": &agentv1.HostSnapshot{IPv4: test.reported}, "observed_ip": test.observed},
+			}}}, time.Now())
+			if items[0].IPv4 != test.wantIP || items[0].CountryCode != test.wantCountry {
+				t.Fatalf("wrong address/geography: %+v", items[0])
+			}
+		})
+	}
+	items := MergeNative(nil, []nodes.View{{Node: nodes.Node{ID: "v6", DialHost: "2606:4700:4700::1111"}}}, time.Now())
+	if items[0].IPv4 != "" || items[0].IPv6 != "2606:4700:4700::1111" {
+		t.Fatal("IPv6 fallback was lost or misclassified")
+	}
+}

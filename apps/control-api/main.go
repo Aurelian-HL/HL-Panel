@@ -27,6 +27,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/releases"
@@ -155,6 +156,7 @@ func run(logger *slog.Logger) error {
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),
+		httpapi.WithHostGeo(hostgeo.New()),
 		httpapi.WithTargetProbe(targetprobe.New(targetprobe.DefaultTimeout)),
 	}
 	if len(configuration.GatewayPoolTokens) > 0 {

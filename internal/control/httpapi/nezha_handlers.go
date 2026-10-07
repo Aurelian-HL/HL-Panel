@@ -64,6 +64,7 @@ func (api *API) listNezhaGroupMonitoring(writer http.ResponseWriter, request *ht
 		}
 	}
 	items = nezhamonitor.MergeNative(items, selected, time.Now())
+	api.fillHostGeography(items)
 	writeJSON(writer, http.StatusOK, struct {
 		Items          []nezhamonitor.Item `json:"items"`
 		UpstreamStatus string              `json:"upstream_status"`
@@ -88,8 +89,25 @@ func (api *API) listNezhaInventory(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	items = nezhamonitor.MergeNative(items, views, time.Now())
+	api.fillHostGeography(items)
 	writeJSON(writer, http.StatusOK, struct {
 		Items          []nezhamonitor.Item `json:"items"`
 		UpstreamStatus string              `json:"upstream_status"`
 	}{Items: items, UpstreamStatus: status})
+}
+
+func (api *API) fillHostGeography(items []nezhamonitor.Item) {
+	if api.hostGeo == nil {
+		return
+	}
+	for i := range items {
+		if items[i].CountryCode != "" {
+			continue
+		}
+		ip := items[i].IPv4
+		if ip == "" {
+			ip = items[i].IPv6
+		}
+		items[i].CountryCode = api.hostGeo.Country(ip)
+	}
 }

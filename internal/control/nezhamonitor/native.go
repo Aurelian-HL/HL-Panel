@@ -2,8 +2,10 @@ package nezhamonitor
 
 import (
 	"encoding/json"
+	"net/netip"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -46,6 +48,21 @@ func MergeNative(items []Item, views []nodes.View, now time.Time) []Item {
 				boot := uint64(view.LastHeartbeatAt.Unix()) - *host.UptimeSeconds
 				item.HostBootTime = &boot
 			}
+		}
+		item.IPv4, item.IPv6 = hostgeo.PublicIP(item.IPv4), hostgeo.PublicIP(item.IPv6)
+		observed, _ := view.Resources["observed_ip"].(string)
+		for _, address := range []string{observed, view.DialHost} {
+			if ip := hostgeo.PublicIP(address); ip != "" {
+				parsed, _ := netip.ParseAddr(ip)
+				if parsed.Is4() && item.IPv4 == "" {
+					item.IPv4 = ip
+				} else if parsed.Is6() && item.IPv6 == "" {
+					item.IPv6 = ip
+				}
+			}
+		}
+		if exists && ((item.IPv4 != "" && item.IPv4 == items[i].IPv4) || (item.IPv4 == "" && item.IPv6 != "" && item.IPv6 == items[i].IPv6)) {
+			item.CountryCode = items[i].CountryCode
 		}
 		if exists {
 			items[i] = item

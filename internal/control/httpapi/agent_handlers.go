@@ -25,6 +25,9 @@ func (api *API) heartbeat(writer http.ResponseWriter, request *http.Request, nod
 	if input.Resources.Host != nil {
 		resources["host"] = input.Resources.Host
 	}
+	if ip := observedNodeIP(request); ip != "" {
+		resources["observed_ip"] = ip
+	}
 	_, err := api.nodes.RecordHeartbeat(request.Context(), node.ID, nodes.Heartbeat{
 		Hostname:                 input.Hostname,
 		Platform:                 input.Platform,

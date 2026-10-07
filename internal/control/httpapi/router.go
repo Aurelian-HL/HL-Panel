@@ -16,6 +16,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/releases"
@@ -54,6 +55,7 @@ type API struct {
 	usage             usagehttpapi.Service
 	gatewayMembership *gatewaymembership.Handler
 	nezha             *nezhamonitor.Service
+	hostGeo           *hostgeo.Service
 	targetProbe       *targetprobe.Service
 	releases          *releases.Service
 }
@@ -64,6 +66,10 @@ func WithTargetProbe(service *targetprobe.Service) Option {
 
 func WithNezha(service *nezhamonitor.Service) Option {
 	return func(api *API) { api.nezha = service }
+}
+
+func WithHostGeo(service *hostgeo.Service) Option {
+	return func(api *API) { api.hostGeo = service }
 }
 
 func WithRuleGroups(service *rulegroups.Service) Option {
