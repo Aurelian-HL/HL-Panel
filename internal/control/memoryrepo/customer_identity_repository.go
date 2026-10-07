@@ -15,9 +15,12 @@ import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/customeridentity"
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/vlessidentity"
+	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
 type customerIdentityRepository struct {
@@ -300,6 +303,13 @@ func (r *customerIdentityRepository) ListSubscriptionsByCustomer(_ context.Conte
 	if _, exists := r.store.customers[customerID]; !exists {
 		return nil, faults.ErrNotFound
 	}
+	activeBindings := make(map[string]vlessidentity.CredentialRecord)
+	for _, binding := range r.store.vlessBindings {
+		if binding.Binding.CustomerID != customerID || binding.Binding.State != vlessidentity.StateActive || binding.CredentialUUID == "" {
+			continue
+		}
+		activeBindings[binding.Binding.ForwardingRuleID+"\x00"+binding.Binding.EndpointPoolID] = cloneVLESSCredentialRecord(binding)
+	}
 	items := make([]customeridentity.SubscriptionRecord, 0)
 	for _, stored := range r.store.forwardRules {
 		if stored.CustomerID != customerID {
@@ -307,19 +317,42 @@ func (r *customerIdentityRepository) ListSubscriptionsByCustomer(_ context.Conte
 		}
 		rule := r.store.forwardingViewLocked(stored)
 		for _, pool := range r.store.endpointPools {
-			if pool.GroupID != rule.EntryGroupID {
+			if pool.GroupID != rule.EntryGroupID || (pool.RuleID != "" && pool.RuleID != rule.ID) || pool.Protocol != "vless" {
 				continue
 			}
 			status := "identity_binding_required"
 			if rule.Status != forwarding.StatusPendingActivation {
 				status = string(rule.Status)
 			}
-			items = append(items, customeridentity.SubscriptionRecord{
+			record := customeridentity.SubscriptionRecord{
 				CustomerID: customerID, ID: rule.ID + ":" + pool.ID, RuleID: rule.ID,
 				Name: pool.Name, Protocol: pool.Protocol,
 				Endpoint: net.JoinHostPort(pool.Hostname, strconv.Itoa(pool.Port)), Status: status,
 				Ready: false,
-			})
+			}
+			if binding, exists := activeBindings[rule.ID+"\x00"+pool.ID]; exists {
+				record.Status = "unavailable"
+				if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && rule.Protocol == forwarding.ProtocolTCP &&
+					!rule.Paused && rule.Deployed && rule.Status == forwarding.StatusActive && rule.IngressReadiness() == forwarding.IngressReady &&
+					pool.Mode == endpoints.ModeSingleServiceEndpoint && pool.RuleID == rule.ID && pool.GroupID == rule.EntryGroupID {
+					healthy := false
+					for _, member := range r.store.endpointMembers[pool.ID] {
+						if member.CandidateEligibleForNewConnection(time.Now().UTC(), endpoints.DefaultHealthTTL) {
+							healthy = true
+							break
+						}
+					}
+					if healthy {
+						uri, err := provisioningvless.URI(vlessProfile(pool, rule, binding.CredentialUUID))
+						if err == nil {
+							record.Status = string(forwarding.StatusActive)
+							record.Ready = true
+							record.URI = uri
+						}
+					}
+				}
+			}
+			items = append(items, record)
 		}
 	}
 	sort.Slice(items, func(left, right int) bool {

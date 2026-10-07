@@ -107,6 +107,28 @@ func (service *Service) CredentialForAdministrator(ctx context.Context, administ
 	return record, nil
 }
 
+// CredentialByIDForAdministrator returns one active credential without
+// allowing a caller to substitute another identity attached to the same rule.
+func (service *Service) CredentialByIDForAdministrator(ctx context.Context, administratorID, bindingID string) (CredentialRecord, error) {
+	administratorID = strings.TrimSpace(administratorID)
+	bindingID = strings.TrimSpace(bindingID)
+	if !validIdentifier(administratorID) || !validIdentifier(bindingID) {
+		return CredentialRecord{}, fmt.Errorf("%w: administrator and binding are required", faults.ErrValidation)
+	}
+	reader, ok := service.repository.(CredentialReader)
+	if !ok {
+		return CredentialRecord{}, faults.ErrNotFound
+	}
+	record, err := reader.CredentialByIDForAdministrator(ctx, administratorID, bindingID)
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	if record.Binding.State != StateActive || record.CredentialUUID == "" {
+		return CredentialRecord{}, faults.ErrNotFound
+	}
+	return record, nil
+}
+
 func (service *Service) Rotate(ctx context.Context, administratorID, bindingID string, request MutationRequest, idempotencyKey string) (Binding, bool, error) {
 	administratorID, bindingID, idempotencyKey = strings.TrimSpace(administratorID), strings.TrimSpace(bindingID), strings.TrimSpace(idempotencyKey)
 	if !validIdentifier(administratorID) || !validIdentifier(bindingID) || !validRevision(request.Revision) || !validIdempotencyKey(idempotencyKey) {

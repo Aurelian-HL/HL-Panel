@@ -11,6 +11,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
@@ -29,24 +30,54 @@ func (api *API) getForwardingRuleConnection(w http.ResponseWriter, r *http.Reque
 		writeProblem(w, r, err)
 		return
 	}
+	record, err := api.vlessIdentity.CredentialForAdministrator(r.Context(), session.AdminID, rule.ID)
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	api.writeVLESSConnection(w, r, session.AdminID, record)
+}
+
+func (api *API) getVLESSIdentityConnection(w http.ResponseWriter, r *http.Request, session auth.Session) {
+	record, err := api.vlessIdentity.CredentialByIDForAdministrator(r.Context(), session.AdminID, r.PathValue("id"))
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	api.writeVLESSConnection(w, r, session.AdminID, record)
+}
+
+func (api *API) writeVLESSConnection(w http.ResponseWriter, r *http.Request, administratorID string, record vlessidentity.CredentialRecord) {
+	rule, err := api.forwarding.GetForAdministrator(r.Context(), administratorID, record.Binding.ForwardingRuleID)
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
 	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.Paused || !rule.Deployed || rule.Status != forwarding.StatusActive || rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
 		writeProblem(w, r, faults.ErrConflict)
 		return
 	}
-	pools, err := api.endpoints.ListPoolsForAdministrator(r.Context(), session.AdminID)
+	// The identity binding is authoritative for the endpoint selected when the
+	// subscription was issued. This avoids reconstructing the link from a
+	// different pool when a rule has more than one historical endpoint record.
+	pools, err := api.endpoints.ListPoolsForAdministrator(r.Context(), administratorID)
 	if err != nil {
 		writeProblem(w, r, err)
 		return
 	}
 	var pool endpoints.EndpointPool
 	for _, candidate := range pools {
-		if candidate.RuleID == rule.ID && candidate.GroupID == rule.EntryGroupID && candidate.Protocol == "vless" {
+		if candidate.ID == record.Binding.EndpointPoolID {
 			pool = candidate
 			break
 		}
 	}
 	if pool.ID == "" {
 		writeProblem(w, r, faults.ErrNotFound)
+		return
+	}
+	if pool.GroupID != rule.EntryGroupID || pool.RuleID != rule.ID || pool.Protocol != "vless" {
+		writeProblem(w, r, faults.ErrConflict)
 		return
 	}
 	members, err := api.endpoints.CandidateSet(r.Context(), pool.ID, time.Now().UTC(), endpoints.DefaultHealthTTL)
@@ -56,11 +87,6 @@ func (api *API) getForwardingRuleConnection(w http.ResponseWriter, r *http.Reque
 	}
 	if len(members) == 0 {
 		writeProblem(w, r, faults.ErrConflict)
-		return
-	}
-	record, err := api.vlessIdentity.CredentialForAdministrator(r.Context(), session.AdminID, rule.ID)
-	if err != nil {
-		writeProblem(w, r, err)
 		return
 	}
 	uri, err := provisioningvless.URI(provisioningvless.Profile{

@@ -163,7 +163,10 @@ func TestCustomerVerticalSliceUsesPersistedBusinessState(t *testing.T) {
 	if !strings.Contains(connections, `"status":"unavailable"`) || strings.Contains(connections, "vless://") || strings.Contains(connections, "identity_binding_required") {
 		t.Fatalf("unverified connection projection is unsafe: %s", connections)
 	}
-	customerRequest(t, handler, http.MethodGet, "/api/v1/customer/subscriptions", login.AccessToken, nil, nil, http.StatusNotFound)
+	subscriptions := string(customerRequest(t, handler, http.MethodGet, "/api/v1/customer/subscriptions", login.AccessToken, nil, nil, http.StatusOK))
+	if !strings.Contains(subscriptions, `"items":[`) || strings.Contains(subscriptions, "vless://") {
+		t.Fatalf("subscription projection should remain unavailable until binding is ready: %s", subscriptions)
+	}
 	usage := string(customerRequest(t, handler, http.MethodGet, "/api/v1/customer/usage", login.AccessToken, nil, nil, http.StatusOK))
 	if !strings.Contains(usage, `"traffic_limit_bytes":4096`) {
 		t.Fatalf("usage projection missing: %s", usage)

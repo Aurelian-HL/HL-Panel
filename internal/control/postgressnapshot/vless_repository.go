@@ -42,6 +42,12 @@ func (s *Store) CredentialForAdministrator(ctx context.Context, administratorID,
 	})
 }
 
+func (s *Store) CredentialByIDForAdministrator(ctx context.Context, administratorID, bindingID string) (vlessidentity.CredentialRecord, error) {
+	return transact(ctx, s, false, func(state *memoryrepo.Store) (vlessidentity.CredentialRecord, error) {
+		return state.CredentialByIDForAdministrator(ctx, administratorID, bindingID)
+	})
+}
+
 func (s *Store) Rotate(ctx context.Context, input vlessidentity.RotateInput, event audit.Event) (vlessidentity.Binding, bool, error) {
 	type result struct {
 		binding  vlessidentity.Binding

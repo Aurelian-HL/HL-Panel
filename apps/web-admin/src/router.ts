@@ -13,6 +13,7 @@ const DeviceGroupsPage = () => import('@/pages/DeviceGroupsPage.vue')
 const CustomersPage = () => import('@/pages/CustomersPage.vue')
 const UserGroupsPage = () => import('@/pages/UserGroupsPage.vue')
 const ForwardRulesPage = () => import('@/pages/ForwardRulesPage.vue')
+const SubscriptionsPage = () => import('@/pages/SubscriptionsPage.vue')
 const RuleGroupsPage = () => import('@/pages/RuleGroupsPage.vue')
 const SystemSettingsPage = () => import('@/pages/SystemSettingsPage.vue')
 
@@ -28,6 +29,7 @@ export const router = createRouter({
         { path: 'overview', name: 'overview', component: OverviewPage },
         { path: 'userinfo', name: 'userinfo', component: ProfilePage },
         { path: 'forward-rules', name: 'forward-rules', component: ForwardRulesPage },
+        { path: 'subscriptions', name: 'subscriptions', component: SubscriptionsPage },
         { path: 'rule-groups', name: 'rule-groups', component: RuleGroupsPage },
         { path: 'system-settings', name: 'system-settings', component: SystemSettingsPage },
         { path: 'customers', name: 'customers', component: CustomersPage },

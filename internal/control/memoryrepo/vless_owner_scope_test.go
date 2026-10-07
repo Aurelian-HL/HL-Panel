@@ -66,3 +66,29 @@ func TestVLESSAndEndpointPoolsAreScopedToOwningAdministrator(t *testing.T) {
 		t.Fatal("cross-owner mutation changed VLESS state")
 	}
 }
+
+func TestVLESSIdentityRejectsUnboundEndpointPool(t *testing.T) {
+	fixture := newVLESSBundleFixture(t, true)
+	ctx := context.Background()
+	sharedID := "pool-unbound"
+	now := time.Date(2026, 10, 3, 14, 0, 0, 0, time.UTC)
+	fixture.store.endpointPools[sharedID] = endpoints.EndpointPool{
+		ID: sharedID, OwnerID: "admin", Name: "unbound-vless", GroupID: fixture.rule.EntryGroupID,
+		Mode: endpoints.ModeSingleServiceEndpoint, Protocol: "vless", Hostname: "vless.example.test", Port: 443,
+		SelectionPolicy: endpoints.SelectionWeightedRoundRobin, CreatedAt: now, UpdatedAt: now,
+	}
+	fixture.store.endpointMembers[sharedID] = map[string]endpoints.EndpointPoolMember{
+		fixture.nodeID: {PoolID: sharedID, GroupID: fixture.rule.EntryGroupID, NodeID: fixture.nodeID,
+			Weight: 1, Priority: 0, State: endpoints.CandidateEligible, UpdatedAt: now},
+	}
+	identity, err := vlessidentity.NewService(fixture.store, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = identity.Provision(ctx, "admin", vlessidentity.ProvisionRequest{
+		CustomerID: fixture.rule.CustomerID, ForwardingRuleID: fixture.rule.ID, EndpointPoolID: sharedID,
+	}, "unbound-identity")
+	if !errors.Is(err, faults.ErrNotFound) {
+		t.Fatalf("unbound endpoint pool was accepted for a rule identity: %v", err)
+	}
+}

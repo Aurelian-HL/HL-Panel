@@ -66,6 +66,7 @@ func New(identity *customeridentity.Service, logger *slog.Logger, options ...Opt
 	}
 	mux.HandleFunc("GET /api/v1/customer/usage", api.requireCustomer(api.usage))
 	mux.HandleFunc("GET /api/v1/customer/connections", api.requireCustomer(api.connectionsView))
+	mux.HandleFunc("GET /api/v1/customer/subscriptions", api.requireCustomer(api.subscriptionsView))
 	return api.securityHeaders(api.recoverPanics(mux))
 }
 

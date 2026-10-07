@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Download, FolderInput, FolderTree, Pause, Play, Plus, RefreshCw, Search, Trash2, Upload } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import type { DeviceGroup } from '@/api'
@@ -29,6 +29,9 @@ const query = ref('')
 const filter = ref('all')
 const groupFilter = ref('all')
 const selectedIds = ref<string[]>([])
+const page = ref(1)
+const pageSize = ref(20)
+const pageSizeOptions = [10, 20, 50, 100, 200, 500, 1000]
 const moveGroupId = ref('')
 const batchBusy = ref(false)
 const deletionCandidates = ref<ForwardRule[]>([])
@@ -65,6 +68,10 @@ const filtered = computed(() => rules.value.filter((item) => {
   const searchable = [item.name, item.listen_port, entry?.name, exit?.name, vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()
   return searchable.includes(query.value.trim().toLowerCase()) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused : !item.paused)) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value))
 }))
+const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
+const pagedRules = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const pageStart = computed(() => filtered.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
+const pageEnd = computed(() => Math.min(page.value * pageSize.value, filtered.value.length))
 const selectedRules = computed(() => rules.value.filter((item) => selectedIds.value.includes(item.id)))
 const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every((item) => selectedIds.value.includes(item.id)))
 async function load(): Promise<void> {
@@ -73,6 +80,7 @@ async function load(): Promise<void> {
   rules.value = []; devices.value = []; networks.value = []; ruleGroups.value = []
   trafficByRule.value = {}
   selectedIds.value = []; deletionCandidates.value = []
+  page.value = 1
   closeEditor(); transferDialog.value = false
   const results = await Promise.allSettled([businessApi.rules(), businessApi.deviceGroups(), businessApi.groupNetworks(), businessApi.ruleGroups()])
   if (version !== loadVersion) return
@@ -93,6 +101,8 @@ async function load(): Promise<void> {
     onUnauthorized: invalidateSession,
   })
 }
+watch([query, filter, groupFilter, pageSize], () => { page.value = 1 })
+watch(totalPages, (value) => { if (page.value > value) page.value = value })
 async function refreshTraffic(): Promise<void> {
   if (trafficRequestInFlight || loading.value || error.value || !rules.value.length) return
   trafficRequestInFlight = true
@@ -235,9 +245,27 @@ onUnmounted(() => {
     <StatePanel v-else-if="error" state="error" title="规则加载失败" :message="error" @retry="load" />
     <StatePanel v-else-if="!rules.length" state="empty" title="暂无转发规则" message="点击添加规则创建。" />
     <StatePanel v-else-if="!filtered.length" state="empty" title="没有匹配的规则" message="调整搜索词或开关筛选。" />
-    <ForwardRuleInventory v-else :rules="filtered" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
+    <ForwardRuleInventory v-else :rules="pagedRules" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
+    <nav v-if="ready && filtered.length" class="rule-pagination" aria-label="转发规则分页">
+      <span class="rule-pagination__summary">显示 {{ pageStart }}-{{ pageEnd }}，共 {{ filtered.length }} 条</span>
+      <label class="rule-pagination__size"><span>每页</span><select v-model.number="pageSize" aria-label="每页规则数量"><option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option></select><span>条</span></label>
+      <div class="rule-pagination__buttons"><button class="button button--secondary" type="button" :disabled="page <= 1" @click="page--">上一页</button><span>第 {{ page }} / {{ totalPages }} 页</span><button class="button button--secondary" type="button" :disabled="page >= totalPages" @click="page++">下一页</button></div>
+    </nav>
     <ForwardRuleEditor v-if="editor" :key="`${selected?.id ?? 'new'}:${copying ? 'copy' : 'edit'}`" :rule="selected" :copy="copying" :devices="devices" :networks="networks" :rule-groups="ruleGroups" @close="closeEditor" @saved="saved" @unauthorized="invalidateSession" />
     <ConfirmRuleDeletion v-if="deletionCandidates.length" :rules="deletionCandidates" :busy="batchBusy" @close="deletionCandidates = []" @confirm="confirmDelete" />
     <ForwardRuleTransferDialog v-if="transferDialog" :devices="devices" :networks="networks" :rule-groups="ruleGroups" @close="transferDialog = false" @imported="imported" @unauthorized="invalidateSession" />
   </div>
 </template>
+
+<style scoped>
+.rule-pagination { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 12px; border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; color: var(--ny-muted); font-size: 12px; }
+.rule-pagination__summary { white-space: nowrap; }
+.rule-pagination__size, .rule-pagination__buttons { display: inline-flex; align-items: center; gap: 7px; }
+.rule-pagination__size select { min-height: 30px; padding: 4px 25px 4px 8px; border: 1px solid var(--ny-border-dark); border-radius: 3px; background: #fff; color: var(--ny-text); }
+.rule-pagination__buttons .button { min-height: 30px; padding: 4px 9px; }
+@media (max-width: 640px) {
+  .rule-pagination { align-items: stretch; flex-direction: column; }
+  .rule-pagination__summary, .rule-pagination__size, .rule-pagination__buttons { justify-content: space-between; }
+  .rule-pagination__buttons .button { flex: 1; }
+}
+</style>

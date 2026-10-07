@@ -25,6 +25,7 @@ describe('AppShell navigation', () => {
       routes: [
         { path: '/overview', component: { template: '<div>Overview</div>' } },
         { path: '/probe', component: { template: '<div>Probe</div>' } },
+        { path: '/subscriptions', component: { template: '<div>Subscriptions</div>' } },
       ],
     })
     await router.push('/overview')
@@ -35,6 +36,7 @@ describe('AppShell navigation', () => {
     expect(probeLink.attributes('target')).toBe('_blank')
     expect(probeLink.attributes('rel')).toBe('opener')
     expect(wrapper.get('a[href="/forward-rules"]').attributes('target')).toBeUndefined()
+    expect(wrapper.get('a[href="/subscriptions"]').text()).toContain('订阅管理')
 
     await wrapper.get('.mobile-nav-toggle').trigger('click')
     expect(wrapper.get('.sidebar').classes()).toContain('sidebar--open')

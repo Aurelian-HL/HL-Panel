@@ -99,12 +99,31 @@ func (s *Store) ListForAdministrator(_ context.Context, administratorID string) 
 func (s *Store) CredentialForAdministrator(_ context.Context, administratorID, ruleID string) (vlessidentity.CredentialRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	var found *vlessidentity.CredentialRecord
 	for _, record := range s.vlessBindings {
-		if record.Binding.ForwardingRuleID == ruleID && s.vlessBindingOwnedByAdministratorLocked(record.Binding, administratorID) {
-			return cloneVLESSCredentialRecord(record), nil
+		if record.Binding.ForwardingRuleID != ruleID || record.Binding.State != vlessidentity.StateActive || !s.vlessBindingOwnedByAdministratorLocked(record.Binding, administratorID) {
+			continue
 		}
+		copy := cloneVLESSCredentialRecord(record)
+		if found != nil {
+			return vlessidentity.CredentialRecord{}, fmt.Errorf("%w: multiple active VLESS identities exist for this rule", faults.ErrConflict)
+		}
+		found = &copy
+	}
+	if found != nil {
+		return *found, nil
 	}
 	return vlessidentity.CredentialRecord{}, faults.ErrNotFound
+}
+
+func (s *Store) CredentialByIDForAdministrator(_ context.Context, administratorID, bindingID string) (vlessidentity.CredentialRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	record, exists := s.vlessBindings[bindingID]
+	if !exists || record.Binding.State != vlessidentity.StateActive || !s.vlessBindingOwnedByAdministratorLocked(record.Binding, administratorID) {
+		return vlessidentity.CredentialRecord{}, faults.ErrNotFound
+	}
+	return cloneVLESSCredentialRecord(record), nil
 }
 
 func (s *Store) Rotate(_ context.Context, input vlessidentity.RotateInput, event audit.Event) (vlessidentity.Binding, bool, error) {

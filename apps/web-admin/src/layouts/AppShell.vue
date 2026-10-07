@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Activity, ChevronDown, Home, LogOut, Menu, Network, ServerCog, Settings, User, Users, UsersRound, X } from '@lucide/vue'
+import { Activity, ChevronDown, Home, KeyRound, LogOut, Menu, Network, ServerCog, Settings, User, Users, UsersRound, X } from '@lucide/vue'
 import { authStore } from '@/stores/auth'
 import { siteStore } from '@/stores/site'
 
@@ -18,6 +18,7 @@ const general = [
   { label: '主页', icon: Home, path: '/overview' },
   { label: '个人中心', icon: User, path: '/userinfo' },
   { label: '转发规则', icon: Network, path: '/forward-rules' },
+  { label: '订阅管理', icon: KeyRound, path: '/subscriptions' },
   { label: '设备探针', icon: Activity, path: '/probe' },
 ]
 const management = [

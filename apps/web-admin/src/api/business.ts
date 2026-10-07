@@ -1,5 +1,5 @@
 import { HttpClient } from './http'
-import type { Customer, CustomerInput, ForwardExportDocument, ForwardImportPreview, ForwardImportResult, ForwardRule, ForwardRuleInput, ForwardTransferRequest, ForwardingConnection, ForwardingTargetProbe, GroupNetwork, GroupNetworkInput, RuleBatchInput, RuleBatchResult, RuleGroup, RuleGroupInput, UserGroup, UserGroupInput } from './businessTypes'
+import type { Customer, CustomerInput, ForwardExportDocument, ForwardImportPreview, ForwardImportResult, ForwardRule, ForwardRuleInput, ForwardTransferRequest, ForwardingConnection, ForwardingTargetProbe, GroupNetwork, GroupNetworkInput, RuleBatchInput, RuleBatchResult, RuleGroup, RuleGroupInput, UserGroup, UserGroupInput, VlessIdentity, VlessIdentityMutation } from './businessTypes'
 import type { DeviceGroup } from './types'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
@@ -23,6 +23,17 @@ export const businessApi = {
   async saveUserGroup(input: UserGroupInput, id: string | null, key: string) { return (await write<{ user_group: UserGroup }>('/user-groups', input, id, key)).user_group },
   async rules() { return list<ForwardRule>(await http.request('/forwarding-rules')) },
   async forwardingConnection(id: string) { return http.request<ForwardingConnection>(`/forwarding-rules/${encodeURIComponent(id)}/connection`) },
+  async vlessIdentities() { return list<VlessIdentity>(await http.request('/vless/identities')) },
+  async vlessIdentityConnection(id: string) { return http.request<ForwardingConnection>(`/vless/identities/${encodeURIComponent(id)}/connection`) },
+  async provisionVlessIdentity(input: { customer_id: string; forwarding_rule_id: string; endpoint_pool_id: string; revision?: number }, key: string) {
+    return http.request<VlessIdentityMutation>('/vless/identities', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ ...input, revision: input.revision ?? 0 }) })
+  },
+  async rotateVlessIdentity(id: string, revision: number, key: string) {
+    return http.request<VlessIdentityMutation>(`/vless/identities/${encodeURIComponent(id)}/rotate`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) })
+  },
+  async revokeVlessIdentity(id: string, revision: number, key: string) {
+    return http.request<VlessIdentityMutation>(`/vless/identities/${encodeURIComponent(id)}/revoke`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) })
+  },
   async saveRule(input: ForwardRuleInput, id: string | null, key: string) { return (await write<{ rule: ForwardRule }>('/forwarding-rules', input, id, key)).rule },
   async probeTarget(input: { host: string; port: number }) { return (await http.request<{ probe: ForwardingTargetProbe }>('/forwarding-target-probes', { method: 'POST', body: JSON.stringify(input) })).probe },
   async ruleGroups() { return list<RuleGroup>(await http.request('/rule-groups')) },

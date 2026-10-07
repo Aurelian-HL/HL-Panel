@@ -88,3 +88,12 @@ func (api *API) usage(writer http.ResponseWriter, request *http.Request, princip
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"usage": view})
 }
+
+func (api *API) subscriptionsView(writer http.ResponseWriter, request *http.Request, principal customeridentity.Principal) {
+	items, err := api.identity.Subscriptions(request.Context(), principal)
+	if err != nil {
+		writeProblem(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{"items": items})
+}

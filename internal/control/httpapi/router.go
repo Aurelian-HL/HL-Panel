@@ -187,6 +187,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("POST /api/v1/agent/apply-results", api.requireNode(api.recordApplyResult))
 	if api.vlessIdentity != nil {
 		mux.HandleFunc("GET /api/v1/vless/identities", api.requireAdministrator(api.listVLESSIdentities))
+		mux.HandleFunc("GET /api/v1/vless/identities/{id}/connection", api.requireAdministrator(api.getVLESSIdentityConnection))
 		mux.HandleFunc("POST /api/v1/vless/identities", api.requireAdministrator(api.provisionVLESSIdentity))
 		mux.HandleFunc("POST /api/v1/vless/identities/{id}/rotate", api.requireAdministrator(api.rotateVLESSIdentity))
 		mux.HandleFunc("POST /api/v1/vless/identities/{id}/revoke", api.requireAdministrator(api.revokeVLESSIdentity))

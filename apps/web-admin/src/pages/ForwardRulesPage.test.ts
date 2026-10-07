@@ -229,6 +229,36 @@ describe('ForwardRulesPage', () => {
     wrapper.unmount()
   })
 
+  it('paginates rules and resets to the first page when filters or page size change', async () => {
+    const rules = Array.from({ length: 21 }, (_, index): ForwardRule => ({
+      id: `rule-${index + 1}`,
+      name: `分页规则 ${index + 1}`,
+      customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '',
+      egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10000 + index,
+      targets: [{ host: `192.0.2.${index + 1}`, port: 443 }], selection_policy: 'round_robin',
+      paused: index === 20, description: '', revision: 1, status: 'pending_activation',
+    }))
+    mocked.rules.mockResolvedValue({ items: rules })
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 1-20，共 21 条')
+    expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBe(0)
+    await wrapper.get('.rule-pagination__buttons button:last-child').trigger('click')
+    expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 21-21，共 21 条')
+    expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBeGreaterThan(0)
+
+    await wrapper.get('select[aria-label="每页规则数量"]').setValue('10')
+    await flushPromises()
+    expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 1-10，共 21 条')
+    await wrapper.get('.rule-pagination__buttons button:last-child').trigger('click')
+    await wrapper.get('input[placeholder="搜索规则、目标或设备组"]').setValue('分页规则 21')
+    await flushPromises()
+    expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 1-1，共 1 条')
+    expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBeGreaterThan(0)
+    wrapper.unmount()
+  })
+
   it('keeps the existing edit and copy actions', async () => {
     const rule: ForwardRule = { id: 'rule-edit', name: '原规则', customer_id: customer.id, rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [{ host: '192.0.2.10', port: 443 }], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'pending_activation' }
     mocked.rules.mockResolvedValue({ items: [rule] })

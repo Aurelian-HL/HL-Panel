@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
+	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 )
 
 func TestVersionFiveSnapshotUpgradesWithEmptyCustomerSessions(t *testing.T) {
@@ -166,3 +168,42 @@ func TestCustomerIdentityProjectsOnlyUsablePublicData(t *testing.T) {
 		t.Fatalf("unexpected portal projection: %+v err=%v", portal, err)
 	}
 }
+
+func TestCustomerIdentityReturnsOwnReadyVLESSSubscription(t *testing.T) {
+	ctx := context.Background()
+	store, customer := customerRepositoryFixture(t)
+	store.customers[customer.ID] = customer
+	now := time.Date(2026, time.October, 3, 1, 0, 0, 0, time.UTC)
+	store.forwardRules["rule-vless"] = forwarding.Rule{
+		ID: "rule-vless", Name: "Reality 订阅", CustomerID: customer.ID, EntryGroupID: "entry-1", EgressMode: forwarding.EgressDirect,
+		IngressProtocol: forwarding.IngressVLESSReality, VLESSFlow: "xtls-rprx-vision", RealityServerName: "edge.example.test",
+		RealityPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", RealityShortID: "01234567", RealityDestination: "edge.example.test:443", Protocol: forwarding.ProtocolTCP,
+		ListenPort: 20443, Status: forwarding.StatusActive, IngressStatus: forwarding.IngressReady, Deployed: true, Revision: 1,
+	}
+	store.endpointPools["pool-vless"] = endpoints.EndpointPool{ID: "pool-vless", Name: "统一 VLESS 入口", GroupID: "entry-1", RuleID: "rule-vless", Mode: endpoints.ModeSingleServiceEndpoint, Protocol: "vless", Hostname: "vless.example.test", Port: 443}
+	store.endpointMembers["pool-vless"] = map[string]endpoints.EndpointPoolMember{
+		"node-1": {PoolID: "pool-vless", GroupID: "entry-1", NodeID: "node-1", Weight: 1, State: endpoints.CandidateEligible, LastHealthAt: ptrTime(time.Now().UTC().Add(-time.Second))},
+	}
+	store.vlessBindings["binding-vless"] = vlessidentity.CredentialRecord{
+		Binding:        vlessidentity.Binding{ID: "binding-vless", CustomerID: customer.ID, ForwardingRuleID: "rule-vless", EndpointPoolID: "pool-vless", State: vlessidentity.StateActive, Revision: 1, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
+		CredentialUUID: "123e4567-e89b-12d3-a456-426614174000",
+	}
+	service := newCustomerIdentityService(t, store, now)
+	login, err := service.Login(ctx, customer.Username, "customer-test-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := service.Authenticate(ctx, login.AccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriptions, err := service.Subscriptions(ctx, principal)
+	if err != nil || len(subscriptions) != 1 {
+		t.Fatalf("unexpected subscriptions: %+v err=%v", subscriptions, err)
+	}
+	if subscriptions[0].Status != string(forwarding.StatusActive) || !strings.HasPrefix(subscriptions[0].URI, "vless://") {
+		t.Fatalf("ready VLESS subscription was not projected: %+v", subscriptions[0])
+	}
+}
+
+func ptrTime(value time.Time) *time.Time { return &value }

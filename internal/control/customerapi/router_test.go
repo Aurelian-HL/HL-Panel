@@ -183,6 +183,7 @@ func TestCustomerAPIPortalAndAuthenticatedOwnViews(t *testing.T) {
 		"/api/v1/customer/rules?customer_id=cus_other",
 		"/api/v1/customer/usage?customer_id=cus_other",
 		"/api/v1/customer/connections?customer_id=cus_other",
+		"/api/v1/customer/subscriptions?customer_id=cus_other",
 	} {
 		response := request(t, handler, http.MethodGet, path, token, nil, nil)
 		if response.Code != http.StatusOK {
@@ -192,9 +193,9 @@ func TestCustomerAPIPortalAndAuthenticatedOwnViews(t *testing.T) {
 			t.Fatalf("GET %s trusted caller customer id: %s", path, response.Body.String())
 		}
 	}
-	legacy := request(t, handler, http.MethodGet, "/api/v1/customer/subscriptions", token, nil, nil)
-	if legacy.Code != http.StatusNotFound {
-		t.Fatalf("legacy subscription route status = %d, want 404", legacy.Code)
+	subscriptions := request(t, handler, http.MethodGet, "/api/v1/customer/subscriptions", token, nil, nil)
+	if subscriptions.Code != http.StatusOK || !strings.Contains(subscriptions.Body.String(), `"id":"sub_api"`) || !strings.Contains(subscriptions.Body.String(), "vless://") {
+		t.Fatalf("subscription projection = %d %s", subscriptions.Code, subscriptions.Body.String())
 	}
 }
 

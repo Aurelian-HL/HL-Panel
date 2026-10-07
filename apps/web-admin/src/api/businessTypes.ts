@@ -122,6 +122,23 @@ export interface ForwardingConnection {
   status: string
 }
 
+export interface VlessIdentity {
+  id: string
+  customer_id: string
+  forwarding_rule_id: string
+  endpoint_pool_id: string
+  state: 'active' | 'revoked' | string
+  revision: number
+  created_at: string
+  updated_at: string
+  revoked_at?: string | null
+}
+
+export interface VlessIdentityMutation {
+  identity: VlessIdentity
+  replayed: boolean
+}
+
 export interface RuleGroupInput {
   name: string
   description: string

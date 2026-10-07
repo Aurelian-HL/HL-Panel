@@ -21,4 +21,5 @@ type Repository interface {
 // path and returns the confidential UUID in-process.
 type CredentialReader interface {
 	CredentialForAdministrator(context.Context, string, string) (CredentialRecord, error)
+	CredentialByIDForAdministrator(context.Context, string, string) (CredentialRecord, error)
 }
