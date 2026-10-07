@@ -120,6 +120,8 @@ os.execv(os.environ['HL_PANEL_REAL_CURL'], ['curl', *values])
     assert username in transcript and args.version in transcript
     assert 'https://8.8.8.8:19443/' in transcript
     assert '123456' in transcript if not custom else password not in transcript
+    if os.environ.get('HL_PANEL_EXPECT_NGINX_ADAPTATION') == 'true':
+        assert 'Nginx 自动适配完成' in transcript, 'Existing nginx-light was not automatically adapted'
     # Repeat install must reject its own existing state, before prompting.
     repeated = subprocess.run(command, env=environment, input='', capture_output=True, text=True)
     assert repeated.returncode != 0, 'Installer accepted overwrite'
@@ -185,5 +187,6 @@ Path('fresh-install-result.json').write_text(json.dumps({
     'real_postgresql_systemd_nginx': True, 'password_change_and_session_revocation': True,
     'restart_durability': True, 'repeat_install_rejected': True, 'local_password_reset': True,
     'unbound_domain_ip_https': True,
+    'nginx_automatic_adaptation': 'Nginx 自动适配完成' in transcript,
 }, indent=2))
 print('FRESH_INSTALL_ACCEPTED: ' + args.credentials)

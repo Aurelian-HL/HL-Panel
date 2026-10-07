@@ -173,12 +173,19 @@ jobs:
         with:
           name: hl-panel-candidate
           path: ${{ runner.temp }}/candidate
+      - name: Exercise existing nginx-light automatic adaptation
+        if: matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nginx-light
       - name: Install and exercise a new isolated instance
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
           CREDENTIALS: ${{ matrix.credentials }}
+          EXPECT_NGINX_ADAPTATION: ${{ matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom' }}
         run: |
           sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true \
+            HL_PANEL_EXPECT_NGINX_ADAPTATION="$EXPECT_NGINX_ADAPTATION" \
             python3 tests/install/fresh_install.py \
             --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG" \
             --credentials "$CREDENTIALS"
@@ -196,7 +203,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.version || github.ref_name }}
-      - name: Reproduce nginx-light failure and verify nginx-core on a disposable VM
+      - name: Verify nginx-light automatic adaptation and site preservation on a disposable VM
         run: |
           sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/nginx_compatibility.py
       - uses: actions/upload-artifact@v4

@@ -25,7 +25,7 @@ log() { printf '[HL-panel] %s\n' "$*"; }
 fail() { printf '[HL-panel] 错误：%s\n' "$*" >&2; exit 1; }
 
 check_nginx_capabilities() {
-  local probe_dir probe_output module_include=""
+  local probe_dir module_include=""
   probe_dir="$(mktemp -d /tmp/hl-panel-nginx-check.XXXXXX)" || fail "无法创建 Nginx 检查目录"
   if [[ -d /etc/nginx/modules-enabled ]]; then
     module_include='include /etc/nginx/modules-enabled/*.conf;'
@@ -53,13 +53,69 @@ http {
 }
 EOF
   # Distro load_module paths are relative to Nginx's compiled prefix.
-  if ! probe_output="$(nginx -t -c "$probe_dir/nginx.conf" 2>&1)"; then
+  if ! NGINX_CHECK_OUTPUT="$(nginx -t -c "$probe_dir/nginx.conf" 2>&1)"; then
     rm -rf -- "$probe_dir"
-    printf '%s\n' "$probe_output" >&2
-    fail "Nginx 缺少面板需要的模块或模块加载失败（登录限流、SSL、HTTP/2、反向代理）。尚未创建面板账号、文件或数据库；不会自动替换已有 Nginx。专用于面板的 VPS 可执行 apt-get update && apt-get install -y nginx-core 后重试；已有其他站点请先由管理员确认 Nginx 升级方案。"
+    return 1
   fi
   rm -rf -- "$probe_dir"
   log "Nginx 模块检查通过（登录限流、SSL、HTTP/2、反向代理）"
+}
+
+ensure_nginx_compatibility() {
+  local nginx_binary backup_dir active_before=false enabled_before adaptation_ok=false
+  if check_nginx_capabilities; then return 0; fi
+  nginx_binary="$(command -v nginx)"
+  if ! dpkg-query -S "$nginx_binary" 2>/dev/null | grep -Fxq "nginx-light: $nginx_binary"; then
+    printf '%s\n' "$NGINX_CHECK_OUTPUT" >&2
+    fail "现有 Nginx 不满足面板模块要求，且不是可自动适配的发行版 nginx-light；请安装支持限流、SSL、HTTP/2 和代理的版本后重试。尚未创建面板文件或数据库。"
+  fi
+  log "检测到 nginx-light 模块不足，自动适配为 nginx-core，保留现有站点配置"
+  systemctl is-active --quiet nginx && active_before=true || true
+  enabled_before="$(systemctl is-enabled nginx 2>/dev/null || true)"
+  install -d -o root -g root -m 0700 /var/backups/hl-panel
+  backup_dir="$(mktemp -d /var/backups/hl-panel/nginx-adapt.XXXXXX)"
+  chmod 0700 "$backup_dir"
+  tar -C / -cpf "$backup_dir/nginx-config.tar" etc/nginx
+  dpkg-query -W 'nginx*' 'libnginx*' > "$backup_dir/package-versions.txt" 2>/dev/null || true
+  {
+    printf '#!/usr/bin/env bash\nset -Eeuo pipefail\n'
+    declare -f log
+    declare -f restore_unit_state
+    printf 'active_before=%q\nenabled_before=%q\n' "$active_before" "$enabled_before"
+    cat <<'ROLLBACK'
+backup_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y --no-install-recommends -o Dpkg::Options::=--force-confold nginx-light
+if [[ -d /etc/nginx && ! -e "$backup_dir/failed-nginx-config" ]]; then
+  mv /etc/nginx "$backup_dir/failed-nginx-config"
+fi
+tar -C / -xpf "$backup_dir/nginx-config.tar"
+nginx -t
+systemctl stop nginx
+restore_unit_state nginx "$active_before" "$enabled_before"
+if [[ "$active_before" == true ]]; then systemctl is-active --quiet nginx; fi
+ROLLBACK
+  } > "$backup_dir/rollback.sh"
+  chmod 0700 "$backup_dir/rollback.sh"
+  log "Nginx 适配备份：$backup_dir"
+  if apt-get install -y --no-install-recommends -o Dpkg::Options::=--force-confold nginx-core \
+    && check_nginx_capabilities && nginx -t; then
+    if [[ "$active_before" == true ]]; then
+      if systemctl restart nginx && systemctl is-active --quiet nginx; then adaptation_ok=true; fi
+    else
+      adaptation_ok=true
+    fi
+  fi
+  if [[ "$adaptation_ok" == true ]]; then
+    restore_unit_state nginx "$active_before" "$enabled_before"
+    log "Nginx 自动适配完成，原站点配置已保留，继续安装面板"
+    return 0
+  fi
+  log "Nginx 适配失败，正在恢复原软件包类型、站点配置和服务状态"
+  if bash "$backup_dir/rollback.sh"; then
+    fail "Nginx 适配未成功，已恢复原站点；备份位于 $backup_dir。请检查软件源或上方错误后重试。"
+  fi
+  fail "Nginx 自动恢复未完成；备份位于 $backup_dir，恢复命令：bash $backup_dir/rollback.sh"
 }
 
 resolve_domain_records() {
@@ -189,7 +245,6 @@ fi
 ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] || fail "当前版本只提供 Linux amd64，检测到 $ARCH"
 id hlpanel >/dev/null 2>&1 && fail "系统账号 hlpanel 已存在；安装器不会接管它"
-if command -v nginx >/dev/null 2>&1; then check_nginx_capabilities; fi
 
 [[ -r /dev/tty && -w /dev/tty ]] || fail "安装需要交互式终端，以安全接收管理员密码"
 [[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || fail "$INSTALL_ROOT 已存在；为保护现有数据，安装器不会覆盖它"
@@ -438,7 +493,7 @@ if command -v nginx >/dev/null 2>&1; then
 else
   apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client
 fi
-check_nginx_capabilities
+ensure_nginx_compatibility
 systemctl enable --now postgresql
 check_database_names
 
