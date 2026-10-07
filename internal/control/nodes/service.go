@@ -123,7 +123,26 @@ func (s *Service) RecordHeartbeat(ctx context.Context, nodeID string, heartbeat 
 }
 
 func (s *Service) Overview(ctx context.Context) (Overview, error) {
-	return s.repository.Overview(ctx, s.now().UTC(), s.onlineFor)
+	now := s.now().UTC()
+	overview, err := s.repository.Overview(ctx, now, s.onlineFor)
+	if err != nil {
+		return Overview{}, err
+	}
+	items, err := s.repository.ListNodes(ctx)
+	if err != nil {
+		return Overview{}, err
+	}
+	overview.Nodes = make([]View, 0, len(items))
+	for _, node := range items {
+		overview.Nodes = append(overview.Nodes, View{Node: node, Status: nodeStatus(node, now, s.onlineFor)})
+	}
+	sort.Slice(overview.Nodes, func(i, j int) bool {
+		if overview.Nodes[i].Name == overview.Nodes[j].Name {
+			return overview.Nodes[i].ID < overview.Nodes[j].ID
+		}
+		return overview.Nodes[i].Name < overview.Nodes[j].Name
+	})
+	return overview, nil
 }
 
 func nodeStatus(node Node, now time.Time, onlineFor time.Duration) string {

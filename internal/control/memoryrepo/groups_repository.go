@@ -91,8 +91,10 @@ func (s *Store) DeleteDeviceGroup(_ context.Context, input groups.DeleteInput, e
 
 	// Deletion is intentionally non-cascading. Every relationship is checked
 	// while holding the store lock so a successful delete cannot race a write.
-	if members := s.membersByGroup[input.GroupID]; len(members) > 0 {
-		return false, fmt.Errorf("%w: device group has members; retire or remove them first", faults.ErrConflict)
+	for _, member := range s.membersByGroup[input.GroupID] {
+		if member.RetiredAt == nil {
+			return false, fmt.Errorf("%w: device group has active members; retire or remove them first", faults.ErrConflict)
+		}
 	}
 	if _, exists := s.groupNetworks[input.GroupID]; exists {
 		return false, fmt.Errorf("%w: device group has a network policy", faults.ErrConflict)
@@ -250,6 +252,18 @@ func (s *Store) UpdateGroupMemberWeight(_ context.Context, input groups.UpdateMe
 // upsertGroupMemberLocked is shared by the administrator member endpoint and
 // group-scoped node enrollment. Callers must hold s.mu.
 func (s *Store) upsertGroupMemberLocked(member groups.Member) (groups.Member, []generations.NodeConfigGeneration, error) {
+	return s.upsertGroupMemberLockedWithCompilePolicy(member, false)
+}
+
+// Enrollment should establish identity and membership even when an unrelated
+// historical rule cannot currently compile. The node remains visible and can
+// receive a repaired bundle after the rule is fixed.
+func (s *Store) upsertGroupMemberForEnrollmentLocked(member groups.Member) (groups.Member, error) {
+	stored, _, err := s.upsertGroupMemberLockedWithCompilePolicy(member, true)
+	return stored, err
+}
+
+func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, tolerateCompileFailure bool) (groups.Member, []generations.NodeConfigGeneration, error) {
 	if _, exists := s.deviceGroups[member.GroupID]; !exists {
 		return groups.Member{}, nil, faults.ErrNotFound
 	}
@@ -269,6 +283,13 @@ func (s *Store) upsertGroupMemberLocked(member groups.Member) (groups.Member, []
 	if changed {
 		assignment, created, err := s.compileNodeConfigLocked(member.NodeID, member.UpdatedAt)
 		if err != nil {
+			if tolerateCompileFailure {
+				s.syncGroupMemberToEndpointPoolsLocked(member)
+				group := s.deviceGroups[member.GroupID]
+				group.UpdatedAt = member.UpdatedAt
+				s.deviceGroups[member.GroupID] = group
+				return cloneGroupMember(member), nil, nil
+			}
 			if exists {
 				s.membersByGroup[member.GroupID][member.NodeID] = existing
 			} else {

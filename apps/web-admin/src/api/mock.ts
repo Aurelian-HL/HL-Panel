@@ -118,6 +118,7 @@ export const mockApi = {
       online_node_count: nodes.filter((node) => node.status === 'online').length,
       syncing_node_count: nodes.filter((node) => node.status === 'syncing').length,
       failed_apply_count: nodes.filter((node) => node.status === 'failed').length,
+      nodes: clone(nodes),
     })
   },
   getNodes(): Promise<NodesResponse> {

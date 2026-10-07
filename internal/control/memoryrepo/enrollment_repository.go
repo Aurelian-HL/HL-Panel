@@ -119,7 +119,7 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 		if dialHost == "" {
 			dialHost = node.Hostname
 		}
-		if _, _, err := s.upsertGroupMemberLocked(groups.Member{GroupID: token.GroupID, NodeID: node.ID, DialHost: dialHost, Weight: 100, Priority: 0, CreatedAt: now, UpdatedAt: now}); err != nil {
+		if _, err := s.upsertGroupMemberForEnrollmentLocked(groups.Member{GroupID: token.GroupID, NodeID: node.ID, DialHost: dialHost, Weight: 100, Priority: 0, CreatedAt: now, UpdatedAt: now}); err != nil {
 			delete(s.nodes, node.ID)
 			delete(s.nodesByCredential, input.CredentialHash)
 			return nodes.Node{}, err

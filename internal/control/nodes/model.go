@@ -62,9 +62,10 @@ type RotateCredentialInput struct {
 }
 
 type Overview struct {
-	NodeCount        int `json:"node_count"`
-	GroupCount       int `json:"group_count"`
-	OnlineNodeCount  int `json:"online_node_count"`
-	SyncingNodeCount int `json:"syncing_node_count"`
-	FailedApplyCount int `json:"failed_apply_count"`
+	NodeCount        int    `json:"node_count"`
+	GroupCount       int    `json:"group_count"`
+	OnlineNodeCount  int    `json:"online_node_count"`
+	SyncingNodeCount int    `json:"syncing_node_count"`
+	FailedApplyCount int    `json:"failed_apply_count"`
+	Nodes            []View `json:"nodes"`
 }

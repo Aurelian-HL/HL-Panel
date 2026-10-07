@@ -154,12 +154,14 @@ export function parseLoginResponse(value: unknown): LoginResponse {
 
 export function parseOverviewResponse(value: unknown): OverviewResponse {
   const body = record(value, 'overview')
+  if (body.nodes !== undefined && !Array.isArray(body.nodes)) throw new ContractError('nodes 必须是数组')
   return {
     node_count: numberValue(body.node_count, 'node_count'),
     group_count: numberValue(body.group_count, 'group_count'),
     online_node_count: numberValue(body.online_node_count, 'online_node_count'),
     syncing_node_count: numberValue(body.syncing_node_count, 'syncing_node_count'),
     failed_apply_count: numberValue(body.failed_apply_count, 'failed_apply_count'),
+    nodes: Array.isArray(body.nodes) ? body.nodes.map(parseNode) : [],
   }
 }
 

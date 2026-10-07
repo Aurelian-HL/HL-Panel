@@ -29,6 +29,7 @@ export interface OverviewResponse {
   online_node_count: number
   syncing_node_count: number
   failed_apply_count: number
+  nodes: EdgeNode[]
 }
 
 export type NodeStatus = 'online' | 'offline' | 'syncing' | 'failed' | 'retired' | 'unknown'

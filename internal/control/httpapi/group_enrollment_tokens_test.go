@@ -55,3 +55,40 @@ func TestPendingGroupEnrollmentTokensAreScopedAndSecretFree(t *testing.T) {
 	}
 	requestJSON(t, fixture.handler, http.MethodGet, "/api/v1/device-groups/missing/enrollment-tokens", fixture.token, nil, http.StatusNotFound)
 }
+
+func TestMultipleNodesCanEnrollIntoOneGroupWithSeparateTokens(t *testing.T) {
+	fixture := newBusinessFixture(t)
+	issue := func(name string) enrollment.IssueResult {
+		t.Helper()
+		body := requestJSON(t, fixture.handler, http.MethodPost, "/api/v1/enrollment-tokens", fixture.token, map[string]any{
+			"name": name, "group_id": fixture.entry.ID, "expires_in_seconds": 900,
+		}, http.StatusCreated)
+		var issued enrollment.IssueResult
+		decodeResponse(t, body, &issued)
+		return issued
+	}
+	enroll := func(issued enrollment.IssueResult, hostname string) agentv1.EnrollmentResponse {
+		t.Helper()
+		body := requestJSON(t, fixture.handler, http.MethodPost, "/api/v1/agent/enroll", "", agentv1.EnrollmentRequest{
+			EnrollmentToken: issued.Token, Hostname: hostname, Platform: "linux", Architecture: "amd64", AgentVersion: "1.0.0",
+		}, http.StatusCreated)
+		var result agentv1.EnrollmentResponse
+		decodeResponse(t, body, &result)
+		return result
+	}
+	first := enroll(issue("entry-node-1"), "entry-1.example.test")
+	second := enroll(issue("entry-node-2"), "entry-2.example.test")
+	if first.NodeID == second.NodeID || first.NodeCredential == second.NodeCredential {
+		t.Fatal("separate enrollment tokens produced duplicate node identity")
+	}
+	body := requestJSON(t, fixture.handler, http.MethodGet, "/api/v1/device-groups/"+fixture.entry.ID+"/members", fixture.token, nil, http.StatusOK)
+	var members struct {
+		Items []struct {
+			NodeID string `json:"node_id"`
+		} `json:"items"`
+	}
+	decodeResponse(t, body, &members)
+	if len(members.Items) != 2 {
+		t.Fatalf("expected two enrolled group members, got %d: %+v", len(members.Items), members.Items)
+	}
+}

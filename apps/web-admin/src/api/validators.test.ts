@@ -40,6 +40,7 @@ describe('API contract validators', () => {
       online_node_count: 2,
       syncing_node_count: 1,
       failed_apply_count: 1,
+      nodes: [],
     })
   })
 
