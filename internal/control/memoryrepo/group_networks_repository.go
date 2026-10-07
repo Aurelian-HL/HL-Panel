@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -58,7 +59,7 @@ func (s *Store) UpdateGroupNetwork(_ context.Context, input groupconfig.UpdateIn
 		return groupconfig.GroupNetwork{}, false, err
 	}
 	for _, pool := range s.endpointPools {
-		if pool.GroupID == item.GroupID && pool.RuleID != "" && (pool.Hostname != item.ConnectHost || !item.ContainsPort(pool.Port)) {
+		if pool.GroupID == item.GroupID && pool.RuleID != "" && !item.ContainsPort(pool.Port) {
 			return groupconfig.GroupNetwork{}, false, fmt.Errorf("%w: network change would invalidate a bound service endpoint", faults.ErrConflict)
 		}
 	}
@@ -83,6 +84,18 @@ func (s *Store) UpdateGroupNetwork(_ context.Context, input groupconfig.UpdateIn
 		return groupconfig.GroupNetwork{}, false, err
 	}
 	s.groupNetworks[item.GroupID] = cloneGroupNetwork(item)
+	// A bound endpoint is the customer-visible address for its forwarding rule.
+	// Keep it in lockstep with the entry group's address so an IP-to-domain
+	// change does not invalidate existing subscriptions or endpoint bindings.
+	updatedAt := time.Now().UTC()
+	for poolID, pool := range s.endpointPools {
+		if pool.GroupID != item.GroupID || pool.RuleID == "" || pool.Hostname == item.ConnectHost {
+			continue
+		}
+		pool.Hostname = item.ConnectHost
+		pool.UpdatedAt = updatedAt
+		s.endpointPools[poolID] = pool
+	}
 	s.appendAuditLocked(event)
 	return item, false, nil
 }

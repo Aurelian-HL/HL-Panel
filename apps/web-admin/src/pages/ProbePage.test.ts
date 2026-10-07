@@ -19,6 +19,17 @@ beforeEach(() => {
 })
 
 describe('ProbePage', () => {
+  it('counts native HL probes when Nezha is disabled', async () => {
+    mocked.getInventory.mockResolvedValue({ upstream_status: 'disabled', items: [
+      { node_id: 'native-node', link_status: 'native', source: 'hl', online: true, name: 'HL 节点', sampled_at: new Date().toISOString() },
+    ] })
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    expect(wrapper.get('.probe-overview__metrics').text()).toContain('在线1')
+    expect(wrapper.findAll('.segmented-control button').find((button) => button.text().includes('在线'))?.text()).toContain('1')
+    wrapper.unmount()
+  })
+
   it('summarizes real online readings and filters per host', async () => {
     const wrapper = mount(ProbePage)
     await flushPromises()

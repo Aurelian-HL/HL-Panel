@@ -75,4 +75,15 @@ describe('GroupNetworkDialog', () => {
     })
     wrapper.unmount()
   })
+
+  it('accepts a public DNS name when replacing an entry address', async () => {
+    const wrapper = mount(GroupNetworkDialog, { props: { group: entry, groups: [entry, exit], userGroups: [userGroup], network: legacyNetwork }, global: { stubs: { Teleport: true } } })
+    const address = wrapper.find('input[placeholder="IP 或域名"]')
+    await address.setValue('ab1q.ipqddonline.top')
+    await wrapper.get('#group-network-editor').trigger('submit')
+    await flushPromises()
+
+    expect(mocked.saveGroupNetwork.mock.calls[0]?.[0]).toMatchObject({ connect_host: 'ab1q.ipqddonline.top', revision: legacyNetwork.revision })
+    wrapper.unmount()
+  })
 })

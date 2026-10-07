@@ -31,6 +31,8 @@ describe('operator error messages', () => {
   it('explains revision and port conflicts in Chinese without raw internals', () => {
     expect(displayError(new Error('conflict: forwarding rule changed; reload before saving'))).toContain('刷新后重试')
     expect(displayError(new Error('conflict: listen port is already reserved for this protocol'))).toContain('监听端口不可用')
+    expect(displayError(new Error('conflict: network change would invalidate a bound service endpoint'))).toContain('端口范围不能移除')
+    expect(displayError(new Error('validation: connect_host must be one DNS name or IP without protocol, credentials, path or port'))).toContain('连接地址格式无效')
     expect(displayError(new Error('internal unrecognized detail'))).toBe('操作失败，请检查填写内容并重试')
   })
 })

@@ -66,7 +66,7 @@ func TestBoundEndpointUsesConfiguredGroupAddressAndRulePort(t *testing.T) {
 	}
 }
 
-func TestBoundEndpointRejectsNetworkAndRuleChangesThatBreakBinding(t *testing.T) {
+func TestBoundEndpointSyncsAddressAndRejectsChangesThatBreakBinding(t *testing.T) {
 	ctx := context.Background()
 	store, request := forwardingRepositoryFixture(t)
 	forwardingService := forwarding.NewService(store, nil)
@@ -82,9 +82,13 @@ func TestBoundEndpointRejectsNetworkAndRuleChangesThatBreakBinding(t *testing.T)
 	if pool.RuleID != rule.ID {
 		t.Fatalf("endpoint lost forwarding rule binding: %+v", pool)
 	}
-	_, _, err = groupconfig.NewService(store, nil).Update(ctx, "admin-test", rule.EntryGroupID, groupconfig.Request{ConnectHost: "other.example.test", PortStart: 12000, PortEnd: 12009, AllowDirect: true, AllowedExitGroupIDs: []string{"exit-1"}, TrafficMultiplier: 1, Revision: 1}, "change-address")
-	if !errors.Is(err, faults.ErrConflict) {
-		t.Fatalf("network change detached the endpoint: %v", err)
+	updated, _, err := groupconfig.NewService(store, nil).Update(ctx, "admin-test", rule.EntryGroupID, groupconfig.Request{ConnectHost: "other.example.test", PortStart: 12000, PortEnd: 12009, AllowDirect: true, AllowedExitGroupIDs: []string{"exit-1"}, TrafficMultiplier: 1, Revision: 1}, "change-address")
+	if err != nil || updated.ConnectHost != "other.example.test" {
+		t.Fatalf("network address change failed: %v", err)
+	}
+	changedPool, err := store.EndpointPool(ctx, pool.ID)
+	if err != nil || changedPool.Hostname != "other.example.test" {
+		t.Fatalf("bound endpoint hostname was not synchronized: %+v, %v", changedPool, err)
 	}
 	request.ListenPort = rule.ListenPort + 1
 	request.Revision = rule.Revision

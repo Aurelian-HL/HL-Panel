@@ -34,6 +34,7 @@ const availableGroups = computed(() => groups.value.filter((group) => !group.hid
 const selectedGroup = computed(() => availableGroups.value.find((group) => group.id === selectedGroupId.value))
 const members = computed(() => response.value?.items ?? [])
 const upstreamStatus = computed(() => monitoringError.value && response.value ? 'unavailable' : response.value?.upstream_status ?? 'disabled')
+const hasProbeSource = computed(() => Boolean(response.value && (upstreamStatus.value === 'ok' || members.value.some((member) => member.source === 'hl'))))
 const counts = computed(() => ({
   all: members.value.length,
   online: members.value.filter((member) => monitorStatus(member, upstreamStatus.value, now.value).text === '在线').length,
@@ -200,7 +201,7 @@ onUnmounted(() => {
     <template v-else>
       <section class="probe-overview" aria-label="设备组探针概况">
         <label class="probe-group-select"><span>查看范围</span><select v-model="selectedGroupId" @change="selectGroup"><option value="">全部机器</option><option v-for="group in availableGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
-        <div class="probe-overview__metrics"><div><span>成员</span><strong>{{ response ? counts.all : '未采集' }}</strong></div><div><span>在线</span><strong>{{ response && upstreamStatus === 'ok' ? counts.online : '未采集' }}</strong></div><div><span>下行速率</span><strong>{{ inboundSpeed }}</strong></div><div><span>上行速率</span><strong>{{ outboundSpeed }}</strong></div></div>
+        <div class="probe-overview__metrics"><div><span>成员</span><strong>{{ response ? counts.all : '未采集' }}</strong></div><div><span>在线</span><strong>{{ hasProbeSource ? counts.online : '未采集' }}</strong></div><div><span>下行速率</span><strong>{{ inboundSpeed }}</strong></div><div><span>上行速率</span><strong>{{ outboundSpeed }}</strong></div></div>
       </section>
       <p v-if="selectedGroup" class="probe-group-context">{{ selectedGroup.name }} · {{ selectedGroup.kind === 'EXIT' ? '出口组' : '入口组' }} · {{ selectedGroup.member_count }} 位设备组成员</p>
       <p v-if="response?.upstream_status === 'disabled'" class="inline-warning">哪吒连接未配置。HL 主机探针独立工作，注册后的节点会通过心跳上报指标。</p>

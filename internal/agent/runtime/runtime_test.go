@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -117,5 +120,74 @@ func TestAgentBootstrapHeartbeatAndDesiredApplyOverHTTPTestServer(t *testing.T) 
 	}
 	if len(phases) != 4 || phases[0] != agentv1.ApplyPhasePrepare || phases[1] != agentv1.ApplyPhaseValidate || phases[2] != agentv1.ApplyPhaseCommit || phases[3] != agentv1.ApplyPhaseVerify {
 		t.Fatalf("apply phases = %#v, want prepare/validate/commit/verify", phases)
+	}
+}
+
+func TestAgentRunContinuesHeartbeatWhenProbeEchoPortIsUnavailable(t *testing.T) {
+	var heartbeats atomic.Int32
+	heartbeatSeen := make(chan struct{})
+	var heartbeatOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/agent/enroll":
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(agentv1.EnrollmentResponse{NodeID: "node-run", NodeCredential: "credential-run"})
+		case "/api/v1/agent/heartbeat":
+			heartbeats.Add(1)
+			heartbeatOnce.Do(func() { close(heartbeatSeen) })
+			writer.WriteHeader(http.StatusNoContent)
+		case "/api/v1/agent/desired":
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve probe echo port: %v", err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	t.Setenv("NYVP_ENROLLMENT_TOKEN", "test-run-token")
+	cfg := config.Config{
+		ControlPlaneURL:       server.URL,
+		AllowInsecureLoopback: true,
+		DataDir:               filepath.Join(t.TempDir(), "state"),
+		Hostname:              "test-run-node",
+		AgentVersion:          "test",
+		EnrollmentTokenEnv:    "NYVP_ENROLLMENT_TOKEN",
+		EngineMode:            config.EngineModeDryRun,
+		ProtocolProbeEchoPort: port,
+		HeartbeatInterval:     config.Duration(time.Second),
+		DesiredPollInterval:   config.Duration(time.Second),
+		RequestTimeout:        config.Duration(time.Second),
+		Backoff:               config.BackoffConfig{Initial: config.Duration(5 * time.Millisecond), Maximum: config.Duration(5 * time.Millisecond), Multiplier: 1},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Config.Validate() error = %v", err)
+	}
+	agent, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	runResult := make(chan error, 1)
+	go func() { runResult <- agent.Run(ctx) }()
+
+	select {
+	case <-heartbeatSeen:
+	case <-ctx.Done():
+		t.Fatalf("agent did not send a heartbeat while probe echo port was occupied")
+	}
+	cancel()
+	if err := <-runResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context cancellation", err)
+	}
+	if heartbeats.Load() < 1 {
+		t.Fatal("agent stopped before recording a heartbeat")
 	}
 }

@@ -399,9 +399,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	probe, err := probeecho.Listen(a.cfg.ProtocolProbeEchoPort)
 	if err != nil {
-		return err
+		// The echo target is only needed for the optional protocol probe. A
+		// stale process or another local service may already own the loopback
+		// port; that must not stop the agent heartbeat and host sampling.
+		a.logger.Warn("protocol probe echo unavailable; continuing without local echo target", "port", a.cfg.ProtocolProbeEchoPort, "error", err)
+	} else {
+		a.probeEcho = probe
 	}
-	a.probeEcho = probe
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop}
