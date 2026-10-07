@@ -171,7 +171,13 @@ session = login(replacement)
 assert session['user']['must_change_password'] is False
 overview = request('GET', '/overview', token=session['access_token'])
 assert overview['nodes'] == []
-assert all(value == 0 for key, value in overview.items() if key != 'nodes')
+assert overview['node_count'] == 0
+assert overview['group_count'] == 0
+assert overview['online_node_count'] == 0
+assert overview['syncing_node_count'] == 0
+assert overview['failed_apply_count'] == 0
+assert overview['panel']['status'] == 'online'
+assert overview['panel']['version'] == args.version
 assert request('GET', '/device-groups', token=session['access_token'])['items'] == []
 subprocess.run(['nginx', '-t'], check=True)
 with urllib.request.urlopen('https://127.0.0.1:19443/', context=ssl._create_unverified_context(), timeout=15) as page:
