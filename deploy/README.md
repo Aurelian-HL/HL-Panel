@@ -8,7 +8,7 @@
 
 1. 将源码推送到 `Aurelian-HL/HL-Panel`。
 2. 推送 `v*` 标签。GitHub Actions 会运行 Go 与管理端测试，构建 Linux amd64
-   程序，生成文件摘要；默认账号和自定义账号分别在全新临时 Linux 虚拟机安装，
+   程序，生成文件摘要；默认账号和自定义账号分别在 Ubuntu 22.04 / 24.04 全新临时虚拟机安装，
    验证真实 PostgreSQL/systemd/Nginx、改密、会话撤销、重启持久化和 IP HTTPS。
    全新安装及旧版本保数据升级、失败回滚测试通过后，才发布 `hl-panel-linux-amd64.tar.gz` 与 SHA256 文件。
 3. 在新主机执行以下命令：
@@ -22,6 +22,12 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.s
 main 脚本与旧安装包混用。也可以通过 `--repo OWNER/REPOSITORY` 切换仓库，
 通过 `--version TAG` 固定版本。源码更新要推送 GitHub；安装行为更新必须经测试
 后发布新标签，不覆盖已发布标签或归档。
+
+未安装 Nginx 时使用 `nginx-core`，避免 Ubuntu 22.04 的 `nginx-light` 缺少登录限流模块。
+已有 Nginx 会先以隔离临时配置执行 `nginx -t`，检查登录限流、SSL、HTTP/2 和代理能力；
+不监听测试端口、不重新加载现有站点。模块不足时，在创建面板账号、配置和数据库前退出，
+不会自动替换已有 Nginx。仅用于面板的 VPS 可安装 `nginx-core` 后重试；共享主机请先确认升级方案。
+发布流程另在 Ubuntu 22.04 实际安装 `nginx-light` 复现失败，验证提前拒绝和 `nginx-core` 兼容性。
 
 安装会询问账号与密码，支持自定义账号（也可用 `--admin-username NAME`）。
 直接回车采用 **admin / 123456**，安装结束明确显示默认凭据与改密提示。

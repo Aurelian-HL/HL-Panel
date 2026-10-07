@@ -158,11 +158,12 @@ jobs:
             ${{ runner.temp }}/hl-panel-linux-amd64.tar.gz.sha256
   fresh-install:
     needs: release
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
         credentials: [default, custom]
     steps:
       - uses: actions/checkout@v4
@@ -184,10 +185,27 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fresh-install-${{ matrix.credentials }}
+          name: fresh-install-${{ matrix.os }}-${{ matrix.credentials }}
           path: |
             fresh-install.log
             fresh-install-result.json
+  nginx-compatibility:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref_name }}
+      - name: Reproduce nginx-light failure and verify nginx-core on a disposable VM
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/nginx_compatibility.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nginx-compatibility-ubuntu-22.04
+          path: |
+            nginx-compatibility.log
+            nginx-compatibility-result.json
   safe-update:
     needs: release
     runs-on: ubuntu-24.04
@@ -249,7 +267,7 @@ jobs:
             node-install.log
             node-install-result.json
   publish:
-    needs: [release, fresh-install, safe-update, node-install]
+    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install]
     if: ${{ inputs.verification_only != true }}
     runs-on: ubuntu-latest
     steps:

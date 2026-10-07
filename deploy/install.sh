@@ -24,6 +24,43 @@ WORK_DIR=""
 log() { printf '[HL-panel] %s\n' "$*"; }
 fail() { printf '[HL-panel] 错误：%s\n' "$*" >&2; exit 1; }
 
+check_nginx_capabilities() {
+  local probe_dir probe_output module_include=""
+  probe_dir="$(mktemp -d /tmp/hl-panel-nginx-check.XXXXXX)" || fail "无法创建 Nginx 检查目录"
+  if [[ -d /etc/nginx/modules-enabled ]]; then
+    module_include='include /etc/nginx/modules-enabled/*.conf;'
+  fi
+  # Parse an isolated configuration; never bind ports or reload existing sites.
+  cat > "$probe_dir/nginx.conf" <<EOF
+$module_include
+error_log stderr;
+pid $probe_dir/nginx.pid;
+events {}
+http {
+  access_log off;
+  client_body_temp_path $probe_dir/client;
+  proxy_temp_path $probe_dir/proxy;
+  limit_req_zone \$binary_remote_addr zone=hl_panel_probe:1m rate=5r/m;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  server {
+    listen 127.0.0.1:19993 http2;
+    location / {
+      limit_req zone=hl_panel_probe burst=4 nodelay;
+      limit_req_status 429;
+      proxy_pass http://127.0.0.1:19994;
+    }
+  }
+}
+EOF
+  if ! probe_output="$(nginx -t -p "$probe_dir/" -c "$probe_dir/nginx.conf" 2>&1)"; then
+    rm -rf -- "$probe_dir"
+    printf '%s\n' "$probe_output" >&2
+    fail "Nginx 缺少面板需要的模块或模块加载失败（登录限流、SSL、HTTP/2、反向代理）。尚未创建面板账号、文件或数据库；不会自动替换已有 Nginx。专用于面板的 VPS 可执行 apt-get update && apt-get install -y nginx-core 后重试；已有其他站点请先由管理员确认 Nginx 升级方案。"
+  fi
+  rm -rf -- "$probe_dir"
+  log "Nginx 模块检查通过（登录限流、SSL、HTTP/2、反向代理）"
+}
+
 resolve_domain_records() {
   python3 - "$DOMAIN" "$1" <<'PY'
 import socket
@@ -151,6 +188,7 @@ fi
 ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] || fail "当前版本只提供 Linux amd64，检测到 $ARCH"
 id hlpanel >/dev/null 2>&1 && fail "系统账号 hlpanel 已存在；安装器不会接管它"
+if command -v nginx >/dev/null 2>&1; then check_nginx_capabilities; fi
 
 [[ -r /dev/tty && -w /dev/tty ]] || fail "安装需要交互式终端，以安全接收管理员密码"
 [[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || fail "$INSTALL_ROOT 已存在；为保护现有数据，安装器不会覆盖它"
@@ -397,8 +435,9 @@ apt-get update
 if command -v nginx >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client
 else
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-light certbot postgresql postgresql-client
+  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client
 fi
+check_nginx_capabilities
 systemctl enable --now postgresql
 check_database_names
 
