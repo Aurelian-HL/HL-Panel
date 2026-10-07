@@ -140,6 +140,43 @@ type ApplyResultRequest struct {
 	Message      string               `json:"message,omitempty"`
 }
 
+// ControlCommand is a deliberately closed set of operator actions. It is
+// never interpreted as a shell command by an agent.
+type ControlCommand string
+
+const (
+	ControlStatus  ControlCommand = "status"
+	ControlLogs    ControlCommand = "logs"
+	ControlStop    ControlCommand = "stop"
+	ControlRestart ControlCommand = "restart"
+	ControlVersion ControlCommand = "version"
+)
+
+func (c ControlCommand) Valid() bool {
+	switch c {
+	case ControlStatus, ControlLogs, ControlStop, ControlRestart, ControlVersion:
+		return true
+	default:
+		return false
+	}
+}
+
+type ControlCommandRequest struct {
+	Command ControlCommand `json:"command"`
+}
+
+type ControlCommandEnvelope struct {
+	ID      string         `json:"id"`
+	Command ControlCommand `json:"command"`
+}
+
+type ControlCommandResultRequest struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+	Logs    string `json:"logs,omitempty"`
+}
+
 const (
 	UsageMultiplierScale     int64 = 1_000_000
 	UsageMaxMultiplierMicros int64 = 1_000_000_000

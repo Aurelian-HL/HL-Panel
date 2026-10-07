@@ -139,3 +139,50 @@ func (s *Store) Overview(_ context.Context, now time.Time, onlineFor time.Durati
 	}
 	return overview, nil
 }
+
+func (s *Store) RequestControl(_ context.Context, input nodes.ControlCommandInput, event audit.Event) (nodes.ControlCommandResult, bool, error) {
+	s.mu.Lock(); defer s.mu.Unlock()
+	node, ok := s.nodes[input.NodeID]
+	if !ok { return nodes.ControlCommandResult{}, false, faults.ErrNotFound }
+	if node.ControlCommandID != "" && node.ControlIdempotencyKey == input.IdempotencyKey {
+		return controlResult(node), true, nil
+	}
+	node.ControlCommandID = input.CommandID
+	node.ControlCommand = input.Command
+	node.ControlCommandStatus = "pending"
+	node.ControlCommandMessage = "等待节点执行"
+	node.ControlCommandLogs = ""
+	node.ControlCommandUpdatedAt = &input.UpdatedAt
+	node.ControlIdempotencyKey = input.IdempotencyKey
+	node.ControlRequestSHA256 = input.RequestSHA256
+	node.UpdatedAt = input.UpdatedAt
+	s.nodes[input.NodeID] = node
+	s.appendAuditLocked(event)
+	return controlResult(node), false, nil
+}
+
+func (s *Store) ControlForNode(_ context.Context, nodeID string) (nodes.ControlCommandResult, error) {
+	s.mu.RLock(); defer s.mu.RUnlock()
+	node, ok := s.nodes[nodeID]; if !ok { return nodes.ControlCommandResult{}, faults.ErrNotFound }
+	return controlResult(node), nil
+}
+
+func (s *Store) RecordControlResult(_ context.Context, nodeID string, result nodes.ControlCommandResult, event audit.Event) error {
+	s.mu.Lock(); defer s.mu.Unlock()
+	node, ok := s.nodes[nodeID]; if !ok { return faults.ErrNotFound }
+	if node.ControlCommandID != result.CommandID || node.ControlCommand != result.Command { return faults.ErrConflict }
+	node.ControlCommandStatus = result.Status
+	node.ControlCommandMessage = result.Message
+	node.ControlCommandLogs = result.Logs
+	node.ControlCommandUpdatedAt = &result.UpdatedAt
+	node.UpdatedAt = result.UpdatedAt
+	s.nodes[nodeID] = node
+	s.appendAuditLocked(event)
+	return nil
+}
+
+func controlResult(node nodes.Node) nodes.ControlCommandResult {
+	return nodes.ControlCommandResult{NodeID: node.ID, CommandID: node.ControlCommandID, Command: node.ControlCommand, Status: node.ControlCommandStatus, Message: node.ControlCommandMessage, Logs: node.ControlCommandLogs, UpdatedAt: valueTime(node.ControlCommandUpdatedAt)}
+}
+
+func valueTime(value *time.Time) time.Time { if value == nil { return time.Time{} }; return value.UTC() }

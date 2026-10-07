@@ -386,6 +386,51 @@ func (a *Agent) EnforcementOnce(ctx context.Context) (bool, error) {
 	return a.enforcement.ReconcileOnce(ctx)
 }
 
+// ControlOnce consumes one closed-set administrator command. Commands are
+// reported as durable results so a lost response can be retried safely.
+func (a *Agent) ControlOnce(ctx context.Context) error {
+	if err := a.Bootstrap(ctx); err != nil { return err }
+	command, err := a.client.DesiredControl(ctx, a.nodeSecret)
+	if err != nil || command == nil { return err }
+	result := agentv1.ControlCommandResultRequest{ID: command.ID, Status: "succeeded"}
+	switch command.Command {
+	case agentv1.ControlStatus:
+		result.Message = "运行中"
+		if mode := a.activeEngineMode(); mode != "" { result.Message = "运行中（" + mode + "）" } else { result.Message = "已停止" }
+	case agentv1.ControlVersion:
+		result.Message = "Agent " + a.cfg.AgentVersion + "; " + a.activeEngineMode()
+	case agentv1.ControlLogs:
+		current, loadErr := a.state.Load()
+		if loadErr != nil { result.Status, result.Message = "failed", "读取节点应用记录失败" } else {
+			result.Message = "最近配置应用记录"
+			result.Logs = current.LastApplyMessage
+			if result.Logs == "" { result.Logs = "暂无配置应用记录" }
+		}
+	case agentv1.ControlStop:
+		if err := a.closeEngines(ctx); err != nil { result.Status, result.Message = "failed", "停止引擎失败" } else { result.Message = "引擎已停止" }
+	case agentv1.ControlRestart:
+		if err := a.reconciler.RestoreApplied(ctx); err != nil { result.Status, result.Message = "failed", "恢复配置并重启失败" } else { result.Message = "引擎已重启并恢复最近配置" }
+	default:
+		result.Status, result.Message = "failed", "不支持的控制命令"
+	}
+	if len(result.Message) > 512 { result.Message = result.Message[:512] }
+	return a.client.ReportControlResult(ctx, a.nodeSecret, result)
+}
+
+func (a *Agent) activeEngineMode() string {
+	if process, ok := a.adapter.(interface{ ActiveEngineMode() string }); ok { return process.ActiveEngineMode() }
+	return ""
+}
+
+func (a *Agent) closeEngines(ctx context.Context) error {
+	var first error
+	if a.xrayAdapter != nil { first = a.xrayAdapter.Close(ctx) }
+	if a.gostAdapter != nil {
+		if err := a.gostAdapter.Close(ctx); first == nil { first = err }
+	}
+	return first
+}
+
 func (a *Agent) requireOwnedXray() error {
 	if a.xrayAdapter == nil || a.xrayAdapter.ActiveEngineMode() != config.EngineModeXray {
 		return errors.New("usage engine unavailable: agent-owned Xray process is not running")
@@ -408,7 +453,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop}
+	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop}
 	if a.usageReporter != nil {
 		loops = append(loops, a.usageLoop)
 	}
@@ -431,6 +476,13 @@ func (a *Agent) Run(ctx context.Context) error {
 		return firstError
 	}
 	return ctx.Err()
+}
+
+func (a *Agent) controlLoop(ctx context.Context) error {
+	interval := a.cfg.DesiredPollInterval.Duration()
+	if interval <= 0 { interval = 10 * time.Second }
+	backoff := reconciler.NewBackoff(a.cfg.Backoff)
+	return runPeriodic(ctx, interval, backoff, a.ControlOnce, func(err error) { a.logger.Warn("control command failed", "error", err) })
 }
 
 func (a *Agent) usageLoop(ctx context.Context) error {

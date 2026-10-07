@@ -122,6 +122,24 @@ func (c *Client) Desired(ctx context.Context, nodeCredential string) (*agentv1.D
 	return &desired, nil
 }
 
+func (c *Client) DesiredControl(ctx context.Context, nodeCredential string) (*agentv1.ControlCommandEnvelope, error) {
+	body, status, err := c.do(ctx, http.MethodGet, "/agent/control", nodeCredential, nil, maxOrdinaryResponseBody)
+	if err != nil { return nil, err }
+	if status == http.StatusNoContent { return nil, nil }
+	if status != http.StatusOK { return nil, httpError(status, body) }
+	var command agentv1.ControlCommandEnvelope
+	if err := decodeStrict(body, &command); err != nil { return nil, fmt.Errorf("decode control command: %w", err) }
+	if command.ID == "" || !command.Command.Valid() { return nil, errors.New("control plane returned an invalid control command") }
+	return &command, nil
+}
+
+func (c *Client) ReportControlResult(ctx context.Context, nodeCredential string, request agentv1.ControlCommandResultRequest) error {
+	body, status, err := c.do(ctx, http.MethodPost, "/agent/control-results", nodeCredential, request, maxOrdinaryResponseBody)
+	if err != nil { return err }
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusAccepted { return httpError(status, body) }
+	return nil
+}
+
 func (c *Client) ReportApplyResult(ctx context.Context, nodeCredential string, request agentv1.ApplyResultRequest) error {
 	body, status, err := c.do(ctx, http.MethodPost, "/agent/apply-results", nodeCredential, request, maxOrdinaryResponseBody)
 	if err != nil {

@@ -4,6 +4,7 @@
 package hostprobe
 
 import (
+	"math"
 	"net"
 	"os"
 	"strconv"
@@ -24,6 +25,7 @@ var previous struct {
 
 func number(s string) (uint64, bool) { v, err := strconv.ParseUint(s, 10, 64); return v, err == nil }
 func ptr(v uint64) *uint64           { return &v }
+func floatPtr(v float64) *float64    { return &v }
 
 func cpuCounters(text string) (total, idle uint64, ok bool) {
 	fields := strings.Fields(strings.SplitN(text, "\n", 2)[0])
@@ -61,6 +63,41 @@ func memory(text string) (used, total *uint64) {
 		return ptr(t - available), ptr(t)
 	}
 	return nil, nil
+}
+
+func swap(text string) (used, total *uint64) {
+	values := map[string]uint64{}
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[2] != "kB" {
+			continue
+		}
+		if n, ok := number(f[1]); ok {
+			values[strings.TrimSuffix(f[0], ":")] = n * 1024
+		}
+	}
+	t, tok := values["SwapTotal"]
+	free, fok := values["SwapFree"]
+	if tok && fok && free <= t {
+		return ptr(t - free), ptr(t)
+	}
+	return nil, nil
+}
+
+func loadAverage(text string) (one, five, fifteen *float64) {
+	fields := strings.Fields(text)
+	if len(fields) < 3 {
+		return nil, nil, nil
+	}
+	values := [3]float64{}
+	for i := range values {
+		value, err := strconv.ParseFloat(fields[i], 64)
+		if err != nil || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, nil, nil
+		}
+		values[i] = value
+	}
+	return floatPtr(values[0]), floatPtr(values[1]), floatPtr(values[2])
 }
 
 func network(text string) (rx, tx uint64, ok bool) {
@@ -123,6 +160,10 @@ func Snapshot() *agentv1.HostSnapshot {
 	}
 	if data, err := os.ReadFile("/proc/meminfo"); err == nil {
 		s.MemoryUsedBytes, s.MemoryTotalBytes = memory(string(data))
+		s.SwapUsedBytes, s.SwapTotalBytes = swap(string(data))
+	}
+	if data, err := os.ReadFile("/proc/loadavg"); err == nil {
+		s.LoadAverage1, s.LoadAverage5, s.LoadAverage15 = loadAverage(string(data))
 	}
 	var disk unix.Statfs_t
 	if unix.Statfs("/", &disk) == nil && disk.Bsize > 0 && disk.Blocks >= disk.Bfree {

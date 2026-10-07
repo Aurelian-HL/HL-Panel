@@ -32,6 +32,16 @@ export interface OverviewResponse {
   nodes: EdgeNode[]
 }
 
+export interface NodeControlResult {
+  node_id: string
+  command_id: string
+  command: 'status' | 'logs' | 'stop' | 'restart' | 'version'
+  status: string
+  message: string
+  logs: string
+  updated_at: string
+}
+
 export type NodeStatus = 'online' | 'offline' | 'syncing' | 'failed' | 'retired' | 'unknown'
 
 export interface NodeDesiredGeneration {
@@ -55,6 +65,12 @@ export interface EdgeNode extends NodeDesiredGeneration {
   capabilities: string[]
   last_heartbeat_at: string | null
   created_at: string
+  control_command_id?: string
+  control_command?: NodeControlResult['command'] | string
+  control_command_status?: string
+  control_command_message?: string
+  control_command_logs?: string
+  control_command_updated_at?: string | null
 }
 
 export interface NodesResponse {

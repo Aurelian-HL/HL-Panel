@@ -147,6 +147,8 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
 	mux.HandleFunc("GET /api/v1/nodes", api.requireAdministrator(api.listNodes))
+	mux.HandleFunc("POST /api/v1/nodes/{node_id}/control", api.requireAdministrator(api.requestNodeControl))
+	mux.HandleFunc("GET /api/v1/nodes/{node_id}/control", api.requireAdministrator(api.nodeControl))
 	mux.HandleFunc("POST /api/v1/nodes/{node_id}/credential/rotate", api.requireAdministrator(api.rotateNodeCredential))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens", api.requireAdministrator(api.issueEnrollmentToken))
 	mux.HandleFunc("POST /api/v1/enrollment-tokens/{token_id}/revoke", api.requireAdministrator(api.revokeEnrollmentToken))
@@ -168,6 +170,8 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("POST /api/v1/endpoint-pools/{pool_id}/members", api.requireAdministrator(api.addEndpointPoolMember))
 	mux.HandleFunc("POST /api/v1/agent/enroll", api.enrollNode)
 	mux.HandleFunc("POST /api/v1/agent/heartbeat", api.requireNode(api.heartbeat))
+	mux.HandleFunc("GET /api/v1/agent/control", api.requireNode(api.desiredControl))
+	mux.HandleFunc("POST /api/v1/agent/control-results", api.requireNode(api.recordControlResult))
 	mux.HandleFunc("GET /api/v1/agent/desired", api.requireNode(api.desiredNodeConfig))
 	mux.HandleFunc("POST /api/v1/agent/apply-results", api.requireNode(api.recordApplyResult))
 	if api.vlessIdentity != nil {

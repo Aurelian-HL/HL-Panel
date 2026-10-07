@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -44,6 +45,19 @@ func (api *API) heartbeat(writer http.ResponseWriter, request *http.Request, nod
 		writeProblem(writer, request, err)
 		return
 	}
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (api *API) desiredControl(writer http.ResponseWriter, request *http.Request, node nodes.Node) {
+	if node.ControlCommandID == "" || node.ControlCommandStatus != "pending" { writer.WriteHeader(http.StatusNoContent); return }
+	writeJSON(writer, http.StatusOK, agentv1.ControlCommandEnvelope{ID: node.ControlCommandID, Command: agentv1.ControlCommand(node.ControlCommand)})
+}
+
+func (api *API) recordControlResult(writer http.ResponseWriter, request *http.Request, node nodes.Node) {
+	var input agentv1.ControlCommandResultRequest
+	if err := decodeJSON(writer, request, &input); err != nil { writeProblem(writer, request, err); return }
+	if input.ID == "" || (input.Status != "succeeded" && input.Status != "failed") || len(input.Message) > 2048 || len(input.Logs) > 16<<10 { writeProblem(writer, request, fmt.Errorf("%w: invalid control result", faults.ErrValidation)); return }
+	if err := api.nodes.RecordControlResult(request.Context(), node.ID, nodes.ControlCommandResult{NodeID: node.ID, CommandID: input.ID, Command: node.ControlCommand, Status: input.Status, Message: input.Message, Logs: input.Logs}); err != nil { writeProblem(writer, request, err); return }
 	writer.WriteHeader(http.StatusNoContent)
 }
 

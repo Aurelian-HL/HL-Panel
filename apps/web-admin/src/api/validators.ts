@@ -19,6 +19,7 @@ import type {
   LoginResponse,
   NodesResponse,
   OverviewResponse,
+  NodeControlResult,
 } from './types'
 
 export class ContractError extends Error {
@@ -165,6 +166,31 @@ export function parseOverviewResponse(value: unknown): OverviewResponse {
   }
 }
 
+function controlCommand(value: unknown, name: string): NodeControlResult['command'] {
+  const raw = text(value, name)
+  if (!['status', 'logs', 'stop', 'restart', 'version'].includes(raw)) throw new ContractError(`${name} 不是受支持的节点控制命令`)
+  return raw as NodeControlResult['command']
+}
+
+function controlStatus(value: unknown, name: string): string {
+  const raw = text(value, name)
+  if (!['pending', 'succeeded', 'failed'].includes(raw)) throw new ContractError(`${name} 不是受支持的控制状态`)
+  return raw
+}
+
+export function parseNodeControlResult(value: unknown, name = 'node_control'): NodeControlResult {
+  const body = record(value, name)
+  return {
+    node_id: text(body.node_id, `${name}.node_id`),
+    command_id: text(body.command_id, `${name}.command_id`),
+    command: controlCommand(body.command, `${name}.command`),
+    status: controlStatus(body.status, `${name}.status`),
+    message: optionalText(body.message, `${name}.message`),
+    logs: optionalText(body.logs, `${name}.logs`),
+    updated_at: text(body.updated_at, `${name}.updated_at`),
+  }
+}
+
 function parseNode(value: unknown, index: number): EdgeNode {
   const item = record(value, `nodes.items[${index}]`)
   const rawStatus = optionalText(item.status, `nodes.items[${index}].status`).toLowerCase()
@@ -187,6 +213,12 @@ function parseNode(value: unknown, index: number): EdgeNode {
     last_apply_message: optionalText(item.last_apply_message, `nodes.items[${index}].last_apply_message`),
     last_heartbeat_at: nullableText(item.last_heartbeat_at, `nodes.items[${index}].last_heartbeat_at`),
     created_at: optionalText(item.created_at, `nodes.items[${index}].created_at`),
+    control_command_id: optionalText(item.control_command_id, `nodes.items[${index}].control_command_id`),
+    control_command: optionalText(item.control_command, `nodes.items[${index}].control_command`),
+    control_command_status: optionalText(item.control_command_status, `nodes.items[${index}].control_command_status`),
+    control_command_message: optionalText(item.control_command_message, `nodes.items[${index}].control_command_message`),
+    control_command_logs: optionalText(item.control_command_logs, `nodes.items[${index}].control_command_logs`),
+    control_command_updated_at: nullableText(item.control_command_updated_at, `nodes.items[${index}].control_command_updated_at`),
   }
 }
 

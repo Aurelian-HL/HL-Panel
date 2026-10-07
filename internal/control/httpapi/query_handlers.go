@@ -8,6 +8,22 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 )
 
+func (api *API) requestNodeControl(writer http.ResponseWriter, request *http.Request, session auth.Session) {
+	var input struct { Command string `json:"command"` }
+	if err := decodeJSON(writer, request, &input); err != nil { writeProblem(writer, request, err); return }
+	result, replayed, err := api.nodes.RequestControl(request.Context(), session.AdminID, request.PathValue("node_id"), input.Command, request.Header.Get("Idempotency-Key"))
+	if err != nil { writeProblem(writer, request, err); return }
+	writeBusinessResult(writer, request, "control", result, replayed)
+}
+
+func (api *API) nodeControl(writer http.ResponseWriter, request *http.Request, _ auth.Session) {
+	result, err := api.nodes.ControlForNode(request.Context(), request.PathValue("node_id"))
+	if err != nil { writeProblem(writer, request, err); return }
+	if result.CommandID == "" { writer.WriteHeader(http.StatusNoContent); return }
+	writeJSON(writer, http.StatusOK, result)
+}
+
+
 func (api *API) health(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
 }

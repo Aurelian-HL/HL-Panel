@@ -6,8 +6,13 @@ type HostSnapshot struct {
 	CPUPercent                *float64 `json:"cpu_percent,omitempty"`
 	MemoryUsedBytes           *uint64  `json:"memory_used_bytes,omitempty"`
 	MemoryTotalBytes          *uint64  `json:"memory_total_bytes,omitempty"`
+	SwapUsedBytes             *uint64  `json:"swap_used_bytes,omitempty"`
+	SwapTotalBytes            *uint64  `json:"swap_total_bytes,omitempty"`
 	DiskUsedBytes             *uint64  `json:"disk_used_bytes,omitempty"`
 	DiskTotalBytes            *uint64  `json:"disk_total_bytes,omitempty"`
+	LoadAverage1               *float64 `json:"load_average_1,omitempty"`
+	LoadAverage5               *float64 `json:"load_average_5,omitempty"`
+	LoadAverage15              *float64 `json:"load_average_15,omitempty"`
 	UptimeSeconds             *uint64  `json:"uptime_seconds,omitempty"`
 	NetInTransferBytes        *uint64  `json:"net_in_transfer_bytes,omitempty"`
 	NetOutTransferBytes       *uint64  `json:"net_out_transfer_bytes,omitempty"`

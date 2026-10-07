@@ -113,3 +113,11 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.
 func (s *Store) Overview(ctx context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {
 	return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Overview, error) { return state.Overview(ctx, now, onlineFor) })
 }
+
+func (s *Store) RequestControl(ctx context.Context, input nodes.ControlCommandInput, event audit.Event) (nodes.ControlCommandResult, bool, error) {
+	type result struct { value nodes.ControlCommandResult; replayed bool }
+	v, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) { value, replayed, err := state.RequestControl(ctx, input, event); return result{value, replayed}, err })
+	return v.value, v.replayed, err
+}
+func (s *Store) ControlForNode(ctx context.Context, nodeID string) (nodes.ControlCommandResult, error) { return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.ControlCommandResult, error) { return state.ControlForNode(ctx, nodeID) }) }
+func (s *Store) RecordControlResult(ctx context.Context, nodeID string, result nodes.ControlCommandResult, event audit.Event) error { return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.RecordControlResult(ctx, nodeID, result, event) }) }

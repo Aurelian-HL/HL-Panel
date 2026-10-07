@@ -145,6 +145,38 @@ func (s *Service) Overview(ctx context.Context) (Overview, error) {
 	return overview, nil
 }
 
+func (s *Service) RequestControl(ctx context.Context, administratorID, nodeID, command, idempotencyKey string) (ControlCommandResult, bool, error) {
+	command = strings.TrimSpace(command)
+	if !validIdentifier(administratorID) || !validIdentifier(nodeID) || !validIdentifier(idempotencyKey) {
+		return ControlCommandResult{}, false, fmt.Errorf("%w: node, administrator, and Idempotency-Key are required", faults.ErrValidation)
+	}
+	if !validControlCommand(command) {
+		return ControlCommandResult{}, false, fmt.Errorf("%w: unsupported node control command", faults.ErrValidation)
+	}
+	now := s.now().UTC()
+	event, err := audit.NewEvent(now, "administrator", administratorID, "node.control."+command, "node", nodeID, "succeeded", map[string]any{"command": command})
+	if err != nil { return ControlCommandResult{}, false, err }
+	return s.repository.RequestControl(ctx, ControlCommandInput{NodeID: nodeID, Command: command, AdministratorID: administratorID, IdempotencyKey: idempotencyKey, RequestSHA256: rotationDigest(nodeID+"\x00"+command), CommandID: newControlID(now), UpdatedAt: now}, event)
+}
+
+func (s *Service) ControlForNode(ctx context.Context, nodeID string) (ControlCommandResult, error) {
+	return s.repository.ControlForNode(ctx, nodeID)
+}
+
+func (s *Service) RecordControlResult(ctx context.Context, nodeID string, result ControlCommandResult) error {
+	now := s.now().UTC()
+	event, err := audit.NewEvent(now, "node", nodeID, "node.control.result", "node", nodeID, result.Status, map[string]any{"command": result.Command, "status": result.Status})
+	if err != nil { return err }
+	result.UpdatedAt = now
+	return s.repository.RecordControlResult(ctx, nodeID, result, event)
+}
+
+func validControlCommand(command string) bool {
+	switch command { case "status", "logs", "stop", "restart", "version": return true; default: return false }
+}
+
+func newControlID(now time.Time) string { return fmt.Sprintf("control_%d", now.UnixNano()) }
+
 func nodeStatus(node Node, now time.Time, onlineFor time.Duration) string {
 	if node.LastHeartbeatAt == nil || now.Sub(*node.LastHeartbeatAt) > onlineFor {
 		return "offline"

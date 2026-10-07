@@ -22,6 +22,7 @@ import type {
   LoginResponse,
   NodesResponse,
   OverviewResponse,
+  NodeControlResult,
   RetireDeviceGroupMemberResponse,
   UpdateDeviceGroupMemberWeightResponse,
 } from './types'
@@ -43,6 +44,7 @@ import {
   parseLoginResponse,
   parseNodesResponse,
   parseOverviewResponse,
+  parseNodeControlResult,
 } from './validators'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
@@ -52,6 +54,8 @@ interface AdminApi {
   login(request: LoginRequest): Promise<LoginResponse>
   getOverview(): Promise<OverviewResponse>
   getNodes(): Promise<NodesResponse>
+  controlNode(nodeId: string, command: NodeControlResult['command']): Promise<NodeControlResult>
+  getNodeControl(nodeId: string): Promise<NodeControlResult | null>
   getDeviceGroups(): Promise<DeviceGroupsResponse>
   getDeviceGroupMembers(groupId: string): Promise<DeviceGroupMembersResponse>
   getEndpointPools(): Promise<EndpointPoolsResponse>
@@ -78,6 +82,16 @@ const realApi: AdminApi = {
   },
   async getNodes() {
     return parseNodesResponse(await http.request('/nodes'))
+  },
+  async controlNode(nodeId, command) {
+    const key = `${nodeId}:${command}:${crypto.randomUUID()}`
+    const body = await http.request(`/nodes/${encodeURIComponent(nodeId)}/control`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ command }) })
+    const value = (body as { control?: unknown }).control
+    return parseNodeControlResult(value, 'control')
+  },
+  async getNodeControl(nodeId) {
+    const value = await http.request<unknown>(`/nodes/${encodeURIComponent(nodeId)}/control`)
+    return value === undefined ? null : parseNodeControlResult(value)
   },
   async getDeviceGroups() {
     return parseDeviceGroupsResponse(await http.request('/device-groups'))
