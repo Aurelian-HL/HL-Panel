@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Plus, RefreshCw, Search } from '@lucide/vue'
+import { ExternalLink, FolderTree, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupKind, type EdgeNode } from '@/api'
 import { businessApi, type GroupNetwork, type UserGroup } from '@/api/business'
@@ -16,6 +16,7 @@ import GroupConfigPreviewDialog from '@/features/groups/GroupConfigPreviewDialog
 import GroupIntegrationDialog from '@/features/groups/GroupIntegrationDialog.vue'
 import DeleteDeviceGroupDialog from '@/features/groups/DeleteDeviceGroupDialog.vue'
 import { displayError } from '@/lib/displayFormatters'
+import { RouterLink } from 'vue-router'
 
 const groups = ref<DeviceGroup[]>([])
 const nodes = ref<EdgeNode[]>([])
@@ -23,6 +24,7 @@ const loading = ref(true)
 const errorMessage = ref('')
 const query = ref('')
 const kindFilter = ref<'ALL' | DeviceGroupKind>('ALL')
+const groupFilter = ref<'ALL' | 'UNGROUPED'>('ALL')
 const showCreateDialog = ref(false)
 const memberGroup = ref<DeviceGroup | null>(null)
 const addMemberGroup = ref<DeviceGroup | null>(null)
@@ -39,9 +41,14 @@ const kinds: Array<{ value: 'ALL' | DeviceGroupKind; label: string }> = [
   { value: 'ALL', label: '全部' }, { value: 'ENTRY', label: '入口' }, { value: 'EXIT', label: '出口' },
 ]
 
+const isUngrouped = (group: DeviceGroup): boolean => !group.user_group_id?.trim()
+const ungroupedCount = computed(() => groups.value.filter(isUngrouped).length)
+
 const filteredGroups = computed(() => {
   const keyword = query.value.trim().toLowerCase()
-  return groups.value.filter((group) => (kindFilter.value === 'ALL' || group.kind === kindFilter.value) && (!keyword || `${group.name} ${group.description}`.toLowerCase().includes(keyword)))
+  return groups.value.filter((group) => (groupFilter.value === 'ALL' || isUngrouped(group))
+    && (kindFilter.value === 'ALL' || group.kind === kindFilter.value)
+    && (!keyword || `${group.name} ${group.description}`.toLowerCase().includes(keyword)))
 })
 
 async function load(): Promise<void> {
@@ -115,11 +122,20 @@ onMounted(load)
 <template>
   <div class="page-stack">
     <header class="page-heading">
-      <div><h2>设备组</h2><p>入口组可直接出站，也可作为经出口组路径的前置入口；出口组负责落地出站</p></div>
-      <div class="page-heading__actions"><button class="button button--secondary" type="button" :disabled="loading" @click="load"><RefreshCw :class="{ spin: loading }" :size="16" />刷新</button><button class="button button--primary" type="button" @click="showCreateDialog = true"><Plus :size="16" />创建设备组</button></div>
+      <div><h2>设备组管理（站点管理员）</h2><p>管理入口与出口设备组、节点成员和路由网络配置</p></div>
+      <div class="page-heading__actions">
+        <button class="button button--primary" type="button" @click="showCreateDialog = true"><Plus :size="16" />添加设备组</button>
+        <button class="button button--secondary" type="button" disabled title="清空流量暂未开放"><SlidersHorizontal :size="16" />清空流量</button>
+        <button class="button button--secondary" type="button" :disabled="loading" @click="load"><RefreshCw :class="{ spin: loading }" :size="16" />刷新</button>
+        <RouterLink class="button button--secondary" to="/user-groups"><FolderTree :size="16" />管理分组<ExternalLink :size="14" /></RouterLink>
+      </div>
     </header>
 
     <section class="toolbar" aria-label="设备组筛选">
+      <div class="segmented-control group-scope-tabs" role="tablist" aria-label="设备组分组筛选">
+        <button type="button" role="tab" :aria-selected="groupFilter === 'ALL'" :class="{ active: groupFilter === 'ALL' }" @click="groupFilter = 'ALL'">全部</button>
+        <button type="button" role="tab" :aria-selected="groupFilter === 'UNGROUPED'" :class="{ active: groupFilter === 'UNGROUPED' }" @click="groupFilter = 'UNGROUPED'">未分组 <span>({{ ungroupedCount }})</span></button>
+      </div>
       <label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索设备组名称或描述" /></label>
       <div class="segmented-control" role="group" aria-label="类型筛选"><button v-for="kind in kinds" :key="kind.value" type="button" :class="{ active: kindFilter === kind.value }" @click="kindFilter = kind.value">{{ kind.label }}</button></div>
     </section>
