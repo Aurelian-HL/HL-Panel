@@ -169,7 +169,9 @@ request('GET', '/auth/me', token=token, expected=401)
 request('POST', '/auth/login', {'username':username, 'password':password}, expected=401)
 session = login(replacement)
 assert session['user']['must_change_password'] is False
-assert all(value == 0 for value in request('GET', '/overview', token=session['access_token']).values())
+overview = request('GET', '/overview', token=session['access_token'])
+assert overview['nodes'] == []
+assert all(value == 0 for key, value in overview.items() if key != 'nodes')
 assert request('GET', '/device-groups', token=session['access_token'])['items'] == []
 subprocess.run(['nginx', '-t'], check=True)
 with urllib.request.urlopen('https://127.0.0.1:19443/', context=ssl._create_unverified_context(), timeout=15) as page:
