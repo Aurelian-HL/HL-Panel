@@ -35,6 +35,13 @@ describe('operator error messages', () => {
     expect(displayError(new Error('validation: connect_host must be one DNS name or IP without protocol, credentials, path or port'))).toContain('连接地址格式无效')
     expect(displayError(new Error('internal unrecognized detail'))).toBe('操作失败，请检查填写内容并重试')
   })
+
+  it('explains why a referenced device group cannot be deleted', () => {
+    expect(displayError(new Error('conflict: device group has a network policy'))).toContain('网络策略')
+    expect(displayError(new Error('conflict: device group is referenced by a user group'))).toContain('用户组授权')
+    expect(displayError(new Error('conflict: device group is referenced by a forwarding rule'))).toContain('转发规则')
+    expect(displayError(new Error('conflict: device group is referenced by an endpoint pool'))).toContain('端点池')
+  })
 })
 
 describe('VLESS Reality ingress', () => {
