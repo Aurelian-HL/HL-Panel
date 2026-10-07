@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -68,9 +69,10 @@ type XrayProcessAdapter struct {
 	runner     XrayRunner
 	autoStart  bool
 
-	counterEpoch uint64
-	mu           sync.Mutex
-	process      XrayProcess
+	counterEpoch     uint64
+	mu               sync.Mutex
+	process          XrayProcess
+	processStartedAt time.Time
 }
 
 // NewXrayProcessAdapter constructs an adapter rooted at private absolute
@@ -237,6 +239,30 @@ func (a *XrayProcessAdapter) ActiveEngineMode() string {
 
 func (a *XrayProcessAdapter) RequiresLiveProcess() bool { return a.autoStart }
 
+// RuntimeMetrics reports the owned Xray process without exposing engine
+// output, which can contain configuration secrets.
+func (a *XrayProcessAdapter) RuntimeMetrics() RuntimeMetrics {
+	a.mu.Lock()
+	process, startedAt := a.process, a.processStartedAt
+	a.mu.Unlock()
+	if !a.autoStart || process == nil || !process.Running() {
+		return RuntimeMetrics{}
+	}
+	pid := 0
+	if provider, ok := process.(interface{ PID() int }); ok {
+		pid = provider.PID()
+	}
+	return readProcessMetrics(pid, startedAt)
+}
+
+func (a *XrayProcessAdapter) RuntimeLog() string {
+	metrics := a.RuntimeMetrics()
+	if metrics.PID == 0 {
+		return "Xray 引擎未检测到受管进程"
+	}
+	return fmt.Sprintf("Xray 运行中（PID %d，内存 %s，线程 %s，运行 %s）", metrics.PID, formatMetricBytes(metrics.MemoryBytes), formatMetricCount(metrics.ThreadCount), formatMetricUptime(metrics.UptimeSeconds))
+}
+
 func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedConfiguration) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -342,6 +368,7 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 		return nil, ErrXrayStart
 	}
 	a.counterEpoch++
+	a.processStartedAt = time.Now().UTC()
 	return process, nil
 }
 
@@ -442,6 +469,13 @@ func (r *ExecXrayRunner) Start(ctx context.Context, configPath string) (XrayProc
 type execXrayProcess struct {
 	command *exec.Cmd
 	done    chan error
+}
+
+func (p *execXrayProcess) PID() int {
+	if p == nil || p.command == nil || p.command.Process == nil {
+		return 0
+	}
+	return p.command.Process.Pid
 }
 
 func (p *execXrayProcess) Running() bool {

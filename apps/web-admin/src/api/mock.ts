@@ -23,6 +23,7 @@ import type {
   LoginResponse,
   NodesResponse,
   OverviewResponse,
+  PanelControlResult,
   RetireDeviceGroupMemberResponse,
 } from './types'
 import { ApiError } from './http'
@@ -93,6 +94,7 @@ const groupRevisionRequests = new Map<string, { fingerprint: string; response: C
 const endpointPoolRequests = new Map<string, { fingerprint: string; response: CreateEndpointPoolResponse }>()
 const endpointPoolDeletions = new Map<string, string>()
 const pendingEnrollmentTokens = new Map<string, PendingEnrollmentToken>()
+let panelControlResult: PanelControlResult | null = null
 
 function pause<T>(value: T, milliseconds = 280): Promise<T> {
   return new Promise((resolve) => window.setTimeout(() => resolve(value), milliseconds))
@@ -119,8 +121,15 @@ export const mockApi = {
       syncing_node_count: nodes.filter((node) => node.status === 'syncing').length,
       failed_apply_count: nodes.filter((node) => node.status === 'failed').length,
       nodes: clone(nodes),
+      panel: { status: 'online', version: 'v0.1.31', started_at: new Date(now - 86400000 * 4).toISOString(), resources: { cpu_percent: 16, memory_used_bytes: 2 * 1024 ** 3, memory_total_bytes: 8 * 1024 ** 3, swap_used_bytes: 0, swap_total_bytes: 0, disk_used_bytes: 40 * 1024 ** 3, disk_total_bytes: 100 * 1024 ** 3, uptime_seconds: 345600, load_average_1: 0.42, load_average_5: 0.37, load_average_15: 0.28, ipv4: '203.0.113.10' }, log: 'HL-Panel 运行中' },
     })
   },
+  async controlPanel(command: PanelControlResult['command']): Promise<PanelControlResult> {
+    const result: PanelControlResult = { command_id: `panel_${crypto.randomUUID()}`, command, status: command === 'stop' || command === 'restart' ? 'failed' : 'succeeded', message: command === 'version' ? 'HL-Panel v0.1.31' : command === 'logs' ? '最近面板运行记录' : command === 'status' ? '面板服务运行中' : '面板服务未配置受限控制器，无法执行该操作', logs: command === 'logs' ? 'HL-Panel 运行中' : '', updated_at: new Date().toISOString() }
+    panelControlResult = result
+    return pause(clone(result))
+  },
+  getPanelControl(): Promise<PanelControlResult | null> { return pause(clone(panelControlResult)) },
   getNodes(): Promise<NodesResponse> {
     return pause(clone({ items: nodes }))
   },

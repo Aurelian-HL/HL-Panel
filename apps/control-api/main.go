@@ -30,6 +30,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -153,6 +154,7 @@ func run(logger *slog.Logger) error {
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
+		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, nil, logger, time.Now)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),

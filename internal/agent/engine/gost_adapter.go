@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -28,9 +29,10 @@ type GOSTProcessAdapter struct {
 	runner     GOSTRunner
 	autoStart  bool
 
-	counterEpoch uint64
-	mu           sync.Mutex
-	process      GOSTProcess
+	counterEpoch     uint64
+	mu               sync.Mutex
+	process          GOSTProcess
+	processStartedAt time.Time
 }
 
 func NewGOSTProcessAdapter(options GOSTAdapterOptions) (*GOSTProcessAdapter, error) {
@@ -170,6 +172,28 @@ func (a *GOSTProcessAdapter) ActiveEngineMode() string {
 
 func (a *GOSTProcessAdapter) RequiresLiveProcess() bool { return a.autoStart }
 
+func (a *GOSTProcessAdapter) RuntimeMetrics() RuntimeMetrics {
+	a.mu.Lock()
+	process, startedAt := a.process, a.processStartedAt
+	a.mu.Unlock()
+	if !a.autoStart || process == nil || !process.Running() {
+		return RuntimeMetrics{}
+	}
+	pid := 0
+	if provider, ok := process.(interface{ PID() int }); ok {
+		pid = provider.PID()
+	}
+	return readProcessMetrics(pid, startedAt)
+}
+
+func (a *GOSTProcessAdapter) RuntimeLog() string {
+	metrics := a.RuntimeMetrics()
+	if metrics.PID == 0 {
+		return "gost 引擎未检测到受管进程"
+	}
+	return fmt.Sprintf("gost 运行中（PID %d，内存 %s，线程 %s，运行 %s）", metrics.PID, formatMetricBytes(metrics.MemoryBytes), formatMetricCount(metrics.ThreadCount), formatMetricUptime(metrics.UptimeSeconds))
+}
+
 func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedConfiguration) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -251,6 +275,7 @@ func (a *GOSTProcessAdapter) startLocked(ctx context.Context, path string) (GOST
 		return nil, ErrGOSTStart
 	}
 	a.counterEpoch++
+	a.processStartedAt = time.Now().UTC()
 	return process, nil
 }
 

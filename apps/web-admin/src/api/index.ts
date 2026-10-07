@@ -23,6 +23,7 @@ import type {
   NodesResponse,
   OverviewResponse,
   NodeControlResult,
+  PanelControlResult,
   RetireDeviceGroupMemberResponse,
   UpdateDeviceGroupMemberWeightResponse,
 } from './types'
@@ -45,6 +46,7 @@ import {
   parseNodesResponse,
   parseOverviewResponse,
   parseNodeControlResult,
+  parsePanelControlResult,
 } from './validators'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
@@ -56,6 +58,8 @@ interface AdminApi {
   getNodes(): Promise<NodesResponse>
   controlNode(nodeId: string, command: NodeControlResult['command']): Promise<NodeControlResult>
   getNodeControl(nodeId: string): Promise<NodeControlResult | null>
+  controlPanel(command: PanelControlResult['command']): Promise<PanelControlResult>
+  getPanelControl(): Promise<PanelControlResult | null>
   getDeviceGroups(): Promise<DeviceGroupsResponse>
   getDeviceGroupMembers(groupId: string): Promise<DeviceGroupMembersResponse>
   getEndpointPools(): Promise<EndpointPoolsResponse>
@@ -92,6 +96,14 @@ const realApi: AdminApi = {
   async getNodeControl(nodeId) {
     const value = await http.request<unknown>(`/nodes/${encodeURIComponent(nodeId)}/control`)
     return value === undefined ? null : parseNodeControlResult(value)
+  },
+  async controlPanel(command) {
+    const body = await http.request('/panel/control', { method: 'POST', body: JSON.stringify({ command }) })
+    return parsePanelControlResult(body, 'panel_control')
+  },
+  async getPanelControl() {
+    const value = await http.request<unknown>('/panel/control')
+    return value === undefined ? null : parsePanelControlResult(value)
   },
   async getDeviceGroups() {
     return parseDeviceGroupsResponse(await http.request('/device-groups'))

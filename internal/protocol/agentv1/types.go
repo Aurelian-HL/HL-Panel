@@ -41,6 +41,11 @@ type ResourceSnapshot struct {
 	GoMaxProcs        int           `json:"go_max_procs"`
 	MemoryAllocBytes  uint64        `json:"memory_alloc_bytes"`
 	MemorySystemBytes uint64        `json:"memory_system_bytes"`
+	// Process metrics describe the agent-owned forwarding engine, when one is
+	// running. They are intentionally separate from host-wide memory metrics.
+	ProcessMemoryBytes  *uint64 `json:"process_memory_bytes,omitempty"`
+	ProcessThreadCount  *uint64 `json:"process_thread_count,omitempty"`
+	EngineUptimeSeconds *uint64 `json:"engine_uptime_seconds,omitempty"`
 }
 
 type HeartbeatRequest struct {

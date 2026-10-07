@@ -220,6 +220,18 @@ func (a *MixedProcessAdapter) ActiveEngineMode() string {
 
 func (a *MixedProcessAdapter) RequiresLiveProcess() bool { return true }
 
+func (a *MixedProcessAdapter) RuntimeMetrics() RuntimeMetrics {
+	return mergeRuntimeMetrics(a.xray.RuntimeMetrics(), a.gost.RuntimeMetrics())
+}
+
+func (a *MixedProcessAdapter) RuntimeLog() string {
+	metrics := a.RuntimeMetrics()
+	if metrics.PID == 0 {
+		return "混合转发引擎未检测到受管进程"
+	}
+	return fmt.Sprintf("混合转发引擎运行中（内存 %s，线程 %s，运行 %s）", formatMetricBytes(metrics.MemoryBytes), formatMetricCount(metrics.ThreadCount), formatMetricUptime(metrics.UptimeSeconds))
+}
+
 func (a *MixedProcessAdapter) checkOwner(prepared PreparedConfiguration) error {
 	if prepared.components == nil {
 		return ErrPreparedForOtherEngine

@@ -19,6 +19,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -52,6 +53,7 @@ type API struct {
 	vlessRuntime      *vlessruntime.Service
 	vlessSetup        *vlesssetup.Service
 	platformInfo      PlatformInfo
+	panelRuntime      *panelruntime.Service
 	usage             usagehttpapi.Service
 	gatewayMembership *gatewaymembership.Handler
 	nezha             *nezhamonitor.Service
@@ -84,6 +86,10 @@ func WithSite(config *siteconfig.Service, notices *announcements.Service, platfo
 
 func WithUsage(service usagehttpapi.Service) Option {
 	return func(api *API) { api.usage = service }
+}
+
+func WithPanelRuntime(service *panelruntime.Service) Option {
+	return func(api *API) { api.panelRuntime = service }
 }
 
 func WithGatewayMembership(handler *gatewaymembership.Handler) Option {
@@ -146,6 +152,11 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
+	if api.panelRuntime != nil {
+		mux.HandleFunc("GET /api/v1/panel/runtime", api.requireAdministrator(api.panelRuntimeStatus))
+		mux.HandleFunc("POST /api/v1/panel/control", api.requireAdministrator(api.requestPanelControl))
+		mux.HandleFunc("GET /api/v1/panel/control", api.requireAdministrator(api.panelControl))
+	}
 	mux.HandleFunc("GET /api/v1/nodes", api.requireAdministrator(api.listNodes))
 	mux.HandleFunc("POST /api/v1/nodes/{node_id}/control", api.requireAdministrator(api.requestNodeControl))
 	mux.HandleFunc("GET /api/v1/nodes/{node_id}/control", api.requireAdministrator(api.nodeControl))

@@ -30,6 +30,24 @@ export interface OverviewResponse {
   syncing_node_count: number
   failed_apply_count: number
   nodes: EdgeNode[]
+  panel?: PanelRuntime
+}
+
+export interface PanelRuntime {
+  status: 'online' | 'unavailable' | string
+  version: string
+  started_at: string
+  resources: Record<string, unknown>
+  log: string
+}
+
+export interface PanelControlResult {
+  command_id: string
+  command: 'status' | 'logs' | 'stop' | 'restart' | 'version'
+  status: string
+  message: string
+  logs: string
+  updated_at: string
 }
 
 export interface NodeControlResult {

@@ -106,6 +106,13 @@ type execGOSTProcess struct {
 	done    chan struct{}
 }
 
+func (p *execGOSTProcess) PID() int {
+	if p == nil || p.command == nil || p.command.Process == nil {
+		return 0
+	}
+	return p.command.Process.Pid
+}
+
 func (p *execGOSTProcess) Running() bool {
 	select {
 	case <-p.done:

@@ -20,6 +20,8 @@ import type {
   NodesResponse,
   OverviewResponse,
   NodeControlResult,
+  PanelControlResult,
+  PanelRuntime,
 } from './types'
 
 export class ContractError extends Error {
@@ -156,6 +158,18 @@ export function parseLoginResponse(value: unknown): LoginResponse {
 export function parseOverviewResponse(value: unknown): OverviewResponse {
   const body = record(value, 'overview')
   if (body.nodes !== undefined && !Array.isArray(body.nodes)) throw new ContractError('nodes 必须是数组')
+  const rawPanel = body.panel
+  let panel: PanelRuntime | undefined
+  if (rawPanel !== undefined) {
+    const item = record(rawPanel, 'panel')
+    panel = {
+      status: optionalText(item.status, 'panel.status') || 'unavailable',
+      version: optionalText(item.version, 'panel.version'),
+      started_at: optionalText(item.started_at, 'panel.started_at'),
+      resources: unknownRecord(item.resources, 'panel.resources'),
+      log: optionalText(item.log, 'panel.log'),
+    }
+  }
   return {
     node_count: numberValue(body.node_count, 'node_count'),
     group_count: numberValue(body.group_count, 'group_count'),
@@ -163,6 +177,7 @@ export function parseOverviewResponse(value: unknown): OverviewResponse {
     syncing_node_count: numberValue(body.syncing_node_count, 'syncing_node_count'),
     failed_apply_count: numberValue(body.failed_apply_count, 'failed_apply_count'),
     nodes: Array.isArray(body.nodes) ? body.nodes.map(parseNode) : [],
+    panel,
   }
 }
 
@@ -184,6 +199,18 @@ export function parseNodeControlResult(value: unknown, name = 'node_control'): N
     node_id: text(body.node_id, `${name}.node_id`),
     command_id: text(body.command_id, `${name}.command_id`),
     command: controlCommand(body.command, `${name}.command`),
+    status: controlStatus(body.status, `${name}.status`),
+    message: optionalText(body.message, `${name}.message`),
+    logs: optionalText(body.logs, `${name}.logs`),
+    updated_at: text(body.updated_at, `${name}.updated_at`),
+  }
+}
+
+export function parsePanelControlResult(value: unknown, name = 'panel_control'): PanelControlResult {
+  const body = record(value, name)
+  return {
+    command_id: text(body.command_id, `${name}.command_id`),
+    command: controlCommand(body.command, `${name}.command`) as PanelControlResult['command'],
     status: controlStatus(body.status, `${name}.status`),
     message: optionalText(body.message, `${name}.message`),
     logs: optionalText(body.logs, `${name}.logs`),
