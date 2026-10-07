@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Megaphone, Pencil, Plus, RefreshCw, Save, Settings2 } from '@lucide/vue'
 import StatePanel from '@/components/StatePanel.vue'
+import VersionNotice from '@/components/VersionNotice.vue'
 import AnnouncementEditor from '@/features/announcements/AnnouncementEditor.vue'
 import { siteApi } from '@/api/site'
 import type { Announcement, SiteSettings, SiteSettingsInput } from '@/api/siteTypes'
@@ -57,6 +58,7 @@ onMounted(load)
 <template>
   <div class="page-stack system-settings-page">
     <header class="page-heading"><div><h2>系统设置</h2><p>管理站点公开信息、主题和首页公告</p></div><div class="page-heading__actions"><button class="button button--secondary" :disabled="loading" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />刷新</button></div></header>
+    <VersionNotice />
     <StatePanel v-if="loading && !settings" state="loading" title="正在读取系统设置" />
     <StatePanel v-else-if="error && !settings" state="error" title="系统设置加载失败" :message="error" @retry="load" />
     <template v-else-if="settings">
