@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
         </main>
 
         <aside class="xpanel-side">
-          <section class="xpanel-side-card"><h3>[HL-Panel 面板]</h3><div class="xpanel-tags"><span>{{ siteStore.info.value?.platform_version || '版本未采集' }}</span><span>节点 {{ overview.online_node_count }}/{{ overview.node_count }}</span><span>设备组 {{ overview.group_count }}</span></div></section>
+          <section class="xpanel-side-card"><h3>[HL-Panel 面板]</h3><div class="xpanel-tags"><span>{{ siteStore.info.value?.platform_version || '版本未采集' }}</span></div></section>
           <section class="xpanel-side-card"><h3>系统正常运行时间</h3><div class="xpanel-tags"><span>面板: {{ panelStatusLabel(panelRuntime?.status) }}</span><span>OS: {{ formatUptime(panelNumber('uptime_seconds')) }}</span></div></section>
           <section class="xpanel-side-card"><h3>系统负载</h3><div class="xpanel-tags"><span>{{ loadLabel() }}</span><span>{{ panelRuntime?.status === 'online' ? '面板正常' : '面板不可用' }}</span></div></section>
           <section class="xpanel-side-card"><h3>使用情况</h3><div class="xpanel-tags"><span>面板内存: {{ formatBytes(panelNumber('memory_used_bytes')) }}</span><span>节点连接: {{ connectionCount }}</span><span>节点总流量: {{ formatBytes(nodeTotalTraffic) }}</span></div></section>
