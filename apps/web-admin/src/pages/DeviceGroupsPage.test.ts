@@ -39,7 +39,6 @@ describe('DeviceGroupsPage', () => {
           GroupNetworkDialog: true,
           EditDeviceGroupDialog: true,
           GroupIntegrationDialog: true,
-          GroupConfigPreviewDialog: true,
           DeleteDeviceGroupDialog: true,
         },
       },

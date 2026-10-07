@@ -53,4 +53,14 @@ describe('DeviceGroupInventory', () => {
     expect(wrapper.emitted('configureNetwork')).toEqual([[group]])
     wrapper.unmount()
   })
+
+  it('removes the read-only config action and keeps labeled delete actions in one desktop row', () => {
+    const wrapper = mount(DeviceGroupInventory, { props: { groups: [group], networks: [] } })
+    const actions = wrapper.get('.group-table .business-row-actions')
+    expect(actions.text()).not.toContain('配置')
+    expect(actions.get('button[title="编辑设备组"]').text()).toContain('编辑')
+    expect(actions.get('button[title="删除设备组"]').text()).toContain('删除')
+    expect(actions.classes()).toContain('business-row-actions')
+    wrapper.unmount()
+  })
 })

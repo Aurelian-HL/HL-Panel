@@ -12,7 +12,6 @@ import DeviceGroupInventory, { type GroupIntegrationMode } from '@/features/grou
 import EditDeviceGroupDialog from '@/features/groups/EditDeviceGroupDialog.vue'
 import GroupNetworkDialog from '@/features/groups/GroupNetworkDialog.vue'
 import GroupMembersDialog from '@/features/groups/GroupMembersDialog.vue'
-import GroupConfigPreviewDialog from '@/features/groups/GroupConfigPreviewDialog.vue'
 import GroupIntegrationDialog from '@/features/groups/GroupIntegrationDialog.vue'
 import DeleteDeviceGroupDialog from '@/features/groups/DeleteDeviceGroupDialog.vue'
 import { displayError } from '@/lib/displayFormatters'
@@ -32,7 +31,6 @@ const networkGroup = ref<DeviceGroup | null>(null)
 const editGroup = ref<DeviceGroup | null>(null)
 const integrationGroup = ref<DeviceGroup | null>(null)
 const integrationMode = ref<GroupIntegrationMode>('online')
-const previewGroup = ref<DeviceGroup | null>(null)
 const deleteGroup = ref<DeviceGroup | null>(null)
 const networks = ref<GroupNetwork[]>([])
 const userGroups = ref<UserGroup[]>([])
@@ -144,7 +142,7 @@ onMounted(load)
     <StatePanel v-else-if="errorMessage && !groups.length" state="error" title="设备组加载失败" :message="errorMessage" @retry="load" />
     <StatePanel v-else-if="!groups.length" state="empty" title="还没有设备组" message="创建设备组，添加机器成员，并配置连接地址与端口范围。" />
     <StatePanel v-else-if="!filteredGroups.length" state="empty" title="没有符合条件的设备组" message="调整搜索词或类型筛选后重试。" />
-    <DeviceGroupInventory v-else :groups="filteredGroups" :networks="networks" @add-member="memberGroup = $event" @configure-network="networkGroup = $event" @edit="editGroup = $event" @integrate="openIntegration" @preview="previewGroup = $event" @remove="deleteGroup = $event" />
+    <DeviceGroupInventory v-else :groups="filteredGroups" :networks="networks" @add-member="memberGroup = $event" @configure-network="networkGroup = $event" @edit="editGroup = $event" @integrate="openIntegration" @remove="deleteGroup = $event" />
     <p v-if="errorMessage && groups.length" class="inline-warning">刷新失败，当前显示上一次成功读取的数据：{{ errorMessage }}</p>
 
     <CreateDeviceGroupDialog v-if="showCreateDialog" :user-groups="userGroups" @close="showCreateDialog = false" @created="onCreated" />
@@ -153,7 +151,6 @@ onMounted(load)
     <GroupNetworkDialog v-if="networkGroup" :group="networkGroup" :groups="groups" :user-groups="userGroups" :network="networks.find(item => item.group_id === networkGroup?.id) ?? null" @close="networkGroup = null" @saved="onNetworkSaved" />
     <EditDeviceGroupDialog v-if="editGroup" :group="editGroup" :user-groups="userGroups" :network="networks.find(item => item.group_id === editGroup?.id) ?? null" @close="editGroup = null" @saved="onGroupSaved" @configure-network="editNetworkFromGroup" />
     <GroupIntegrationDialog v-if="integrationGroup" :group="integrationGroup" :mode="integrationMode" @close="integrationGroup = null" />
-    <GroupConfigPreviewDialog v-if="previewGroup" :group="previewGroup" :groups="groups" :network="networks.find(item => item.group_id === previewGroup?.id) ?? null" :user-groups="userGroups" @close="previewGroup = null" />
     <DeleteDeviceGroupDialog v-if="deleteGroup" :group="deleteGroup" @close="deleteGroup = null" @deleted="onGroupDeleted" />
   </div>
 </template>

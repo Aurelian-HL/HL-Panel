@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ChevronDown, Eye, Link, Network, Pencil, ServerCog, Trash2, UserPlus, UsersRound } from '@lucide/vue'
+import { ChevronDown, Link, Network, Pencil, ServerCog, Trash2, UserPlus, UsersRound } from '@lucide/vue'
 
 import type { DeviceGroup, LoadBalancingStrategy } from '@/api'
 import type { GroupNetwork } from '@/api/business'
@@ -11,7 +11,7 @@ import { formatPortRanges } from '@/lib/portRanges'
 export type GroupIntegrationMode = 'online' | 'overseas' | 'offline' | 'config'
 
 const props = defineProps<{ groups: DeviceGroup[]; networks: GroupNetwork[] }>()
-const emit = defineEmits<{ addMember: [group: DeviceGroup]; configureNetwork: [group: DeviceGroup]; edit: [group: DeviceGroup]; integrate: [group: DeviceGroup, mode: GroupIntegrationMode]; preview: [group: DeviceGroup]; remove: [group: DeviceGroup] }>()
+const emit = defineEmits<{ addMember: [group: DeviceGroup]; configureNetwork: [group: DeviceGroup]; edit: [group: DeviceGroup]; integrate: [group: DeviceGroup, mode: GroupIntegrationMode]; remove: [group: DeviceGroup] }>()
 const openMenuGroup = ref<DeviceGroup | null>(null)
 const menuElement = ref<HTMLElement | null>(null)
 const menuStyle = ref<Record<string, string>>({ visibility: 'hidden' })
@@ -94,7 +94,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
             <td><span class="kind-badge">{{ kindLabels[group.kind] }}</span><small class="table-secondary">{{ group.member_count }} 台机器</small></td>
             <td><strong class="table-primary">{{ networkLabel(group) }}</strong><small v-if="networkFor(group.id) && group.kind === 'ENTRY'" class="table-secondary">{{ portRangeLabel(group) }} · {{ routePolicyLabel(group) }}</small></td>
             <td><strong class="table-primary">{{ formatDateTime(group.updated_at) }}</strong></td>
-            <td><template v-if="isManagedKind(group)"><div class="business-row-actions"><div class="integration-menu"><button class="button button--secondary integration-menu__toggle" type="button" aria-haspopup="menu" :aria-expanded="openMenuGroup?.id === group.id" @click.stop="toggleIntegrationMenu(group, $event)"><Link :size="15" />对接<ChevronDown :size="14" /></button></div><button class="button button--quiet" type="button" @click="emit('preview', group)"><Eye :size="15" />配置</button><button class="button button--quiet" type="button" @click="emit('configureNetwork', group)"><Network :size="15" />{{ group.kind === 'ENTRY' ? '连接' : '落地' }}</button><button class="button button--quiet" type="button" aria-label="编辑设备组" title="编辑设备组" @click="emit('edit', group)"><Pencil :size="15" /></button><button class="button button--quiet" type="button" @click="emit('addMember', group)"><UserPlus :size="15" />成员</button><button class="button button--quiet button--danger" type="button" aria-label="删除设备组" title="删除设备组" @click="emit('remove', group)"><Trash2 :size="15" /></button></div></template><span v-else class="table-secondary">历史类型，仅查看</span></td>
+            <td><template v-if="isManagedKind(group)"><div class="business-row-actions"><div class="integration-menu"><button class="button button--secondary integration-menu__toggle" type="button" aria-haspopup="menu" :aria-expanded="openMenuGroup?.id === group.id" @click.stop="toggleIntegrationMenu(group, $event)"><Link :size="15" />对接<ChevronDown :size="14" /></button></div><button class="button button--quiet" type="button" @click="emit('configureNetwork', group)"><Network :size="15" />{{ group.kind === 'ENTRY' ? '连接' : '落地' }}</button><button class="button button--quiet" type="button" aria-label="编辑设备组" title="编辑设备组" @click="emit('edit', group)"><Pencil :size="15" />编辑</button><button class="button button--quiet" type="button" @click="emit('addMember', group)"><UserPlus :size="15" />成员</button><button class="button button--quiet button--danger" type="button" aria-label="删除设备组" title="删除设备组" @click="emit('remove', group)"><Trash2 :size="15" />删除</button></div></template><span v-else class="table-secondary">历史类型，仅查看</span></td>
           </tr>
         </tbody>
       </table>
@@ -104,7 +104,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
       <article v-for="group in groups" :key="group.id" class="mobile-resource-card group-mobile-card">
         <header><div class="resource-name"><span><ServerCog :size="17" /></span><div><strong>{{ group.name }}</strong><small>{{ group.description || '未填写描述' }}</small></div></div><span class="kind-badge">{{ kindLabels[group.kind] }}</span></header>
         <dl><div><dt><UsersRound :size="13" />机器成员</dt><dd>{{ group.member_count }}</dd></div><div><dt>{{ group.kind === 'ENTRY' ? '连接地址' : '落地能力' }}</dt><dd>{{ networkLabel(group) }}</dd></div><div><dt>端口范围</dt><dd>{{ group.kind === 'EXIT' ? '不适用' : portRangeLabel(group) }}</dd></div><div><dt>出站策略</dt><dd>{{ routePolicyLabel(group) }}</dd></div><div><dt>分配方式</dt><dd>{{ strategyLabels[group.selection_policy] }}</dd></div></dl>
-        <template v-if="isManagedKind(group)"><footer><div class="integration-menu"><button class="button button--secondary integration-menu__toggle" type="button" aria-haspopup="menu" :aria-expanded="openMenuGroup?.id === group.id" @click.stop="toggleIntegrationMenu(group, $event)"><Link :size="15" />对接<ChevronDown :size="14" /></button></div><button class="button button--quiet" type="button" @click="emit('preview', group)"><Eye :size="15" />配置</button><button class="button button--quiet" type="button" @click="emit('edit', group)"><Pencil :size="15" />编辑</button><button class="button button--quiet" type="button" @click="emit('configureNetwork', group)"><Network :size="15" />{{ group.kind === 'ENTRY' ? '连接' : '落地' }}</button><button class="button button--quiet" type="button" @click="emit('addMember', group)"><UserPlus :size="15" />成员</button><button class="button button--quiet button--danger" type="button" aria-label="删除设备组" title="删除设备组" @click="emit('remove', group)"><Trash2 :size="15" />删除</button></footer></template><p v-else class="table-secondary">历史类型，仅查看</p>
+        <template v-if="isManagedKind(group)"><footer><div class="integration-menu"><button class="button button--secondary integration-menu__toggle" type="button" aria-haspopup="menu" :aria-expanded="openMenuGroup?.id === group.id" @click.stop="toggleIntegrationMenu(group, $event)"><Link :size="15" />对接<ChevronDown :size="14" /></button></div><button class="button button--quiet" type="button" @click="emit('edit', group)"><Pencil :size="15" />编辑</button><button class="button button--quiet" type="button" @click="emit('configureNetwork', group)"><Network :size="15" />{{ group.kind === 'ENTRY' ? '连接' : '落地' }}</button><button class="button button--quiet" type="button" @click="emit('addMember', group)"><UserPlus :size="15" />成员</button><button class="button button--quiet button--danger" type="button" aria-label="删除设备组" title="删除设备组" @click="emit('remove', group)"><Trash2 :size="15" />删除</button></footer></template><p v-else class="table-secondary">历史类型，仅查看</p>
       </article>
     </div>
     <Teleport to="body">
@@ -127,8 +127,8 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
 .group-table th:nth-child(3) { width: 24%; }
 .group-table th:nth-child(4) { width: 16%; }
 .group-table th:last-child { width: 26%; }
-.group-table .business-row-actions { flex-wrap: wrap; justify-content: flex-end; white-space: normal; }
-.group-table .business-row-actions .button { flex: 0 0 auto; }
+.group-table .business-row-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 2px; white-space: nowrap; }
+.group-table .business-row-actions .button { flex: 0 0 auto; padding-right: 6px; padding-left: 6px; }
 .group-inventory .table-primary, .group-inventory .table-secondary { white-space: normal; overflow-wrap: anywhere; }
 .group-inventory .resource-name { min-width: 0; }
 .group-inventory .resource-name strong, .group-inventory .resource-name small { max-width: none; white-space: normal; overflow-wrap: anywhere; }
@@ -149,7 +149,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
 @media (max-width: 760px) {
   .group-inventory .mobile-resource-list { grid-template-columns: 1fr; gap: 10px; }
   .group-mobile-card { padding: 13px; border-radius: 4px; box-shadow: none; }
-  .group-mobile-card footer { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .group-mobile-card footer { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 .integration-menu { position: relative; display: inline-flex; }
 .integration-menu__toggle { gap: 6px; }
