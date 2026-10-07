@@ -52,7 +52,8 @@ http {
   }
 }
 EOF
-  if ! probe_output="$(nginx -t -p "$probe_dir/" -c "$probe_dir/nginx.conf" 2>&1)"; then
+  # Distro load_module paths are relative to Nginx's compiled prefix.
+  if ! probe_output="$(nginx -t -c "$probe_dir/nginx.conf" 2>&1)"; then
     rm -rf -- "$probe_dir"
     printf '%s\n' "$probe_output" >&2
     fail "Nginx 缺少面板需要的模块或模块加载失败（登录限流、SSL、HTTP/2、反向代理）。尚未创建面板账号、文件或数据库；不会自动替换已有 Nginx。专用于面板的 VPS 可执行 apt-get update && apt-get install -y nginx-core 后重试；已有其他站点请先由管理员确认 Nginx 升级方案。"
