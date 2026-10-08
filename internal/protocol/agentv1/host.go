@@ -10,9 +10,9 @@ type HostSnapshot struct {
 	SwapTotalBytes            *uint64  `json:"swap_total_bytes,omitempty"`
 	DiskUsedBytes             *uint64  `json:"disk_used_bytes,omitempty"`
 	DiskTotalBytes            *uint64  `json:"disk_total_bytes,omitempty"`
-	LoadAverage1               *float64 `json:"load_average_1,omitempty"`
-	LoadAverage5               *float64 `json:"load_average_5,omitempty"`
-	LoadAverage15              *float64 `json:"load_average_15,omitempty"`
+	LoadAverage1              *float64 `json:"load_average_1,omitempty"`
+	LoadAverage5              *float64 `json:"load_average_5,omitempty"`
+	LoadAverage15             *float64 `json:"load_average_15,omitempty"`
 	UptimeSeconds             *uint64  `json:"uptime_seconds,omitempty"`
 	NetInTransferBytes        *uint64  `json:"net_in_transfer_bytes,omitempty"`
 	NetOutTransferBytes       *uint64  `json:"net_out_transfer_bytes,omitempty"`
@@ -22,4 +22,5 @@ type HostSnapshot struct {
 	UDPConnCount              *uint64  `json:"udp_conn_count,omitempty"`
 	IPv4                      string   `json:"ipv4,omitempty"`
 	IPv6                      string   `json:"ipv6,omitempty"`
+	IPCollectionStatus        string   `json:"ip_collection_status,omitempty"`
 }

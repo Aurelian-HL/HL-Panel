@@ -102,6 +102,7 @@ def verify(version):
         request('GET', '/panel/runtime', token=token)
         time.sleep(0.25)
         resources = request('GET', '/panel/runtime', token=token)['resources']
+        assert resources['ip_collection_status'] == 'collected', 'upgrade must repair legacy interface collection permissions'
         for metric in ('cpu_percent', 'memory_used_bytes', 'memory_total_bytes', 'swap_total_bytes', 'uptime_seconds', 'load_average_1'):
             assert metric in resources, 'Host metrics missing after update: ' + metric
         original = (previous/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()

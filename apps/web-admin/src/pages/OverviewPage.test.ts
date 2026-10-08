@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const mocked = vi.hoisted(() => ({ getOverview: vi.fn(), loadSite: vi.fn(), controlPanel: vi.fn(), getPanelControl: vi.fn() }))
 
 vi.mock('@/api/panelLogs', () => ({ getPanelLogs: vi.fn().mockResolvedValue({ items: [{ time: '2026-10-08T00:00:00Z', level: 'INFO', message: '面板真实日志' }], persistent: true }) }))
+vi.mock('@/api/panelUpdate', () => ({ panelUpdateStatus: vi.fn().mockResolvedValue({ available: true, task: null }), startPanelUpdate: vi.fn() }))
 vi.mock('@/api/releases', () => ({ checkVersion: vi.fn().mockResolvedValue({ current_version: 'v0.1.31', versions: [{ tag: 'v0.1.31', current: true, can_update: false }] }), repositoryUrl: 'https://github.com/Aurelian-HL/HL-Panel', updateCommand: '' }))
 
 vi.mock('@/api', () => ({ api: { getOverview: mocked.getOverview, controlPanel: mocked.controlPanel, getPanelControl: mocked.getPanelControl } }))
@@ -51,6 +52,18 @@ beforeEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it.each([
+    ['collected', '未配置'],
+    ['unavailable', '采集失败'],
+    [undefined, '未采集'],
+  ])('distinguishes absent IPv6 from collection errors: %s', async (status, expected) => {
+    mocked.getOverview.mockResolvedValue({ ...overview, panel: { ...overview.panel, resources: { ...overview.panel.resources, ipv6: undefined, ip_collection_status: status } } })
+    const wrapper = mount(OverviewPage)
+    await flushPromises()
+    expect(wrapper.get('.xpanel-ip').text()).toContain('203.0.113.8')
+    expect(wrapper.get('.xpanel-ip').text()).toContain(expected)
+    wrapper.unmount()
+  })
   it('renders overview without waiting for slow site metadata', async () => {
     mocked.loadSite.mockReturnValue(new Promise(() => {}))
     const wrapper = mount(OverviewPage)

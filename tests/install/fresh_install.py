@@ -178,6 +178,7 @@ assert overview['syncing_node_count'] == 0
 assert overview['failed_apply_count'] == 0
 assert overview['panel']['status'] == 'online'
 assert overview['panel']['version'] == args.version
+assert overview['panel']['resources']['ip_collection_status'] == 'collected', 'systemd sandbox must allow interface collection'
 import time
 time.sleep(0.25)
 resources = request('GET', '/panel/runtime', token=session['access_token'])['resources']

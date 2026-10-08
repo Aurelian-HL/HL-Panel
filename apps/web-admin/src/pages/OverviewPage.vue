@@ -71,7 +71,11 @@ function panelNumber(key: string): number | null {
 
 function panelText(key: string): string {
   const value = panelResource()[key]
-  return typeof value === 'string' && value.length > 0 ? value : '未采集'
+  if (typeof value === 'string' && value.length > 0) return value
+  const status = panelResource().ip_collection_status
+  if (status === 'collected') return '未配置'
+  if (status === 'unavailable') return '采集失败'
+  return '未采集'
 }
 
 function formatBytes(value: number | null): string {

@@ -80,6 +80,27 @@ class SubscriptionNginxTests(unittest.TestCase):
                 update.host_metrics_update(target, backup)
             self.assertIn('custom config', update.PROC_OVERRIDE.read_text())
 
+    def test_upgrades_legacy_metrics_dropin_and_restores_original(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root/'release'
+            unit = target/'deploy/systemd/hl-panel-control-api.service'
+            unit.parent.mkdir(parents=True)
+            unit.write_text('[Service]\nProcSubset=all\n')
+            backup = root/'backup'
+            backup.mkdir()
+            update.PROC_OVERRIDE = root/'unit.d/20-host-metrics.conf'
+            update.PROC_OVERRIDE.parent.mkdir()
+            update.PROC_OVERRIDE.write_text(update.LEGACY_PROC_OVERRIDE_CONTENT)
+            update.private_regular = lambda path: None
+            update.run = lambda args: None
+            update.host_metrics_update(target, backup)
+            self.assertIn('AF_NETLINK', update.PROC_OVERRIDE.read_text())
+            self.assertEqual((backup/'host-metrics-previous.conf').read_text(), update.LEGACY_PROC_OVERRIDE_CONTENT)
+            update.host_metrics_update(target, backup)
+            update.restore_host_metrics(backup)
+            self.assertEqual(update.PROC_OVERRIDE.read_text(), update.LEGACY_PROC_OVERRIDE_CONTENT)
+
     def test_preserves_routes_and_restores_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

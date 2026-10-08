@@ -197,18 +197,7 @@ func Snapshot() *agentv1.HostSnapshot {
 	previous.at = now
 	s.TCPConnCount = connections("/proc/net/tcp", "/proc/net/tcp6")
 	s.UDPConnCount = connections("/proc/net/udp", "/proc/net/udp6")
-	if addresses, err := net.InterfaceAddrs(); err == nil {
-		for _, address := range addresses {
-			ip, _, err := net.ParseCIDR(address.String())
-			if err != nil || !ip.IsGlobalUnicast() || ip.IsPrivate() {
-				continue
-			}
-			if ip.To4() != nil && s.IPv4 == "" {
-				s.IPv4 = ip.String()
-			} else if ip.To4() == nil && s.IPv6 == "" {
-				s.IPv6 = ip.String()
-			}
-		}
-	}
+	addresses, err := net.InterfaceAddrs()
+	collectIPAddresses(s, addresses, err)
 	return s
 }

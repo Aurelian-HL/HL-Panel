@@ -32,7 +32,8 @@ APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
 API_PROXY = Path('/etc/nginx/snippets/hl-panel-api-proxy.conf')
 MIGRATION_PROXY = Path('/etc/nginx/snippets/hl-panel-migration-proxy.conf')
 PROC_OVERRIDE = Path('/etc/systemd/system/hl-panel-control-api.service.d/20-host-metrics.conf')
-PROC_OVERRIDE_CONTENT = '# Managed by HL-panel: allow read-only host metrics.\n[Service]\nProcSubset=all\n'
+LEGACY_PROC_OVERRIDE_CONTENT = '# Managed by HL-panel: allow read-only host metrics.\n[Service]\nProcSubset=all\n'
+PROC_OVERRIDE_CONTENT = LEGACY_PROC_OVERRIDE_CONTENT + 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n'
 SUBSCRIPTION_LOCATION = '''location ^~ /api/v1/public/subscriptions/ {
     access_log off;
     include /etc/nginx/snippets/hl-panel-api-proxy.conf;
@@ -250,15 +251,20 @@ def host_metrics_update(destination, backup):
     require(not PROC_OVERRIDE.is_symlink(), '面板指标服务配置不能为链接')
     if PROC_OVERRIDE.exists():
         private_regular(PROC_OVERRIDE)
-        if PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT:
+        existing = PROC_OVERRIDE.read_text()
+        if existing == PROC_OVERRIDE_CONTENT:
             return
-        raise UpdateError('面板指标服务配置路径已被自定义文件占用，现有文件未覆盖')
+        require(existing == LEGACY_PROC_OVERRIDE_CONTENT,
+                '面板指标服务配置路径已被自定义文件占用，现有文件未覆盖')
     PROC_OVERRIDE.parent.mkdir(mode=0o755, exist_ok=True)
     require(not PROC_OVERRIDE.parent.is_symlink(), '面板服务配置目录不能为链接')
     directory_info = PROC_OVERRIDE.parent.stat()
     require(directory_info.st_uid == os.geteuid() and not directory_info.st_mode & 0o022,
             '面板服务配置目录必须归更新用户所有且不能被其他用户修改')
-    (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
+    if PROC_OVERRIDE.exists():
+        shutil.copyfile(PROC_OVERRIDE, backup/'host-metrics-previous.conf')
+    else:
+        (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
     PROC_OVERRIDE.write_text(PROC_OVERRIDE_CONTENT)
     PROC_OVERRIDE.chmod(0o644)
     run(['systemctl','daemon-reload'])
@@ -292,6 +298,17 @@ def restore_domain_access(backup):
 
 
 def restore_host_metrics(backup):
+    previous = backup/'host-metrics-previous.conf'
+    if previous.is_file():
+        private_regular(previous)
+        require(previous.read_text() == LEGACY_PROC_OVERRIDE_CONTENT, '面板指标配置备份内容无效')
+        if PROC_OVERRIDE.exists():
+            private_regular(PROC_OVERRIDE)
+            require(PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT, '面板指标配置已被修改，拒绝覆盖')
+        shutil.copyfile(previous, PROC_OVERRIDE)
+        PROC_OVERRIDE.chmod(0o644)
+        run(['systemctl','daemon-reload'])
+        return
     if (backup/'host-metrics-added').is_file():
         if PROC_OVERRIDE.exists():
             private_regular(PROC_OVERRIDE)

@@ -259,6 +259,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 host = node['resources']['host']
                 assert node['agent_version'] == args.version
                 assert host['memory_total_bytes'] > 0 and host['disk_total_bytes'] > 0
+                assert host['ip_collection_status'] == 'collected', 'agent sandbox must allow interface collection'
                 assert 0 <= host['cpu_percent'] <= 100
                 assert host['net_in_speed_bytes_per_second'] >= 0
                 return node
