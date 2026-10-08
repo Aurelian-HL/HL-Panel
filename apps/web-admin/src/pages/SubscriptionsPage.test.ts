@@ -17,6 +17,23 @@ beforeEach(() => {
 })
 const options = { global: { stubs: { VlessCredentials: true } } }
 describe('SubscriptionsPage', () => {
+  it('keeps mobile subscriptions readable and routes their actions to the same API', async () => {
+    const stopped = { ...item, id: 'sub-stopped', name: '已停用订阅', state: 'revoked' as const }
+    subs.list.mockResolvedValue({ items: [item, stopped] })
+    const wrapper = mount(SubscriptionsPage, options); await flushPromises()
+    const mobile = wrapper.get('[aria-label="订阅卡片"]')
+    expect(mobile.findAll('article')).toHaveLength(2)
+    expect(mobile.text()).toContain('客户固定订阅'); expect(mobile.text()).toContain('测试客户')
+    expect(mobile.text()).not.toContain('socks5://'); expect(mobile.text()).not.toContain('secret.txt')
+    const active = mobile.findAll('article')[0]!
+    await active.findAll('button').find(b => b.text() === '编辑')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[role="dialog"]').text()).toContain('编辑订阅草稿')
+    await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    await active.findAll('button').find(b => b.text() === '发布更新')!.trigger('click'); await flushPromises()
+    expect(subs.action).toHaveBeenCalledWith(item, 'publish', expect.any(String))
+    await wrapper.get('[aria-label="订阅卡片"]').findAll('article')[1]!.findAll('button').find(b => b.text() === '恢复')!.trigger('click'); await flushPromises()
+    expect(subs.action).toHaveBeenCalledWith(stopped, 'restore', expect.any(String)); wrapper.unmount()
+  })
   it('creates a two-line draft, does not publish implicitly', async () => {
     const wrapper = mount(SubscriptionsPage, options); await flushPromises()
     await wrapper.findAll('button').find(b => b.text() === '创建订阅')!.trigger('click')
