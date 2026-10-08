@@ -160,6 +160,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
 	if api.panelRuntime != nil {
+		mux.HandleFunc("GET /api/v1/panel/logs", api.requireAdministrator(api.panelLogs))
 		mux.HandleFunc("GET /api/v1/panel/runtime", api.requireAdministrator(api.panelRuntimeStatus))
 		mux.HandleFunc("POST /api/v1/panel/control", api.requireAdministrator(api.requestPanelControl))
 		mux.HandleFunc("GET /api/v1/panel/control", api.requireAdministrator(api.panelControl))
@@ -237,6 +238,9 @@ func (api *API) requireAdministrator(next administratorHandler) http.HandlerFunc
 			return
 		}
 		next(writer, request, session)
+		if request.Method != http.MethodGet && request.Method != http.MethodHead {
+			api.logger.Info("管理员操作请求：" + request.Pattern)
+		}
 	})
 }
 

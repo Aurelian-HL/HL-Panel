@@ -36,6 +36,14 @@ func TestReleasePolicyAndFiltering(t *testing.T) {
 			if behind >= 3 && result.State != "attention_required" {
 				t.Fatal("urgent state missing")
 			}
+			if len(result.Versions) != behind+1 {
+				t.Fatalf("release list not filtered: %+v", result.Versions)
+			}
+			for i, v := range result.Versions {
+				if v.Tag != fmt.Sprintf("v0.1.%d", behind-i) || v.Current != (i == behind) || v.CanUpdate != (i < behind) || v.ReleaseURL != RepositoryURL+"/releases/tag/"+v.Tag {
+					t.Fatalf("incorrect version row: %+v", v)
+				}
+			}
 		})
 	}
 }

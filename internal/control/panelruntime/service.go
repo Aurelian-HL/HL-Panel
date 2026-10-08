@@ -41,6 +41,15 @@ type Service struct {
 	logger      *slog.Logger
 	mu          sync.RWMutex
 	lastControl ControlResult
+	logs        *LogStore
+}
+
+func (s *Service) WithLogs(logs *LogStore) *Service { s.logs = logs; return s }
+func (s *Service) Logs(limit int) LogResult {
+	if s.logs == nil {
+		return LogResult{Items: []LogEntry{}, UpdatedAt: s.now().UTC()}
+	}
+	return s.logs.Read(limit)
 }
 
 func NewService(version string, controller Controller, logger *slog.Logger, now func() time.Time) *Service {
@@ -70,9 +79,10 @@ func (s *Service) Control(ctx context.Context, command string) ControlResult {
 	case "version":
 		result.Message = "HL-Panel " + s.version
 	case "logs":
-		runtime := s.Runtime(ctx)
-		result.Message = "最近面板运行记录"
-		result.Logs = runtime.Log
+		result.Message = "面板运行日志"
+		for _, entry := range s.Logs(100).Items {
+			result.Logs += entry.Time + " " + entry.Level + " " + entry.Message + "\n"
+		}
 	case "stop", "restart":
 		if s.controller == nil {
 			result.Status = "failed"

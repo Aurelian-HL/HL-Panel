@@ -10,6 +10,7 @@ export interface VersionStatus {
   can_defer: boolean
   checked_at: string
   message: string
+  versions?: { tag: string; published_at: string; current: boolean; can_update: boolean; release_url: string }[]
 }
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')

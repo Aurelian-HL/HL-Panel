@@ -4,6 +4,8 @@ import { Archive, Cpu, Database, FileText, HardDrive, MemoryStick, Network, Powe
 
 import { api, type EdgeNode, type PanelControlResult, type OverviewResponse } from '@/api'
 import StatePanel from '@/components/StatePanel.vue'
+import PanelLogsDialog from '@/features/panel/PanelLogsDialog.vue'
+import PanelVersionDialog from '@/features/panel/PanelVersionDialog.vue'
 import { displayError } from '@/lib/displayFormatters'
 import { siteStore } from '@/stores/site'
 
@@ -13,6 +15,8 @@ const errorMessage = ref('')
 const controlBusy = ref(false)
 const controlResult = ref<PanelControlResult | null>(null)
 const refreshTimer = ref<number | undefined>()
+const showLogs = ref(false)
+const showVersions = ref(false)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -139,10 +143,6 @@ const systemMemory = computed(() => percent(panelNumber('memory_used_bytes'), pa
 const systemSwap = computed(() => panelNumber('swap_total_bytes') === 0 ? 0 : percent(panelNumber('swap_used_bytes'), panelNumber('swap_total_bytes')))
 const systemDisk = computed(() => percent(panelNumber('disk_used_bytes'), panelNumber('disk_total_bytes')))
 const connectionCount = computed(() => `${sum('tcp_conn_count') === null ? '未采集' : Math.round(sum('tcp_conn_count') as number).toLocaleString('zh-CN')} / ${sum('udp_conn_count') === null ? '未采集' : Math.round(sum('udp_conn_count') as number).toLocaleString('zh-CN')}`)
-const latestLog = computed(() => {
-  if (controlResult.value?.logs || controlResult.value?.message) return controlResult.value
-  return panelRuntime.value?.log ? { status: 'succeeded', message: panelRuntime.value.log, logs: '' } : null
-})
 
 onMounted(() => {
   void load()
@@ -181,20 +181,14 @@ onBeforeUnmount(() => {
             <div v-if="panelRuntime" class="xpanel-runtime__body">
               <div class="xpanel-version">{{ panelRuntime.version || '版本未采集' }}</div>
               <div class="xpanel-controls">
-                <button type="button" :disabled="controlBusy" @click="runControl('logs')"><FileText :size="14" />日志</button>
+                <button type="button" @click="showLogs = true"><FileText :size="14" />日志</button>
                 <button type="button" :disabled="controlBusy" @click="runControl('stop')"><Power :size="14" />停止</button>
                 <button type="button" :disabled="controlBusy" @click="runControl('restart')"><RotateCw :size="14" />重启</button>
-                <button type="button" :disabled="controlBusy" @click="runControl('version')"><Terminal :size="14" />版本</button>
+                <button type="button" @click="showVersions = true"><Terminal :size="14" />版本</button>
               </div>
               <div v-if="controlResult" class="xpanel-result" :class="`xpanel-result--${controlResult.status}`"><CheckCircle2 v-if="controlResult.status === 'succeeded'" :size="14" /><XCircle v-else-if="controlResult.status === 'failed'" :size="14" /><RefreshCw v-else :size="14" class="spin" />{{ controlStatusLabel(controlResult.status) }}：{{ controlResult.message || '等待面板返回' }}</div>
             </div>
             <div v-else class="xpanel-empty">面板运行状态暂未采集。</div>
-          </section>
-
-          <section class="xpanel-section xpanel-logs" aria-label="日志">
-            <div class="xpanel-section__title"><h2>日志</h2><span>最近一次面板运行记录</span></div>
-            <div v-if="latestLog" class="xpanel-log"><strong>HL-Panel</strong><span>{{ controlStatusLabel(latestLog.status || '') }}</span><p>{{ latestLog.message || '暂无面板运行记录' }}</p><pre v-if="latestLog.logs">{{ latestLog.logs }}</pre></div>
-            <div v-else class="xpanel-empty">暂无面板运行日志</div>
           </section>
 
           <div class="xpanel-bottom-grid">
@@ -214,5 +208,7 @@ onBeforeUnmount(() => {
         </aside>
       </div>
     </template>
+    <PanelLogsDialog v-if="showLogs" @close="showLogs = false" />
+    <PanelVersionDialog v-if="showVersions" :current="panelRuntime?.version || ''" @close="showVersions = false" />
   </div>
 </template>

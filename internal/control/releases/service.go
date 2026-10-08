@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,15 @@ type Status struct {
 	ReleaseURL    string    `json:"release_url"`
 	UpdateCommand string    `json:"update_command"`
 	Message       string    `json:"message"`
+	Versions      []Version `json:"versions"`
+}
+
+type Version struct {
+	Tag         string    `json:"tag"`
+	PublishedAt time.Time `json:"published_at"`
+	Current     bool      `json:"current"`
+	CanUpdate   bool      `json:"can_update"`
+	ReleaseURL  string    `json:"release_url"`
 }
 
 type release struct {
@@ -93,7 +103,7 @@ func (s *Service) Check(ctx context.Context) Status {
 	if now.Before(s.expires) {
 		return s.cached
 	}
-	result := Status{Current: s.current, State: "check_failed", CheckedAt: now,
+	result := Status{Current: s.current, State: "check_failed", CheckedAt: now, Versions: []Version{},
 		RepositoryURL: RepositoryURL, ReleaseURL: RepositoryURL + "/releases",
 		Message: "暂时无法连接 GitHub，版本尚未核实；请稍后重试或前往仓库查看。"}
 	s.expires = now.Add(time.Minute)
@@ -115,6 +125,7 @@ func (s *Service) Check(ctx context.Context) Status {
 				continue
 			}
 			seen[entry.Tag] = true
+			result.Versions = append(result.Versions, Version{Tag: entry.Tag, PublishedAt: *entry.PublishedAt, Current: entry.Tag == s.current, CanUpdate: newer(version, current), ReleaseURL: RepositoryURL + "/releases/tag/" + entry.Tag})
 			if latestTag == "" || newer(version, latest) {
 				latest = version
 				latestTag = entry.Tag
@@ -123,6 +134,11 @@ func (s *Service) Check(ctx context.Context) Status {
 				result.Behind++
 			}
 		}
+		sort.Slice(result.Versions, func(i, j int) bool {
+			a, _ := parseVersion(result.Versions[i].Tag)
+			b, _ := parseVersion(result.Versions[j].Tag)
+			return newer(a, b)
+		})
 		if latestTag != "" {
 			result.Latest = latestTag
 			result.ReleaseURL = RepositoryURL + "/releases/tag/" + latestTag

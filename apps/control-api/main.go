@@ -47,7 +47,12 @@ var platformVersion = "development"
 var platformBuildTime string
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logPath := strings.TrimSpace(os.Getenv("CONTROL_PANEL_LOG_FILE"))
+	if cwd, _ := os.Getwd(); logPath == "" && cwd == "/var/lib/hl-panel" {
+		logPath = "/var/lib/hl-panel/panel.log"
+	}
+	panelLogs := panelruntime.NewLogStore(logPath)
+	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, panelLogs), nil))
 	if len(os.Args) > 1 {
 		if os.Args[1] == "reset-admin-password" && len(os.Args) == 3 {
 			if err := resetAdministratorPassword(os.Args[2], os.Stdin); err != nil {
@@ -67,7 +72,7 @@ func main() {
 		}
 		return
 	}
-	if err := run(logger); err != nil {
+	if err := run(logger, panelLogs); err != nil {
 		logger.Error("control api stopped", "error", err)
 		os.Exit(1)
 	}
@@ -94,7 +99,7 @@ func hashPasswordFromReader(reader io.Reader, writer io.Writer) error {
 	return nil
 }
 
-func run(logger *slog.Logger) error {
+func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	configuration, err := loadRuntimeConfig()
 	if err != nil {
 		return err
@@ -157,7 +162,7 @@ func run(logger *slog.Logger) error {
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
-		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, nil, logger, time.Now)),
+		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, nil, logger, time.Now).WithLogs(panelLogs)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
 		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService), time.Now)),
 		httpapi.WithUsage(usageService),

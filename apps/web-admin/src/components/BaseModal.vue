@@ -7,6 +7,7 @@ const props = withDefaults(defineProps<{
   description?: string
   width?: 'small' | 'medium' | 'large'
   closeDisabled?: boolean
+  dialogClass?: string
 }>(), { description: '', width: 'medium', closeDisabled: false })
 
 const emit = defineEmits<{ close: [] }>()
@@ -33,7 +34,7 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <div class="modal-backdrop" role="presentation" @mousedown.self="close">
-      <section class="modal" :class="`modal--${width}`" role="dialog" aria-modal="true" :aria-label="title">
+      <section class="modal" :class="[`modal--${width}`, dialogClass]" role="dialog" aria-modal="true" :aria-label="title">
         <header class="modal__header">
           <div>
             <h2>{{ title }}</h2>

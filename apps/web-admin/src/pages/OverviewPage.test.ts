@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocked = vi.hoisted(() => ({ getOverview: vi.fn(), loadSite: vi.fn(), controlPanel: vi.fn(), getPanelControl: vi.fn() }))
 
+vi.mock('@/api/panelLogs', () => ({ getPanelLogs: vi.fn().mockResolvedValue({ items: [{ time: '2026-10-08T00:00:00Z', level: 'INFO', message: '面板真实日志' }], persistent: true }) }))
+vi.mock('@/api/releases', () => ({ checkVersion: vi.fn().mockResolvedValue({ current_version: 'v0.1.31', versions: [{ tag: 'v0.1.31', current: true, can_update: false }] }), repositoryUrl: 'https://github.com/Aurelian-HL/HL-Panel', updateCommand: '' }))
+
 vi.mock('@/api', () => ({ api: { getOverview: mocked.getOverview, controlPanel: mocked.controlPanel, getPanelControl: mocked.getPanelControl } }))
 vi.mock('@/stores/site', () => ({
   siteStore: {
@@ -48,6 +51,23 @@ beforeEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it('opens logs and versions as dialogs and removes the old log card', async () => {
+    const wrapper = mount(OverviewPage)
+    await flushPromises()
+    expect(wrapper.find('.xpanel-logs').exists()).toBe(false)
+    await wrapper.findAll('.xpanel-controls button')[0]!.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('日志')
+    expect(document.body.querySelector('pre')?.textContent).toContain('面板真实日志')
+    document.body.querySelector<HTMLButtonElement>('[aria-label="关闭对话框"]')!.click()
+    await flushPromises()
+    await wrapper.findAll('.xpanel-controls button')[3]!.trigger('click')
+    await flushPromises()
+    expect(document.body.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('版本')
+    expect(document.body.querySelector<HTMLInputElement>('input[type="radio"]')!.checked).toBe(true)
+    expect(mocked.controlPanel).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('distinguishes disabled swap from missing metrics', async () => {
     mocked.getOverview.mockResolvedValue({ ...overview, panel: { ...overview.panel, resources: { ...overview.panel.resources, swap_used_bytes: 0, swap_total_bytes: 0 } } })
     const wrapper = mount(OverviewPage)
@@ -70,7 +90,8 @@ describe('OverviewPage', () => {
     expect(wrapper.get('.xpanel-runtime').text()).toContain('停止')
     expect(wrapper.get('.xpanel-runtime').text()).toContain('重启')
     expect(wrapper.get('.xpanel-runtime').text()).toContain('版本')
-    expect(wrapper.get('.xpanel-logs').text()).toContain('日志')
+    expect(wrapper.get('.xpanel-controls').text()).toContain('日志')
+    expect(wrapper.find('.xpanel-logs').exists()).toBe(false)
     expect(wrapper.get('.xpanel-bottom-grid').text()).toContain('总数据')
     expect(wrapper.get('.xpanel-bottom-grid').text()).toContain('连接数')
     expect(wrapper.get('.xpanel-side').text()).toContain('系统正常运行时间')
@@ -85,8 +106,6 @@ describe('OverviewPage', () => {
     expect(wrapper.get('.xpanel-bottom-grid').text()).toContain('220.00 GB')
     expect(wrapper.get('.xpanel-bottom-grid').text()).toContain('1,052')
     expect(wrapper.get('.xpanel-bottom-grid').text()).toContain('1,012')
-    expect(wrapper.get('.xpanel-logs').text()).toContain('面板服务运行中')
-    expect(wrapper.get('.xpanel-logs').text()).not.toContain('配置已应用')
     expect(wrapper.find('.overview-action-grid').exists()).toBe(false)
     wrapper.unmount()
   })
