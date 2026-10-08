@@ -178,6 +178,14 @@ assert overview['syncing_node_count'] == 0
 assert overview['failed_apply_count'] == 0
 assert overview['panel']['status'] == 'online'
 assert overview['panel']['version'] == args.version
+import time
+time.sleep(0.25)
+resources = request('GET', '/panel/runtime', token=session['access_token'])['resources']
+for metric in ('cpu_percent', 'memory_used_bytes', 'memory_total_bytes', 'swap_used_bytes',
+               'swap_total_bytes', 'load_average_1', 'uptime_seconds'):
+    assert metric in resources, 'Host metric hidden by service sandbox: ' + metric
+assert resources['memory_total_bytes'] > 0
+assert 0 <= resources['cpu_percent'] <= 100
 assert request('GET', '/device-groups', token=session['access_token'])['items'] == []
 subprocess.run(['nginx', '-t'], check=True)
 with urllib.request.urlopen('https://127.0.0.1:19443/', context=ssl._create_unverified_context(), timeout=15) as page:
@@ -195,6 +203,7 @@ Path('fresh-install-result.json').write_text(json.dumps({
     'real_postgresql_systemd_nginx': True, 'password_change_and_session_revocation': True,
     'restart_durability': True, 'repeat_install_rejected': True, 'local_password_reset': True,
     'unbound_domain_ip_https': True,
+    'panel_host_metrics': True,
     'nginx_automatic_adaptation': 'Nginx 自动适配完成' in transcript,
 }, indent=2))
 print('FRESH_INSTALL_ACCEPTED: ' + args.credentials)

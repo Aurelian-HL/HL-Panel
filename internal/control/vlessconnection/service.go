@@ -25,6 +25,12 @@ type Connection struct {
 	Status   string `json:"status"`
 }
 
+type unavailable struct{ reason string }
+
+func (e unavailable) Error() string              { return faults.ErrConflict.Error() + ": " + e.reason }
+func (e unavailable) Unwrap() error              { return faults.ErrConflict }
+func (e unavailable) SubscriptionReason() string { return e.reason }
+
 func NewService(i *vlessidentity.Service, f *forwarding.Service, e *endpoints.Service) *Service {
 	return &Service{i, f, e}
 }
@@ -44,8 +50,17 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if err != nil {
 		return Connection{}, err
 	}
-	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.Paused || !rule.Deployed || rule.Status != forwarding.StatusActive || rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
-		return Connection{}, faults.ErrConflict
+	if rule.Paused {
+		return Connection{}, unavailable{"规则已暂停，请先恢复规则并等待节点应用"}
+	}
+	if rule.Status == forwarding.StatusQuotaExhausted {
+		return Connection{}, unavailable{"规则流量额度已用完，请先调整额度并等待节点应用"}
+	}
+	if !rule.Deployed || rule.Status != forwarding.StatusActive {
+		return Connection{}, unavailable{"规则尚未部署就绪，请检查节点在线状态与配置应用结果"}
+	}
+	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
+		return Connection{}, unavailable{"Reality 参数不完整，请检查规则配置"}
 	}
 	pools, err := s.endpoints.ListPoolsForAdministrator(ctx, admin)
 	if err != nil {
@@ -69,9 +84,9 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 		return Connection{}, err
 	}
 	if len(members) == 0 {
-		return Connection{}, faults.ErrConflict
+		return Connection{}, unavailable{"设备组暂无健康在线节点，请检查节点状态"}
 	}
-	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: pool.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.VLESSFlow}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})
+	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: rule.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.VLESSFlow}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})
 	if err != nil {
 		return Connection{}, faults.ErrConflict
 	}

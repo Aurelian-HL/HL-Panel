@@ -144,7 +144,7 @@ func (api *API) subscriptionPackage(w http.ResponseWriter, r *http.Request, s au
 		writeProblem(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"filename": "HL-panel-" + record.Item.ID + ".zip", "data_base64": base64.StdEncoding.EncodeToString(content)})
+	writeJSON(w, http.StatusOK, map[string]any{"filename": subscriptions.PackageBaseName(record.Item.Name) + "-订阅导入包.zip", "data_base64": base64.StdEncoding.EncodeToString(content)})
 }
 
 func (api *API) subscriptionQRCode(w http.ResponseWriter, r *http.Request, s auth.Session) {

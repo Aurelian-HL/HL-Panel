@@ -38,7 +38,8 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectHostname=true
 ProtectProc=invisible
-ProcSubset=pid
+# Host metrics need /proc/stat, meminfo, loadavg, uptime and net.
+ProcSubset=all
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=true
 RestrictRealtime=true
@@ -51,4 +52,3 @@ AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
-

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -46,7 +47,8 @@ previous = Path('/opt/hl-panel/current').resolve()
 
 def fingerprint():
     values={}
-    for directory in ('/etc/hl-panel','/etc/nginx','/etc/systemd/system/hl-panel-control-api.service'):
+    for directory in ('/etc/hl-panel','/etc/nginx','/etc/systemd/system/hl-panel-control-api.service',
+                      '/etc/systemd/system/hl-panel-control-api.service.d'):
         root=Path(directory)
         for path in ([root] if root.is_file() else root.rglob('*')):
             if path.is_symlink():
@@ -93,11 +95,17 @@ def verify(version):
     expected = dict(protected)
     locations = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
     if version == args.version:
+        expected[str(update.PROC_OVERRIDE)] = hashlib.sha256(update.PROC_OVERRIDE_CONTENT.encode()).hexdigest()
+        request('GET', '/panel/runtime', token=token)
+        time.sleep(0.25)
+        resources = request('GET', '/panel/runtime', token=token)['resources']
+        for metric in ('cpu_percent', 'memory_used_bytes', 'memory_total_bytes', 'swap_total_bytes', 'uptime_seconds', 'load_average_1'):
+            assert metric in resources, 'Host metrics missing after update: ' + metric
         original = (previous/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
         candidate = (repository/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
         if update.SUBSCRIPTION_LOCATION in candidate and update.SUBSCRIPTION_LOCATION not in original:
             expected[str(locations)] = hashlib.sha256((original.rstrip()+'\n\n'+update.SUBSCRIPTION_LOCATION+'\n').encode()).hexdigest()
-    assert fingerprint()==expected,'Configuration or certificates changed beyond the managed subscription location'
+    assert fingerprint()==expected,'Configuration changed beyond managed subscription location and metrics drop-in'
     subprocess.run(['nginx','-t'],check=True)
 
 # Invalid SHA must fail without stopping the service or switching binaries.
@@ -148,6 +156,7 @@ report.write_text(json.dumps({
     'modified_password_and_session_preserved':True,'device_group_data_preserved':True,
     'configuration_and_certificates_preserved':True,'verified_database_backups':len(backups),
     'same_version_no_op':True,
+    'panel_host_metrics_and_dropin_rollback':True,
 },indent=2)+'\n')
 # The root updater intentionally sets umask 077. This report contains only
 # public test outcomes; allow the unprivileged Actions uploader to read it.

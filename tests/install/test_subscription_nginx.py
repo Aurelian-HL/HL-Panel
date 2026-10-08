@@ -12,6 +12,31 @@ spec.loader.exec_module(update)
 
 
 class SubscriptionNginxTests(unittest.TestCase):
+    def test_host_metrics_dropin_preserves_custom_unit_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root/'release'
+            unit = target/'deploy/systemd/hl-panel-control-api.service'
+            unit.parent.mkdir(parents=True)
+            unit.write_text('[Service]\nProtectProc=invisible\nProcSubset=all\n')
+            backup = root/'backup'
+            backup.mkdir()
+            update.PROC_OVERRIDE = root/'unit.d/20-host-metrics.conf'
+            update.private_regular = lambda path: None
+            calls = []
+            update.run = lambda args: calls.append(args)
+            update.host_metrics_update(target, backup)
+            self.assertEqual(update.PROC_OVERRIDE.read_text(), update.PROC_OVERRIDE_CONTENT)
+            self.assertEqual(calls, [['systemctl','daemon-reload']])
+            update.host_metrics_update(target, backup)
+            self.assertEqual(len(calls), 1)
+            update.restore_host_metrics(backup)
+            self.assertFalse(update.PROC_OVERRIDE.exists())
+            update.PROC_OVERRIDE.write_text('[Service]\n# custom config\n')
+            with self.assertRaises(update.UpdateError):
+                update.host_metrics_update(target, backup)
+            self.assertIn('custom config', update.PROC_OVERRIDE.read_text())
+
     def test_preserves_routes_and_restores_on_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

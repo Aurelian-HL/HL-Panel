@@ -19,13 +19,29 @@ func cloneSubscription(r subscriptions.Record) subscriptions.Record {
 	r.Published = append([]subscriptions.Line(nil), r.Published...)
 	return r
 }
+
+// Names are a read projection of the current rule. Renaming a rule never
+// rotates its subscription token or changes the stored publication revision.
+func (s *Store) subscriptionNamesLocked(r subscriptions.Record) subscriptions.Record {
+	r = cloneSubscription(r)
+	if rule, ok := s.forwardRules[r.Item.ForwardingRuleID]; ok && rule.OwnedByAdministrator(r.OwnerID) {
+		r.Item.Name = rule.Name
+		for i := range r.Draft {
+			r.Draft[i].Name = rule.Name
+		}
+		for i := range r.Published {
+			r.Published[i].Name = rule.Name
+		}
+	}
+	return r
+}
 func (s *Store) ListSubscriptions(_ context.Context, admin string) ([]subscriptions.Item, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	items := []subscriptions.Item{}
 	for _, r := range s.subscriptions {
 		if r.OwnerID == admin {
-			items = append(items, r.Item)
+			items = append(items, s.subscriptionNamesLocked(r).Item)
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -43,14 +59,14 @@ func (s *Store) Subscription(_ context.Context, admin, id string) (subscriptions
 	if !ok || r.OwnerID != admin {
 		return subscriptions.Record{}, faults.ErrNotFound
 	}
-	return cloneSubscription(r), nil
+	return s.subscriptionNamesLocked(r), nil
 }
 func (s *Store) SubscriptionByToken(_ context.Context, hash string) (subscriptions.Record, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, r := range s.subscriptions {
 		if securetoken.Hash(r.Token) == hash {
-			return cloneSubscription(r), nil
+			return s.subscriptionNamesLocked(r), nil
 		}
 	}
 	return subscriptions.Record{}, faults.ErrNotFound

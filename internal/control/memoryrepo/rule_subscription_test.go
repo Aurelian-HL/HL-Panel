@@ -8,6 +8,8 @@ import (
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
+	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +53,15 @@ func TestAutomaticRuleSubscriptionConcurrentClicksAndQuota(t *testing.T) {
 		t.Fatal("administrator auto feed unavailable", err, lines)
 	}
 	// Updating the native account changes the same feed, without caching its URI.
+	rule.Name = "随遇而安"
+	f.store.forwardRules[rule.ID] = rule
+	afterRename, _ := service.Detail(ctx, "admin", item.ID)
+	_, renamedLines, renameErr := service.Public(ctx, record.Token)
+	parsed, _ := url.Parse(renamedLines[0].URI)
+	listed, _ := service.List(ctx, "admin")
+	if renameErr != nil || afterRename.Token != record.Token || afterRename.Item.Name != rule.Name || listed[0].Name != rule.Name || renamedLines[0].Name != rule.Name || parsed.Fragment != rule.Name || afterRename.Item.Revision != record.Item.Revision {
+		t.Fatal("rename failed to update current rule nickname with fixed address")
+	}
 	binding := f.store.vlessBindings[f.bindingID]
 	binding.CredentialUUID = "4d506676-e698-44f0-b7ae-bc56ae48f394"
 	f.store.vlessBindings[f.bindingID] = binding
@@ -70,6 +81,12 @@ func TestAutomaticRuleSubscriptionConcurrentClicksAndQuota(t *testing.T) {
 	_, lines, err = service.Public(ctx, record.Token)
 	if err != nil || len(lines) != 1 || lines[0].URI != "" {
 		t.Fatal("exhausted rule still supplied", lines, err)
+	}
+	if !strings.Contains(lines[0].Error, "额度已用完") {
+		t.Fatal("missing quota reason", lines[0].Error)
+	}
+	if _, err := subscriptions.Package(afterRename, lines, "https://panel.example.test"); err == nil {
+		t.Fatal("quota allowed empty ZIP")
 	}
 	after, _ := service.Detail(ctx, "admin", item.ID)
 	if after.Token != record.Token {

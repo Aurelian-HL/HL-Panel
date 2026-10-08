@@ -27,6 +27,8 @@ REPO = 'https://github.com/Aurelian-HL/HL-Panel'
 TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
 APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
+PROC_OVERRIDE = Path('/etc/systemd/system/hl-panel-control-api.service.d/20-host-metrics.conf')
+PROC_OVERRIDE_CONTENT = '# Managed by HL-panel: allow read-only host metrics.\n[Service]\nProcSubset=all\n'
 SUBSCRIPTION_LOCATION = '''location ^~ /api/v1/public/subscriptions/ {
     access_log off;
     include /etc/nginx/snippets/hl-panel-api-proxy.conf;
@@ -206,6 +208,37 @@ def restore_subscription_nginx(backup):
         run(['systemctl','reload','nginx'])
 
 
+def host_metrics_update(destination, backup):
+    """A bounded drop-in preserves the administrator's existing service unit."""
+    packaged = destination/'deploy/systemd/hl-panel-control-api.service'
+    if not packaged.is_file() or '\nProcSubset=all\n' not in packaged.read_text():
+        return
+    require(not PROC_OVERRIDE.is_symlink(), '面板指标服务配置不能为链接')
+    if PROC_OVERRIDE.exists():
+        private_regular(PROC_OVERRIDE)
+        if PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT:
+            return
+        raise UpdateError('面板指标服务配置路径已被自定义文件占用，现有文件未覆盖')
+    PROC_OVERRIDE.parent.mkdir(mode=0o755, exist_ok=True)
+    require(not PROC_OVERRIDE.parent.is_symlink(), '面板服务配置目录不能为链接')
+    directory_info = PROC_OVERRIDE.parent.stat()
+    require(directory_info.st_uid == os.geteuid() and not directory_info.st_mode & 0o022,
+            '面板服务配置目录必须归更新用户所有且不能被其他用户修改')
+    (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
+    PROC_OVERRIDE.write_text(PROC_OVERRIDE_CONTENT)
+    PROC_OVERRIDE.chmod(0o644)
+    run(['systemctl','daemon-reload'])
+
+
+def restore_host_metrics(backup):
+    if (backup/'host-metrics-added').is_file():
+        if PROC_OVERRIDE.exists():
+            private_regular(PROC_OVERRIDE)
+            require(PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT, '面板指标配置已被修改，拒绝覆盖')
+            PROC_OVERRIDE.unlink()
+        run(['systemctl','daemon-reload'])
+
+
 def rollback(backup):
     backup=backup.resolve()
     require(backup.parent==Path('/var/backups/hl-panel') and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
@@ -217,6 +250,7 @@ def rollback(backup):
     require(digest(backup/'database.dump')==state['database_sha256'],'数据库备份摘要不一致，拒绝恢复')
     run(['systemctl','stop',SERVICE])
     restore_subscription_nginx(backup)
+    restore_host_metrics(backup)
     with (backup/'database.dump').open('rb') as stream:
         run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
     switch(old)
@@ -314,6 +348,7 @@ def main():
             run([str(destination/'bin/usage-migrate'),'apply','-dsn-file',str(CONFIG/'database-url')])
             run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
             subscription_nginx_update(destination, backup)
+            host_metrics_update(destination, backup)
             switch(destination)
             run(['systemctl','start',SERVICE])
             healthy(origin,target)

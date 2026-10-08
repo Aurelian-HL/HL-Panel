@@ -18,11 +18,7 @@ func (api *API) generateRuleSubscription(w http.ResponseWriter, r *http.Request,
 		writeProblem(w, r, err)
 		return
 	}
-	name := []rune(rule.Name)
-	if len(name) > 100 {
-		name = name[:100]
-	}
-	item, replayed, err := api.subscriptions.Generate(r.Context(), s.AdminID, rule.ID, subscriptions.Request{Name: rule.Name, CustomerID: rule.CustomerID, Lines: []subscriptions.Line{{Name: string(name), BindingID: credential.Binding.ID}}}, r.Header.Get("Idempotency-Key"))
+	item, replayed, err := api.subscriptions.Generate(r.Context(), s.AdminID, rule.ID, subscriptions.Request{Name: rule.Name, CustomerID: rule.CustomerID, Lines: []subscriptions.Line{{Name: rule.Name, BindingID: credential.Binding.ID}}}, r.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeProblem(w, r, err)
 		return

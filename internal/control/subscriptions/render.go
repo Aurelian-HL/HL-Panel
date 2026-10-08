@@ -4,10 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	qrcode "github.com/skip2/go-qrcode"
+	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
 	"regexp"
@@ -178,27 +178,39 @@ func YAML(lines []Resolved) ([]byte, error) {
 		proxies = append(proxies, p.Config)
 		names = append(names, line.Name)
 	}
-	// JSON flow mappings and strings are valid YAML scalars. Encoding every
-	// untrusted value prevents node names/passwords from injecting YAML keys.
-	var out strings.Builder
-	out.WriteString("mixed-port: 7890\nallow-lan: false\nmode: rule\nlog-level: info\nproxies:")
-	if len(proxies) == 0 {
-		out.WriteString(" []\nproxy-groups: []\nrules: [\"MATCH,REJECT\"]\n")
-		return []byte(out.String()), nil
+	document := struct {
+		MixedPort int              `yaml:"mixed-port"`
+		AllowLAN  bool             `yaml:"allow-lan"`
+		Mode      string           `yaml:"mode"`
+		LogLevel  string           `yaml:"log-level"`
+		Proxies   []map[string]any `yaml:"proxies"`
+		Groups    []map[string]any `yaml:"proxy-groups"`
+		Rules     []string         `yaml:"rules"`
+	}{7890, false, "rule", "info", proxies, []map[string]any{}, []string{"MATCH,REJECT"}}
+	if len(proxies) > 0 {
+		base := names[0] + "-选择"
+		groupName := base
+		// Names containing commas cannot be used as a Clash routing target.
+		if strings.ContainsAny(base, ",\r\n") {
+			groupName = "HL-panel-选择"
+			base = groupName
+		}
+		for suffix := 2; containsName(names, groupName); suffix++ {
+			groupName = fmt.Sprintf("%s %d", base, suffix)
+		}
+		document.Groups = []map[string]any{{"name": groupName, "type": "select", "proxies": names}}
+		document.Rules = []string{"MATCH," + groupName}
 	}
-	out.WriteByte('\n')
-	for _, p := range proxies {
-		v, _ := json.Marshal(p)
-		out.WriteString("  - " + string(v) + "\n")
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(document); err != nil {
+		return nil, err
 	}
-	groupName := "HL-panel"
-	for suffix := 2; containsName(names, groupName); suffix++ {
-		groupName = fmt.Sprintf("HL-panel %d", suffix)
+	if err := encoder.Close(); err != nil {
+		return nil, err
 	}
-	group, _ := json.Marshal(map[string]any{"name": groupName, "type": "select", "proxies": names})
-	rules, _ := json.Marshal([]string{"MATCH," + groupName})
-	out.WriteString("proxy-groups:\n  - " + string(group) + "\nrules: " + string(rules) + "\n")
-	return []byte(out.String()), nil
+	return out.Bytes(), nil
 }
 func containsName(names []string, name string) bool {
 	for _, candidate := range names {
@@ -234,6 +246,17 @@ func QRCode(token, baseURL, format string) ([]byte, error) {
 	return qrcode.Encode(address, qrcode.Medium, 384)
 }
 func Package(r Record, lines []Resolved, baseURL string) ([]byte, error) {
+	available := false
+	for _, line := range lines {
+		available = available || line.URI != ""
+	}
+	if !available {
+		message := "没有可用线路，请检查规则、客户和节点状态"
+		if len(lines) == 1 && lines[0].Error != "" {
+			message = lines[0].Error
+		}
+		return nil, fmt.Errorf("%w: 无法下载订阅包：%s", faults.ErrConflict, message)
+	}
 	txtURL, err := FeedURL(r.Token, baseURL, "txt")
 	if err != nil {
 		return nil, err
@@ -252,16 +275,20 @@ func Package(r Record, lines []Resolved, baseURL string) ([]byte, error) {
 	}
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
+	name := PackageBaseName(r.Item.Name)
+	// UTF-8 BOM lets Windows text editors detect Chinese reliably. The public
+	// feed remains UTF-8 without BOM for subscription client compatibility.
+	textFile := func(value string) []byte { return []byte("\xef\xbb\xbf" + strings.ReplaceAll(value, "\n", "\r\n")) }
 	for _, entry := range []struct {
 		name string
 		data []byte
 	}{
-		{"Clash-Mihomo.yaml", yaml},
-		{"Clash-Mihomo-订阅地址.txt", []byte(yamlURL + "\n")},
-		{"v2rayN-订阅地址.txt", []byte(txtURL + "\n")},
-		{"Shadowrocket-订阅地址.txt", []byte(txtURL + "\n")},
-		{"Shadowrocket-QR.png", qr},
-		{"README.txt", []byte("HL-panel 订阅导入包\nClash/Mihomo：从订阅地址导入 " + yamlURL + "\nv2rayN/Shadowrocket：从订阅地址导入 " + txtURL + "\n二维码内容为 TXT 订阅地址。静态 YAML 为下载时的快照；需要自动更新请使用订阅地址。\n规则暂停、额度用完或尚未就绪时暂不包含该线路；恢复后请更新客户端订阅。ZIP 文件应先解压，再按对应客户端导入地址或 YAML 文件。\n订阅地址含访问凭据，请勿公开。\n")},
+		{name + "-电脑Clash直接拖入使用.yaml", append([]byte{0xef, 0xbb, 0xbf}, yaml...)},
+		{name + "-Clash订阅链接.txt", textFile(yamlURL + "\n")},
+		{name + "-电脑手机通用v2rayN订阅链接.txt", textFile(txtURL + "\n")},
+		{name + "-小火箭订阅链接.txt", textFile(txtURL + "\n")},
+		{name + "-苹果小火箭订阅二维码.png", qr},
+		{name + "-导入使用说明.txt", textFile("HL-panel 订阅导入包\n规则 / 订阅：" + r.Item.Name + "\n请先解压 ZIP。\nClash/Mihomo：导入同名 YAML 文件，或从 Clash订阅链接.txt 中复制地址并从 URL 导入。\nv2rayN：使用电脑手机通用v2rayN订阅链接.txt 中的地址。\nShadowrocket（小火箭）：使用小火箭订阅链接.txt 中的地址，或扫描苹果小火箭订阅二维码.png。\n二维码内容为 TXT 订阅地址。静态 YAML 为下载时的快照；需要自动更新请使用订阅地址。\n规则暂停、额度用完或尚未就绪时暂不下发该线路；恢复后请更新客户端订阅。\n订阅地址含访问凭据，请勿公开。\n")},
 	} {
 		f, e := writer.Create(entry.name)
 		if e != nil {
@@ -275,4 +302,37 @@ func Package(r Record, lines []Resolved, baseURL string) ([]byte, error) {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+// Strip Windows-invalid characters, paths and device names. Truncation uses
+// UTF-16 code units, keeping all six filenames usable in Windows Explorer.
+func PackageBaseName(value string) string {
+	var out strings.Builder
+	units := 0
+	for _, r := range value {
+		if unicode.IsControl(r) || strings.ContainsRune(`<>:"/\|?*`, r) {
+			r = '_'
+		}
+		size := 1
+		if r > 0xffff {
+			size = 2
+		}
+		if units+size > 80 {
+			break
+		}
+		if out.Len()+len(string(r)) > 180 {
+			break
+		}
+		out.WriteRune(r)
+		units += size
+	}
+	name := strings.Trim(out.String(), " .")
+	if name == "" {
+		name = "HL-panel"
+	}
+	stem := strings.ToUpper(strings.SplitN(name, ".", 2)[0])
+	if stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || regexp.MustCompile(`^(COM|LPT)[1-9¹²³]$`).MatchString(stem) {
+		name = "_" + name
+	}
+	return name
 }

@@ -48,6 +48,14 @@ beforeEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it('distinguishes disabled swap from missing metrics', async () => {
+    mocked.getOverview.mockResolvedValue({ ...overview, panel: { ...overview.panel, resources: { ...overview.panel.resources, swap_used_bytes: 0, swap_total_bytes: 0 } } })
+    const wrapper = mount(OverviewPage)
+    await flushPromises()
+    expect(wrapper.findAll('.xpanel-gauge')[2]!.text()).toContain('未启用')
+    expect(wrapper.findAll('.xpanel-gauge')[2]!.text()).not.toContain('未采集')
+    wrapper.unmount()
+  })
   it('matches the X-Panel overview blocks and exposes every live metric', async () => {
     const wrapper = mount(OverviewPage)
     await flushPromises()

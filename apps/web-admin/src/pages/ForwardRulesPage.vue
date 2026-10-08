@@ -213,7 +213,7 @@ async function copyConnection(rule: ForwardRule): Promise<void> {
     const generated = await subscriptionApi.generateRule(rule.id, mutationKey({ operation: 'generate-subscription', rule_id: rule.id, revision: rule.revision }))
     const pack = await subscriptionApi.package(generated.subscription.id)
     downloadSubscriptionPackage(pack)
-    toast.success('订阅已生成，导入包已下载', rule.status === 'active' ? '可在订阅管理查看固定地址和二维码，重复点击复用同一订阅' : '规则暂停、额度用完或尚未就绪时暂不下发线路；恢复后更新客户端订阅')
+    toast.success('订阅已生成，已开始下载导入包', '文件名和客户端昵称使用规则名，可在订阅管理查看固定地址和二维码')
   } catch (cause) {
     if (isUnauthorized(cause)) invalidateSession(); else actionError.value = displayError(cause)
   } finally { busyId.value = '' }

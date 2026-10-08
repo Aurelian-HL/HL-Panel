@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
@@ -46,7 +47,7 @@ func validID(v string) bool {
 }
 func Normalize(r Request) (Request, error) {
 	r.Name = strings.TrimSpace(r.Name)
-	if r.Name == "" || utf8.RuneCountInString(r.Name) > 120 || strings.IndexFunc(r.Name, unicode.IsControl) >= 0 || !validID(r.CustomerID) || r.Revision < 0 || r.Revision == math.MaxInt64 || len(r.Lines) < 1 || len(r.Lines) > 100 {
+	if r.Name == "" || utf8.RuneCountInString(r.Name) > 128 || strings.IndexFunc(r.Name, unicode.IsControl) >= 0 || !validID(r.CustomerID) || r.Revision < 0 || r.Revision == math.MaxInt64 || len(r.Lines) < 1 || len(r.Lines) > 100 {
 		return Request{}, fmt.Errorf("%w: 名称、客户和 1–100 条线路为必填项", faults.ErrValidation)
 	}
 	r.Lines = append([]Line(nil), r.Lines...)
@@ -56,7 +57,7 @@ func Normalize(r Request) (Request, error) {
 		line.Name = strings.TrimSpace(line.Name)
 		line.URI = strings.TrimSpace(line.URI)
 		line.BindingID = strings.TrimSpace(line.BindingID)
-		if line.Name == "" || utf8.RuneCountInString(line.Name) > 100 || strings.IndexFunc(line.Name, unicode.IsControl) >= 0 || names[line.Name] || (line.URI == "") == (line.BindingID == "") {
+		if line.Name == "" || utf8.RuneCountInString(line.Name) > 128 || strings.IndexFunc(line.Name, unicode.IsControl) >= 0 || names[line.Name] || (line.URI == "") == (line.BindingID == "") {
 			return Request{}, fmt.Errorf("%w: 每条线路须有唯一名称，并选择一个凭据或填写一个链接", faults.ErrValidation)
 		}
 		source := line.BindingID
@@ -244,7 +245,12 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 			}
 		}
 		if resolveErr != nil {
-			out = append(out, Resolved{Name: line.Name, Error: "线路未就绪或凭据已撤销"})
+			message := "线路未就绪或凭据已撤销"
+			var reason interface{ SubscriptionReason() string }
+			if errors.As(resolveErr, &reason) {
+				message = reason.SubscriptionReason()
+			}
+			out = append(out, Resolved{Name: line.Name, Error: message})
 			continue
 		}
 		proxy, e := ParseProxy(uri, line.Name)

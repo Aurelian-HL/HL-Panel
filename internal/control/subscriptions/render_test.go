@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
+	"github.com/hongle/hl-panel/internal/control/faults"
+	"gopkg.in/yaml.v3"
 	"image/png"
 	"io"
 	"strings"
@@ -14,7 +16,7 @@ import (
 const testURI = "vless://a612b608-291f-4add-ae78-ece0c450691a@edge.example.test:443?security=tls&type=tcp&sni=edge.example.test"
 
 func TestRenderRoundTripAndPackage(t *testing.T) {
-	lines := []Resolved{{Name: "HL-panel", URI: testURI}, {Name: "香港: \"线路\"", URI: "socks5://user:p%40ss@[::1]:1080"}, {Name: "offline", Error: "unavailable"}}
+	lines := []Resolved{{Name: "随遇而安", URI: testURI}, {Name: "随遇而安-选择", URI: "socks5://user:p%40ss@[::1]:1080"}, {Name: "offline", Error: "unavailable"}}
 	txt, err := base64.StdEncoding.DecodeString(TXT(lines))
 	if err != nil || len(strings.Split(string(txt), "\n")) != 2 {
 		t.Fatal("TXT did not preserve two available lines")
@@ -23,19 +25,17 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(body, []byte(`"name":"HL-panel 2"`)) || !bytes.Contains(body, []byte(`"password":"p@ss"`)) || bytes.Contains(body, []byte("offline")) {
+	var config struct {
+		Proxies []map[string]any `yaml:"proxies"`
+		Groups  []map[string]any `yaml:"proxy-groups"`
+	}
+	if err = yaml.Unmarshal(body, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Proxies) != 2 || config.Proxies[0]["name"] != "随遇而安" || config.Proxies[1]["password"] != "p@ss" || config.Groups[0]["name"] != "随遇而安-选择 2" || bytes.Contains(body, []byte("offline")) {
 		t.Fatal("unsafe group name or malformed YAML")
 	}
-	// Each generated proxy is JSON flow YAML; decode independently to check escaping.
-	for _, line := range strings.Split(string(body), "\n") {
-		if strings.HasPrefix(line, "  - ") {
-			var value map[string]any
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "  - ")), &value); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	r := Record{Token: "sub_" + strings.Repeat("A", 43)}
+	r := Record{Item: Item{Name: "随遇而安"}, Token: "sub_" + strings.Repeat("A", 43)}
 	pack, err := Package(r, lines, "https://panel.example.test")
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +45,9 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 		t.Fatal("invalid import ZIP")
 	}
 	for _, f := range z.File {
+		if !strings.HasPrefix(f.Name, "随遇而安-") || f.Flags&0x800 == 0 {
+			t.Fatal("rule name or UTF-8 ZIP flag missing", f.Name)
+		}
 		reader, e := f.Open()
 		if e != nil {
 			t.Fatal(e)
@@ -55,13 +58,18 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 			t.Fatal(e)
 		}
 		switch f.Name {
-		case "Shadowrocket-QR.png":
+		case "随遇而安-苹果小火箭订阅二维码.png":
 			if _, e = png.Decode(bytes.NewReader(raw)); e != nil {
 				t.Fatal(e)
 			}
-		case "v2rayN-订阅地址.txt", "Shadowrocket-订阅地址.txt":
-			if string(raw) != "https://panel.example.test"+Paths(r.Token).TXT+"\n" {
+		case "随遇而安-电脑手机通用v2rayN订阅链接.txt", "随遇而安-小火箭订阅链接.txt":
+			if string(raw) != "\xef\xbb\xbfhttps://panel.example.test"+Paths(r.Token).TXT+"\r\n" {
 				t.Fatal("wrong feed address")
+			}
+		case "随遇而安-电脑Clash直接拖入使用.yaml":
+			var parsed any
+			if err := yaml.Unmarshal(raw, &parsed); err != nil {
+				t.Fatal("BOM YAML unreadable", err)
 			}
 		}
 	}
@@ -73,6 +81,32 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 	empty, _ := YAML([]Resolved{{Name: "offline", Error: "unavailable"}})
 	if !bytes.Contains(empty, []byte("MATCH,REJECT")) || bytes.Contains(empty, []byte("DIRECT")) {
 		t.Fatal("empty subscription must fail closed")
+	}
+	if _, err := Package(r, []Resolved{{Error: "规则已暂停"}}, "https://panel.example.test"); !errors.Is(err, faults.ErrConflict) || !strings.Contains(err.Error(), "规则已暂停") {
+		t.Fatal("empty ZIP not rejected with reason", err)
+	}
+}
+
+func TestPackageFilenameAndYAMLInjection(t *testing.T) {
+	for raw, want := range map[string]string{"../../a:b": "_.._a_b", "CON": "_CON", "NUL.txt": "_NUL.txt", " . ": "HL-panel", "随遇而安": "随遇而安"} {
+		if got := PackageBaseName(raw); got != want {
+			t.Errorf("name %q got %q want %q", raw, got, want)
+		}
+	}
+	if len(PackageBaseName(strings.Repeat("中", 128))) > 180 {
+		t.Fatal("filename exceeds filesystem byte limit")
+	}
+	name := "线路: # [\"quoted\"]\nproxies: []"
+	body, err := YAML([]Resolved{{Name: name, URI: testURI}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = yaml.Unmarshal(body, &value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value["proxies"].([]any)) != 1 || value["proxies"].([]any)[0].(map[string]any)["name"] != name {
+		t.Fatal("YAML name injection")
 	}
 }
 
