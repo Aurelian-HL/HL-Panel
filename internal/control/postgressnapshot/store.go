@@ -6,8 +6,8 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
@@ -18,11 +18,51 @@ import (
 
 const operationTimeout = 10 * time.Second
 
-// Store does not cache mutable state: every operation loads from PostgreSQL.
+// Writes always load private state inside a row-locked database transaction.
+// Reads reuse a validated snapshot only while its database row identity matches.
 // Database errors are intentionally redacted to avoid leaking DSNs or payloads.
 type Store struct {
 	db             *sql.DB
 	desiredChanges generations.ChangeSignals
+	readMu         sync.Mutex
+	readCache      snapshotReadCache
+}
+
+type snapshotReadCache struct {
+	version       int
+	revision      int64
+	transactionID string
+	state         *memoryrepo.Store
+}
+
+func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
+	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
+	// xmin also detects restores or external repairs that do not bump revision.
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	cached := s.readCache
+	var next snapshotReadCache
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text,
+ CASE WHEN format_version=$1 AND revision=$2 AND xmin::text=$3 THEN NULL ELSE payload END
+ FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
+		Scan(&next.version, &next.revision, &next.transactionID, &raw)
+	if err != nil {
+		return nil, errors.New("PostgreSQL snapshot read failed")
+	}
+	if !memoryrepo.SupportsSnapshotVersion(next.version) {
+		return nil, errors.New("unsupported PostgreSQL snapshot version")
+	}
+	if raw == nil && cached.state != nil {
+		return cached.state, nil
+	}
+	next.state, err = memoryrepo.DecodeSnapshotAtVersion(raw, next.version)
+	if err != nil {
+		return nil, err
+	}
+	next.state.SetPersistenceRevision(uint64(next.revision))
+	s.readCache = next
+	return next.state, nil
 }
 
 func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
@@ -84,7 +124,7 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 			return errors.New("PostgreSQL initial snapshot write failed")
 		}
 	}
-	if _, err := readState(ctx, tx, false); err != nil {
+	if err := initializeAuditJournal(ctx, tx); err != nil {
 		return err
 	}
 	if err := migrationTables(ctx, tx); err != nil {
@@ -97,23 +137,24 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 }
 
 func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, error) {
-	query := `SELECT format_version, payload FROM nyvp_control_snapshots WHERE singleton = true`
+	query := `SELECT format_version, revision, payload FROM nyvp_control_snapshots WHERE singleton = true`
 	if lock {
 		query += ` FOR UPDATE`
 	}
 	var version int
+	var revision int64
 	var raw []byte
-	if err := tx.QueryRowContext(ctx, query).Scan(&version, &raw); err != nil {
+	if err := tx.QueryRowContext(ctx, query).Scan(&version, &revision, &raw); err != nil {
 		return nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(version) {
 		return nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
-	var header struct{ Version int }
-	if json.Unmarshal(raw, &header) != nil || header.Version != version {
-		return nil, errors.New("PostgreSQL snapshot version mismatch")
+	state, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
+	if err == nil {
+		state.SetPersistenceRevision(uint64(revision))
 	}
-	return memoryrepo.DecodeSnapshot(raw)
+	return state, err
 }
 
 func transact[T any](parent context.Context, s *Store, write bool, operation func(*memoryrepo.Store) (T, error)) (T, error) {
@@ -125,7 +166,12 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
 	defer tx.Rollback()
-	state, err := readState(ctx, tx, write)
+	var state *memoryrepo.Store
+	if write {
+		state, err = readState(ctx, tx, true)
+	} else {
+		state, err = s.readSnapshot(ctx, tx)
+	}
 	if err != nil {
 		return zero, err
 	}
@@ -138,7 +184,10 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return result, err
 	}
 	if write {
-		raw, err := state.EncodeSnapshot()
+		if err := appendAuditJournal(ctx, tx, state.AuditEvents()); err != nil {
+			return zero, err
+		}
+		raw, err := state.EncodeSnapshotWithAudit(nil)
 		if err != nil {
 			return zero, err
 		}

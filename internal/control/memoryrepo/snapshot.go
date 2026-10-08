@@ -29,7 +29,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 17
+const SnapshotVersion = 18
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -169,6 +169,19 @@ type snapshot struct {
 
 // EncodeSnapshot is only for the confidential persistence adapter.
 func (s *Store) EncodeSnapshot() ([]byte, error) {
+	return s.encodeSnapshot(nil)
+}
+
+// EncodeSnapshotWithAudit lets the persistence adapter join its independent
+// journal for backups, or exclude it from frequently updated business state.
+func (s *Store) EncodeSnapshotWithAudit(events []audit.Event) ([]byte, error) {
+	if events == nil {
+		events = []audit.Event{}
+	}
+	return s.encodeSnapshot(&events)
+}
+
+func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	// ForwardRules is a confidential persistence projection, but it must still
@@ -217,6 +230,9 @@ func (s *Store) EncodeSnapshot() ([]byte, error) {
 		BusinessIdempotency:   s.businessIdempotency,
 		ProtocolHealth:        s.protocolHealth,
 		ProtocolProbes:        s.protocolProbes,
+	}
+	if events != nil {
+		state.AuditEvents = *events
 	}
 	for id, r := range s.subscriptions {
 		state.Subscriptions[id] = storedSubscription{r.Item, r.OwnerID, r.Token, r.Draft, r.Published}
@@ -275,6 +291,15 @@ func (s *Store) EncodeSnapshot() ([]byte, error) {
 
 // DecodeSnapshot fails closed. A damaged or newer snapshot is never an empty DB.
 func DecodeSnapshot(raw []byte) (*Store, error) {
+	return decodeSnapshot(raw, 0)
+}
+
+// DecodeSnapshotAtVersion validates the database envelope in the same decode.
+func DecodeSnapshotAtVersion(raw []byte, expectedVersion int) (*Store, error) {
+	return decodeSnapshot(raw, expectedVersion)
+}
+
+func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 	if len(raw) == 0 || len(raw) > MaxSnapshotBytes {
 		return nil, errors.New("invalid persistence state size")
 	}
@@ -286,6 +311,9 @@ func DecodeSnapshot(raw []byte) (*Store, error) {
 	}
 	if decoder.Decode(new(any)) != io.EOF {
 		return nil, errors.New("trailing persistence state data")
+	}
+	if expectedVersion != 0 && state.Version != expectedVersion {
+		return nil, errors.New("PostgreSQL snapshot version mismatch")
 	}
 	if state.Version >= 17 && state.Subscriptions == nil {
 		return nil, errors.New("missing persisted subscriptions")

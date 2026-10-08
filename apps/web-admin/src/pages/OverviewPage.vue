@@ -19,17 +19,20 @@ const refreshTimer = ref<number | undefined>()
 const showLogs = ref(false)
 const showVersions = ref(false)
 const showMigration = ref(false)
+let inFlight = false
 
 async function load(): Promise<void> {
+  if (inFlight) return
+  inFlight = true
   loading.value = true
   errorMessage.value = ''
   try {
-    const [runtime] = await Promise.all([api.getOverview(), siteStore.load(true).catch(() => null)])
-    overview.value = runtime
+    overview.value = await api.getOverview()
   } catch (error) {
     errorMessage.value = displayError(error)
   } finally {
     loading.value = false
+    inFlight = false
   }
 }
 
@@ -146,12 +149,18 @@ const systemSwap = computed(() => panelNumber('swap_total_bytes') === 0 ? 0 : pe
 const systemDisk = computed(() => percent(panelNumber('disk_used_bytes'), panelNumber('disk_total_bytes')))
 const connectionCount = computed(() => `${sum('tcp_conn_count') === null ? '未采集' : Math.round(sum('tcp_conn_count') as number).toLocaleString('zh-CN')} / ${sum('udp_conn_count') === null ? '未采集' : Math.round(sum('udp_conn_count') as number).toLocaleString('zh-CN')}`)
 
+function refreshOnVisible(): void {
+  if (document.visibilityState === 'visible') void load()
+}
 onMounted(() => {
+  void siteStore.load().catch(() => null)
   void load()
-  refreshTimer.value = window.setInterval(() => { if (!loading.value) void load() }, 15000)
+  document.addEventListener('visibilitychange', refreshOnVisible)
+  refreshTimer.value = window.setInterval(refreshOnVisible, 15000)
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', refreshOnVisible)
   if (refreshTimer.value !== undefined) window.clearInterval(refreshTimer.value)
 })
 </script>

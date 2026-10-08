@@ -51,6 +51,35 @@ beforeEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it('renders overview without waiting for slow site metadata', async () => {
+    mocked.loadSite.mockReturnValue(new Promise(() => {}))
+    const wrapper = mount(OverviewPage)
+    await flushPromises()
+    expect(wrapper.find('.xpanel-gauges').exists()).toBe(true)
+    expect(mocked.getOverview).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+  it('pauses hidden polling, refreshes on return, and removes its timer on unmount', async () => {
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const wrapper = mount(OverviewPage)
+    try {
+      await flushPromises()
+      visibility.mockReturnValue('hidden')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(45000)
+      expect(mocked.getOverview).toHaveBeenCalledTimes(1)
+      visibility.mockReturnValue('visible')
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flushPromises()
+      expect(mocked.getOverview).toHaveBeenCalledTimes(2)
+      expect(mocked.loadSite).toHaveBeenCalledTimes(1)
+      wrapper.unmount()
+      await vi.advanceTimersByTimeAsync(30000)
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(mocked.getOverview).toHaveBeenCalledTimes(2)
+    } finally { wrapper.unmount(); visibility.mockRestore(); vi.useRealTimers() }
+  })
   it('opens logs and versions as dialogs and removes the old log card', async () => {
     const wrapper = mount(OverviewPage)
     await flushPromises()

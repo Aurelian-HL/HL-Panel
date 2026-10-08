@@ -26,6 +26,9 @@ func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewa
 		Deployments:    make(map[string]gatewaymembership.DeploymentEvidence),
 		ProtocolHealth: make(map[string]gatewaymembership.ProtocolObservation),
 	}
+	if s.persistenceRevision != 0 {
+		state.Revision = s.persistenceRevision
+	}
 	for nodeID, observation := range s.protocolHealth[poolID] {
 		state.ProtocolHealth[nodeID] = observation
 	}
@@ -49,6 +52,14 @@ func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewa
 	}
 	sort.Slice(state.Members, func(i, j int) bool { return state.Members[i].NodeID < state.Members[j].NodeID })
 	return state, nil
+}
+
+// SetPersistenceRevision binds a decoded read projection to the database
+// revision, independent of the separately persisted audit history.
+func (s *Store) SetPersistenceRevision(revision uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.persistenceRevision = revision
 }
 
 // PublishProtocolHealth stores a rule/config-bound observation produced by

@@ -154,8 +154,7 @@ async function loadGroups(): Promise<void> {
   } finally {
     groupsLoading.value = false
   }
-  await loadGroupMembers()
-  await loadMonitoring()
+  await Promise.all([loadGroupMembers(), loadMonitoring()])
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined

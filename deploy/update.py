@@ -369,6 +369,13 @@ def rollback(backup):
     restore_domain_access(backup)
     with (backup/'database.dump').open('rb') as stream:
         run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
+    # pg_restore --clean only removes objects present in the old archive.
+    # Remove the journal added by an unsuccessful schema-18 upgrade, otherwise
+    # retrying the upgrade would append the restored legacy history twice.
+    manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
+    if not re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+hl_panel_audit_journal\s', manifest):
+        run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
+             '-c','DROP TABLE IF EXISTS public.hl_panel_audit_journal'])
     switch(old)
     run(['systemctl','start',SERVICE])
     healthy(origin,state['previous_version'])

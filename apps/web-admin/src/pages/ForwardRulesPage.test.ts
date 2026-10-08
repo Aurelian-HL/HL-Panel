@@ -250,8 +250,13 @@ describe('ForwardRulesPage', () => {
     await flushPromises()
 
     expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 1-20，共 21 条')
+    expect(mockedUsage.query).toHaveBeenCalledTimes(20)
+    expect(mockedUsage.query.mock.calls.every(([request]) => request.scope_id !== 'rule-21')).toBe(true)
+    mockedUsage.query.mockClear()
     expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBe(0)
     await wrapper.get('.rule-pagination__buttons button:last-child').trigger('click')
+    await flushPromises()
+    expect(mockedUsage.query.mock.calls.map(([request]) => request.scope_id)).toEqual(['rule-21'])
     expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 21-21，共 21 条')
     expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBeGreaterThan(0)
 
@@ -264,6 +269,49 @@ describe('ForwardRulesPage', () => {
     expect(wrapper.get('.rule-pagination__summary').text()).toContain('显示 1-1，共 1 条')
     expect(wrapper.findAll('input[aria-label="选择规则 分页规则 21"]').length).toBeGreaterThan(0)
     wrapper.unmount()
+  })
+
+  it('coalesces rapid page changes without starting obsolete traffic queues', async () => {
+    const rules = Array.from({ length: 41 }, (_, index): ForwardRule => ({
+      id: `rule-${index + 1}`, name: `Rule ${index + 1}`, customer_id: '', rule_group_id: '',
+      entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp',
+      listen_port: 10000 + index, targets: [{ host: '192.0.2.1', port: 443 }],
+      selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active',
+    }))
+    mocked.rules.mockResolvedValue({ items: rules })
+    const pending: (() => void)[] = []
+    mockedUsage.query.mockImplementation(() => new Promise((resolve) => {
+      pending.push(() => resolve({ items: [], totals: { rule_actual_bytes: 0 }, total: 0 }))
+    }))
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(mockedUsage.query).toHaveBeenCalledTimes(4)
+    await wrapper.get('.rule-pagination__buttons button:last-child').trigger('click')
+    await wrapper.get('.rule-pagination__buttons button:last-child').trigger('click')
+    expect(mockedUsage.query).toHaveBeenCalledTimes(4)
+    pending.splice(0).forEach((resolve) => resolve())
+    await flushPromises()
+    expect(mockedUsage.query.mock.calls.map(([request]) => request.scope_id)).toEqual([
+      'rule-1', 'rule-2', 'rule-3', 'rule-4', 'rule-41',
+    ])
+    wrapper.unmount()
+    pending.splice(0).forEach((resolve) => resolve())
+    await flushPromises()
+    expect(mockedUsage.query).toHaveBeenCalledTimes(5)
+  })
+
+  it('does not schedule polling when the initial load resolves after unmount', async () => {
+    let resolveRules!: (value: { items: ForwardRule[] }) => void
+    mocked.rules.mockReturnValue(new Promise((resolve) => { resolveRules = resolve }))
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    wrapper.unmount()
+    const timer = vi.spyOn(window, 'setTimeout')
+    try {
+      resolveRules({ items: [] })
+      await flushPromises()
+      expect(timer).not.toHaveBeenCalled()
+      expect(mockedUsage.query).not.toHaveBeenCalled()
+    } finally { timer.mockRestore() }
   })
 
   it('keeps the existing edit and copy actions', async () => {

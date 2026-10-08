@@ -44,6 +44,8 @@ request('POST','/device-groups',{'name':'upgrade-persistence','kind':'ENTRY','se
 groups = request('GET','/device-groups',token=token)
 assert len(groups['items']) == 1
 previous = Path('/opt/hl-panel/current').resolve()
+previous_audit_journal = subprocess.check_output(['runuser','-u','postgres','--','psql','-XAt','--dbname=hl_panel_control',
+    '-c', "SELECT coalesce(to_regclass('public.hl_panel_audit_journal')::text,'absent')"]).strip()
 
 def fingerprint():
     values={}
@@ -149,6 +151,8 @@ assert Path('/opt/hl-panel/current').resolve()==previous
 verify(args.previous_version)
 
 update.healthy=real_healthy
+assert subprocess.check_output(['runuser','-u','postgres','--','psql','-XAt','--dbname=hl_panel_control',
+    '-c', "SELECT coalesce(to_regclass('public.hl_panel_audit_journal')::text,'absent')"]).strip() == previous_audit_journal, 'Rollback retained the new journal'
 invoke('--version',args.version)
 verify(args.version)
 invoke('--version',args.version,'--check')

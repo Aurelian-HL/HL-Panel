@@ -23,7 +23,7 @@ const panelTitle = computed(() => info.value?.settings.panel_title?.trim() || br
 
 async function load(force = false): Promise<PublicSiteInfo> {
   if (info.value && !force) return info.value
-  if (inFlight && !force) return inFlight
+  if (inFlight) return inFlight
   const request = siteApi.publicInfo().then((value) => {
     info.value = value
     brand.value = { site_name: value.settings.site_name, panel_title: value.settings.panel_title }

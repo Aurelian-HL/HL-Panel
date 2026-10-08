@@ -129,6 +129,11 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	var a, b map[string]json.RawMessage
 	require(json.Unmarshal(sourceState.Snapshot, &a))
 	require(json.Unmarshal(restored.Snapshot, &b))
+	var restoredAudit []audit.Event
+	require(json.Unmarshal(b["AuditEvents"], &restoredAudit))
+	if len(restoredAudit) < 5 || restoredAudit[0].ID != event.ID {
+		t.Fatal("restore omitted independent audit history")
+	}
 	for key := range a {
 		if key != "Sessions" && key != "CustomerSessions" && key != "Nodes" && key != "ProtocolHealth" && key != "AuditEvents" && !bytes.Equal(a[key], b[key]) {
 			t.Fatalf("business field changed: %s", key)
@@ -207,6 +212,11 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	}
 	_, err = target.NodeByCredentialHash(ctx, credentialHash)
 	require(err)
+	restartedAudit, err := target.AuditEvents(ctx)
+	require(err)
+	if !reflect.DeepEqual(restartedAudit, restoredAudit) {
+		t.Fatal("restart changed restored audit journal")
+	}
 	_, err = service(target).Restore(ctx, "admin-one", "isolated-test-password", backupPass, "rollback-fixture", migrationbackup.Digest(recoveryRaw), "https://target.example.com", recoveryRaw)
 	require(err)
 	_, err = target.AdministratorByUsername(ctx, "target")

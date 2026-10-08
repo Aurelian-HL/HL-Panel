@@ -48,6 +48,10 @@ const mutationKey = useMutationKey()
 let loadVersion = 0
 let trafficTimer: number | undefined
 let trafficRequestInFlight = false
+let trafficLoadEpoch = 0
+let visibleTrafficInFlight: Promise<void> | null = null
+let trafficReloadPending = false
+let active = false
 const trafficRefreshIntervals = readProbeRefreshIntervals()
 const ready = computed(() => !loading.value && !error.value)
 function isUnauthorized(cause: unknown): boolean { return cause instanceof ApiError && cause.status === 401 }
@@ -97,14 +101,30 @@ async function load(): Promise<void> {
     .flatMap(([name, result]) => result.status === 'rejected' ? [{ name, reason: result.reason }] : [])
   if (failedResources.length) resourceWarning.value = `${failedResources.map(({ name }) => name).join('、')}加载失败，相关选项暂不可用；请刷新重试。${displayError(failedResources[0]!.reason)}`
   loading.value = false
-  if (r.status === 'fulfilled') void loadRuleTraffic(r.value.items.map((rule) => rule.id), {
-    isCurrent: () => version === loadVersion,
-    onValue: (id, bytes) => { trafficByRule.value[id] = bytes },
-    onUnauthorized: invalidateSession,
-  })
+  if (r.status === 'fulfilled') void loadVisibleTraffic(version)
+}
+async function loadVisibleTraffic(version = loadVersion): Promise<void> {
+  if (!active || version !== loadVersion || loading.value || error.value) return
+  trafficLoadEpoch++
+  trafficReloadPending = true
+  if (visibleTrafficInFlight) return visibleTrafficInFlight
+  visibleTrafficInFlight = (async () => {
+    while (trafficReloadPending && active && !loading.value && !error.value) {
+      trafficReloadPending = false
+      const epoch = trafficLoadEpoch
+      const version = loadVersion
+      await loadRuleTraffic(pagedRules.value.map((rule) => rule.id), {
+        isCurrent: () => active && epoch === trafficLoadEpoch && version === loadVersion,
+        onValue: (id, bytes) => { trafficByRule.value[id] = bytes },
+        onUnauthorized: invalidateSession,
+      })
+    }
+  })()
+  try { await visibleTrafficInFlight } finally { visibleTrafficInFlight = null }
 }
 watch([query, filter, groupFilter, pageSize], () => { page.value = 1 })
 watch(totalPages, (value) => { if (page.value > value) page.value = value })
+watch([page, pageSize, query, filter, groupFilter], () => { void loadVisibleTraffic() }, { flush: 'post' })
 async function refreshTraffic(): Promise<void> {
   if (trafficRequestInFlight || loading.value || error.value || busyId.value || batchBusy.value || !rules.value.length) return
   trafficRequestInFlight = true
@@ -114,11 +134,7 @@ async function refreshTraffic(): Promise<void> {
     if (version !== loadVersion || busyId.value || batchBusy.value) return
     rules.value = result.items
     selectedIds.value = selectedIds.value.filter(id => result.items.some(rule => rule.id === id))
-    await loadRuleTraffic(rules.value.map((rule) => rule.id), {
-      isCurrent: () => version === loadVersion,
-      onValue: (id, bytes) => { trafficByRule.value[id] = bytes },
-      onUnauthorized: invalidateSession,
-    })
+    await loadVisibleTraffic(version)
   } catch (cause) {
     if (isUnauthorized(cause)) invalidateSession()
   } finally {
@@ -127,6 +143,7 @@ async function refreshTraffic(): Promise<void> {
 }
 function scheduleTrafficRefresh(): void {
   if (trafficTimer !== undefined) window.clearTimeout(trafficTimer)
+  if (!active) return
   const interval = document.visibilityState === 'visible' ? trafficRefreshIntervals.foreground : trafficRefreshIntervals.background
   trafficTimer = window.setTimeout(async () => {
     await refreshTraffic()
@@ -233,11 +250,13 @@ async function exportRules(): Promise<void> {
   finally { exportBusy.value = false }
 }
 onMounted(async () => {
+  active = true
   document.addEventListener('visibilitychange', handleTrafficVisibilityChange)
   await load()
   scheduleTrafficRefresh()
 })
 onUnmounted(() => {
+  active = false
   loadVersion++
   document.removeEventListener('visibilitychange', handleTrafficVisibilityChange)
   if (trafficTimer !== undefined) window.clearTimeout(trafficTimer)

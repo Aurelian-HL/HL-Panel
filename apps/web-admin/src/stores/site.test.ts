@@ -10,6 +10,16 @@ beforeEach(() => {
 })
 
 describe('siteStore brand', () => {
+  it('coalesces simultaneous forced refreshes while a request is pending', async () => {
+    let resolve!: (value: unknown) => void
+    mocked.publicInfo.mockReturnValue(new Promise((done) => { resolve = done }))
+    const { siteStore } = await import('./site')
+    const pending = [siteStore.load(), siteStore.load(true), siteStore.load(true)]
+    expect(mocked.publicInfo).toHaveBeenCalledTimes(1)
+    resolve({ settings: { site_name: 'HL-panel', panel_title: 'HL-panel' }, announcements: [] })
+    await Promise.all(pending)
+    expect(siteStore.siteName.value).toBe('HL-panel')
+  })
   it('uses the last configured brand immediately after a refresh, then updates it from the public API', async () => {
     sessionStorage.setItem('hl_panel_brand_v1', JSON.stringify({ site_name: '已配置站名', panel_title: '已配置标题' }))
     mocked.publicInfo.mockResolvedValue({ settings: { site_name: '新站名', panel_title: '新标题' }, announcements: [] })

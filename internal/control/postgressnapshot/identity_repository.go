@@ -2,6 +2,8 @@ package postgressnapshot
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
@@ -47,7 +49,26 @@ func (s *Store) AppendAudit(ctx context.Context, event audit.Event) error {
 }
 
 func (s *Store) AuditEvents(ctx context.Context) ([]audit.Event, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]audit.Event, error) { return state.AuditEvents(), nil })
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, errors.New("audit journal transaction unavailable")
+	}
+	defer tx.Rollback()
+	events, err := readAuditJournal(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	state, err := s.readSnapshot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	events = append(events, state.AuditEvents()...)
+	if err := tx.Commit(); err != nil {
+		return nil, errors.New("audit journal transaction failed")
+	}
+	return events, nil
 }
 
 func (s *Store) CreateEnrollmentToken(ctx context.Context, token enrollment.Token, event audit.Event) error {

@@ -42,8 +42,18 @@ func captureMigration(ctx context.Context, tx *sql.Tx) (migrationbackup.State, e
 	if err := tx.QueryRowContext(ctx, `SELECT payload FROM nyvp_control_snapshots WHERE singleton=true`).Scan(&state.Snapshot); err != nil {
 		return state, errors.New("migration snapshot unavailable")
 	}
-	if _, err := memoryrepo.DecodeSnapshot(state.Snapshot); err != nil {
+	decoded, err := memoryrepo.DecodeSnapshot(state.Snapshot)
+	if err != nil {
 		return state, errors.New("migration snapshot invalid")
+	}
+	events, err := readAuditJournal(ctx, tx)
+	if err != nil {
+		return state, err
+	}
+	events = append(events, decoded.AuditEvents()...)
+	state.Snapshot, err = decoded.EncodeSnapshotWithAudit(events)
+	if err != nil {
+		return state, err
 	}
 	state.Usage = map[string]json.RawMessage{}
 	total := len(state.Snapshot)
@@ -128,7 +138,7 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if !errors.Is(err, sql.ErrNoRows) {
 		return result, errors.New("migration receipt lookup failed")
 	}
-	if _, err = tx.ExecContext(ctx, `LOCK TABLE nyvp_control_snapshots, `+strings.Join(migrationbackup.Tables(), ", ")+` IN ACCESS EXCLUSIVE MODE`); err != nil {
+	if _, err = tx.ExecContext(ctx, `LOCK TABLE nyvp_control_snapshots, hl_panel_audit_journal, `+strings.Join(migrationbackup.Tables(), ", ")+` IN ACCESS EXCLUSIVE MODE`); err != nil {
 		return result, errors.New("migration business lock failed")
 	}
 	current, err := readState(ctx, tx, false)
@@ -150,6 +160,20 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	restored, err := memoryrepo.PrepareMigrationRestore(input.Bundle.State.Snapshot, input.Event)
 	if err != nil {
 		return result, errors.New("migration snapshot validation failed")
+	}
+	restoredState, err := memoryrepo.DecodeSnapshot(restored)
+	if err != nil {
+		return result, err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_audit_journal`); err != nil {
+		return result, errors.New("migration audit replacement failed")
+	}
+	if err = appendAuditJournal(ctx, tx, restoredState.AuditEvents()); err != nil {
+		return result, err
+	}
+	restored, err = restoredState.EncodeSnapshotWithAudit(nil)
+	if err != nil {
+		return result, err
 	}
 	for i := len(migrationbackup.Tables()) - 1; i >= 0; i-- {
 		if _, err = tx.ExecContext(ctx, `DELETE FROM `+migrationbackup.Tables()[i]); err != nil {
