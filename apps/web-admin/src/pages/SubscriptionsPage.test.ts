@@ -1,99 +1,60 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-const mockedBusiness = vi.hoisted(() => ({
-  vlessIdentities: vi.fn(),
-  rules: vi.fn(),
-  customers: vi.fn(),
-  provisionVlessIdentity: vi.fn(),
-  vlessIdentityConnection: vi.fn(),
-  rotateVlessIdentity: vi.fn(),
-  revokeVlessIdentity: vi.fn(),
-}))
-const mockedAdminApi = vi.hoisted(() => ({ getEndpointPools: vi.fn() }))
-vi.mock('@/api/business', () => ({ businessApi: mockedBusiness }))
-vi.mock('@/api', () => ({ api: mockedAdminApi }))
-
-import type { EndpointPool } from '@/api'
-import type { Customer, ForwardRule, VlessIdentity } from '@/api/business'
+const subs = vi.hoisted(() => ({ list: vi.fn(), detail: vi.fn(), save: vi.fn(), action: vi.fn(), package: vi.fn(), qrcode: vi.fn() }))
+const business = vi.hoisted(() => ({ customers: vi.fn(), vlessIdentities: vi.fn(), rules: vi.fn() }))
+vi.mock('@/api/subscriptions', () => ({ subscriptionApi: subs }))
+vi.mock('@/api/business', () => ({ businessApi: business }))
 import SubscriptionsPage from './SubscriptionsPage.vue'
-
-const rule: ForwardRule = {
-  id: 'rule-vless', name: 'Reality 入口', customer_id: 'customer-1', rule_group_id: '', entry_group_id: 'entry-1', exit_group_id: '',
-  egress_mode: 'DIRECT', ingress_protocol: 'vless_reality', vless_flow: 'xtls-rprx-vision', reality_server_name: 'edge.example.test',
-  reality_public_key: 'public-key', reality_short_id: 'short', reality_destination: 'edge.example.test:443', protocol: 'tcp', listen_port: 443,
-  targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 3, status: 'active', ingress_status: 'ready', deployed: true,
-}
-const pool: EndpointPool = {
-  id: 'pool-vless', name: '统一入口', group_id: 'entry-1', rule_id: rule.id, mode: 'SINGLE_SERVICE_ENDPOINT', protocol: 'vless', hostname: 'sub.example.test', port: 443,
-  selection_policy: 'weighted_round_robin', member_count: 1, healthy_candidate_count: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-}
-const customer: Customer = {
-  id: 'customer-1', username: 'alice', display_name: 'Alice', user_group_id: '', disabled: false, expires_at: null, traffic_limit_bytes: 0, traffic_used_bytes: 0,
-  max_rules: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0, revision: 1, effective_status: 'active', created_at: '', updated_at: '',
-}
-const identity: VlessIdentity = {
-  id: 'binding-1', customer_id: customer.id, forwarding_rule_id: rule.id, endpoint_pool_id: pool.id, state: 'active', revision: 1,
-  created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-}
-
+import type { Subscription, SubscriptionDetail } from '@/api/subscriptions'
+const item: Subscription = { id: 'sub-1', name: '客户固定订阅', customer_id: 'cus-1', state: 'active', revision: 3, published_revision: 2, pending_update: true, line_count: 2, published_line_count: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }
+const detail: SubscriptionDetail = { subscription: item, lines: [{ name: '香港', uri: 'socks5://user:pass@hk.example.test:1080' }, { name: '本面板', binding_id: 'binding-1' }], preview: [{ name: '香港', uri: 'socks5://user:pass@hk.example.test:1080' }], published_preview: [{ name: '香港', uri: 'socks5://old:pass@hk.example.test:1080' }], links: { txt: '/api/v1/public/subscriptions/secret.txt', yaml: '/api/v1/public/subscriptions/secret.yaml' }, warning: '' }
 beforeEach(() => {
-  for (const method of Object.values(mockedBusiness)) method.mockReset()
-  mockedAdminApi.getEndpointPools.mockReset()
-  mockedBusiness.vlessIdentities.mockResolvedValue({ items: [] })
-  mockedBusiness.rules.mockResolvedValue({ items: [rule] })
-  mockedBusiness.customers.mockResolvedValue({ items: [customer] })
-  mockedAdminApi.getEndpointPools.mockResolvedValue({ items: [pool] })
+  Object.values(subs).forEach(m => m.mockReset()); Object.values(business).forEach(m => m.mockReset())
+  subs.list.mockResolvedValue({ items: [item] }); subs.detail.mockResolvedValue(detail); subs.save.mockResolvedValue({ subscription: item }); subs.action.mockResolvedValue({ subscription: item })
+  subs.qrcode.mockResolvedValue({ png_base64: 'cG5n' })
+  business.customers.mockResolvedValue({ items: [{ id: 'cus-1', display_name: '测试客户' }] }); business.vlessIdentities.mockResolvedValue({ items: [{ id: 'binding-1', customer_id: 'cus-1', forwarding_rule_id: 'rule-1', state: 'active' }] }); business.rules.mockResolvedValue({ items: [{ id: 'rule-1', name: '原生线路' }] })
+  vi.stubGlobal('confirm', vi.fn(() => true))
 })
-
+const options = { global: { stubs: { VlessCredentials: true } } }
 describe('SubscriptionsPage', () => {
-  it('loads identities, creates one with the rule-bound VLESS pool, and copies its connection URI', async () => {
-    mockedBusiness.vlessIdentities.mockResolvedValueOnce({ items: [] }).mockResolvedValue({ items: [identity] })
-    mockedBusiness.provisionVlessIdentity.mockResolvedValue({ identity, replayed: false })
-    mockedBusiness.vlessIdentityConnection.mockResolvedValue({ uri: 'vless://secret', name: rule.name, endpoint: 'sub.example.test:443', status: 'ready' })
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
-    const wrapper = mount(SubscriptionsPage)
-    await flushPromises()
-
-    await wrapper.findAll('button').find((button) => button.text().includes('创建订阅'))!.trigger('click')
-    const selects = wrapper.findAll('select')
-    await selects[0]!.setValue(rule.id)
-    await selects[1]!.setValue(pool.id)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(mockedBusiness.provisionVlessIdentity).toHaveBeenCalledWith(expect.objectContaining({ customer_id: customer.id, forwarding_rule_id: rule.id, endpoint_pool_id: pool.id }), expect.any(String))
-    expect(wrapper.text()).toContain('Reality 入口')
-
-    await wrapper.get('button[title="复制订阅链接"]').trigger('click')
-    await flushPromises()
-    expect(mockedBusiness.vlessIdentityConnection).toHaveBeenCalledWith(identity.id)
-    expect(writeText).toHaveBeenCalledWith('vless://secret')
-    wrapper.unmount()
+  it('creates a two-line draft, does not publish implicitly', async () => {
+    const wrapper = mount(SubscriptionsPage, options); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '创建订阅')!.trigger('click')
+    const form = wrapper.get('form'); await form.findAll('input')[0]!.setValue('多线路订阅'); await form.findAll('input')[1]!.setValue('香港')
+    await form.get('textarea').setValue('socks5://user:pass@hk.example.test:1080')
+    await form.findAll('button').find(b => b.text() === '添加线路')!.trigger('click')
+    await form.findAll('input')[2]!.setValue('本面板'); await form.findAll('select')[2]!.setValue('native'); await form.findAll('select')[3]!.setValue('binding-1')
+    await form.trigger('submit'); await flushPromises()
+    expect(subs.save).toHaveBeenCalledWith(null, { name: '多线路订阅', customer_id: 'cus-1', revision: 0, lines: [{ name: '香港', uri: 'socks5://user:pass@hk.example.test:1080' }, { name: '本面板', binding_id: 'binding-1' }] }, expect.any(String))
+    expect(subs.action).not.toHaveBeenCalled(); expect(wrapper.find('form').exists()).toBe(false); wrapper.unmount()
   })
-
-  it('rotates and revokes an active identity with its current revision', async () => {
-    mockedBusiness.vlessIdentities.mockResolvedValue({ items: [identity] })
-    mockedBusiness.rotateVlessIdentity.mockResolvedValue({ identity: { ...identity, revision: 2 }, replayed: false })
-    mockedBusiness.revokeVlessIdentity.mockResolvedValue({ identity: { ...identity, state: 'revoked', revision: 3 }, replayed: false })
-    vi.stubGlobal('confirm', vi.fn(() => true))
-    const wrapper = mount(SubscriptionsPage)
-    await flushPromises()
-    await wrapper.get('button[title="轮换订阅凭据"]').trigger('click')
-    await flushPromises()
-    expect(mockedBusiness.rotateVlessIdentity).toHaveBeenCalledWith(identity.id, identity.revision, expect.any(String))
-    await wrapper.get('button[title="撤销订阅"]').trigger('click')
-    await flushPromises()
-    expect(mockedBusiness.revokeVlessIdentity).toHaveBeenCalledWith(identity.id, identity.revision, expect.any(String))
-    wrapper.unmount()
+  it('edits the current draft, keeps the customer fixed and copies both published addresses', async () => {
+    const wrapper = mount(SubscriptionsPage, options); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '编辑')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('form select').attributes('disabled')).toBeDefined(); expect((wrapper.get('form textarea').element as HTMLTextAreaElement).value).toContain('hk.example.test')
+    await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
+    await wrapper.findAll('button').find(b => b.text() === '详情')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('有未发布的修改'); expect(wrapper.text()).toContain('已发布线路')
+    const writeText = vi.fn().mockResolvedValue(undefined); Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const copies = wrapper.findAll('button').filter(b => b.text() === '复制'); await copies[0]!.trigger('click'); await copies[1]!.trigger('click'); await flushPromises()
+    expect(writeText).toHaveBeenCalledWith(new URL(detail.links.txt, location.origin).href); expect(writeText).toHaveBeenCalledWith(new URL(detail.links.yaml, location.origin).href)
+    await wrapper.findAll('button').find(b => b.text() === 'YAML 二维码')!.trigger('click'); await flushPromises()
+    expect(subs.qrcode).toHaveBeenCalledWith(item.id, 'yaml'); expect(wrapper.get('img[alt="YAML 订阅二维码"]').attributes('src')).toBe('data:image/png;base64,cG5n')
+    await wrapper.findAll('button').find(b => b.text() === '更换订阅地址')!.trigger('click'); await flushPromises()
+    expect(subs.action).toHaveBeenCalledWith(item, 'rotate', expect.any(String)); wrapper.unmount()
   })
-
-  it('keeps the page usable when the optional customer lookup fails', async () => {
-    mockedBusiness.customers.mockRejectedValue(new Error('customers unavailable'))
-    const wrapper = mount(SubscriptionsPage)
-    await flushPromises()
-    expect(wrapper.text()).toContain('还没有订阅')
-    expect(wrapper.text()).not.toContain('订阅加载失败')
-    wrapper.unmount()
+  it('paginates and filters without showing private credentials in the list', async () => {
+    subs.list.mockResolvedValue({ items: Array.from({ length: 23 }, (_, i) => ({ ...item, id: `sub-${i}`, name: `订阅 ${i}` })) })
+    const wrapper = mount(SubscriptionsPage, options); await flushPromises(); expect(wrapper.findAll('tbody tr')).toHaveLength(20)
+    expect(wrapper.text()).not.toContain('socks5://'); expect(wrapper.text()).not.toContain('secret.txt')
+    await wrapper.get('select[aria-label="每页订阅数量"]').setValue('10'); await flushPromises(); expect(wrapper.findAll('tbody tr')).toHaveLength(10)
+    await wrapper.findAll('button').find(b => b.text() === '下一页')!.trigger('click'); expect(wrapper.text()).toContain('2 / 3')
+    await wrapper.get('input[placeholder="名称或客户"]').setValue('订阅 22'); expect(wrapper.findAll('tbody tr')).toHaveLength(1); expect(wrapper.text()).toContain('1 / 1'); wrapper.unmount()
+  })
+  it('shows server failures and remains retryable', async () => {
+    subs.action.mockRejectedValue(new Error('revision conflict')); const wrapper = mount(SubscriptionsPage, options); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '发布更新')!.trigger('click'); await flushPromises(); expect(wrapper.get('[role="alert"]').text()).toContain('数据已被其他操作更新')
+    expect(wrapper.findAll('button').find(b => b.text() === '发布更新')!.attributes('disabled')).toBeUndefined(); wrapper.unmount()
+    subs.list.mockRejectedValue(new Error('offline')); const failed = mount(SubscriptionsPage, options); await flushPromises(); expect(failed.text()).toContain('订阅加载失败'); failed.unmount()
   })
 })

@@ -18,6 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
+	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
@@ -60,6 +61,7 @@ type Store struct {
 	vlessSOCKS5Upstreams  map[string]provisioningvless.SOCKS5Upstream
 	ruleGroups            map[string]rulegroups.RuleGroup
 	siteSettings          siteconfig.Settings
+	subscriptions         map[string]subscriptions.Record
 	announcements         map[string]announcements.Announcement
 	vlessBindings         map[string]vlessidentity.CredentialRecord
 	vlessRuntimeMaterials map[string]vlessruntime.Material
@@ -99,6 +101,7 @@ func New(admin auth.Administrator) *Store {
 		vlessSOCKS5Upstreams:  make(map[string]provisioningvless.SOCKS5Upstream),
 		ruleGroups:            make(map[string]rulegroups.RuleGroup),
 		siteSettings:          siteconfig.DefaultSettings(),
+		subscriptions:         make(map[string]subscriptions.Record),
 		announcements:         make(map[string]announcements.Announcement),
 		vlessBindings:         make(map[string]vlessidentity.CredentialRecord),
 		vlessRuntimeMaterials: make(map[string]vlessruntime.Material),

@@ -26,6 +26,11 @@ API = 'https://api.github.com/repos/Aurelian-HL/HL-Panel'
 REPO = 'https://github.com/Aurelian-HL/HL-Panel'
 TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
+APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
+SUBSCRIPTION_LOCATION = '''location ^~ /api/v1/public/subscriptions/ {
+    access_log off;
+    include /etc/nginx/snippets/hl-panel-api-proxy.conf;
+}'''
 
 
 class UpdateError(RuntimeError):
@@ -160,6 +165,47 @@ def switch(target):
     pending.replace(ROOT/'current')
 
 
+def subscription_nginx_update(destination, backup):
+    """Add only the subscription location; preserve custom domains/TLS/routes."""
+    packaged = destination/'deploy/nginx/snippets/hl-panel-app-locations.conf'
+    if not packaged.is_file() or SUBSCRIPTION_LOCATION not in packaged.read_text():
+        return
+    private_regular(APP_LOCATIONS)
+    current = APP_LOCATIONS.read_text()
+    if SUBSCRIPTION_LOCATION in current:
+        return
+    require('/api/v1/public/subscriptions/' not in current,
+            '自定义订阅 Nginx 路由已存在；请为该路由设置 access_log off 后重试，现有配置未覆盖。')
+    saved = backup/'nginx-app-locations.conf'
+    shutil.copyfile(APP_LOCATIONS, saved)
+    pending = APP_LOCATIONS.with_name('.hl-panel-app-locations-'+str(os.getpid()))
+    try:
+        pending.write_text(current.rstrip()+'\n\n'+SUBSCRIPTION_LOCATION+'\n')
+        pending.chmod(0o644)
+        pending.replace(APP_LOCATIONS)
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+    except Exception:
+        shutil.copyfile(saved, APP_LOCATIONS)
+        APP_LOCATIONS.chmod(0o644)
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+        raise
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+def restore_subscription_nginx(backup):
+    saved = backup/'nginx-app-locations.conf'
+    if saved.is_file():
+        private_regular(saved)
+        shutil.copyfile(saved, APP_LOCATIONS)
+        APP_LOCATIONS.chmod(0o644)
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+
+
 def rollback(backup):
     backup=backup.resolve()
     require(backup.parent==Path('/var/backups/hl-panel') and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
@@ -170,6 +216,7 @@ def rollback(backup):
     database,origin=configuration()
     require(digest(backup/'database.dump')==state['database_sha256'],'数据库备份摘要不一致，拒绝恢复')
     run(['systemctl','stop',SERVICE])
+    restore_subscription_nginx(backup)
     with (backup/'database.dump').open('rb') as stream:
         run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
     switch(old)
@@ -239,7 +286,8 @@ def main():
         destination=ROOT/'releases'/(target+'-'+stamp)
         destination.mkdir(mode=0o755)
         extract_verified(archive,destination)
-        # Configuration, Nginx, service identities, domains and TLS remain intact.
+        # Domains, TLS and custom routes remain intact. A bounded subscription
+        # location is added below, with its own backup and rollback.
         # Runtime/schema changes are handled by the verified new binaries.
         with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
             saved.add(CONFIG,arcname='etc/hl-panel')
@@ -265,6 +313,7 @@ def main():
             print('[HL-panel 更新] 手动回滚命令：bash '+str(backup/'rollback.sh'),flush=True)
             run([str(destination/'bin/usage-migrate'),'apply','-dsn-file',str(CONFIG/'database-url')])
             run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
+            subscription_nginx_update(destination, backup)
             switch(destination)
             run(['systemctl','start',SERVICE])
             healthy(origin,target)

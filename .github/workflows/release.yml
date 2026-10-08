@@ -91,6 +91,7 @@ jobs:
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
           python3 tests/install/test_node_update.py
+          python3 tests/install/test_subscription_nginx.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |

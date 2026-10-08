@@ -90,7 +90,14 @@ def verify(version):
     request('POST','/auth/login',{'username':'admin','password':secret})
     request('POST','/auth/login',{'username':'admin','password':'123456'},expected=401)
     assert request('GET','/device-groups',token=token)==groups
-    assert fingerprint()==protected,'Configuration or certificates changed'
+    expected = dict(protected)
+    locations = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
+    if version == args.version:
+        original = (previous/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
+        candidate = (repository/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
+        if update.SUBSCRIPTION_LOCATION in candidate and update.SUBSCRIPTION_LOCATION not in original:
+            expected[str(locations)] = hashlib.sha256((original.rstrip()+'\n\n'+update.SUBSCRIPTION_LOCATION+'\n').encode()).hexdigest()
+    assert fingerprint()==expected,'Configuration or certificates changed beyond the managed subscription location'
     subprocess.run(['nginx','-t'],check=True)
 
 # Invalid SHA must fail without stopping the service or switching binaries.

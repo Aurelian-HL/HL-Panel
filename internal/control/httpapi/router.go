@@ -23,6 +23,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
+	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/targetprobe"
 	usagehttpapi "github.com/hongle/hl-panel/internal/control/usage/httpapi"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
@@ -48,6 +49,7 @@ type API struct {
 	groupNetworks     *groupconfig.Service
 	ruleGroups        *rulegroups.Service
 	siteConfig        *siteconfig.Service
+	subscriptions     *subscriptions.Service
 	announcements     *announcements.Service
 	vlessIdentity     *vlessidentity.Service
 	vlessRuntime      *vlessruntime.Service
@@ -102,6 +104,10 @@ func WithVLESS(identityService *vlessidentity.Service, runtimeService *vlessrunt
 	}
 }
 
+func WithSubscriptions(service *subscriptions.Service) Option {
+	return func(api *API) { api.subscriptions = service }
+}
+
 type Option func(*API)
 
 func WithBusiness(customerService *customers.Service, forwardingService *forwarding.Service, networkService *groupconfig.Service) Option {
@@ -130,6 +136,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 		api.vlessSetup = vlesssetup.NewService(api.groupNetworks, api.endpoints, api.vlessIdentity)
 	}
 	mux := http.NewServeMux()
+	api.registerSubscriptionRoutes(mux)
 	api.registerBusinessRoutes(mux)
 	api.registerSiteRoutes(mux)
 	if api.gatewayMembership != nil {
@@ -281,7 +288,7 @@ func (api *API) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				api.logger.Error("http handler panic", "method", request.Method, "path", request.URL.Path)
+				api.logger.Error("http handler panic", "method", request.Method, "path", safeRequestPath(request.URL.Path))
 				writeInternalProblem(writer)
 			}
 		}()

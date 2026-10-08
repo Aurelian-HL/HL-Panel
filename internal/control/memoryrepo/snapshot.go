@@ -23,12 +23,13 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
+	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 16
+const SnapshotVersion = 17
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -95,6 +96,14 @@ type storedRevision struct {
 	IdempotencyKey string
 }
 
+type storedSubscription struct {
+	Item      subscriptions.Item
+	OwnerID   string
+	Token     string
+	Draft     []subscriptions.Line
+	Published []subscriptions.Line
+}
+
 type storedVLESSBinding struct {
 	Binding        vlessidentity.Binding
 	CredentialUUID string
@@ -149,6 +158,7 @@ type snapshot struct {
 	VLESSSOCKS5Upstreams  map[string]storedVLESSSOCKS5Upstream
 	RuleGroups            map[string]rulegroups.RuleGroup
 	SiteSettings          siteconfig.Settings
+	Subscriptions         map[string]storedSubscription
 	Announcements         map[string]announcements.Announcement
 	VLESSBindings         map[string]storedVLESSBinding
 	VLESSRuntimeMaterials map[string]storedVLESSRuntimeMaterial
@@ -200,12 +210,16 @@ func (s *Store) EncodeSnapshot() ([]byte, error) {
 		UserGroups: s.userGroups, GroupNetworks: groupNetworks,
 		ForwardRules: forwardRules, AutoRealityKeys: s.autoRealityKeys, RuleGroups: s.ruleGroups,
 		VLESSSOCKS5Upstreams: make(map[string]storedVLESSSOCKS5Upstream, len(s.vlessSOCKS5Upstreams)),
+		Subscriptions:        make(map[string]storedSubscription, len(s.subscriptions)),
 		SiteSettings:         s.siteSettings, Announcements: s.announcements,
 		VLESSBindings:         make(map[string]storedVLESSBinding, len(s.vlessBindings)),
 		VLESSRuntimeMaterials: make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
 		BusinessIdempotency:   s.businessIdempotency,
 		ProtocolHealth:        s.protocolHealth,
 		ProtocolProbes:        s.protocolProbes,
+	}
+	for id, r := range s.subscriptions {
+		state.Subscriptions[id] = storedSubscription{r.Item, r.OwnerID, r.Token, r.Draft, r.Published}
 	}
 	for id, record := range s.vlessBindings {
 		state.VLESSBindings[id] = storedVLESSBinding{Binding: cloneVLESSBinding(record.Binding), CredentialUUID: record.CredentialUUID}
@@ -272,6 +286,12 @@ func DecodeSnapshot(raw []byte) (*Store, error) {
 	}
 	if decoder.Decode(new(any)) != io.EOF {
 		return nil, errors.New("trailing persistence state data")
+	}
+	if state.Version >= 17 && state.Subscriptions == nil {
+		return nil, errors.New("missing persisted subscriptions")
+	}
+	if state.Version < 17 && len(state.Subscriptions) > 0 {
+		return nil, errors.New("unexpected persisted subscriptions")
 	}
 	if !SupportsSnapshotVersion(state.Version) {
 		return nil, errors.New("unsupported persistence state version")
@@ -552,6 +572,30 @@ func DecodeSnapshot(raw []byte) (*Store, error) {
 				}
 			}
 		}
+	}
+	tokens := map[string]bool{}
+	for id, r := range state.Subscriptions {
+		record := subscriptions.Record{Item: r.Item, OwnerID: r.OwnerID, Token: r.Token, Draft: r.Draft, Published: r.Published}
+		if id != r.Item.ID || subscriptions.ValidateRecord(record) != nil || tokens[r.Token] {
+			return nil, errors.New("invalid persisted subscription")
+		}
+		if _, ok := adminIDs[r.OwnerID]; !ok {
+			return nil, errors.New("invalid persisted subscription owner")
+		}
+		if _, ok := s.customers[r.Item.CustomerID]; !ok {
+			return nil, errors.New("invalid persisted subscription customer")
+		}
+		for _, line := range append(append([]subscriptions.Line(nil), r.Draft...), r.Published...) {
+			if line.BindingID == "" {
+				continue
+			}
+			binding, ok := s.vlessBindings[line.BindingID]
+			if !ok || (binding.Binding.CustomerID != r.Item.CustomerID && binding.Binding.CustomerID != forwarding.AdministratorSubjectID(r.OwnerID)) || (binding.Binding.State == vlessidentity.StateActive && !s.vlessBindingOwnedByAdministratorLocked(binding.Binding, r.OwnerID)) {
+				return nil, errors.New("invalid persisted subscription binding")
+			}
+		}
+		tokens[r.Token] = true
+		s.subscriptions[id] = cloneSubscription(record)
 	}
 	if err := s.validateBusinessSnapshot(); err != nil {
 		return nil, err

@@ -34,8 +34,10 @@ import (
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
+	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/targetprobe"
 	"github.com/hongle/hl-panel/internal/control/usage"
+	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/idgen"
@@ -156,6 +158,7 @@ func run(logger *slog.Logger) error {
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
 		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, nil, logger, time.Now)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
+		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService), time.Now)),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),
 		httpapi.WithHostGeo(hostgeo.New()),
