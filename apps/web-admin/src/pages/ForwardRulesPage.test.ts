@@ -24,6 +24,10 @@ vi.mock('@/api/business', () => ({ businessApi: mocked }))
 const mockedUsage = vi.hoisted(() => ({ query: vi.fn() }))
 vi.mock('@/api/usage', () => ({ usageApi: mockedUsage }))
 
+const mockedSubscription = vi.hoisted(() => ({ generateRule: vi.fn(), package: vi.fn() }))
+vi.mock('@/api/subscriptions', () => ({ subscriptionApi: mockedSubscription }))
+const mockedDownload = vi.hoisted(() => ({ downloadSubscriptionPackage: vi.fn() }))
+vi.mock('@/lib/subscriptionDownload', () => mockedDownload)
 import ForwardRulesPage from './ForwardRulesPage.vue'
 
 const customer: Customer = { id: 'c-1', username: 'user01', display_name: '示例客户', user_group_id: 'ug-1', disabled: false, expires_at: null, traffic_limit_bytes: 0, traffic_used_bytes: 0, max_rules: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0, revision: 1, effective_status: 'active', created_at: '', updated_at: '' }
@@ -34,6 +38,9 @@ const network: GroupNetwork = { group_id: 'entry-1', connect_host: 'entry.exampl
 beforeEach(() => {
 	config.global.plugins = [createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })]
 	for (const method of Object.values(mocked)) method.mockReset()
+  mockedSubscription.generateRule.mockReset()
+  mockedSubscription.package.mockReset()
+  mockedDownload.downloadSubscriptionPackage.mockReset()
   mockedUsage.query.mockReset()
   mockedUsage.query.mockResolvedValue({ items: [], totals: { rule_actual_bytes: 0, customer_actual_bytes: 0, charged_bytes: 0 }, total: 0, page: 1, page_size: 1 })
   mocked.rules.mockResolvedValue({ items: [] })
@@ -381,4 +388,26 @@ describe('ForwardRulesPage', () => {
     expect(wrapper.find('#forward-rule-editor').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('generates the native rule subscription then downloads its ZIP on one click', async () => {
+    const rule: ForwardRule = { id: 'rule-auto', name: '自动订阅', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', ingress_protocol: 'vless_reality', listen_port: 10002, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 4, status: 'active' }
+    const pack = { filename: 'auto.zip', data_base64: 'UEs=' }
+    mocked.rules.mockResolvedValue({ items: [rule] })
+    mockedSubscription.generateRule.mockResolvedValue({ subscription: { id: 'sub-auto' }, replayed: false })
+    mockedSubscription.package.mockResolvedValue(pack)
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    await wrapper.get('.business-desktop button[title="生成订阅并下载导入包"]').trigger('click')
+    await flushPromises()
+    expect(mockedSubscription.generateRule).toHaveBeenCalledWith(rule.id, expect.any(String))
+    expect(mockedSubscription.package).toHaveBeenCalledWith('sub-auto')
+    expect(mockedDownload.downloadSubscriptionPackage).toHaveBeenCalledWith(pack)
+    mockedSubscription.package.mockRejectedValue(new Error('下载失败，请重试'))
+    await wrapper.get('.business-desktop button[title="生成订阅并下载导入包"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('下载失败，请重试')
+    expect(mockedDownload.downloadSubscriptionPackage).toHaveBeenCalledTimes(1)
+    expect(mockedSubscription.generateRule.mock.calls[1]?.[1]).toBe(mockedSubscription.generateRule.mock.calls[0]?.[1])
+    wrapper.unmount()
+  })
+
 })

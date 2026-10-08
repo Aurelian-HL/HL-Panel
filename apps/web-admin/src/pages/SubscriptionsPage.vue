@@ -8,6 +8,7 @@ import SubscriptionInventory from '@/features/subscriptions/SubscriptionInventor
 import StatePanel from '@/components/StatePanel.vue'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
+import { downloadSubscriptionPackage } from '@/lib/subscriptionDownload'
 import { displayError } from '@/lib/displayFormatters'
 
 const tab = ref('subscriptions')
@@ -66,7 +67,7 @@ async function showQR(kind: 'txt' | 'yaml') {
 }
 async function download(item: Subscription) {
   busy.value = item.id; actionError.value = ''; qrImage.value = ''
-  try { const pack = await subscriptionApi.package(item.id); const bytes = Uint8Array.from(atob(pack.data_base64), c => c.charCodeAt(0)); const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' })); const a = document.createElement('a'); a.href = url; a.download = pack.filename; a.click(); URL.revokeObjectURL(url); toast.success('导入包已下载', '包含 YAML、订阅地址和二维码') }
+  try { const pack = await subscriptionApi.package(item.id); downloadSubscriptionPackage(pack); toast.success('导入包已下载', '包含 YAML、订阅地址和二维码') }
   catch (cause) { actionError.value = displayError(cause) } finally { busy.value = '' }
 }
 onMounted(load)

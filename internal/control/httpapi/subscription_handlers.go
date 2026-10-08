@@ -13,6 +13,7 @@ func (api *API) registerSubscriptionRoutes(mux *http.ServeMux) {
 	if api.subscriptions == nil {
 		return
 	}
+	mux.HandleFunc("POST /api/v1/forwarding-rules/{id}/subscription", api.requireAdministrator(api.generateRuleSubscription))
 	mux.HandleFunc("GET /api/v1/subscriptions", api.requireAdministrator(api.listSubscriptions))
 	mux.HandleFunc("POST /api/v1/subscriptions", api.requireAdministrator(api.saveSubscription))
 	mux.HandleFunc("GET /api/v1/subscriptions/{id}", api.requireAdministrator(api.subscriptionDetail))

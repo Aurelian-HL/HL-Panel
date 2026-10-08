@@ -148,6 +148,7 @@ func run(logger *slog.Logger) error {
 		usageRepository,
 		usage.NewCustomerPolicyAdapter(store),
 		time.Now,
+		usage.WithRuleTrafficRepository(store),
 		usage.WithLimitPolicyProvider(usage.NewRuntimeLimitPolicyAdapter(store, store)),
 		usage.WithLegacyRuleMetadataProvider(usage.NewLegacyRuleMetadataProvider(deploymentreceipts.Repository(store))),
 	)
@@ -189,6 +190,7 @@ func run(logger *slog.Logger) error {
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serverErrors := make(chan error, 1)
+	go func() { _ = usageService.RunRuleTraffic(shutdownContext, logger) }()
 	go func() {
 		if err := protocolRunner.Run(shutdownContext); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Warn("VLESS protocol observer stopped", "error", err)

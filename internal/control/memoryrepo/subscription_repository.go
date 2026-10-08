@@ -8,6 +8,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/securetoken"
+	"reflect"
 	"sort"
 )
 
@@ -58,7 +59,7 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := c.AdministratorID + "\x00subscription." + c.Operation + "\x00"
-	if c.Operation != "create" {
+	if c.Operation != "create" && c.Operation != "generate" {
 		key += c.ID + "\x00"
 	}
 	key += c.IdempotencyKey
@@ -66,8 +67,31 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	if ok, err := s.replayBusinessLocked(key, c.RequestSHA256, &replay); ok || err != nil {
 		return replay, ok, err
 	}
+	if c.Operation == "generate" {
+		rule, ok := s.forwardRules[c.ForwardingRuleID]
+		if !ok || !rule.OwnedByAdministrator(c.AdministratorID) || rule.CustomerID != c.Request.CustomerID || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || len(c.Request.Lines) != 1 {
+			return subscriptions.Item{}, false, faults.ErrNotFound
+		}
+		binding, ok := s.vlessBindings[c.Request.Lines[0].BindingID]
+		if !ok || binding.Binding.ForwardingRuleID != rule.ID || binding.Binding.CustomerID != rule.CustomerID || !s.vlessBindingOwnedByAdministratorLocked(binding.Binding, c.AdministratorID) || binding.Binding.State != vlessidentity.StateActive {
+			return subscriptions.Item{}, false, faults.ErrNotFound
+		}
+		for _, r := range s.subscriptions {
+			if r.OwnerID == c.AdministratorID && r.Item.ForwardingRuleID == c.ForwardingRuleID {
+				if r.Item.State == "revoked" {
+					return subscriptions.Item{}, false, faults.ErrConflict
+				}
+				if r.Item.Name == c.Request.Name && r.Item.CustomerID == c.Request.CustomerID && reflect.DeepEqual(r.Draft, c.Request.Lines) {
+					return r.Item, true, nil
+				}
+				c.ID = r.Item.ID
+				c.Request.Revision = r.Item.Revision
+				break
+			}
+		}
+	}
 	previous, exists := s.subscriptions[c.ID]
-	if c.Operation == "create" {
+	if c.Operation == "create" || (c.Operation == "generate" && !exists) {
 		if exists {
 			return subscriptions.Item{}, false, faults.ErrConflict
 		}
@@ -81,6 +105,9 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	} else if !exists || previous.OwnerID != c.AdministratorID {
 		return subscriptions.Item{}, false, faults.ErrNotFound
 	}
+	if exists && previous.Item.ForwardingRuleID != "" && c.Operation == "update" {
+		return subscriptions.Item{}, false, faults.ErrValidation
+	}
 	if exists && c.Operation == "update" && c.Request.CustomerID != previous.Item.CustomerID {
 		return subscriptions.Item{}, false, faults.ErrValidation
 	}
@@ -88,10 +115,10 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	if err != nil {
 		return subscriptions.Item{}, false, err
 	}
-	if _, ok := s.customers[next.Item.CustomerID]; !ok {
+	if _, ok := s.customers[next.Item.CustomerID]; !ok && !(next.Item.ForwardingRuleID != "" && next.Item.CustomerID == forwarding.AdministratorSubjectID(c.AdministratorID)) {
 		return subscriptions.Item{}, false, faults.ErrNotFound
 	}
-	if c.Operation == "create" || c.Operation == "update" || c.Operation == "publish" {
+	if c.Operation == "create" || c.Operation == "generate" || c.Operation == "update" || c.Operation == "publish" {
 		for _, line := range next.Draft {
 			if line.BindingID == "" {
 				continue
@@ -111,6 +138,7 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 		return subscriptions.Item{}, false, err
 	}
 	s.subscriptions[next.Item.ID] = cloneSubscription(next)
+	event.ResourceID = next.Item.ID
 	s.appendAuditLocked(event)
 	return next.Item, false, nil
 }

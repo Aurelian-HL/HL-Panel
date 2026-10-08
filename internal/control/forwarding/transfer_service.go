@@ -202,6 +202,6 @@ func requestFromRule(rule Rule) Request {
 		RealityShortID: rule.RealityShortID, RealityDestination: rule.RealityDestination, Protocol: rule.Protocol, ListenPort: rule.ListenPort,
 		Targets: append([]Target(nil), rule.Targets...), SelectionPolicy: rule.SelectionPolicy,
 		AcceptProxyProtocol: rule.AcceptProxyProtocol, SendProxyProtocol: rule.SendProxyProtocol,
-		SpeedLimitMbps: rule.SpeedLimitMbps, IPLimit: rule.IPLimit, ConnectionLimit: rule.ConnectionLimit,
+		TrafficLimitBytes: rule.TrafficLimitBytes, SpeedLimitMbps: rule.SpeedLimitMbps, IPLimit: rule.IPLimit, ConnectionLimit: rule.ConnectionLimit,
 		Paused: rule.Paused, Description: rule.Description, Revision: rule.Revision}
 }

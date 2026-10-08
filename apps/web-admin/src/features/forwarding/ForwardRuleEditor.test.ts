@@ -43,7 +43,7 @@ beforeEach(() => { mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValu
 describe('ForwardRuleEditor', () => {
   it('follows the NY field order without an endpoint-pool workflow', () => {
     const wrapper = mountEditor()
-    expect(wrapper.findAll('form > label.field').map((item) => item.find('span').text())).toEqual(['名称', '接入协议', '入口', '监听端口', '出口', '目标地址'])
+    expect(wrapper.findAll('form > label.field').map((item) => item.find('span').text())).toEqual(['名称', '接入协议', '入口', '监听端口', '出口', '目标地址', '规则流量额度（GB）'])
     expect(wrapper.text()).not.toContain('服务端点')
     expect(wrapper.text()).not.toContain('转发路径')
     wrapper.unmount()
@@ -211,4 +211,28 @@ describe('ForwardRuleEditor', () => {
     expect(mocked.saveRule.mock.calls[0]?.[0]).not.toHaveProperty('customer_id')
     wrapper.unmount()
   })
+  it('converts a decimal GB quota and preserves it when editing', async () => {
+    const wrapper = mountEditor({ rule: { ...rule, traffic_limit_bytes: 2_500_000_000, traffic_used_bytes: 1_000_000_000 } })
+    expect(field(wrapper, '规则流量额度（GB）').get('input').element.value).toBe('2.5')
+    expect(wrapper.text()).toContain('已累计 1.000 GB')
+    await field(wrapper, '规则流量额度（GB）').get('input').setValue('0.125')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ traffic_limit_bytes: 125_000_000 })
+    expect(mocked.saveRule.mock.calls[0]?.[0]).not.toHaveProperty('traffic_used_bytes')
+    await field(wrapper, '规则流量额度（GB）').get('input').setValue('0')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ traffic_limit_bytes: 0 })
+    wrapper.unmount()
+  })
+  it('rejects negative or unsafe quotas', async () => {
+    const wrapper = mountEditor({ rule })
+    for (const value of ['-1', '9007200']) {
+      await field(wrapper, '规则流量额度（GB）').get('input').setValue(value)
+      await submit(wrapper)
+      expect(mocked.saveRule).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('请输入有效的流量额度')
+    }
+    wrapper.unmount()
+  })
+
 })

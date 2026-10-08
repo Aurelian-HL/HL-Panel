@@ -143,6 +143,7 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 		return forwarding.Rule{}, false, fmt.Errorf("%w: forwarding rule changed; reload before saving", faults.ErrConflict)
 	}
 	item.CreatedAt = previous.CreatedAt
+	item.TrafficUsedBytes = previous.TrafficUsedBytes
 	if item.ListenPort == 0 && item.EntryGroupID == previous.EntryGroupID && item.Protocol == previous.Protocol {
 		item.ListenPort = previous.ListenPort
 	}

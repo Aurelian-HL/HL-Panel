@@ -111,6 +111,35 @@ func TestPostgreSQLBusinessRestartReplayAndAuthorizationRollback(t *testing.T) {
 	if bytes.Contains(snapshotRaw, []byte(customerInput.Password)) {
 		t.Fatal("database snapshot leaked plaintext customer password")
 	}
+	// The quota projection is a separate transaction from the usage ledger.
+	// Its total and exhausted state must survive reopening the durable store.
+	restored.TrafficLimitBytes = 100
+	restored.Revision++
+	_, _, err = reopened.UpdateForwardingRule(ctx, forwarding.UpdateInput{Rule: restored, ExpectedRevision: restored.Revision - 1, IdempotencyKey: "quota-limit", RequestSHA256: "quota-limit", CreatedBy: admin.ID}, event)
+	require(err)
+	require(reopened.SyncRuleTraffic(ctx, rule.ID, 120, now))
+	require(reopened.SyncRuleTraffic(ctx, rule.ID, 120, now))
+	require(reopened.SyncRuleTraffic(ctx, rule.ID, 90, now))
+	require(reopened.Close())
+	quotaRestored, err := Open(ctx, dsn, auth.Administrator{})
+	require(err)
+	defer quotaRestored.Close()
+	quotaRule, err := quotaRestored.ForwardingRule(ctx, rule.ID)
+	require(err)
+	if quotaRule.TrafficLimitBytes != 100 || quotaRule.TrafficUsedBytes != 120 || quotaRule.Status != forwarding.StatusQuotaExhausted {
+		t.Fatal("rule quota lost across PostgreSQL restart", quotaRule)
+	}
+	quotaAudit, err := quotaRestored.AuditEvents(ctx)
+	require(err)
+	exhaustedEvents := 0
+	for _, e := range quotaAudit {
+		if e.ResourceID == rule.ID && e.Action == "forwarding.quota_exhausted" {
+			exhaustedEvents++
+		}
+	}
+	if exhaustedEvents != 1 {
+		t.Fatal("replayed quota duplicated audit", exhaustedEvents)
+	}
 }
 
 func TestPostgreSQLVersionOneBusinessMigration(t *testing.T) {

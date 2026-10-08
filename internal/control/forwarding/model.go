@@ -64,9 +64,9 @@ const (
 	// StatusActive means the rule has a matching deployment receipt and a
 	// verified healthy runtime candidate. It is distinct from customer
 	// availability so pause/expiry/quota states can still override it.
-	StatusActive            Status            = "active"
-	IngressReady            IngressStatus     = "ready"
-	IngressPendingReality   IngressStatus     = "pending_reality_parameters"
+	StatusActive          Status        = "active"
+	IngressReady          IngressStatus = "ready"
+	IngressPendingReality IngressStatus = "pending_reality_parameters"
 
 	// ActivationReasonVLESSRuntimeMaterialPending is used by the current
 	// control-plane slice while VLESS credentials and node-local Reality
@@ -118,6 +118,8 @@ type Rule struct {
 	SpeedLimitMbps      int               `json:"speed_limit_mbps,omitempty"`
 	IPLimit             int               `json:"ip_limit,omitempty"`
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
+	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
+	TrafficUsedBytes    int64             `json:"traffic_used_bytes,omitempty"`
 	Paused              bool              `json:"paused"`
 	Description         string            `json:"description"`
 	Revision            int64             `json:"revision"`
@@ -199,6 +201,7 @@ type Request struct {
 	SpeedLimitMbps      int               `json:"speed_limit_mbps,omitempty"`
 	IPLimit             int               `json:"ip_limit,omitempty"`
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
+	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
 	Paused              bool              `json:"paused"`
 	Description         string            `json:"description"`
 	Revision            int64             `json:"revision"`
@@ -259,6 +262,9 @@ type CustomerAvailability struct {
 func DeriveStatus(rule Rule, customer CustomerAvailability, now time.Time) Status {
 	if rule.Paused {
 		return StatusPaused
+	}
+	if rule.TrafficLimitBytes > 0 && rule.TrafficUsedBytes >= rule.TrafficLimitBytes {
+		return StatusQuotaExhausted
 	}
 	if !customer.Enabled {
 		return StatusCustomerDisabled

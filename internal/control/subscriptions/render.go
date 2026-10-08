@@ -257,9 +257,11 @@ func Package(r Record, lines []Resolved, baseURL string) ([]byte, error) {
 		data []byte
 	}{
 		{"Clash-Mihomo.yaml", yaml},
-		{"v2rayN-Shadowrocket.txt", []byte(txtURL + "\n")},
+		{"Clash-Mihomo-订阅地址.txt", []byte(yamlURL + "\n")},
+		{"v2rayN-订阅地址.txt", []byte(txtURL + "\n")},
+		{"Shadowrocket-订阅地址.txt", []byte(txtURL + "\n")},
 		{"Shadowrocket-QR.png", qr},
-		{"README.txt", []byte("HL-panel 订阅导入包\nClash/Mihomo：从订阅地址导入 " + yamlURL + "\nv2rayN/Shadowrocket：从订阅地址导入 " + txtURL + "\n二维码内容为 TXT 订阅地址。静态 YAML 为下载时的快照；需要自动更新请使用订阅地址。\n订阅地址含访问凭据，请勿公开。\n")},
+		{"README.txt", []byte("HL-panel 订阅导入包\nClash/Mihomo：从订阅地址导入 " + yamlURL + "\nv2rayN/Shadowrocket：从订阅地址导入 " + txtURL + "\n二维码内容为 TXT 订阅地址。静态 YAML 为下载时的快照；需要自动更新请使用订阅地址。\n规则暂停、额度用完或尚未就绪时暂不包含该线路；恢复后请更新客户端订阅。ZIP 文件应先解压，再按对应客户端导入地址或 YAML 文件。\n订阅地址含访问凭据，请勿公开。\n")},
 	} {
 		f, e := writer.Create(entry.name)
 		if e != nil {

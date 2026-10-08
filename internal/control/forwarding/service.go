@@ -272,7 +272,7 @@ func (r Request) rule(id string, now time.Time) Rule {
 		RealityServerName: r.RealityServerName, RealityPublicKey: r.RealityPublicKey, RealityShortID: r.RealityShortID, RealityDestination: r.RealityDestination,
 		IngressStatus: r.IngressReadiness(), Protocol: r.Protocol, ListenPort: r.ListenPort, Targets: r.Targets, SelectionPolicy: r.SelectionPolicy,
 		AcceptProxyProtocol: r.AcceptProxyProtocol, SendProxyProtocol: r.SendProxyProtocol, SpeedLimitMbps: r.SpeedLimitMbps,
-		IPLimit: r.IPLimit, ConnectionLimit: r.ConnectionLimit,
+		IPLimit: r.IPLimit, ConnectionLimit: r.ConnectionLimit, TrafficLimitBytes: r.TrafficLimitBytes,
 		Paused: r.Paused, Description: r.Description, CreatedAt: now, UpdatedAt: now, Status: StatusPendingActivation, Deployed: false}
 }
 
@@ -284,7 +284,7 @@ func ruleEvent(now time.Time, actorType, actorID, action string, rule Rule) (aud
 		"egress_mode": rule.EgressMode, "ingress_protocol": rule.EffectiveIngressProtocol(), "ingress_status": rule.IngressReadiness(), "protocol": rule.Protocol, "listen_port": rule.ListenPort,
 		"target_count": len(rule.Targets), "selection_policy": rule.SelectionPolicy,
 		"accept_proxy_protocol": rule.AcceptProxyProtocol, "send_proxy_protocol": rule.SendProxyProtocol,
-		"speed_limit_mbps": rule.SpeedLimitMbps, "ip_limit": rule.IPLimit, "connection_limit": rule.ConnectionLimit,
+		"traffic_limit_bytes": rule.TrafficLimitBytes, "speed_limit_mbps": rule.SpeedLimitMbps, "ip_limit": rule.IPLimit, "connection_limit": rule.ConnectionLimit,
 		"paused": rule.Paused, "revision": rule.Revision,
 	}
 	if reason := rule.PendingActivationReason(); reason != "" {

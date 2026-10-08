@@ -22,6 +22,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
+	"github.com/hongle/hl-panel/internal/control/usage"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
@@ -45,6 +46,7 @@ type controlRepository interface {
 	rulegroups.Repository
 	siteconfig.Repository
 	subscriptions.Repository
+	usage.RuleTrafficRepository
 	announcements.Repository
 	vlessidentity.Repository
 	vlessruntime.Repository

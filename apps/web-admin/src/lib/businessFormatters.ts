@@ -93,6 +93,7 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
     selection_policy: rule.selection_policy, accept_proxy_protocol: rule.accept_proxy_protocol ?? false,
     send_proxy_protocol: rule.send_proxy_protocol ?? 0, speed_limit_mbps: rule.speed_limit_mbps ?? 0,
     ip_limit: rule.ip_limit ?? 0, connection_limit: rule.connection_limit ?? 0,
+    traffic_limit_bytes: rule.traffic_limit_bytes ?? 0,
     paused: rule.paused, description: rule.description, revision: rule.revision,
   }
 }

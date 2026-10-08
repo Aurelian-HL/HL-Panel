@@ -9,7 +9,7 @@ export const unsupportedActivationLabels: Record<string, string> = {
 }
 
 export function ruleDisplayStatus(rule: ForwardRule): string {
-  if (rule.paused) return rule.status
+  if (rule.paused || rule.status === 'quota_exhausted') return rule.status
   if (rule.activation_reason && unsupportedActivationLabels[rule.activation_reason]) return rule.activation_reason
   if (ingressStatusFor(rule) === 'pending_reality_parameters') return 'pending_reality_parameters'
   if (rule.activation_reason === 'vless_runtime_material_pending') return rule.activation_reason
@@ -19,5 +19,7 @@ export function ruleDisplayStatus(rule: ForwardRule): string {
 export function ruleActivationNotice(rule: ForwardRule): string {
   if (rule.paused) return '已暂停'
   const status = ruleDisplayStatus(rule)
+  if (status === 'quota_exhausted') return '额度用完，已自动暂停；提高或取消规则额度后恢复'
+  if (status === 'active') return '已激活'
   return unsupportedActivationLabels[status] ?? (status === 'pending_reality_parameters' ? '待补 Reality 参数' : status === 'vless_runtime_material_pending' ? '等待节点运行材料' : '待激活')
 }

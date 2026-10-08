@@ -25,6 +25,7 @@ type Service struct {
 	policies           CustomerPolicyProvider
 	limits             LimitPolicyProvider
 	legacyRuleMetadata LegacyRuleMetadataProvider
+	ruleTraffic        RuleTrafficRepository
 	now                func() time.Time
 }
 
@@ -57,7 +58,11 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 				return IngestResult{}, err
 			}
 			if replayed {
-				return result, nil
+				id := input.RuleID
+				if input.LegacyRuleID != "" {
+					id = input.LegacyRuleID
+				}
+				return service.afterIngest(ctx, result, nil, id)
 			}
 		}
 	}
@@ -87,7 +92,7 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 	}
 	now := service.now().UTC()
 	event := Event{Report: normalized, ChargedBytes: charged, PayloadSHA256: payloadHash, ReceivedAt: now}
-	return service.repository.Ingest(ctx, event, func(totals CustomerTotals) (*EnforcementDecision, error) {
+	result, err := service.repository.Ingest(ctx, event, func(totals CustomerTotals) (*EnforcementDecision, error) {
 		policy, err := service.policies.UsagePolicy(ctx, normalized.CustomerID)
 		if err != nil {
 			return nil, err
@@ -97,6 +102,7 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 		}
 		return projectEnforcement(policy, totals, event, now), nil
 	})
+	return service.afterIngest(ctx, result, err, normalized.RuleID)
 }
 
 // LegacyReplayMatches compares every field available from an old-format

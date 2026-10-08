@@ -9,6 +9,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/idgen"
 	"github.com/hongle/hl-panel/internal/securetoken"
 	"math"
@@ -79,17 +80,29 @@ func Normalize(r Request) (Request, error) {
 	return r, nil
 }
 func (s *Service) Mutate(ctx context.Context, admin, id, operation string, r Request, key string) (Item, bool, error) {
+	return s.mutate(ctx, admin, id, operation, r, key, "")
+}
+
+// Generate publishes a single native rule in the same durable transaction.
+// The repository owns uniqueness, so simultaneous clicks share one token.
+func (s *Service) Generate(ctx context.Context, admin, ruleID string, r Request, key string) (Item, bool, error) {
+	if !validID(ruleID) {
+		return Item{}, false, faults.ErrValidation
+	}
+	return s.mutate(ctx, admin, "", "generate", r, key, ruleID)
+}
+func (s *Service) mutate(ctx context.Context, admin, id, operation string, r Request, key, ruleID string) (Item, bool, error) {
 	if !validID(admin) || !validID(key) {
 		return Item{}, false, faults.ErrValidation
 	}
 	switch operation {
-	case "create", "update":
+	case "create", "update", "generate":
 		var err error
 		r, err = Normalize(r)
 		if err != nil {
 			return Item{}, false, err
 		}
-		if (operation == "create" && r.Revision != 0) || (operation == "update" && r.Revision < 1) {
+		if ((operation == "create" || operation == "generate") && r.Revision != 0) || (operation == "update" && r.Revision < 1) {
 			return Item{}, false, faults.ErrValidation
 		}
 	case "publish", "rotate", "revoke", "restore":
@@ -100,7 +113,7 @@ func (s *Service) Mutate(ctx context.Context, admin, id, operation string, r Req
 		return Item{}, false, faults.ErrValidation
 	}
 	originalID := id
-	if operation == "create" {
+	if operation == "create" || operation == "generate" {
 		var err error
 		id, err = idgen.New("subscription")
 		if err != nil {
@@ -110,7 +123,7 @@ func (s *Service) Mutate(ctx context.Context, admin, id, operation string, r Req
 		return Item{}, false, faults.ErrValidation
 	}
 	token := ""
-	if operation == "create" || operation == "rotate" {
+	if operation == "create" || operation == "generate" || operation == "rotate" {
 		var err error
 		token, err = securetoken.Generate("sub")
 		if err != nil {
@@ -118,23 +131,23 @@ func (s *Service) Mutate(ctx context.Context, admin, id, operation string, r Req
 		}
 	}
 	fingerprint, _ := json.Marshal(struct {
-		ID, Operation string
-		Request       Request
-	}{originalID, operation, r})
+		ID, Operation, RuleID string
+		Request               Request
+	}{originalID, operation, ruleID, r})
 	digest := sha256.Sum256(fingerprint)
 	now := s.now().UTC()
 	event, err := audit.NewEvent(now, "administrator", admin, "subscription."+operation, "subscription", id, "succeeded", map[string]any{"revision": r.Revision + 1, "line_count": len(r.Lines)})
 	if err != nil {
 		return Item{}, false, err
 	}
-	return s.repository.MutateSubscription(ctx, Command{ID: id, AdministratorID: admin, Operation: operation, IdempotencyKey: key, RequestSHA256: hex.EncodeToString(digest[:]), Token: token, Request: r, At: now}, event)
+	return s.repository.MutateSubscription(ctx, Command{ID: id, AdministratorID: admin, Operation: operation, IdempotencyKey: key, RequestSHA256: hex.EncodeToString(digest[:]), Token: token, ForwardingRuleID: ruleID, Request: r, At: now}, event)
 }
 
 // Apply is called inside the repository transaction, after replay and ownership
 // checks. Publishing never replaces the token; revocation leaves native accounts intact.
 func Apply(previous Record, c Command) (Record, error) {
 	r := previous
-	if c.Operation == "create" {
+	if c.Operation == "create" || (c.Operation == "generate" && previous.Item.ID == "") {
 		r = Record{Item: Item{ID: c.ID, State: "active", CreatedAt: c.At}, OwnerID: c.AdministratorID, Token: c.Token}
 	}
 	if r.Item.Revision != c.Request.Revision {
@@ -144,11 +157,17 @@ func Apply(previous Record, c Command) (Record, error) {
 		return Record{}, fmt.Errorf("%w: 请先恢复订阅", faults.ErrConflict)
 	}
 	switch c.Operation {
-	case "create", "update":
+	case "create", "update", "generate":
 		r.Item.Name = c.Request.Name
 		r.Item.CustomerID = c.Request.CustomerID
 		r.Draft = append([]Line(nil), c.Request.Lines...)
 		r.Item.PendingUpdate = true
+		if c.Operation == "generate" {
+			r.Item.ForwardingRuleID = c.ForwardingRuleID
+			r.Published = append([]Line(nil), r.Draft...)
+			r.Item.PublishedRevision = c.Request.Revision + 1
+			r.Item.PendingUpdate = false
+		}
 	case "publish":
 		r.Published = append([]Line(nil), r.Draft...)
 		r.Item.PublishedRevision = c.Request.Revision + 1
@@ -170,6 +189,9 @@ func Apply(previous Record, c Command) (Record, error) {
 }
 func ValidateRecord(r Record) error {
 	if !validID(r.Item.ID) || !validID(r.OwnerID) || !tokenPattern.MatchString(r.Token) || r.Item.Revision < 1 || r.Item.CreatedAt.IsZero() || r.Item.UpdatedAt.Before(r.Item.CreatedAt) || (r.Item.State != "active" && r.Item.State != "revoked") || r.Item.PublishedRevision < 0 || r.Item.PublishedRevision > r.Item.Revision || r.Item.LineCount != len(r.Draft) || r.Item.PublishedLineCount != len(r.Published) {
+		return faults.ErrValidation
+	}
+	if r.Item.ForwardingRuleID != "" && (!validID(r.Item.ForwardingRuleID) || len(r.Draft) != 1 || r.Draft[0].BindingID == "" || len(r.Published) != 1 || r.Published[0].BindingID != r.Draft[0].BindingID) {
 		return faults.ErrValidation
 	}
 	if _, err := Normalize(Request{Name: r.Item.Name, CustomerID: r.Item.CustomerID, Lines: r.Draft}); err != nil {
@@ -200,9 +222,11 @@ type Resolved struct {
 }
 
 func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved, error) {
-	customer, err := s.repository.Customer(ctx, r.Item.CustomerID)
-	if err != nil || customer.EffectiveStatus(s.now()) != customers.StatusActive {
-		return nil, faults.ErrNotFound
+	if !(r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)) {
+		customer, err := s.repository.Customer(ctx, r.Item.CustomerID)
+		if err != nil || customer.EffectiveStatus(s.now()) != customers.StatusActive {
+			return nil, faults.ErrNotFound
+		}
 	}
 	lines := r.Published
 	if draft {

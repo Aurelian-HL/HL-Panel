@@ -4,6 +4,8 @@ import { Download, FolderInput, FolderTree, Pause, Play, Plus, RefreshCw, Search
 import { RouterLink } from 'vue-router'
 import type { DeviceGroup } from '@/api'
 import { businessApi, type ForwardRule, type GroupNetwork, type RuleBatchOperation, type RuleGroup } from '@/api/business'
+import { subscriptionApi } from '@/api/subscriptions'
+import { downloadSubscriptionPackage } from '@/lib/subscriptionDownload'
 import { ApiError } from '@/api/http'
 import StatePanel from '@/components/StatePanel.vue'
 import ForwardRuleEditor from '@/features/forwarding/ForwardRuleEditor.vue'
@@ -66,7 +68,7 @@ const filtered = computed(() => rules.value.filter((item) => {
     ? `${item.vless_socks5_host}:${item.vless_socks5_port}`
     : ''
   const searchable = [item.name, item.listen_port, entry?.name, exit?.name, vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()
-  return searchable.includes(query.value.trim().toLowerCase()) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused : !item.paused)) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value))
+  return searchable.includes(query.value.trim().toLowerCase()) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused || item.status === 'quota_exhausted' : !item.paused && item.status !== 'quota_exhausted')) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value))
 }))
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
 const pagedRules = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
@@ -104,15 +106,21 @@ async function load(): Promise<void> {
 watch([query, filter, groupFilter, pageSize], () => { page.value = 1 })
 watch(totalPages, (value) => { if (page.value > value) page.value = value })
 async function refreshTraffic(): Promise<void> {
-  if (trafficRequestInFlight || loading.value || error.value || !rules.value.length) return
+  if (trafficRequestInFlight || loading.value || error.value || busyId.value || batchBusy.value || !rules.value.length) return
   trafficRequestInFlight = true
   const version = loadVersion
   try {
+    const result = await businessApi.rules()
+    if (version !== loadVersion || busyId.value || batchBusy.value) return
+    rules.value = result.items
+    selectedIds.value = selectedIds.value.filter(id => result.items.some(rule => rule.id === id))
     await loadRuleTraffic(rules.value.map((rule) => rule.id), {
       isCurrent: () => version === loadVersion,
       onValue: (id, bytes) => { trafficByRule.value[id] = bytes },
       onUnauthorized: invalidateSession,
     })
+  } catch (cause) {
+    if (isUnauthorized(cause)) invalidateSession()
   } finally {
     trafficRequestInFlight = false
   }
@@ -202,9 +210,10 @@ async function copyConnection(rule: ForwardRule): Promise<void> {
   if (!ready.value || busyId.value || batchBusy.value) return
   busyId.value = rule.id; actionError.value = ''
   try {
-    const connection = await businessApi.forwardingConnection(rule.id)
-    await navigator.clipboard.writeText(connection.uri)
-    toast.success('VLESS 链接已复制', `${connection.name} · ${connection.endpoint}`)
+    const generated = await subscriptionApi.generateRule(rule.id, mutationKey({ operation: 'generate-subscription', rule_id: rule.id, revision: rule.revision }))
+    const pack = await subscriptionApi.package(generated.subscription.id)
+    downloadSubscriptionPackage(pack)
+    toast.success('订阅已生成，导入包已下载', rule.status === 'active' ? '可在订阅管理查看固定地址和二维码，重复点击复用同一订阅' : '规则暂停、额度用完或尚未就绪时暂不下发线路；恢复后更新客户端订阅')
   } catch (cause) {
     if (isUnauthorized(cause)) invalidateSession(); else actionError.value = displayError(cause)
   } finally { busyId.value = '' }

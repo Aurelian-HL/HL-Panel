@@ -160,6 +160,9 @@ func NormalizeRequest(input Request) (Request, error) {
 	if input.SendProxyProtocol < SendProxyDisabled || input.SendProxyProtocol > SendProxyV2TCP {
 		return Request{}, fmt.Errorf("%w: send_proxy_protocol must be 0, 1, 2 or 3", faults.ErrValidation)
 	}
+	if input.TrafficLimitBytes < 0 || input.TrafficLimitBytes > 9_007_199_254_740_991 {
+		return Request{}, fmt.Errorf("%w: 规则流量额度必须为 0 或安全范围内的正整数", faults.ErrValidation)
+	}
 	if input.SpeedLimitMbps < 0 || input.SpeedLimitMbps > 1_000_000 {
 		return Request{}, fmt.Errorf("%w: speed_limit_mbps must be between 0 and 1000000", faults.ErrValidation)
 	}

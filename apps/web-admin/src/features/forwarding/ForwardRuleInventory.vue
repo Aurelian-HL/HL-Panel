@@ -64,7 +64,7 @@ function selectVisible(selected: boolean): void {
           <td><strong class="table-primary">{{ rule.name }}</strong><small class="table-secondary rule-protocol">{{ protocolSummary(rule) }}</small><small v-if="rule.description" class="table-secondary">{{ rule.description }}</small></td>
           <td class="rule-entry-cell"><div class="rule-route-heading"><span>入口：{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></td>
           <td class="rule-exit-cell"><div class="rule-route-heading"><span>出口：{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></td>
-          <td class="rule-used-traffic">{{ usedTraffic(rule.id) }}</td>
+          <td class="rule-used-traffic">{{ usedTraffic(rule.id) }}<small class="table-secondary">{{ rule.traffic_limit_bytes ? `限额 ${byteAmount(rule.traffic_limit_bytes)}` : '不限量' }}</small><small v-if="rule.traffic_limit_bytes && (rule.traffic_used_bytes ?? 0) >= rule.traffic_limit_bytes" class="table-secondary">额度用完，自动暂停</small></td>
           <td><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></td>
           <td><ForwardRuleActions :rule="rule" :busy-id="busyId" compact @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></td>
         </tr></tbody>
@@ -76,7 +76,7 @@ function selectVisible(selected: boolean): void {
         <dl>
           <div class="rule-card-route"><dt>入口</dt><dd><div class="rule-route-heading"><span>{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></dd></div>
           <div class="rule-card-route"><dt>出口</dt><dd><div class="rule-route-heading"><span>{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></dd></div>
-          <div><dt>已用流量</dt><dd class="rule-used-traffic">{{ usedTraffic(rule.id) }}</dd></div>
+          <div><dt>已用流量 / 额度</dt><dd>{{ usedTraffic(rule.id) }} / {{ rule.traffic_limit_bytes ? byteAmount(rule.traffic_limit_bytes) : '不限量' }}</dd></div>
           <div v-if="rule.description"><dt>备注</dt><dd>{{ rule.description }}</dd></div>
         </dl>
         <footer><ForwardRuleActions :rule="rule" :busy-id="busyId" @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></footer>

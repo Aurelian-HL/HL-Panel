@@ -91,6 +91,7 @@ export interface ForwardRuleInput {
   speed_limit_mbps?: number
   ip_limit?: number
   connection_limit?: number
+  traffic_limit_bytes?: number
   paused: boolean
   description: string
   revision: number
@@ -99,6 +100,7 @@ export interface ForwardRule extends Omit<ForwardRuleInput, 'vless_socks5_passwo
   id: string
   customer_id: string
   status: string
+  traffic_used_bytes?: number
   ingress_status?: IngressStatus
   deployed?: boolean
   /** Non-secret reason why the current isolated slice has not activated a rule. */

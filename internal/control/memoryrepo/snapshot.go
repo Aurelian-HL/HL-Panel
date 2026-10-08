@@ -574,6 +574,7 @@ func DecodeSnapshot(raw []byte) (*Store, error) {
 		}
 	}
 	tokens := map[string]bool{}
+	autoRules := map[string]bool{}
 	for id, r := range state.Subscriptions {
 		record := subscriptions.Record{Item: r.Item, OwnerID: r.OwnerID, Token: r.Token, Draft: r.Draft, Published: r.Published}
 		if id != r.Item.ID || subscriptions.ValidateRecord(record) != nil || tokens[r.Token] {
@@ -582,7 +583,14 @@ func DecodeSnapshot(raw []byte) (*Store, error) {
 		if _, ok := adminIDs[r.OwnerID]; !ok {
 			return nil, errors.New("invalid persisted subscription owner")
 		}
-		if _, ok := s.customers[r.Item.CustomerID]; !ok {
+		if r.Item.ForwardingRuleID != "" {
+			key := r.OwnerID + "\x00" + r.Item.ForwardingRuleID
+			if autoRules[key] {
+				return nil, errors.New("duplicate persisted automatic rule subscription")
+			}
+			autoRules[key] = true
+		}
+		if _, ok := s.customers[r.Item.CustomerID]; !ok && !(r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)) {
 			return nil, errors.New("invalid persisted subscription customer")
 		}
 		for _, line := range append(append([]subscriptions.Line(nil), r.Draft...), r.Published...) {

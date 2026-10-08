@@ -39,7 +39,7 @@ describe('ForwardRuleInventory', () => {
     const missingRule: ForwardRule = { ...baseRule, id: 'missing' }
     const zeroRule: ForwardRule = { ...baseRule, id: 'zero' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [baseRule, missingRule, zeroRule], devices, ruleGroups: [], selectedIds: [], busyId: '', trafficByRule: { [baseRule.id]: 1024 ** 3 * 12.5, zero: 0 } } })
-    expect(wrapper.findAll('td.rule-used-traffic').map((item) => item.text())).toEqual(['12.5 GiB', '—', '0 B'])
+    expect(wrapper.findAll('td.rule-used-traffic').map((item) => item.text())).toEqual(['12.5 GiB不限量', '—不限量', '0 B不限量'])
     wrapper.unmount()
   })
 
@@ -48,10 +48,10 @@ describe('ForwardRuleInventory', () => {
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
     const actions = wrapper.find('.business-desktop .rule-actions')
     expect(actions.text()).toBe('')
-    expect(actions.findAll('button').map((button) => button.attributes('title'))).toEqual(['编辑规则', '复制规则', '复制 VLESS 链接', '暂停规则', '删除规则'])
+    expect(actions.findAll('button').map((button) => button.attributes('title'))).toEqual(['编辑规则', '复制规则', '生成订阅并下载导入包', '暂停规则', '删除规则'])
     await actions.find('button[title="编辑规则"]').trigger('click')
     await actions.find('button[title="复制规则"]').trigger('click')
-    await actions.find('button[title="复制 VLESS 链接"]').trigger('click')
+    await actions.find('button[title="生成订阅并下载导入包"]').trigger('click')
     await actions.find('button[title="暂停规则"]').trigger('click')
     await actions.find('button[title="删除规则"]').trigger('click')
     for (const event of ['edit', 'copy', 'connection', 'toggle', 'delete']) expect(wrapper.emitted(event)?.[0]).toEqual([rule])
@@ -118,4 +118,15 @@ describe('ForwardRuleInventory', () => {
     expect(wrapper.find('.business-status').text()).not.toBe('待激活')
     wrapper.unmount()
   })
+  it('shows the exhausted quota and opens the editor instead of pretending to resume', async () => {
+    const rule = { ...baseRule, traffic_limit_bytes: 1000, traffic_used_bytes: 1500, status: 'quota_exhausted' as const }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '', trafficByRule: { [rule.id]: 1500 } } })
+    expect(wrapper.text()).toContain('额度用完，自动暂停')
+    expect(wrapper.find('button[title="恢复规则"]').exists()).toBe(false)
+    await wrapper.get('.business-desktop button[title="调整流量额度"]').trigger('click')
+    expect(wrapper.emitted('edit')?.[0]).toEqual([rule])
+    expect(wrapper.emitted('toggle')).toBeUndefined()
+    wrapper.unmount()
+  })
+
 })

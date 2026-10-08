@@ -17,6 +17,7 @@ type Line struct {
 type Item struct {
 	ID                 string    `json:"id"`
 	Name               string    `json:"name"`
+	ForwardingRuleID   string    `json:"forwarding_rule_id,omitempty"`
 	CustomerID         string    `json:"customer_id"`
 	State              string    `json:"state"`
 	Revision           int64     `json:"revision"`
@@ -44,6 +45,7 @@ type Request struct {
 }
 type Command struct {
 	ID, AdministratorID, Operation, IdempotencyKey, RequestSHA256, Token string
+	ForwardingRuleID                                                     string
 	Request                                                              Request
 	At                                                                   time.Time
 }

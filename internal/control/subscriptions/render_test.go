@@ -41,7 +41,7 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	z, err := zip.NewReader(bytes.NewReader(pack), int64(len(pack)))
-	if err != nil || len(z.File) != 4 {
+	if err != nil || len(z.File) != 6 {
 		t.Fatal("invalid import ZIP")
 	}
 	for _, f := range z.File {
@@ -59,7 +59,7 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 			if _, e = png.Decode(bytes.NewReader(raw)); e != nil {
 				t.Fatal(e)
 			}
-		case "v2rayN-Shadowrocket.txt":
+		case "v2rayN-订阅地址.txt", "Shadowrocket-订阅地址.txt":
 			if string(raw) != "https://panel.example.test"+Paths(r.Token).TXT+"\n" {
 				t.Fatal("wrong feed address")
 			}
