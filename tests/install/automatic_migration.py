@@ -8,6 +8,7 @@ No production hosts, external DNS changes or ACME issuance are involved.
 import argparse
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -15,6 +16,8 @@ from pathlib import Path
 import pwd
 import secrets
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -47,6 +50,21 @@ def request(base, route, body=None, token='', expected=200, headers=None, raw=Fa
         assert response.code == expected, f'{route}: {response.code}, expected {expected}'
         value = response.read()
         return value if raw else json.loads(value) if value else None
+
+
+def verify_proxy_isolation(domain, login):
+    context = ssl.create_default_context(cafile='/etc/hl-panel/tls/domain-current/fullchain.pem')
+    connection = http.client.HTTPSConnection(domain, 443, context=context, timeout=30)
+    connection.sock = context.wrap_socket(socket.create_connection(('127.0.0.1', 443), timeout=30),
+                                          server_hostname=domain)
+    try:
+        connection.request('POST', '/api/v1/auth/login', json.dumps(login),
+                           {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        assert response.status == 503, 'Nginx bypassed receiver isolation'
+        response.read()
+    finally:
+        connection.close()
 
 
 def main():
@@ -92,7 +110,7 @@ os.execv(os.environ['HL_AUTO_CURL'], ['curl', *values])
         login = {'username': executor.BOOTSTRAP, 'password': task['bootstrap_password']}
         target_token = request(executor.API, '/api/v1/auth/login', login)['access_token']
         request(executor.API, '/api/v1/auth/login', login, expected=503, headers={'X-Forwarded-For': '127.0.0.1'})
-        request('http://127.0.0.1', '/api/v1/auth/login', login, expected=503, headers={'Host': task['domain']})
+        verify_proxy_isolation(task['domain'], login)
         public_config = command(['runuser', '-u', 'hlpanel', '--', 'cat', '/etc/hl-panel/domain.conf'])
         assert task['domain'].encode() in public_config
         assert Path('/etc/hl-panel/domain.conf').stat().st_mode & 0o777 == 0o640
