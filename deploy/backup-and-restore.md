@@ -1,6 +1,6 @@
 # HL-Panel 迁移备份与恢复
 
-从 v0.1.47 起，在 **首页 → HL-Panel 运行状态 → 迁移备份** 中导出备份，或将备份导入另一台已安装的面板。无需手动复制数据库，也不用重新创建规则、节点和订阅。
+从 v0.1.48 起，在 **首页 → HL-Panel 运行状态 → 迁移备份** 中导出备份，或将备份导入另一台已安装的面板。无需手动复制数据库，也不用重新创建规则、节点和订阅。
 
 ## 备份包含什么
 
@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/install.s
 
 ```sh
 script=$(mktemp)
-if curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/v0.1.47/deploy/node-control-url.py -o "$script"; then
+if curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/v0.1.48/deploy/node-control-url.py -o "$script"; then
   python3 "$script" --panel-url https://panel.example.com
   result=$?
 else
