@@ -12,6 +12,7 @@ import MemberWeightDialog from '@/features/groups/MemberWeightDialog.vue'
 import { formatRate, hasLiveProbeReading, monitorStatus } from '@/features/probe/format'
 import { readProbeRefreshIntervals, saveProbeRefreshIntervals, type ProbeRefreshIntervals } from '@/features/probe/refreshPreferences'
 import { displayError } from '@/lib/displayFormatters'
+import { serverNow } from '@/lib/serverClock'
 
 type StatusFilter = 'all' | 'online' | 'offline'
 const groups = ref<DeviceGroup[]>([])
@@ -22,7 +23,7 @@ const monitoringLoading = ref(false)
 const groupsError = ref('')
 const monitoringError = ref('')
 const statusFilter = ref<StatusFilter>('all')
-const now = ref(Date.now())
+const now = ref(serverNow())
 const refreshIntervals = ref(readProbeRefreshIntervals())
 const settingsOpen = ref(false)
 const settingsError = ref('')
@@ -106,7 +107,7 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
   try {
     const result = groupId ? await probeApi.getGroup(groupId) : await probeApi.getInventory()
     if (currentRequest === requestId) {
-      now.value = Date.now()
+      now.value = serverNow()
       response.value = result
       monitoringError.value = ''
     }
@@ -164,14 +165,14 @@ function scheduleRefresh(): void {
   if (!active) return
   refreshTimer = setTimeout(async () => {
     refreshTimer = undefined
-    now.value = Date.now()
+    now.value = serverNow()
     if (!monitoringLoading.value) await loadMonitoring()
     scheduleRefresh()
   }, document.visibilityState === 'visible' ? refreshIntervals.value.foreground : refreshIntervals.value.background)
 }
 
 function onVisibilityChange(): void {
-  now.value = Date.now()
+  now.value = serverNow()
   if (document.visibilityState === 'visible' && !monitoringLoading.value) void loadMonitoring()
   scheduleRefresh()
 }

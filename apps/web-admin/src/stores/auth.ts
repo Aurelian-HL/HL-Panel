@@ -28,7 +28,7 @@ function clearSession(): void {
   sessionStorage.removeItem(EXPIRY_KEY)
 }
 
-if (expiresAt.value && Date.parse(expiresAt.value) <= Date.now()) clearSession()
+// Only the server can expire a persisted session; browser time may be skewed.
 
 async function login(request: LoginRequest): Promise<void> {
   const response = await api.login(request)

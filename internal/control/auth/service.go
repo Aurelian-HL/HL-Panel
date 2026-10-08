@@ -26,6 +26,9 @@ func (s *Service) ConfirmAdministratorPassword(ctx context.Context, id, password
 		return nil, fmt.Errorf("%w: 请填写当前管理员密码", faults.ErrValidation)
 	}
 	a, err := s.repository.AdministratorByID(ctx, id)
+	if err != nil && !errors.Is(err, faults.ErrNotFound) {
+		return nil, err
+	}
 	if err != nil || checkPassword(a.PasswordHash, password) != nil {
 		return nil, fmt.Errorf("%w: 当前管理员密码错误", faults.ErrValidation)
 	}
@@ -78,6 +81,9 @@ func NewService(repository Repository, auditService *audit.Service, now func() t
 func (s *Service) Login(ctx context.Context, username, password string) (LoginResult, error) {
 	now := s.now().UTC()
 	admin, err := s.repository.AdministratorByUsername(ctx, username)
+	if err != nil && !errors.Is(err, faults.ErrNotFound) && !errors.Is(err, faults.ErrUnauthorized) {
+		return LoginResult{}, err
+	}
 	if err != nil || checkPassword(admin.PasswordHash, password) != nil {
 		event, eventErr := audit.NewEvent(now, "administrator", username, "auth.login", "session", "", "failed", nil)
 		if eventErr == nil && s.auditService != nil {
@@ -132,7 +138,10 @@ func (s *Service) Authenticate(ctx context.Context, rawToken string) (Session, e
 	}
 	admin, err := s.repository.AdministratorByID(ctx, session.AdminID)
 	if err != nil {
-		return Session{}, faults.ErrUnauthorized
+		if errors.Is(err, faults.ErrNotFound) {
+			return Session{}, faults.ErrUnauthorized
+		}
+		return Session{}, err
 	}
 	session.MustChangePassword = admin.MustChangePassword
 	return session, nil

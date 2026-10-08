@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/faults"
 )
@@ -40,6 +41,8 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) e
 
 func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("X-HL-Server-Time", time.Now().UTC().Format(time.RFC3339Nano))
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
 }

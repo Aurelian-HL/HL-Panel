@@ -1,4 +1,5 @@
 import type { ProbeMember, ProbeUpstreamStatus } from '@/api/probe'
+import { serverNow } from '@/lib/serverClock'
 
 export function formatBytes(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value) || value < 0) return '未采集'
@@ -56,13 +57,13 @@ export function capacityPercent(used: number | undefined, total: number | undefi
     : undefined
 }
 
-export function hasFreshProbeSample(member: ProbeMember, now = Date.now()): boolean {
+export function hasFreshProbeSample(member: ProbeMember, now = serverNow()): boolean {
   if (!member.sampled_at) return false
   const sampledAt = Date.parse(member.sampled_at)
   return Number.isFinite(sampledAt) && sampledAt <= now + 5_000 && now - sampledAt <= (member.source === 'hl' ? 90_000 : 30_000)
 }
 
-export function monitorStatus(member: ProbeMember, upstream: ProbeUpstreamStatus, now = Date.now()): { text: string; tone: string } {
+export function monitorStatus(member: ProbeMember, upstream: ProbeUpstreamStatus, now = serverNow()): { text: string; tone: string } {
   if (member.link_status === 'unlinked') return { text: '未关联', tone: 'muted' }
   if (member.source !== 'hl' && upstream === 'disabled') return { text: '未配置', tone: 'muted' }
   if (member.source !== 'hl' && upstream === 'unavailable') return { text: '数据不可用', tone: 'warning' }
@@ -72,11 +73,11 @@ export function monitorStatus(member: ProbeMember, upstream: ProbeUpstreamStatus
   return { text: '未采集', tone: 'muted' }
 }
 
-export function hasLiveProbeReading(member: ProbeMember, upstream: ProbeUpstreamStatus, now = Date.now()): boolean {
+export function hasLiveProbeReading(member: ProbeMember, upstream: ProbeUpstreamStatus, now = serverNow()): boolean {
   return (member.source === 'hl' || upstream === 'ok') && member.link_status !== 'unlinked' && member.online === true && hasFreshProbeSample(member, now)
 }
 
-export function probeReadingState(member: ProbeMember, upstream: ProbeUpstreamStatus, now = Date.now()): string {
+export function probeReadingState(member: ProbeMember, upstream: ProbeUpstreamStatus, now = serverNow()): string {
   if (member.source !== 'hl' && upstream === 'unavailable' && member.link_status !== 'unlinked') return '数据不可用'
   if (member.sampled_at && !hasLiveProbeReading(member, upstream, now)) return '历史采样'
   return member.sampled_at ? '最近采样' : '尚无采样'

@@ -1,3 +1,5 @@
+import { observeServerTime } from '@/lib/serverClock'
+
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
@@ -53,15 +55,19 @@ export class HttpClient {
     }
 
     if (response.status === 401 && token && path !== '/auth/login') {
-      unauthorizedHandler?.()
+      if (this.tokenProvider() === token) unauthorizedHandler?.()
       throw new ApiError('登录已过期，请重新登录后继续', 401, 'session_expired')
     }
+    if (response.ok) observeServerTime(response.headers.get('X-HL-Server-Time') ?? response.headers.get('Date'))
     if (response.status === 204) return undefined as T
 
     const contentType = response.headers.get('content-type') ?? ''
     const body: unknown = contentType.includes('application/json') ? await response.json() : await response.text()
     if (!response.ok) {
       const detail = errorMessage(body, `请求失败 (${response.status})`)
+      if (response.status === 500 && detail.code === 'internal_error') {
+        throw new ApiError('面板服务暂时异常，请稍后重试；若持续失败，请检查控制服务与数据库日志', response.status, detail.code)
+      }
       if ([502, 503, 504].includes(response.status) && detail.code === 'request_failed') {
         throw new ApiError('无法连接控制服务，请检查 API 服务和代理配置', response.status, 'service_unavailable')
       }

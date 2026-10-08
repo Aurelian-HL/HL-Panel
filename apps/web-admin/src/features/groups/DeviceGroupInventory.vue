@@ -10,13 +10,14 @@ import { formatPortRanges } from '@/lib/portRanges'
 
 export type GroupIntegrationMode = 'online' | 'overseas' | 'offline' | 'config'
 
-const props = defineProps<{ groups: DeviceGroup[]; networks: GroupNetwork[] }>()
+const props = defineProps<{ groups: DeviceGroup[]; networks: GroupNetwork[]; disabled?: boolean }>()
 const emit = defineEmits<{ addMember: [group: DeviceGroup]; configureNetwork: [group: DeviceGroup]; edit: [group: DeviceGroup]; integrate: [group: DeviceGroup, mode: GroupIntegrationMode]; remove: [group: DeviceGroup] }>()
 const openMenuGroup = ref<DeviceGroup | null>(null)
 const menuElement = ref<HTMLElement | null>(null)
 const menuStyle = ref<Record<string, string>>({ visibility: 'hidden' })
 
 async function toggleIntegrationMenu(group: DeviceGroup, event: MouseEvent): Promise<void> {
+  if (props.disabled) return
   if (openMenuGroup.value?.id === group.id) {
     closeIntegrationMenu()
     return
@@ -38,6 +39,7 @@ async function toggleIntegrationMenu(group: DeviceGroup, event: MouseEvent): Pro
 
 function selectIntegration(group: DeviceGroup, mode: GroupIntegrationMode): void {
   closeIntegrationMenu()
+  if (props.disabled) return
   emit('integrate', group, mode)
 }
 
@@ -84,7 +86,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
 </script>
 
 <template>
-  <div class="inventory group-inventory">
+  <fieldset class="inventory group-inventory" :disabled="disabled" aria-label="设备组列表">
     <div class="table-wrap group-table-wrap">
       <table class="data-table group-table">
         <thead><tr><th>设备组</th><th>类型 / 成员</th><th>网络配置</th><th>最近更新</th><th class="align-right">操作</th></tr></thead>
@@ -115,10 +117,11 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
         <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'config')">查看节点记录（调试用）</button>
       </div>
     </Teleport>
-  </div>
+  </fieldset>
 </template>
 
 <style scoped>
+.group-inventory { min-width: 0; margin: 0; padding: 0; border: 0; }
 .group-inventory { min-width: 0; }
 .group-table-wrap { display: block; }
 .group-table { width: 100%; min-width: 0; table-layout: fixed; }

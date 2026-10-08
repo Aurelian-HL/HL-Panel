@@ -3,6 +3,31 @@ import { describe, expect, it, vi } from 'vitest'
 import { HttpClient, onUnauthorized } from './http'
 
 describe('HttpClient', () => {
+  it('does not log out a newer login when an old request returns unauthorized', async () => {
+    let token = 'old-token'
+    const handler = vi.fn()
+    onUnauthorized(handler)
+    let finish!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve })))
+    const request = new HttpClient('/api/v1', () => token).request('/nodes')
+    token = 'new-token'
+    finish(new Response('{}', { status: 401 }))
+    await expect(request).rejects.toMatchObject({ status: 401 })
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('keeps sessions on server failure and gives an actionable service error', async () => {
+    const handler = vi.fn()
+    onUnauthorized(handler)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'internal_error', message: 'internal server error' } }), {
+      status: 500, headers: { 'content-type': 'application/json' },
+    })))
+    await expect(new HttpClient('/api/v1', () => 'token').request('/device-groups')).rejects.toMatchObject({
+      status: 500, code: 'internal_error', message: expect.stringContaining('面板服务暂时异常'),
+    })
+    expect(handler).not.toHaveBeenCalled()
+  })
+
   it('preserves the real Go API conflict reason instead of a generic status error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       error: { code: 'conflict', message: 'stable endpoint is already allocated' },

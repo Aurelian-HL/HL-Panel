@@ -1,9 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, formatUptime, hasFreshProbeSample, hasLiveProbeReading, measuredPercent, monitorStatus } from './format'
 import { completeProbeSample } from '@/test/fixtures/probe'
+import { observeServerTime } from '@/lib/serverClock'
 
 describe('probe measurement formatting', () => {
+  it('does not expire fresh native samples when the browser clock is a day ahead', () => {
+    const member = { ...completeProbeSample.items[0]!, source: 'hl' as const, link_status: 'native' as const }
+    const sampledAt = Date.parse(member.sampled_at!)
+    vi.spyOn(Date, 'now').mockReturnValue(sampledAt + 86_400_000)
+    observeServerTime(new Date(sampledAt + 10_000).toISOString())
+    expect(monitorStatus(member, 'disabled').text).toBe('在线')
+    expect(hasLiveProbeReading(member, 'disabled')).toBe(true)
+  })
+
   it('keeps native HL probes live without a Nezha upstream and expires after 90 seconds', () => {
     const member = { ...completeProbeSample.items[0]!, source: 'hl' as const, link_status: 'native' as const }
     const sampledAt = Date.parse(member.sampled_at!)

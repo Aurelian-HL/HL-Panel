@@ -34,6 +34,8 @@ const integrationMode = ref<GroupIntegrationMode>('online')
 const deleteGroup = ref<DeviceGroup | null>(null)
 const networks = ref<GroupNetwork[]>([])
 const userGroups = ref<UserGroup[]>([])
+const auxiliaryError = ref('')
+const actionsReady = ref(false)
 
 const kinds: Array<{ value: 'ALL' | DeviceGroupKind; label: string }> = [
   { value: 'ALL', label: '全部' }, { value: 'ENTRY', label: '入口' }, { value: 'EXIT', label: '出口' },
@@ -52,17 +54,19 @@ const filteredGroups = computed(() => {
 async function load(): Promise<void> {
   loading.value = true
   errorMessage.value = ''
-  try {
-    const [groupResponse, nodeResponse, networkResponse, userGroupResponse] = await Promise.all([api.getDeviceGroups(), api.getNodes(), businessApi.groupNetworks(), businessApi.userGroups()])
-    groups.value = groupResponse.items
-    nodes.value = nodeResponse.items
-    networks.value = networkResponse.items
-    userGroups.value = userGroupResponse.items
-  } catch (error) {
-    errorMessage.value = displayError(error)
-  } finally {
-    loading.value = false
-  }
+  auxiliaryError.value = ''
+  actionsReady.value = false
+  const [groupResult, nodeResult, networkResult, userGroupResult] = await Promise.allSettled([api.getDeviceGroups(), api.getNodes(), businessApi.groupNetworks(), businessApi.userGroups()])
+  if (groupResult.status === 'fulfilled') groups.value = groupResult.value.items
+  else errorMessage.value = displayError(groupResult.reason)
+  if (nodeResult.status === 'fulfilled') nodes.value = nodeResult.value.items
+  if (networkResult.status === 'fulfilled') networks.value = networkResult.value.items
+  if (userGroupResult.status === 'fulfilled') userGroups.value = userGroupResult.value.items
+  const failures = [nodeResult, networkResult, userGroupResult]
+    .flatMap((result, index) => result.status === 'rejected' ? [`${['节点', '网络配置', '用户分组'][index]}：${displayError(result.reason)}`] : [])
+  auxiliaryError.value = failures.join('；')
+  actionsReady.value = groupResult.status === 'fulfilled' && failures.length === 0
+  loading.value = false
 }
 
 function onCreated(group: DeviceGroup): void {
@@ -122,7 +126,7 @@ onMounted(load)
     <header class="page-heading">
       <div><h2>设备组管理（站点管理员）</h2><p>管理入口与出口设备组、节点成员和路由网络配置</p></div>
       <div class="page-heading__actions">
-        <button class="button button--primary" type="button" @click="showCreateDialog = true"><Plus :size="16" />添加设备组</button>
+        <button class="button button--primary" type="button" :disabled="!actionsReady" @click="showCreateDialog = true"><Plus :size="16" />添加设备组</button>
         <button class="button button--secondary" type="button" disabled title="清空流量暂未开放"><SlidersHorizontal :size="16" />清空流量</button>
         <button class="button button--secondary" type="button" :disabled="loading" @click="load"><RefreshCw :class="{ spin: loading }" :size="16" />刷新</button>
         <RouterLink class="button button--secondary" to="/user-groups"><FolderTree :size="16" />管理分组<ExternalLink :size="14" /></RouterLink>
@@ -142,8 +146,9 @@ onMounted(load)
     <StatePanel v-else-if="errorMessage && !groups.length" state="error" title="设备组加载失败" :message="errorMessage" @retry="load" />
     <StatePanel v-else-if="!groups.length" state="empty" title="还没有设备组" message="创建设备组，添加机器成员，并配置连接地址与端口范围。" />
     <StatePanel v-else-if="!filteredGroups.length" state="empty" title="没有符合条件的设备组" message="调整搜索词或类型筛选后重试。" />
-    <DeviceGroupInventory v-else :groups="filteredGroups" :networks="networks" @add-member="memberGroup = $event" @configure-network="networkGroup = $event" @edit="editGroup = $event" @integrate="openIntegration" @remove="deleteGroup = $event" />
+    <DeviceGroupInventory v-else :groups="filteredGroups" :networks="networks" :disabled="!actionsReady" @add-member="memberGroup = $event" @configure-network="networkGroup = $event" @edit="editGroup = $event" @integrate="openIntegration" @remove="deleteGroup = $event" />
     <p v-if="errorMessage && groups.length" class="inline-warning">刷新失败，当前显示上一次成功读取的数据：{{ errorMessage }}</p>
+    <p v-if="auxiliaryError" class="inline-warning">部分数据读取失败，编辑操作暂不可用，请刷新重试。{{ auxiliaryError }}</p>
 
     <CreateDeviceGroupDialog v-if="showCreateDialog" :user-groups="userGroups" @close="showCreateDialog = false" @created="onCreated" />
     <GroupMembersDialog v-if="memberGroup" :group="memberGroup" :nodes="nodes" @close="memberGroup = null" @add="addMemberGroup = memberGroup; memberGroup = null" @changed="onMemberRetired" />
