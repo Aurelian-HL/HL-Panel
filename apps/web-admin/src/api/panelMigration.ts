@@ -47,3 +47,34 @@ export function downloadMigration(blob: Blob, name: string): void {
   const a = document.createElement('a'); a.href = url; a.download = name; a.click()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
+
+export interface MigrationTarget { host: string; port: number; fingerprint: string }
+export interface AutomaticTask {
+  id: string; target: MigrationTarget; source_url: string; domain: string; version: string
+  state: 'running' | 'ready' | 'waiting_dns' | 'failed' | 'completed' | 'cancelled'
+  phase: string; message: string; backup_id: string; updated_at: string
+  counts?: Record<string, number>
+}
+export interface AutomaticStatus {
+  available: boolean; message?: string; source_url?: string; source_ip_url?: string
+  frozen: boolean; running: boolean; credentials_required: boolean; task: AutomaticTask | null
+}
+export interface AutomaticInput {
+  id: string; target: MigrationTarget; source_url: string; confirm: string
+  administrator_password: string; password: string
+  ssh_password: string; ssh_private_key: string; ssh_key_passphrase: string
+}
+export async function automaticStatus(): Promise<AutomaticStatus> {
+  return (await request('auto', { method: 'GET' })).json()
+}
+async function automaticPost<T>(path: string, input: unknown): Promise<T> {
+  return (await request(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) })).json()
+}
+export function probeMigration(target: MigrationTarget, administratorPassword: string): Promise<{ fingerprint: string }> {
+  return automaticPost('auto/probe', { target, administrator_password: administratorPassword })
+}
+export function startAutomaticMigration(input: AutomaticInput): Promise<AutomaticStatus> { return automaticPost('auto', input) }
+export function continueAutomaticMigration(id: string, administratorPassword: string): Promise<AutomaticStatus> {
+  return automaticPost('auto/continue', { id, administrator_password: administratorPassword, confirm: 'CUTOVER' })
+}
+export function rollbackAutomaticMigration(input: AutomaticInput): Promise<AutomaticStatus> { return automaticPost('auto/rollback', input) }

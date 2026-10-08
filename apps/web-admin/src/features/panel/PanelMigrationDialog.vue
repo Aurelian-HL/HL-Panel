@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Download, Upload, ShieldCheck } from '@lucide/vue'
+import { Download, Upload, ShieldCheck, Server } from '@lucide/vue'
+import PanelAutomaticMigration from './PanelAutomaticMigration.vue'
 import BaseModal from '@/components/BaseModal.vue'
 import { downloadMigration, exportMigration, importMigration, previewMigration, recoveryMigration, type MigrationPreview } from '@/api/panelMigration'
 import { displayError } from '@/lib/displayFormatters'
 
 defineEmits<{ close: [] }>()
-const mode = ref<'export' | 'import'>('export')
+const mode = ref<'export' | 'import' | 'auto'>('export')
 const administratorPassword = ref('')
 const password = ref('')
 const confirmation = ref('')
@@ -81,7 +82,10 @@ function login(): void { window.location.assign('/login?redirect=/overview') }
         <nav class="migration-tabs" aria-label="迁移方式">
           <button type="button" :class="{ selected: mode === 'export' }" :disabled="busy" @click="mode = 'export'"><Download :size="17" />导出备份</button>
           <button type="button" :class="{ selected: mode === 'import' }" :disabled="busy" @click="mode = 'import'"><Upload :size="17" />导入恢复</button>
+          <button type="button" :class="{ selected: mode === 'auto' }" :disabled="busy" @click="mode = 'auto'"><Server :size="17" />自动迁移</button>
         </nav>
+        <PanelAutomaticMigration v-if="mode === 'auto'" />
+        <template v-else>
         <p class="migration-summary">打包账号、规则、设备组、节点身份、订阅、限额、流量账本、站点设置及面板日志。新机器的证书、端口和安装环境由新面板安装器配置。</p>
         <form @submit.prevent="act">
           <fieldset :disabled="busy" class="migration-form">
@@ -106,6 +110,7 @@ function login(): void { window.location.assign('/login?redirect=/overview') }
         </section>
         <div v-if="recoveryID" class="migration-recovery"><span>上次导入前的恢复备份（使用当次备份密码）</span><button class="button button--secondary" :disabled="busy" @click="recovery">下载恢复备份</button></div>
         <p class="migration-help">新面板请先完成一键安装、修改默认管理员密码，并更新到不低于备份的版本。节点凭据和规则密钥会保留，无需重新注册。<a href="https://github.com/Aurelian-HL/HL-Panel/blob/main/deploy/backup-and-restore.md" target="_blank" rel="noopener noreferrer">查看迁移操作说明 ↗</a></p>
+        </template>
       </template>
       <section v-else class="migration-finished" role="status"><ShieldCheck :size="38" /><h3>导入成功</h3><p>面板正在重新载入，数秒后可登录。请使用原面板的管理员账号和密码。</p><p>导入前的恢复备份已保留。重新登录后在“迁移备份”中下载。</p><button class="button button--primary" @click="login">重新登录</button></section>
     </div>
@@ -114,7 +119,7 @@ function login(): void { window.location.assign('/login?redirect=/overview') }
 
 <style scoped>
 .migration-panel { color: #34475e; line-height: 1.65; }
-.migration-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.migration-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .migration-tabs button { display: flex; align-items: center; gap: 8px; border: 1px solid #dbe3eb; background: #f5f7fa; color: #526177; padding: 10px 18px; border-radius: 8px; cursor: pointer; }
 .migration-tabs .selected { color: #126857; background: #ecf7f3; border-color: #98cdbd; }
 .migration-summary, .migration-help { color: #768397; font-size: 13px; }

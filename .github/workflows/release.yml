@@ -83,7 +83,7 @@ jobs:
           NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
         run: |
           go test ./...
-          go test -race ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime
+          go test -race ./internal/control/panelmigration ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime
           go vet ./...
           bash -n install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh
           sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh
@@ -98,6 +98,8 @@ jobs:
           python3 -m py_compile tests/install/panel_migration.py
           python3 -m py_compile deploy/panel-update-worker.py
           python3 tests/install/test_panel_update_worker.py
+          python3 -m py_compile internal/control/panelmigration/remote.py tests/install/automatic_migration.py
+          python3 tests/install/test_automatic_migration.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |
@@ -337,8 +339,33 @@ jobs:
         with:
           name: panel-migration
           path: panel-migration-result.log
+  automatic-migration:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Prepare package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Verify receiver installation, encrypted restore and restart isolation
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/automatic_migration.py \
+            --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: automatic-migration
+          path: automatic-migration-result.json
   publish:
-    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install, panel-migration]
+    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install, panel-migration, automatic-migration]
     if: ${{ inputs.verification_only != true }}
     runs-on: ubuntu-latest
     steps:

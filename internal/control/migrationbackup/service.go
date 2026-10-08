@@ -132,6 +132,14 @@ func (s *Service) Restore(ctx context.Context, adminID, adminPassword, password,
 
 var recoveryName = regexp.MustCompile(`^mbk_[a-f0-9]{32}$`)
 
+// Retain keeps an encrypted final cutover archive in the existing recovery store.
+func (s *Service) Retain(raw []byte) (string, error) {
+	if len(raw) == 0 || len(raw) > MaxArchiveBytes {
+		return "", errors.New("invalid migration archive size")
+	}
+	return s.saveRecovery(raw)
+}
+
 func (s *Service) saveRecovery(raw []byte) (string, error) {
 	if s.directory == "" {
 		return "", errors.New("migration recovery directory unavailable")

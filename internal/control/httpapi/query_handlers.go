@@ -39,7 +39,7 @@ func (api *API) nodeControl(writer http.ResponseWriter, request *http.Request, _
 }
 
 func (api *API) health(writer http.ResponseWriter, _ *http.Request) {
-	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok", "version": api.platformInfo.Version})
 }
 
 func (api *API) overview(writer http.ResponseWriter, request *http.Request, _ auth.Session) {

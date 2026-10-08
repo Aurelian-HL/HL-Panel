@@ -8,6 +8,8 @@ DOMAIN_EXPLICIT=false
 ADMIN_USERNAME="admin"
 ADMIN_USERNAME_EXPLICIT=false
 ADMIN_DEFAULT_PASSWORD=false
+PASSWORD_STDIN=false
+MIGRATION_RECEIVER=""
 EMAIL=""
 PUBLIC_IP=""
 API_PORT="8080"
@@ -143,7 +145,7 @@ usage() {
 用法：install.sh [--repo OWNER/REPOSITORY] [--version TAG|latest]
                  [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
                  [--ip-https-port PORT]
-                 [--admin-username NAME] [--email EMAIL]
+                 [--admin-username NAME] [--email EMAIL] [--password-stdin]
 
 选项：
   --repo              GitHub 仓库；默认 Aurelian-HL/HL-Panel
@@ -154,6 +156,8 @@ usage() {
   --ip-https-port     IP HTTPS 独立监听端口；默认 8443，不得使用 80、443 或 API 端口
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
+  --password-stdin    从标准输入读取一行管理员密码；须明确指定域名和账号
+  --migration-receiver TASK_ID  自动迁移专用：首次启动前隔离新机业务写入
   -h, --help          显示帮助
 
 安装只创建 HL-panel 独立实例，不导入或删除其他面板数据。
@@ -172,6 +176,8 @@ while (($#)); do
     --ip-https-port) (($# >= 2)) || fail "--ip-https-port 缺少参数"; IP_HTTPS_PORT="$2"; shift 2 ;;
     --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; ADMIN_USERNAME_EXPLICIT=true; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
+    --password-stdin) PASSWORD_STDIN=true; shift ;;
+    --migration-receiver) (($# >= 2)) || fail "--migration-receiver 缺少参数"; MIGRATION_RECEIVER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "未知参数：$1" ;;
   esac
@@ -246,7 +252,13 @@ ARCH="$(uname -m)"
 [[ "$ARCH" == "x86_64" ]] || fail "当前版本只提供 Linux amd64，检测到 $ARCH"
 id hlpanel >/dev/null 2>&1 && fail "系统账号 hlpanel 已存在；安装器不会接管它"
 
-[[ -r /dev/tty && -w /dev/tty ]] || fail "安装需要交互式终端，以安全接收管理员密码"
+if [[ "$PASSWORD_STDIN" == true ]]; then
+  [[ "$DOMAIN_EXPLICIT" == true && "$ADMIN_USERNAME_EXPLICIT" == true ]] || fail "--password-stdin 需要明确指定 --domain 和 --admin-username"
+else
+  [[ -r /dev/tty && -w /dev/tty ]] || fail "安装需要交互式终端，以安全接收管理员密码"
+fi
+[[ -z "$MIGRATION_RECEIVER" || "$MIGRATION_RECEIVER" =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]] || fail "迁移任务编号无效"
+[[ -z "$MIGRATION_RECEIVER" || "$PASSWORD_STDIN" == true ]] || fail "迁移接收端需要 --password-stdin"
 [[ ! -e "$INSTALL_ROOT" && ! -L "$INSTALL_ROOT" ]] || fail "$INSTALL_ROOT 已存在；为保护现有数据，安装器不会覆盖它"
 [[ ! -e "$CONFIG_DIR" && ! -L "$CONFIG_DIR" ]] || fail "$CONFIG_DIR 已存在；为保护现有配置，安装器不会覆盖它"
 [[ ! -e "$STATE_DIR" && ! -L "$STATE_DIR" ]] || fail "$STATE_DIR 已存在；为保护现有数据，安装器不会覆盖它"
@@ -415,18 +427,25 @@ if [[ "$ADMIN_USERNAME_EXPLICIT" != true ]]; then
   unset ADMIN_USERNAME_INPUT
 fi
 [[ "$ADMIN_USERNAME" =~ ^[A-Za-z0-9._@-]{1,128}$ ]] || fail "管理员账号仅支持字母、数字、点、下划线、@ 和连字符"
-read -r -s -p "设置 HL-panel 管理员密码 [回车使用 123456]：" ADMIN_PASSWORD </dev/tty
-printf '\n' >/dev/tty
+if [[ "$PASSWORD_STDIN" == true ]]; then
+  IFS= read -r ADMIN_PASSWORD || fail "无法从标准输入读取管理员密码"
+  [[ -n "$ADMIN_PASSWORD" && "$ADMIN_PASSWORD" != "123456" ]] || fail "自动安装必须设置非默认管理员密码"
+else
+  read -r -s -p "设置 HL-panel 管理员密码 [回车使用 123456]：" ADMIN_PASSWORD </dev/tty
+  printf '\n' >/dev/tty
+fi
 if [[ -z "$ADMIN_PASSWORD" || "$ADMIN_PASSWORD" == "123456" ]]; then
   ADMIN_PASSWORD="123456"
   ADMIN_DEFAULT_PASSWORD=true
   log "初始密码：123456；首次登录后必须在个人中心修改密码"
 else
   ((${#ADMIN_PASSWORD} >= 8 && ${#ADMIN_PASSWORD} <= 256)) || fail "自定义管理员密码需为 8 到 256 个字符"
-  read -r -s -p "再次输入管理员密码：" ADMIN_PASSWORD_CONFIRM </dev/tty
-  printf '\n' >/dev/tty
-  [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]] || fail "两次输入的管理员密码不一致"
-  unset ADMIN_PASSWORD_CONFIRM
+  if [[ "$PASSWORD_STDIN" != true ]]; then
+    read -r -s -p "再次输入管理员密码：" ADMIN_PASSWORD_CONFIRM </dev/tty
+    printf '\n' >/dev/tty
+    [[ "$ADMIN_PASSWORD" == "$ADMIN_PASSWORD_CONFIRM" ]] || fail "两次输入的管理员密码不一致"
+    unset ADMIN_PASSWORD_CONFIRM
+  fi
 fi
 
 ROLLBACK_REQUIRED=true
@@ -664,8 +683,8 @@ for update_unit in hl-panel-update.socket hl-panel-update.service; do
   UPDATE_UNITS_CREATED=true
 done
 printf 'DOMAIN=%s\nPUBLIC_IP=%s\nIP_HTTPS_PORT=%s\nCERTBOT_CERT_NAME=%s\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT" "$CERTBOT_CERT_NAME" > "$CONFIG_DIR/domain.conf"
-chown root:root "$CONFIG_DIR/domain.conf"
-chmod 0600 "$CONFIG_DIR/domain.conf"
+chown root:hlpanel "$CONFIG_DIR/domain.conf"
+chmod 0640 "$CONFIG_DIR/domain.conf"
 install_new_file "$FINAL_RELEASE/deploy/enable-domain-tls.sh" /usr/local/sbin/hl-panel-enable-domain-tls root root 0755
 install_new_file "$FINAL_RELEASE/deploy/update.sh" /usr/local/sbin/hl-panel-update root root 0755
 install_new_file "$FINAL_RELEASE/deploy/configure-reality.sh" /usr/local/sbin/hl-panel-configure-reality root root 0755
@@ -677,6 +696,12 @@ systemctl daemon-reload
 nginx -t
 check_api_port_available
 check_ip_https_port_available
+if [[ -n "$MIGRATION_RECEIVER" ]]; then
+  install -d -o hlpanel -g hlpanel -m 0700 "$STATE_DIR/automatic-migration"
+  printf '{"role":"receiver","id":"%s"}\n' "$MIGRATION_RECEIVER" > "$STATE_DIR/automatic-migration/fence.json"
+  chown hlpanel:hlpanel "$STATE_DIR/automatic-migration/fence.json"
+  chmod 0600 "$STATE_DIR/automatic-migration/fence.json"
+fi
 systemctl enable --now hl-panel-control-api.service
 systemctl enable --now hl-panel-update.socket
 

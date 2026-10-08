@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import grp
 from pathlib import Path, PurePosixPath
 import re
 import shlex
@@ -263,6 +264,33 @@ def host_metrics_update(destination, backup):
     run(['systemctl','daemon-reload'])
 
 
+def migration_domain_access(backup):
+    # domain.conf contains only public installation settings; allow the panel
+    # service to read them without granting access to root secrets.
+    path = CONFIG/'domain.conf'
+    if path.exists():
+        private_regular(path)
+        allowed = {'DOMAIN', 'PUBLIC_IP', 'IP_HTTPS_PORT', 'CERTBOT_CERT_NAME'}
+        lines = [line for line in path.read_text().splitlines() if line and not line.startswith('#')]
+        require(all('=' in line and line.split('=', 1)[0] in allowed for line in lines),
+                '域名配置包含未知字段，拒绝扩大读取权限')
+        info = path.stat()
+        (backup/'domain-access.json').write_text(json.dumps({'uid': info.st_uid, 'gid': info.st_gid, 'mode': info.st_mode & 0o777}))
+        os.chown(path, 0, grp.getgrnam('hlpanel').gr_gid)
+        path.chmod(0o640)
+
+
+def restore_domain_access(backup):
+    metadata = backup/'domain-access.json'
+    if metadata.is_file():
+        private_regular(metadata)
+        original = json.loads(metadata.read_text())
+        path = CONFIG/'domain.conf'
+        private_regular(path)
+        os.chown(path, original['uid'], original['gid'])
+        path.chmod(original['mode'])
+
+
 def restore_host_metrics(backup):
     if (backup/'host-metrics-added').is_file():
         if PROC_OVERRIDE.exists():
@@ -338,6 +366,7 @@ def rollback(backup):
     restore_subscription_nginx(backup)
     restore_host_metrics(backup)
     restore_web_update_channel(backup)
+    restore_domain_access(backup)
     with (backup/'database.dump').open('rb') as stream:
         run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
     switch(old)
@@ -436,6 +465,7 @@ def main():
             run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
             subscription_nginx_update(destination, backup)
             host_metrics_update(destination, backup)
+            migration_domain_access(backup)
             web_update_channel(destination, backup)
             switch(destination)
             run(['systemctl','enable','--now','hl-panel-update.socket'])

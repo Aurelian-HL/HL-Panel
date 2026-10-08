@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +34,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/panelmigration"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/postgressnapshot"
@@ -187,12 +189,20 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var migrationGate sync.RWMutex
+	fence, err := panelmigration.OpenFence("automatic-migration")
+	if err != nil {
+		return fmt.Errorf("open migration isolation: %w", err)
+	}
 	var backgroundMu sync.Mutex
 	var background sync.WaitGroup
 	var cancelBackground context.CancelFunc
 	startBackground := func() {
 		backgroundMu.Lock()
 		defer backgroundMu.Unlock()
+		if fence.Active() || cancelBackground != nil || shutdownContext.Err() != nil {
+			return
+		}
 		ctx, cancel := context.WithCancel(shutdownContext)
 		cancelBackground = cancel
 		background.Add(2)
@@ -237,7 +247,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		if directory == "" {
 			directory = "migration-backups"
 		}
-		options = append(options, httpapi.WithMigrationBackup(migrationbackup.New(durable, authService, auditService, platformVersion, directory, func() migrationbackup.RuntimeSecrets {
+		backupService := migrationbackup.New(durable, authService, auditService, platformVersion, directory, func() migrationbackup.RuntimeSecrets {
 			return migrationbackup.RuntimeSecrets{PasswordFingerprintKey: configuration.CustomerPasswordFingerprintKey, GatewayPoolTokens: configuration.GatewayPoolTokens, Logs: panelLogs.Read(2000).Items}
 		}, func() {
 			migrationPending.Store(true)
@@ -249,7 +259,35 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 					startBackground()
 				}
 			}
-		})))
+		})
+		domain, ipURL, installer := panelmigration.InstalledConfig()
+		automaticService, err := panelmigration.New(authService, auditService, backupService, panelmigration.Config{
+			Directory: "automatic-migration", Domain: domain, SourceIPURL: ipURL, Version: platformVersion, Installer: installer,
+			Context: shutdownContext, Fence: fence,
+			Freeze: func(id string) error {
+				migrationGate.Lock()
+				defer migrationGate.Unlock()
+				if err := fence.Set(panelmigration.FenceState{Role: "source", ID: id}); err != nil {
+					return err
+				}
+				stopBackground()
+				return nil
+			},
+			Thaw: func(id string) error {
+				migrationGate.Lock()
+				defer migrationGate.Unlock()
+				if err := fence.Clear(id); err != nil {
+					return err
+				}
+				startBackground()
+				return nil
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("configure automatic migration: %w", err)
+		}
+		defer automaticService.Close()
+		options = append(options, httpapi.WithMigrationBackup(backupService), httpapi.WithAutomaticMigration(automaticService))
 	}
 	if len(configuration.GatewayPoolTokens) > 0 {
 		gatewayHandler, err := gatewaymembership.NewHandler(gatewayMembershipService, configuration.GatewayPoolTokens)
@@ -264,7 +302,6 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return fmt.Errorf("configure customer API: %w", err)
 	}
 	handler := mountCustomerRoutes(controlHandler, customerHandler)
-	var migrationGate sync.RWMutex
 	guardedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/panel/migration/import" {
 			migrationGate.Lock()
@@ -272,6 +309,20 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		} else {
 			migrationGate.RLock()
 			defer migrationGate.RUnlock()
+		}
+		if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": platformVersion, "migration_isolated": fence.Active()})
+			return
+		}
+		if !fence.Allows(r) {
+			w.Header().Set("Retry-After", "15")
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"message": "面板正在迁移，业务已隔离。请打开迁移备份查看进度；节点会保留现有规则并重试连接。"})
+			return
 		}
 		if migrationPending.Load() {
 			w.Header().Set("Retry-After", "2")

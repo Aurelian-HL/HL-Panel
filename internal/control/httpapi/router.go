@@ -20,6 +20,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/panelmigration"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/releases"
@@ -39,37 +40,42 @@ type PlatformInfo struct {
 }
 
 type API struct {
-	auth              *auth.Service
-	enrollment        *enrollment.Service
-	nodes             *nodes.Service
-	groups            *groups.Service
-	endpoints         *endpoints.Service
-	generations       *generations.Service
-	logger            *slog.Logger
-	customers         *customers.Service
-	forwarding        *forwarding.Service
-	groupNetworks     *groupconfig.Service
-	ruleGroups        *rulegroups.Service
-	siteConfig        *siteconfig.Service
-	subscriptions     *subscriptions.Service
-	announcements     *announcements.Service
-	vlessIdentity     *vlessidentity.Service
-	vlessRuntime      *vlessruntime.Service
-	vlessSetup        *vlesssetup.Service
-	platformInfo      PlatformInfo
-	panelRuntime      *panelruntime.Service
-	usage             usagehttpapi.Service
-	gatewayMembership *gatewaymembership.Handler
-	nezha             *nezhamonitor.Service
-	hostGeo           *hostgeo.Service
-	targetProbe       *targetprobe.Service
-	releases          *releases.Service
-	migration         *migrationbackup.Service
-	panelUpdate       *panelupdate.Service
+	auth               *auth.Service
+	enrollment         *enrollment.Service
+	nodes              *nodes.Service
+	groups             *groups.Service
+	endpoints          *endpoints.Service
+	generations        *generations.Service
+	logger             *slog.Logger
+	customers          *customers.Service
+	forwarding         *forwarding.Service
+	groupNetworks      *groupconfig.Service
+	ruleGroups         *rulegroups.Service
+	siteConfig         *siteconfig.Service
+	subscriptions      *subscriptions.Service
+	announcements      *announcements.Service
+	vlessIdentity      *vlessidentity.Service
+	vlessRuntime       *vlessruntime.Service
+	vlessSetup         *vlesssetup.Service
+	platformInfo       PlatformInfo
+	panelRuntime       *panelruntime.Service
+	usage              usagehttpapi.Service
+	gatewayMembership  *gatewaymembership.Handler
+	nezha              *nezhamonitor.Service
+	hostGeo            *hostgeo.Service
+	targetProbe        *targetprobe.Service
+	releases           *releases.Service
+	migration          *migrationbackup.Service
+	panelUpdate        *panelupdate.Service
+	automaticMigration *panelmigration.Service
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {
 	return func(api *API) { api.migration = service }
+}
+
+func WithAutomaticMigration(service *panelmigration.Service) Option {
+	return func(api *API) { api.automaticMigration = service }
 }
 
 func WithTargetProbe(service *targetprobe.Service) Option {
@@ -176,6 +182,13 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 		mux.HandleFunc("POST /api/v1/panel/migration/preview", api.requireAdministrator(api.inspectMigration))
 		mux.HandleFunc("POST /api/v1/panel/migration/import", api.requireAdministrator(api.importMigration))
 		mux.HandleFunc("GET /api/v1/panel/migration/recovery/{backup_id}", api.requireAdministrator(api.migrationRecovery))
+	}
+	if api.automaticMigration != nil {
+		mux.HandleFunc("GET /api/v1/panel/migration/auto", api.requireAdministrator(api.automaticMigrationStatus))
+		mux.HandleFunc("POST /api/v1/panel/migration/auto", api.requireAdministrator(api.startAutomaticMigration))
+		mux.HandleFunc("POST /api/v1/panel/migration/auto/probe", api.requireAdministrator(api.probeAutomaticMigration))
+		mux.HandleFunc("POST /api/v1/panel/migration/auto/continue", api.requireAdministrator(api.continueAutomaticMigration))
+		mux.HandleFunc("POST /api/v1/panel/migration/auto/rollback", api.requireAdministrator(api.rollbackAutomaticMigration))
 	}
 	if api.panelRuntime != nil {
 		mux.HandleFunc("GET /api/v1/panel/logs", api.requireAdministrator(api.panelLogs))
