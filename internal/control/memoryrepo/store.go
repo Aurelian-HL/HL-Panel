@@ -25,7 +25,8 @@ import (
 )
 
 type Store struct {
-	mu sync.RWMutex
+	mu             sync.RWMutex
+	desiredChanges generations.ChangeSignals
 
 	adminsByUsername map[string]auth.Administrator
 	sessionsByHash   map[string]auth.Session

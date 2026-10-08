@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
+	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -19,7 +20,14 @@ const operationTimeout = 10 * time.Second
 
 // Store does not cache mutable state: every operation loads from PostgreSQL.
 // Database errors are intentionally redacted to avoid leaking DSNs or payloads.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db             *sql.DB
+	desiredChanges generations.ChangeSignals
+}
+
+func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
+	return s.desiredChanges.ForNode(nodeID)
+}
 
 func Open(ctx context.Context, databaseURL string, bootstrap auth.Administrator) (*Store, error) {
 	db, err := sql.Open("pgx", databaseURL)
@@ -118,6 +126,10 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	if err != nil {
 		return zero, err
 	}
+	var before map[string]int64
+	if write {
+		before = state.DesiredGenerationIndex()
+	}
 	result, err := operation(state)
 	if err != nil {
 		return result, err
@@ -133,6 +145,19 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	}
 	if err := tx.Commit(); err != nil {
 		return zero, errors.New("PostgreSQL transaction commit failed")
+	}
+	if write {
+		after := state.DesiredGenerationIndex()
+		for id, generation := range after {
+			if generation != before[id] {
+				s.desiredChanges.Notify(id)
+			}
+		}
+		for id := range before {
+			if _, exists := after[id]; !exists {
+				s.desiredChanges.Notify(id)
+			}
+		}
 	}
 	return result, nil
 }

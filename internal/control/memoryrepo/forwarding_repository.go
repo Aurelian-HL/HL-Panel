@@ -13,21 +13,29 @@ import (
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
+	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
 var _ forwarding.Repository = (*Store)(nil)
 
-func (s *Store) MarkActivated(_ context.Context, ruleID string, event audit.Event) error {
+func (s *Store) MarkActivated(_ context.Context, ruleID string, expectedRevision int64, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rule, ok := s.forwardRules[ruleID]
 	if !ok {
 		return faults.ErrNotFound
 	}
+	if rule.Revision != expectedRevision {
+		return faults.ErrConflict
+	}
 	if rule.Paused || rule.Status == forwarding.StatusPaused || rule.Status == forwarding.StatusCustomerDisabled || rule.Status == forwarding.StatusCustomerExpired || rule.Status == forwarding.StatusQuotaExhausted {
 		return faults.ErrConflict
+	}
+	if rule.Deployed {
+		return nil
 	}
 	rule.Deployed = true
 	rule.ActivationReason = ""
@@ -110,7 +118,7 @@ func (s *Store) CreateForwardingRule(_ context.Context, input forwarding.CreateI
 		}
 		return forwarding.Rule{}, false, err
 	}
-	result, replayed, err := s.saveForwardingRuleWithKeyLocked(key, input.RequestSHA256, item, input.RealityPrivateKey, upstream, event)
+	result, replayed, err := s.saveForwardingRuleWithKeyLocked(key, input.RequestSHA256, item, input.RealityPrivateKey, upstream, input.ProtocolProbeEchoPort, event)
 	if err != nil && autoNetwork {
 		delete(s.groupNetworks, item.EntryGroupID)
 	}
@@ -195,7 +203,7 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 		}
 		return forwarding.Rule{}, false, err
 	}
-	result, replayed, err := s.saveForwardingRuleWithKeyLocked(key, input.RequestSHA256, item, privateKey, upstream, event)
+	result, replayed, err := s.saveForwardingRuleWithKeyLocked(key, input.RequestSHA256, item, privateKey, upstream, input.ProtocolProbeEchoPort, event)
 	if err != nil && autoNetwork {
 		delete(s.groupNetworks, item.EntryGroupID)
 	}
@@ -324,10 +332,22 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 }
 
 func (s *Store) saveForwardingRuleLocked(key, hash string, item forwarding.Rule, event audit.Event) (forwarding.Rule, bool, error) {
-	return s.saveForwardingRuleWithKeyLocked(key, hash, item, "", nil, event)
+	return s.saveForwardingRuleWithKeyLocked(key, hash, item, "", nil, protocolprobe.DefaultEchoPort, event)
 }
 
-func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwarding.Rule, privateKey string, upstream *provisioningvless.SOCKS5Upstream, event audit.Event) (forwarding.Rule, bool, error) {
+func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwarding.Rule, privateKey string, upstream *provisioningvless.SOCKS5Upstream, echoPort int, event audit.Event) (forwarding.Rule, bool, error) {
+	previousProbe, hadProbe := s.protocolProbes[item.ID]
+	probe := previousProbe
+	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !hadProbe {
+		if echoPort == 0 {
+			echoPort = protocolprobe.DefaultEchoPort
+		}
+		var err error
+		probe, err = gatewaymembership.NewProtocolProbeConfig(echoPort)
+		if err != nil {
+			return forwarding.Rule{}, false, err
+		}
+	}
 	// Keep the confidential username in the stored rule, while all public
 	// projections (including idempotency replay data) are redacted below.
 	storedItem := cloneForwardingRule(item)
@@ -371,7 +391,17 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	if hadPrevious {
 		groups = append(groups, previous.EntryGroupID)
 	}
+	// Include the probe-only identity in the very first bundle. Deferring this
+	// until the periodic observer forces a second engine replacement.
+	if probe.UUID != "" {
+		s.protocolProbes[item.ID] = probe
+	}
 	if err := s.recompileForwardingGroupsLocked(groups, event.CreatedAt); err != nil {
+		if hadProbe {
+			s.protocolProbes[item.ID] = previousProbe
+		} else {
+			delete(s.protocolProbes, item.ID)
+		}
 		if hadPrevious {
 			s.forwardRules[item.ID] = previous
 		} else {

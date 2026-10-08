@@ -140,9 +140,9 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	gatewayMembershipService := gatewaymembership.NewService(store)
 	protocolRunner := gatewaymembership.NewProtocolRunner(store, configuration.ProtocolProbeXrayBinary, configuration.ProtocolProbeEchoPort, configuration.ProtocolProbeInterval, logger)
 	endpointService := endpoints.NewServiceWithReadyCandidateSource(store, time.Now, gatewayMembershipService)
-	generationService := generations.NewService(store, time.Now)
+	generationService := generations.NewService(store, time.Now, generations.WithDeploymentNotification(protocolRunner.NotifyDeployment))
 	customerService := customers.NewService(store, time.Now)
-	forwardingService := forwarding.NewService(store, time.Now, forwarding.WithRealityDefaults(configuration.RealityDefaults))
+	forwardingService := forwarding.NewService(store, time.Now, forwarding.WithRealityDefaults(configuration.RealityDefaults), forwarding.WithProtocolProbeEchoPort(configuration.ProtocolProbeEchoPort))
 	vlessIdentityService, err := vlessidentity.NewService(store, time.Now, nil)
 	if err != nil {
 		return fmt.Errorf("configure VLESS identity service: %w", err)

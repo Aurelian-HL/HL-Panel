@@ -6,8 +6,9 @@ import (
 )
 
 type CreateInput struct {
-	Rule              Rule
-	RealityPrivateKey string
+	Rule                  Rule
+	ProtocolProbeEchoPort int
+	RealityPrivateKey     string
 	// VLESSSOCKS5Password is confidential runtime material. It must never be
 	// copied into Rule or an audit/event projection.
 	VLESSSOCKS5Password string
@@ -18,15 +19,16 @@ type CreateInput struct {
 }
 
 type UpdateInput struct {
-	Rule                Rule
-	RealityPrivateKey   string
-	VLESSSOCKS5Password string
-	AutoReality         bool
-	ExpectedRevision    int64
-	ExpectedCustomerID  string
-	IdempotencyKey      string
-	RequestSHA256       string
-	CreatedBy           string
+	Rule                  Rule
+	ProtocolProbeEchoPort int
+	RealityPrivateKey     string
+	VLESSSOCKS5Password   string
+	AutoReality           bool
+	ExpectedRevision      int64
+	ExpectedCustomerID    string
+	IdempotencyKey        string
+	RequestSHA256         string
+	CreatedBy             string
 }
 
 // Repository operations atomically enforce references, group kinds, customer
@@ -46,5 +48,5 @@ type Repository interface {
 // check. It is intentionally separate from ordinary rule edits so activation
 // can only be recorded after deployment receipts and protocol health agree.
 type ActivationWriter interface {
-	MarkActivated(context.Context, string, audit.Event) error
+	MarkActivated(context.Context, string, int64, audit.Event) error
 }

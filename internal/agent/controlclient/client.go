@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -106,6 +107,26 @@ func (c *Client) Heartbeat(ctx context.Context, nodeCredential string, request a
 
 func (c *Client) Desired(ctx context.Context, nodeCredential string) (*agentv1.DesiredNodeConfig, error) {
 	body, status, err := c.do(ctx, http.MethodGet, "/agent/desired", nodeCredential, nil, maxDesiredResponseBody)
+	return decodeDesired(body, status, err)
+}
+
+// DesiredWatch falls back to the ordinary endpoint on older control planes.
+// supported tells the caller whether to reconnect immediately or keep polling.
+func (c *Client) DesiredWatch(ctx context.Context, nodeCredential string) (*agentv1.DesiredNodeConfig, bool, error) {
+	wait := 8 * time.Second
+	if timeout := c.httpClient.Timeout; timeout > 0 && timeout < 10*time.Second {
+		wait = timeout / 2
+	}
+	body, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/agent/desired-watch?wait_ms=%d", max(1, wait.Milliseconds())), nodeCredential, nil, maxDesiredResponseBody)
+	if err == nil && status == http.StatusNotFound {
+		desired, err := c.Desired(ctx, nodeCredential)
+		return desired, false, err
+	}
+	desired, err := decodeDesired(body, status, err)
+	return desired, true, err
+}
+
+func decodeDesired(body []byte, status int, err error) (*agentv1.DesiredNodeConfig, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -124,19 +145,33 @@ func (c *Client) Desired(ctx context.Context, nodeCredential string) (*agentv1.D
 
 func (c *Client) DesiredControl(ctx context.Context, nodeCredential string) (*agentv1.ControlCommandEnvelope, error) {
 	body, status, err := c.do(ctx, http.MethodGet, "/agent/control", nodeCredential, nil, maxOrdinaryResponseBody)
-	if err != nil { return nil, err }
-	if status == http.StatusNoContent { return nil, nil }
-	if status != http.StatusOK { return nil, httpError(status, body) }
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNoContent {
+		return nil, nil
+	}
+	if status != http.StatusOK {
+		return nil, httpError(status, body)
+	}
 	var command agentv1.ControlCommandEnvelope
-	if err := decodeStrict(body, &command); err != nil { return nil, fmt.Errorf("decode control command: %w", err) }
-	if command.ID == "" || !command.Command.Valid() { return nil, errors.New("control plane returned an invalid control command") }
+	if err := decodeStrict(body, &command); err != nil {
+		return nil, fmt.Errorf("decode control command: %w", err)
+	}
+	if command.ID == "" || !command.Command.Valid() {
+		return nil, errors.New("control plane returned an invalid control command")
+	}
 	return &command, nil
 }
 
 func (c *Client) ReportControlResult(ctx context.Context, nodeCredential string, request agentv1.ControlCommandResultRequest) error {
 	body, status, err := c.do(ctx, http.MethodPost, "/agent/control-results", nodeCredential, request, maxOrdinaryResponseBody)
-	if err != nil { return err }
-	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusAccepted { return httpError(status, body) }
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusAccepted {
+		return httpError(status, body)
+	}
 	return nil
 }
 
@@ -215,7 +250,12 @@ func (c *Client) do(ctx context.Context, method, path, nodeCredential string, pa
 		requestBody = bytes.NewReader(encoded)
 	}
 	endpoint := *c.baseURL
-	endpoint.Path = apiPrefix + path
+	relative, err := url.Parse(path)
+	if err != nil {
+		return nil, 0, errors.New("invalid control plane endpoint")
+	}
+	endpoint.Path = apiPrefix + relative.Path
+	endpoint.RawQuery = relative.RawQuery
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), requestBody)
 	if err != nil {
 		return nil, 0, err

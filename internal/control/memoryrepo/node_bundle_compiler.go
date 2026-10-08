@@ -104,6 +104,7 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 		s.nodeConfigsByNode[nodeID] = make(map[int64]generations.NodeConfigGeneration)
 	}
 	s.nodeConfigsByNode[nodeID][configuration.Generation] = configuration
+	s.desiredChanges.Notify(nodeID)
 	return cloneNodeConfig(configuration), true, nil
 }
 

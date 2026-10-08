@@ -389,44 +389,72 @@ func (a *Agent) EnforcementOnce(ctx context.Context) (bool, error) {
 // ControlOnce consumes one closed-set administrator command. Commands are
 // reported as durable results so a lost response can be retried safely.
 func (a *Agent) ControlOnce(ctx context.Context) error {
-	if err := a.Bootstrap(ctx); err != nil { return err }
+	if err := a.Bootstrap(ctx); err != nil {
+		return err
+	}
 	command, err := a.client.DesiredControl(ctx, a.nodeSecret)
-	if err != nil || command == nil { return err }
+	if err != nil || command == nil {
+		return err
+	}
 	result := agentv1.ControlCommandResultRequest{ID: command.ID, Status: "succeeded"}
 	switch command.Command {
 	case agentv1.ControlStatus:
 		result.Message = "运行中"
-		if mode := a.activeEngineMode(); mode != "" { result.Message = "运行中（" + mode + "）" } else { result.Message = "已停止" }
+		if mode := a.activeEngineMode(); mode != "" {
+			result.Message = "运行中（" + mode + "）"
+		} else {
+			result.Message = "已停止"
+		}
 	case agentv1.ControlVersion:
 		result.Message = "Agent " + a.cfg.AgentVersion + "; " + a.activeEngineMode()
 	case agentv1.ControlLogs:
 		current, loadErr := a.state.Load()
-		if loadErr != nil { result.Status, result.Message = "failed", "读取节点应用记录失败" } else {
+		if loadErr != nil {
+			result.Status, result.Message = "failed", "读取节点应用记录失败"
+		} else {
 			result.Message = "最近配置应用记录"
 			result.Logs = current.LastApplyMessage
-			if result.Logs == "" { result.Logs = "暂无配置应用记录" }
+			if result.Logs == "" {
+				result.Logs = "暂无配置应用记录"
+			}
 		}
 	case agentv1.ControlStop:
-		if err := a.closeEngines(ctx); err != nil { result.Status, result.Message = "failed", "停止引擎失败" } else { result.Message = "引擎已停止" }
+		if err := a.closeEngines(ctx); err != nil {
+			result.Status, result.Message = "failed", "停止引擎失败"
+		} else {
+			result.Message = "引擎已停止"
+		}
 	case agentv1.ControlRestart:
-		if err := a.reconciler.RestoreApplied(ctx); err != nil { result.Status, result.Message = "failed", "恢复配置并重启失败" } else { result.Message = "引擎已重启并恢复最近配置" }
+		if err := a.reconciler.RestoreApplied(ctx); err != nil {
+			result.Status, result.Message = "failed", "恢复配置并重启失败"
+		} else {
+			result.Message = "引擎已重启并恢复最近配置"
+		}
 	default:
 		result.Status, result.Message = "failed", "不支持的控制命令"
 	}
-	if len(result.Message) > 512 { result.Message = result.Message[:512] }
+	if len(result.Message) > 512 {
+		result.Message = result.Message[:512]
+	}
 	return a.client.ReportControlResult(ctx, a.nodeSecret, result)
 }
 
 func (a *Agent) activeEngineMode() string {
-	if process, ok := a.adapter.(interface{ ActiveEngineMode() string }); ok { return process.ActiveEngineMode() }
+	if process, ok := a.adapter.(interface{ ActiveEngineMode() string }); ok {
+		return process.ActiveEngineMode()
+	}
 	return ""
 }
 
 func (a *Agent) closeEngines(ctx context.Context) error {
 	var first error
-	if a.xrayAdapter != nil { first = a.xrayAdapter.Close(ctx) }
+	if a.xrayAdapter != nil {
+		first = a.xrayAdapter.Close(ctx)
+	}
 	if a.gostAdapter != nil {
-		if err := a.gostAdapter.Close(ctx); first == nil { first = err }
+		if err := a.gostAdapter.Close(ctx); first == nil {
+			first = err
+		}
 	}
 	return first
 }
@@ -480,7 +508,9 @@ func (a *Agent) Run(ctx context.Context) error {
 
 func (a *Agent) controlLoop(ctx context.Context) error {
 	interval := a.cfg.DesiredPollInterval.Duration()
-	if interval <= 0 { interval = 10 * time.Second }
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
 	backoff := reconciler.NewBackoff(a.cfg.Backoff)
 	return runPeriodic(ctx, interval, backoff, a.ControlOnce, func(err error) { a.logger.Warn("control command failed", "error", err) })
 }
@@ -523,33 +553,55 @@ func (a *Agent) heartbeatLoop(ctx context.Context) error {
 func (a *Agent) desiredLoop(ctx context.Context) error {
 	backoff := reconciler.NewBackoff(a.cfg.Backoff)
 	var failedKey string
-	return runPeriodic(ctx, a.cfg.DesiredPollInterval.Duration(), backoff, func(callContext context.Context) error {
-		if err := a.reconciler.FlushReceipts(callContext); err != nil {
-			return fmt.Errorf("retry apply receipts: %w", err)
-		}
-		desired, err := a.client.Desired(callContext, a.nodeSecret)
-		if err != nil {
-			return err
-		}
-		if desired == nil {
+	for {
+		watchSupported := false
+		waitForPoll := false
+		err := func(callContext context.Context) error {
+			if err := a.reconciler.FlushReceipts(callContext); err != nil {
+				return fmt.Errorf("retry apply receipts: %w", err)
+			}
+			desired, supported, err := a.client.DesiredWatch(callContext, a.nodeSecret)
+			watchSupported = supported
+			if err != nil {
+				return err
+			}
+			if desired == nil {
+				failedKey = ""
+				return nil
+			}
+			key := fmt.Sprintf("%d/%s", desired.Generation, strings.ToLower(strings.TrimSpace(desired.ConfigSHA256)))
+			if key == failedKey {
+				// An unapplied failed generation returns immediately. Bound retries
+				// without spinning or replacing the last-known-good configuration.
+				waitForPoll = true
+				return nil
+			}
+			if err := a.applyWithUsage(callContext, *desired); err != nil {
+				if !errors.Is(err, errUsageBeforeApply) {
+					failedKey = key
+				}
+				return err
+			}
 			failedKey = ""
 			return nil
+		}(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		key := fmt.Sprintf("%d/%s", desired.Generation, strings.ToLower(strings.TrimSpace(desired.ConfigSHA256)))
-		if key == failedKey {
-			return nil
-		}
-		if err := a.applyWithUsage(callContext, *desired); err != nil {
-			if !errors.Is(err, errUsageBeforeApply) {
-				failedKey = key
+		if err != nil {
+			a.logger.Warn("desired configuration sync failed", "error", err)
+			if err := waitContext(ctx, backoff.Next()); err != nil {
+				return err
 			}
-			return err
+			continue
 		}
-		failedKey = ""
-		return nil
-	}, func(err error) {
-		a.logger.Warn("desired configuration sync failed", "error", err)
-	})
+		backoff.Reset()
+		if !watchSupported || waitForPoll {
+			if err := waitContext(ctx, a.cfg.DesiredPollInterval.Duration()); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func runPeriodic(ctx context.Context, interval time.Duration, backoff *reconciler.Backoff, operation func(context.Context) error, report func(error)) error {

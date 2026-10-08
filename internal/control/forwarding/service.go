@@ -14,6 +14,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/idgen"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 	"github.com/hongle/hl-panel/internal/serviceaddress"
@@ -55,12 +56,17 @@ func NormalizeRealityDefaults(value RealityDefaults) (RealityDefaults, error) {
 }
 
 type Service struct {
-	repository Repository
-	now        func() time.Time
-	reality    RealityDefaults
+	repository    Repository
+	now           func() time.Time
+	reality       RealityDefaults
+	probeEchoPort int
 }
 
 type ServiceOption func(*Service)
+
+func WithProtocolProbeEchoPort(port int) ServiceOption {
+	return func(s *Service) { s.probeEchoPort = port }
+}
 
 func WithRealityDefaults(value RealityDefaults) ServiceOption {
 	return func(s *Service) { s.reality = value }
@@ -70,7 +76,7 @@ func NewService(repository Repository, now func() time.Time, options ...ServiceO
 	if now == nil {
 		now = time.Now
 	}
-	s := &Service{repository: repository, now: now}
+	s := &Service{repository: repository, now: now, probeEchoPort: protocolprobe.DefaultEchoPort}
 	for _, option := range options {
 		option(s)
 	}
@@ -130,7 +136,7 @@ func (s *Service) create(ctx context.Context, actorType, actorID string, request
 	if err != nil {
 		return Rule{}, false, err
 	}
-	return s.repository.CreateForwardingRule(ctx, CreateInput{Rule: rule, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
+	return s.repository.CreateForwardingRule(ctx, CreateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
 }
 
 func (s *Service) Update(ctx context.Context, adminID, id string, request Request, idempotencyKey string) (Rule, bool, error) {
@@ -191,7 +197,7 @@ func (s *Service) update(ctx context.Context, actorType, actorID, expectedCustom
 	if err != nil {
 		return Rule{}, false, err
 	}
-	return s.repository.UpdateForwardingRule(ctx, UpdateInput{Rule: rule, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
+	return s.repository.UpdateForwardingRule(ctx, UpdateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
 }
 
 func (s *Service) fillAutomaticReality(request *Request) (string, error) {

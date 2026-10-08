@@ -19,15 +19,28 @@ import (
 const maxConfigBytes = 1 << 20
 
 type Service struct {
-	repository Repository
-	now        func() time.Time
+	repository   Repository
+	now          func() time.Time
+	onDeployment func(string)
 }
 
-func NewService(repository Repository, now func() time.Time) *Service {
+type ServiceOption func(*Service)
+
+// WithDeploymentNotification schedules protocol verification after a durable,
+// successful engine verification. It never grants health by itself.
+func WithDeploymentNotification(notify func(string)) ServiceOption {
+	return func(s *Service) { s.onDeployment = notify }
+}
+
+func NewService(repository Repository, now func() time.Time, options ...ServiceOption) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{repository: repository, now: now}
+	s := &Service{repository: repository, now: now}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 func (s *Service) CreateGroupRevision(ctx context.Context, adminID, groupID string, engine agentv1.Engine, rawConfig json.RawMessage, idempotencyKey string) (CreateGroupRevisionResult, error) {
@@ -119,7 +132,7 @@ func (s *Service) RecordApplyResult(ctx context.Context, nodeID string, generati
 	if err != nil {
 		return nodes.Node{}, err
 	}
-	return s.repository.RecordApplyResult(ctx, ApplyResult{
+	node, err := s.repository.RecordApplyResult(ctx, ApplyResult{
 		ID:           id,
 		NodeID:       nodeID,
 		Generation:   generation,
@@ -131,6 +144,10 @@ func (s *Service) RecordApplyResult(ctx context.Context, nodeID string, generati
 		Message:      message,
 		CreatedAt:    now,
 	}, event)
+	if err == nil && phase == agentv1.ApplyPhaseVerify && status == agentv1.ApplyStatusSucceeded && node.AppliedGeneration >= generation && s.onDeployment != nil {
+		s.onDeployment(nodeID)
+	}
+	return node, err
 }
 
 func validAttemptID(value string) bool {

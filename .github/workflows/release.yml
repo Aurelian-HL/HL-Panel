@@ -83,6 +83,7 @@ jobs:
           NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
         run: |
           go test ./...
+          go test -race ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime
           go vet ./...
           bash -n install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh
           sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh

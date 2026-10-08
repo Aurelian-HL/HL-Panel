@@ -8,8 +8,8 @@ import (
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 )
 
-func (s *Store) MarkActivated(ctx context.Context, ruleID string, event audit.Event) error {
-	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.MarkActivated(ctx, ruleID, event) })
+func (s *Store) MarkActivated(ctx context.Context, ruleID string, expectedRevision int64, event audit.Event) error {
+	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.MarkActivated(ctx, ruleID, expectedRevision, event) })
 }
 
 func (s *Store) GatewayMembershipState(ctx context.Context, poolID string) (gatewaymembership.State, error) {
