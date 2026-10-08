@@ -6,6 +6,10 @@ const mocked = vi.hoisted(() => ({
   settings: vi.fn(), announcements: vi.fn(), saveSettings: vi.fn(), saveAnnouncement: vi.fn(), publicInfo: vi.fn(),
 }))
 vi.mock('@/api/site', () => ({ siteApi: mocked }))
+vi.mock('@/api/releases', async original => ({
+  ...await original<typeof import('@/api/releases')>(),
+  checkVersion: vi.fn().mockResolvedValue({ state: 'up_to_date', current_version: 'test' }),
+}))
 import SystemSettingsPage from './SystemSettingsPage.vue'
 
 const settings: SiteSettings = {

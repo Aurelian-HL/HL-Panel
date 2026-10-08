@@ -19,6 +19,8 @@ ROOT = Path('/opt/hl-panel')
 CONFIG = Path('/etc/hl-panel/edge-agent.json')
 STATE = Path('/var/lib/hl-panel-edge')
 SERVICE = 'hl-panel-edge-agent.service'
+METRICS_OVERRIDE = Path('/etc/systemd/system/hl-panel-edge-agent.service.d/20-host-metrics.conf')
+METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n'
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
 
 
@@ -70,6 +72,36 @@ def start_service():
     run(['systemctl', 'start', SERVICE])
 
 
+def metrics_update(backup):
+    require(not METRICS_OVERRIDE.is_symlink(), '节点指标服务配置不能为链接')
+    if METRICS_OVERRIDE.exists():
+        private_regular(METRICS_OVERRIDE)
+        require(METRICS_OVERRIDE.read_text() == METRICS_CONTENT, '节点指标配置路径被自定义文件占用，未覆盖')
+        return
+    METRICS_OVERRIDE.parent.mkdir(mode=0o755, exist_ok=True)
+    info = METRICS_OVERRIDE.parent.stat()
+    require(not METRICS_OVERRIDE.parent.is_symlink() and info.st_uid == os.geteuid() and not info.st_mode & 0o022,
+            '节点服务配置目录必须归更新用户所有且不能被其他用户修改')
+    (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
+    METRICS_OVERRIDE.write_text(METRICS_CONTENT)
+    METRICS_OVERRIDE.chmod(0o644)
+    run(['systemctl', 'daemon-reload'])
+
+
+def restore_metrics(backup):
+    marker = backup/'host-metrics-added'
+    if not marker.exists():
+        return
+    private_regular(marker)
+    require(marker.read_text() == '20-host-metrics.conf\n', '节点指标备份标记无效')
+    require(not METRICS_OVERRIDE.is_symlink(), '节点指标服务配置不能为链接')
+    if METRICS_OVERRIDE.exists():
+        private_regular(METRICS_OVERRIDE)
+        require(METRICS_OVERRIDE.read_text() == METRICS_CONTENT, '节点指标配置已被修改，拒绝覆盖')
+        METRICS_OVERRIDE.unlink()
+    run(['systemctl', 'daemon-reload'])
+
+
 def rollback(backup):
     private_credentials()
     backup = backup.resolve()
@@ -80,6 +112,7 @@ def rollback(backup):
     require(manifest['credential_sha256'] == digest(STATE/'credentials.json'), '当前节点身份不同；拒绝回滚')
     for name in FILES:
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
+    restore_metrics(backup)
     run(['systemctl','stop',SERVICE])
     for name in FILES:
         install(backup/name,ROOT/name)
@@ -146,9 +179,12 @@ def main():
             for name in ('update-node.py','update.py'):
                 source=ROOT/name if (ROOT/name).is_file() else release/'deploy'/name
                 shutil.copy2(source,backup/name)
+            # The old updater cannot restore service changes introduced here.
+            shutil.copy2(Path(__file__), backup/'rollback-runner.py')
             (backup/'manifest.json').write_text(json.dumps(manifest)+'\n')
-            (backup/'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 '+str(backup/'update-node.py')+' --rollback '+str(backup)+'\n')
+            (backup/'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 '+str(backup/'rollback-runner.py')+' --rollback '+str(backup)+'\n')
             (backup/'rollback.sh').chmod(0o700)
+            metrics_update(backup)
             for name,source in FILES.items():
                 install(release/source,ROOT/name)
             for name in ('update-node.py','update.py'):

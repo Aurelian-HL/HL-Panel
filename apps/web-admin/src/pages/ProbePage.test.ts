@@ -20,6 +20,33 @@ beforeEach(() => {
 })
 
 describe('ProbePage', () => {
+  it('bounds membership requests and stops queued work after leaving the page', async () => {
+    mocked.getDeviceGroups.mockResolvedValue({ items: Array.from({ length: 12 }, (_, index) => ({ ...probeGroups[0], id: `group-${index}` })) })
+    const finishes: Array<(value: { items: [] }) => void> = []
+    mocked.getDeviceGroupMembers.mockImplementation(() => new Promise(resolve => { finishes.push(resolve) }))
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    expect(mocked.getDeviceGroupMembers).toHaveBeenCalledTimes(4)
+    finishes[0]!({ items: [] })
+    await flushPromises()
+    expect(mocked.getDeviceGroupMembers).toHaveBeenCalledTimes(5)
+    wrapper.unmount()
+    finishes.slice(1).forEach(finish => finish({ items: [] }))
+    await flushPromises()
+    expect(mocked.getDeviceGroupMembers).toHaveBeenCalledTimes(5)
+  })
+
+  it('does not start probe requests when the group list arrives after unmount', async () => {
+    let finish!: (value: { items: typeof probeGroups }) => void
+    mocked.getDeviceGroups.mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(ProbePage)
+    wrapper.unmount()
+    finish({ items: probeGroups })
+    await flushPromises()
+    expect(mocked.getDeviceGroupMembers).not.toHaveBeenCalled()
+    expect(mocked.getInventory).not.toHaveBeenCalled()
+  })
+
   it('counts native HL probes when Nezha is disabled', async () => {
     mocked.getInventory.mockResolvedValue({ upstream_status: 'disabled', items: [
       { node_id: 'native-node', link_status: 'native', source: 'hl', online: true, name: 'HL 节点', sampled_at: new Date().toISOString() },

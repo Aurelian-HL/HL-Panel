@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { checkVersion, type VersionStatus } from '@/api/releases'
 import VersionNotice from './VersionNotice.vue'
 
+vi.mock('@/api/panelUpdate', () => ({
+  panelUpdateStatus: vi.fn().mockResolvedValue({ available: false, task: null }),
+  startPanelUpdate: vi.fn(),
+}))
 vi.mock('@/api/releases', async (original) => ({
   ...await original<typeof import('@/api/releases')>(),
   checkVersion: vi.fn(),

@@ -354,19 +354,30 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 return (candidate / url.rsplit('/',1)[1]).read_bytes()
             node_updater.request = candidate_request
             saved_args = sys.argv
+            service_unit = Path('/etc/systemd/system/hl-panel-edge-agent.service')
+            original_unit = service_unit.read_text()
+            service_unit.write_text(original_unit.replace(' AF_NETLINK', ''))
+            run(['systemctl', 'daemon-reload'], check=True)
             try:
                 sys.argv = ['update-node.py','--version',args.version]
                 node_updater.main()
                 wait_for(real_clients)
+                wait_for(node_sample)
+                assert node_updater.METRICS_OVERRIDE.is_file()
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
                 backups = sorted(Path('/var/backups/hl-panel-node').glob('update-*'))
                 assert backups
-                node_updater.rollback(backups[-1])
+                run(['bash', str(backups[-1]/'rollback.sh')], check=True)
+                assert not node_updater.METRICS_OVERRIDE.exists()
+                assert service_unit.read_text() == original_unit.replace(' AF_NETLINK', '')
                 wait_for(real_clients)
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
             finally:
                 sys.argv = saved_args
-            checks.append('verified node upgrade and binary rollback preserve identity and real forwarding')
+                service_unit.write_text(original_unit)
+                run(['systemctl', 'daemon-reload'], check=True)
+                run(['systemctl', 'restart', 'hl-panel-edge-agent'], check=True)
+            checks.append('verified legacy node metrics upgrade and rollback launcher preserve custom unit, identity and real forwarding')
             limits = run(['systemctl','show','hl-panel-edge-agent',
                           '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
             assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits

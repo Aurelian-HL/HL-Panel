@@ -20,16 +20,18 @@ const showLogs = ref(false)
 const showVersions = ref(false)
 const showMigration = ref(false)
 let inFlight = false
+let active = false
 
 async function load(): Promise<void> {
-  if (inFlight) return
+  if (inFlight || !active) return
   inFlight = true
   loading.value = true
   errorMessage.value = ''
   try {
-    overview.value = await api.getOverview()
+    const result = await api.getOverview()
+    if (active) overview.value = result
   } catch (error) {
-    errorMessage.value = displayError(error)
+    if (active) errorMessage.value = displayError(error)
   } finally {
     loading.value = false
     inFlight = false
@@ -48,8 +50,10 @@ function number(node: EdgeNode | null, key: string): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function sum(key: string): number | null {
-  const values = (overview.value?.nodes ?? []).map((node) => number(node, key)).filter((value): value is number => value !== null)
+function sum(key: string, live = false): number | null {
+  const nodes = (overview.value?.nodes ?? []).filter(node => !live || ['online', 'syncing', 'failed'].includes(node.status))
+  if (live && !nodes.length) return 0
+  const values = nodes.map((node) => number(node, key)).filter((value): value is number => value !== null)
   return values.length ? values.reduce((total, value) => total + value, 0) : null
 }
 
@@ -132,8 +136,9 @@ async function runControl(command: PanelControlResult['command']): Promise<void>
   try {
     const requested = await api.controlPanel(command)
     controlResult.value = requested
-    for (let attempt = 0; attempt < 12 && requested.status === 'pending'; attempt += 1) {
+    for (let attempt = 0; active && attempt < 12 && requested.status === 'pending'; attempt += 1) {
       await new Promise((resolve) => window.setTimeout(resolve, 1000))
+      if (!active) break
       const current = await api.getPanelControl()
       if (current) controlResult.value = current
       if (!current || current.status !== 'pending') break
@@ -151,12 +156,13 @@ const systemCpu = computed(() => panelNumber('cpu_percent'))
 const systemMemory = computed(() => percent(panelNumber('memory_used_bytes'), panelNumber('memory_total_bytes')))
 const systemSwap = computed(() => panelNumber('swap_total_bytes') === 0 ? 0 : percent(panelNumber('swap_used_bytes'), panelNumber('swap_total_bytes')))
 const systemDisk = computed(() => percent(panelNumber('disk_used_bytes'), panelNumber('disk_total_bytes')))
-const connectionCount = computed(() => `${sum('tcp_conn_count') === null ? '未采集' : Math.round(sum('tcp_conn_count') as number).toLocaleString('zh-CN')} / ${sum('udp_conn_count') === null ? '未采集' : Math.round(sum('udp_conn_count') as number).toLocaleString('zh-CN')}`)
+const connectionCount = computed(() => `${sum('tcp_conn_count', true) === null ? '未采集' : Math.round(sum('tcp_conn_count', true) as number).toLocaleString('zh-CN')} / ${sum('udp_conn_count', true) === null ? '未采集' : Math.round(sum('udp_conn_count', true) as number).toLocaleString('zh-CN')}`)
 
 function refreshOnVisible(): void {
   if (document.visibilityState === 'visible') void load()
 }
 onMounted(() => {
+  active = true
   void siteStore.load().catch(() => null)
   void load()
   document.addEventListener('visibilitychange', refreshOnVisible)
@@ -164,6 +170,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  active = false
   document.removeEventListener('visibilitychange', refreshOnVisible)
   if (refreshTimer.value !== undefined) window.clearInterval(refreshTimer.value)
 })
@@ -209,7 +216,7 @@ onBeforeUnmount(() => {
 
           <div class="xpanel-bottom-grid">
             <section class="xpanel-section xpanel-bottom-card"><h2>总数据</h2><div class="xpanel-dual"><div><span>已发送（面板机）</span><strong><Archive :size="14" />{{ formatBytes(panelNumber('net_out_transfer_bytes')) }}</strong></div><div><span>已接收（面板机）</span><strong><Archive :size="14" />{{ formatBytes(panelNumber('net_in_transfer_bytes')) }}</strong></div></div></section>
-            <section class="xpanel-section xpanel-bottom-card"><h2>连接数</h2><div class="xpanel-dual"><div><span>TCP（节点合计）</span><strong><Network :size="14" />{{ sum('tcp_conn_count') === null ? '未采集' : Math.round(sum('tcp_conn_count') as number).toLocaleString('zh-CN') }}</strong></div><div><span>UDP（节点合计）</span><strong><Network :size="14" />{{ sum('udp_conn_count') === null ? '未采集' : Math.round(sum('udp_conn_count') as number).toLocaleString('zh-CN') }}</strong></div></div></section>
+            <section class="xpanel-section xpanel-bottom-card"><h2>连接数</h2><div class="xpanel-dual"><div><span>TCP（节点合计）</span><strong><Network :size="14" />{{ sum('tcp_conn_count', true) === null ? '未采集' : Math.round(sum('tcp_conn_count', true) as number).toLocaleString('zh-CN') }}</strong></div><div><span>UDP（节点合计）</span><strong><Network :size="14" />{{ sum('udp_conn_count', true) === null ? '未采集' : Math.round(sum('udp_conn_count', true) as number).toLocaleString('zh-CN') }}</strong></div></div></section>
             <section class="xpanel-section xpanel-bottom-card"><h2>总流量</h2><div class="xpanel-dual"><div><span>所有节点收发合计</span><strong><Archive :size="14" />{{ formatBytes(nodeTotalTraffic) }}</strong></div><div><span>统计范围</span><strong><Network :size="14" />{{ overview.node_count }} 台节点</strong></div></div></section>
           </div>
         </main>
@@ -219,7 +226,7 @@ onBeforeUnmount(() => {
           <section class="xpanel-side-card"><h3>系统正常运行时间</h3><div class="xpanel-tags"><span>面板: {{ panelStatusLabel(panelRuntime?.status) }}</span><span>OS: {{ formatUptime(panelNumber('uptime_seconds')) }}</span></div></section>
           <section class="xpanel-side-card"><h3>系统负载</h3><div class="xpanel-tags"><span>{{ loadLabel() }}</span><span>{{ panelRuntime?.status === 'online' ? '面板正常' : '面板不可用' }}</span></div></section>
           <section class="xpanel-side-card"><h3>使用情况</h3><div class="xpanel-tags"><span>面板内存: {{ formatBytes(panelNumber('memory_used_bytes')) }}</span><span>节点连接: {{ connectionCount }}</span><span>节点总流量: {{ formatBytes(nodeTotalTraffic) }}</span></div></section>
-          <section class="xpanel-side-card"><h3>整体速度</h3><div class="xpanel-speed"><div><span>上传（节点合计）</span><strong>↑ {{ formatSpeed(sum('net_out_speed_bytes_per_second')) }}</strong></div><div><span>下载（节点合计）</span><strong>↓ {{ formatSpeed(sum('net_in_speed_bytes_per_second')) }}</strong></div></div></section>
+          <section class="xpanel-side-card"><h3>整体速度</h3><div class="xpanel-speed"><div><span>上传（节点合计）</span><strong>↑ {{ formatSpeed(sum('net_out_speed_bytes_per_second', true)) }}</strong></div><div><span>下载（节点合计）</span><strong>↓ {{ formatSpeed(sum('net_in_speed_bytes_per_second', true)) }}</strong></div></div></section>
           <section class="xpanel-side-card"><h3>IP 地址 <Wifi :size="14" /></h3><div class="xpanel-ip"><div><span>面板 IPv4</span><strong>{{ panelText('ipv4') }}</strong></div><div><span>面板 IPv6</span><strong>{{ panelText('ipv6') }}</strong></div></div></section>
         </aside>
       </div>

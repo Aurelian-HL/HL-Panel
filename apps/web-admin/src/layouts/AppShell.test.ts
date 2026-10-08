@@ -26,6 +26,9 @@ describe('AppShell navigation', () => {
         { path: '/overview', component: { template: '<div>Overview</div>' } },
         { path: '/probe', component: { template: '<div>Probe</div>' } },
         { path: '/subscriptions', component: { template: '<div>Subscriptions</div>' } },
+        ...['/userinfo', '/forward-rules', '/customers', '/user-groups', '/device-groups', '/system-settings'].map(path => ({
+          path, component: { template: '<div />' },
+        })),
       ],
     })
     await router.push('/overview')

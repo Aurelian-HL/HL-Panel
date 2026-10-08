@@ -74,6 +74,7 @@ const sectionSpeed = (items: typeof members.value, field: 'net_in_speed_bytes_pe
 
 let requestId = 0
 let memberRequestId = 0
+let groupRequestId = 0
 async function loadGroupMembers(): Promise<void> {
   const groupId = selectedGroupId.value
   const currentRequest = ++memberRequestId
@@ -81,10 +82,18 @@ async function loadGroupMembers(): Promise<void> {
   groupMembersError.value = ''
   try {
     const targetGroups = groupId ? availableGroups.value.filter((group) => group.id === groupId) : availableGroups.value
-    const results = await Promise.all(targetGroups.map(async (group) => {
-      const result = await api.getDeviceGroupMembers(group.id)
-      return [group.id, result.items.filter((member) => member.group_id === group.id && !member.retired_at)] as const
-    }))
+    const results: Array<readonly [string, DeviceGroupMember[]]> = []
+    let next = 0
+    async function worker(): Promise<void> {
+      while (active && currentRequest === memberRequestId && next < targetGroups.length) {
+        const group = targetGroups[next++]!
+        const result = await api.getDeviceGroupMembers(group.id)
+        results.push([group.id, result.items.filter((member) => member.group_id === group.id && !member.retired_at)])
+      }
+    }
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(4, targetGroups.length) }, worker))
+    const failure = settled.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
     if (currentRequest === memberRequestId) {
       allGroupMembers.value = Object.fromEntries(results)
       groupMembers.value = groupId ? allGroupMembers.value[groupId] ?? [] : []
@@ -141,19 +150,23 @@ function weightSaved(member: DeviceGroupMember): void {
 }
 
 async function loadGroups(): Promise<void> {
+  const currentRequest = ++groupRequestId
   groupsLoading.value = true
   groupsError.value = ''
   try {
-    groups.value = (await api.getDeviceGroups()).items
+    const result = await api.getDeviceGroups()
+    if (!active || currentRequest !== groupRequestId) return
+    groups.value = result.items
     if (selectedGroupId.value && !availableGroups.value.some((group) => group.id === selectedGroupId.value)) {
       selectedGroupId.value = ''
       response.value = null
     }
   } catch (error) {
-    groupsError.value = displayError(error)
+    if (active && currentRequest === groupRequestId) groupsError.value = displayError(error)
   } finally {
-    groupsLoading.value = false
+    if (active && currentRequest === groupRequestId) groupsLoading.value = false
   }
+  if (!active || currentRequest !== groupRequestId) return
   await Promise.all([loadGroupMembers(), loadMonitoring()])
 }
 
@@ -196,6 +209,7 @@ onUnmounted(() => {
   active = false
   requestId++
   memberRequestId++
+  groupRequestId++
   document.removeEventListener('visibilitychange', onVisibilityChange)
   if (refreshTimer) clearTimeout(refreshTimer)
 })

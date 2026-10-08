@@ -65,21 +65,24 @@ function invalidateSession(): void {
   selectedIds.value = []; deletionCandidates.value = []
   closeEditor(); transferDialog.value = false
 }
-const filtered = computed(() => rules.value.filter((item) => {
-  const entry = devices.value.find((group) => group.id === item.entry_group_id)
-  const exit = devices.value.find((group) => group.id === item.exit_group_id)
+const deviceNames = computed(() => new Map(devices.value.map((group) => [group.id, group.name])))
+const searchIndex = computed(() => new Map(rules.value.map((item) => {
   const vlessUpstream = item.vless_socks5_host && item.vless_socks5_port
     ? `${item.vless_socks5_host}:${item.vless_socks5_port}`
     : ''
-  const searchable = [item.name, item.listen_port, entry?.name, exit?.name, vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()
-  return searchable.includes(query.value.trim().toLowerCase()) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused || item.status === 'quota_exhausted' : !item.paused && item.status !== 'quota_exhausted')) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value))
-}))
+  return [item.id, [item.name, item.listen_port, deviceNames.value.get(item.entry_group_id), deviceNames.value.get(item.exit_group_id), vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()] as const
+})))
+const filtered = computed(() => {
+  const keyword = query.value.trim().toLowerCase()
+  return rules.value.filter((item) => (!keyword || searchIndex.value.get(item.id)?.includes(keyword)) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused || item.status === 'quota_exhausted' : !item.paused && item.status !== 'quota_exhausted')) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value)))
+})
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
 const pagedRules = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const pageStart = computed(() => filtered.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
 const pageEnd = computed(() => Math.min(page.value * pageSize.value, filtered.value.length))
-const selectedRules = computed(() => rules.value.filter((item) => selectedIds.value.includes(item.id)))
-const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every((item) => selectedIds.value.includes(item.id)))
+const selectedIdSet = computed(() => new Set(selectedIds.value))
+const selectedRules = computed(() => rules.value.filter((item) => selectedIdSet.value.has(item.id)))
+const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every((item) => selectedIdSet.value.has(item.id)))
 async function load(): Promise<void> {
   const version = ++loadVersion
   loading.value = true; error.value = ''; resourceWarning.value = ''
@@ -133,7 +136,8 @@ async function refreshTraffic(): Promise<void> {
     const result = await businessApi.rules()
     if (version !== loadVersion || busyId.value || batchBusy.value) return
     rules.value = result.items
-    selectedIds.value = selectedIds.value.filter(id => result.items.some(rule => rule.id === id))
+    const currentIds = new Set(result.items.map(rule => rule.id))
+    selectedIds.value = selectedIds.value.filter(id => currentIds.has(id))
     await loadVisibleTraffic(version)
   } catch (cause) {
     if (isUnauthorized(cause)) invalidateSession()

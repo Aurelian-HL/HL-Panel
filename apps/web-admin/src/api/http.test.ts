@@ -1,8 +1,57 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { HttpClient, onUnauthorized } from './http'
 
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
 describe('HttpClient', () => {
+  it('bounds a stalled GET and preserves the login without retrying', async () => {
+    vi.useFakeTimers()
+    const handler = vi.fn()
+    onUnauthorized(handler)
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const result = expect(new HttpClient('/api/v1', () => 'token').request('/nodes')).rejects.toMatchObject({ code: 'request_timeout' })
+    await vi.advanceTimersByTimeAsync(30_000)
+    await result
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(handler).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('keeps the deadline until the response body is received', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(async (_url, init: RequestInit) => ({
+      status: 200, ok: true, headers: new Headers({ 'content-type': 'application/json' }),
+      json: () => new Promise((_resolve, reject) => init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))),
+    })))
+    const result = expect(new HttpClient('/api/v1', () => null).request('/nodes', { timeoutMs: 100 })).rejects.toMatchObject({ code: 'request_timeout' })
+    await vi.advanceTimersByTimeAsync(100)
+    await result
+  })
+
+  it('honors caller cancellation and removes the listener', async () => {
+    const controller = new AbortController()
+    const remove = vi.spyOn(controller.signal, 'removeEventListener')
+    vi.stubGlobal('fetch', vi.fn((_url, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    })))
+    const result = expect(new HttpClient('/api/v1', () => null).request('/nodes', { signal: controller.signal })).rejects.toMatchObject({ code: 'request_cancelled' })
+    controller.abort()
+    await result
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('reports truncated JSON and preserves a broken proxy status', async () => {
+    const client = new HttpClient('/api/v1', () => null)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{', { headers: { 'content-type': 'application/json' } })))
+    await expect(client.request('/nodes')).rejects.toMatchObject({ code: 'invalid_response', status: 200 })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{', { status: 502, headers: { 'content-type': 'application/json' } })))
+    await expect(client.request('/nodes')).rejects.toMatchObject({ code: 'service_unavailable', status: 502 })
+  })
+
   it('does not log out a newer login when an old request returns unauthorized', async () => {
     let token = 'old-token'
     const handler = vi.fn()

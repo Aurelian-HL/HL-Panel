@@ -63,5 +63,58 @@ class CredentialPermissions(unittest.TestCase):
                 updater.private_credentials()
 
 
+class MetricsUpgrade(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.override = root/'unit.d/20-host-metrics.conf'
+        self.backup = root/'backup'
+        self.backup.mkdir()
+        self.calls = []
+        for replacement in (patch.object(updater, 'METRICS_OVERRIDE', self.override),
+                            patch.object(updater, 'private_regular', lambda path: None),
+                            patch.object(updater, 'run', lambda args: self.calls.append(args))):
+            replacement.start()
+            self.addCleanup(replacement.stop)
+
+    def test_adds_only_managed_metrics_and_rolls_back(self):
+        unit = self.override.parent.parent/'hl-panel-edge-agent.service'
+        unit.write_text('[Service]\n# custom limits remain\nMemoryMax=256M\n')
+        updater.metrics_update(self.backup)
+        self.assertEqual(self.override.read_text(), updater.METRICS_CONTENT)
+        self.assertIn('MemoryMax=256M', unit.read_text())
+        updater.metrics_update(self.backup)
+        self.assertEqual(len(self.calls), 1)
+        updater.restore_metrics(self.backup)
+        self.assertFalse(self.override.exists())
+        self.assertEqual(len(self.calls), 2)
+
+    def test_existing_managed_configuration_survives_rollback(self):
+        self.override.parent.mkdir()
+        self.override.write_text(updater.METRICS_CONTENT)
+        updater.metrics_update(self.backup)
+        updater.restore_metrics(self.backup)
+        self.assertTrue(self.override.exists())
+        self.assertFalse(self.calls)
+
+    def test_rejects_custom_file_and_changed_configuration(self):
+        updater.metrics_update(self.backup)
+        self.override.write_text('[Service]\n# custom configuration\n')
+        with self.assertRaises(updater.UpdateError):
+            updater.metrics_update(self.backup)
+        with self.assertRaises(updater.UpdateError):
+            updater.restore_metrics(self.backup)
+        self.assertIn('custom configuration', self.override.read_text())
+
+    def test_rejects_symlinked_configuration(self):
+        target = self.backup/'custom.conf'
+        target.write_text(updater.METRICS_CONTENT)
+        self.override.parent.mkdir()
+        self.override.symlink_to(target)
+        with self.assertRaises(updater.UpdateError):
+            updater.metrics_update(self.backup)
+
+
 if __name__ == '__main__':
     unittest.main()
