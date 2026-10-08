@@ -28,6 +28,7 @@ const updated = (item: Subscription) => new Date(item.updated_at).toLocaleString
 </template>
 
 <style scoped>
+.subscription-inventory { container-type: inline-size; }
 .subscription-table { min-width: 1000px; }
 .subscription-table th:first-child { width: 23%; }
 .subscription-table th:nth-child(2) { width: 14%; }
@@ -38,4 +39,8 @@ const updated = (item: Subscription) => new Date(item.updated_at).toLocaleString
 .subscription-card header > div { min-width: 0; }
 .subscription-card h3, .subscription-card p, .subscription-card dd { overflow-wrap: anywhere; }
 .subscription-card__updated { grid-column: 1 / -1; }
+@container (max-width: 999px) {
+  .business-desktop { display: none; }
+  .business-mobile { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 330px), 1fr)); gap: 12px; }
+}
 </style>
