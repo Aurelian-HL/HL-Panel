@@ -182,11 +182,14 @@ os.execv(os.environ['HL_AUTO_CURL'], ['curl', *values])
                 except subprocess.TimeoutExpired:
                     process.kill(); process.wait()
             command(['runuser', '-u', 'postgres', '--', 'dropdb', '--force', database])
-    Path('automatic-migration-result.json').write_text(json.dumps({'version': args.version,
+    result_file = Path('automatic-migration-result.json')
+    result_file.write_text(json.dumps({'version': args.version,
         'real_stdin_installation': True, 'fresh_receiver_and_proxy_isolation': True,
         'real_encrypted_postgresql_restore': True, 'receipt_replay_without_overwrite': True,
         'restart_retains_isolation': True, 'wrong_dns_blocks_activation': True,
         'rollback_stops_target': True, 'real_domain_tls_cutover': False}, indent=2))
+    # Only public acceptance flags are published; private executor files stay 0600.
+    result_file.chmod(0o644)
     print('AUTOMATIC_MIGRATION_RECEIVER_ACCEPTED')
 
 
