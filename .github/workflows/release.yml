@@ -88,6 +88,7 @@ jobs:
           sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
+          python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
           python3 tests/install/test_node_update.py
       - name: Build web admin
@@ -173,6 +174,8 @@ jobs:
         with:
           name: hl-panel-candidate
           path: ${{ runner.temp }}/candidate
+      - name: Prepare bounded HTTPS package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Exercise existing nginx-light automatic adaptation
         if: matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom'
         run: |
@@ -203,6 +206,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.version || github.ref_name }}
+      - name: Prepare bounded HTTPS package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Verify nginx-light automatic adaptation and site preservation on a disposable VM
         run: |
           sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/nginx_compatibility.py
@@ -228,6 +233,8 @@ jobs:
         with:
           name: hl-panel-candidate
           path: ${{ runner.temp }}/candidate
+      - name: Prepare bounded HTTPS package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Install the previous official version on a disposable VM
         run: |
           set -euo pipefail
@@ -261,6 +268,8 @@ jobs:
         with:
           name: hl-panel-candidate
           path: ${{ runner.temp }}/candidate
+      - name: Prepare bounded HTTPS package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Verify complete node installation and real forwarding on a disposable VM
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
