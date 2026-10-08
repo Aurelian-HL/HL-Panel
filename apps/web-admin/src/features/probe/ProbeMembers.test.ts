@@ -59,7 +59,8 @@ describe('ProbeMembers', () => {
     expect(document.body.textContent).toContain('主机 GeoIP 国家')
     expect(document.body.textContent).toContain('线路出口 IP')
     expect(document.body.textContent).toContain('未验证')
-    expect(document.body.textContent).toContain('主机在线也不代表转发线路健康')
+    expect(document.body.textContent).not.toContain('哪吒关联')
+    expect(document.body.textContent).not.toContain('主机在线也不代表转发线路健康')
     wrapper.unmount()
   })
 

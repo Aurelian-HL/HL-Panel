@@ -123,7 +123,6 @@ const uptimeDetails = (member: ProbeMember) => [
         <div class="probe-details__heading"><span class="probe-status" :class="`probe-status--${monitorStatus(selected, upstreamStatus, now).tone}`">{{ monitorStatus(selected, upstreamStatus, now).text }}</span><span :class="{ 'probe-stale': !live(selected) }">{{ probeReadingState(selected, upstreamStatus, now) }} · {{ selected.sampled_at ? formatDateTime(selected.sampled_at) : '未采集' }}</span></div>
         <dl class="probe-details__facts">
           <div><dt>节点 ID</dt><dd>{{ selected.link_status === 'unmanaged' ? '未关联 HL 节点' : selected.node_id }}</dd></div>
-          <div><dt>哪吒关联</dt><dd>{{ selected.link_status === 'unlinked' ? '未关联' : `服务器 #${selected.nezha_server_id ?? '未知'}` }}</dd></div>
           <div><dt>主机 IPv4</dt><dd>{{ collected(selected.ipv4) }}</dd></div>
           <div><dt>主机 IPv6</dt><dd>{{ collected(selected.ipv6) }}</dd></div>
           <div><dt>主机 GeoIP 国家</dt><dd>{{ collected(selected.country_code) }}</dd></div>
@@ -140,7 +139,6 @@ const uptimeDetails = (member: ProbeMember) => [
           <div><dt>磁盘已用 / 总量</dt><dd>{{ formatBytes(metric(selected, 'disk_used_bytes')) }} / {{ formatBytes(metric(selected, 'disk_total_bytes')) }}</dd></div>
         </dl>
         <div class="probe-meter-list probe-details__meters"><ProbeMetricBar label="CPU" :percent="measuredPercent(metric(selected, 'cpu_percent'))" /><ProbeMetricBar label="内存" :percent="capacityPercent(metric(selected, 'memory_used_bytes'), metric(selected, 'memory_total_bytes'))" /><ProbeMetricBar label="磁盘" :percent="capacityPercent(metric(selected, 'disk_used_bytes'), metric(selected, 'disk_total_bytes'))" /></div>
-        <p class="probe-details__note">主机公网 IP 和 GeoIP 属地不代表线路真实出口；主机在线也不代表转发线路健康。</p>
       </div>
     </BaseModal>
   </div>
