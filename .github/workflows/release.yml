@@ -94,7 +94,7 @@ jobs:
           python3 tests/install/test_node_update.py
           python3 tests/install/test_subscription_nginx.py
           python3 -m py_compile deploy/node-control-url.py
-          python3 tests/install/test_node_control_url.py
+          sudo python3 tests/install/test_node_control_url.py
           python3 -m py_compile tests/install/panel_migration.py
       - name: Build web admin
         working-directory: apps/web-admin
