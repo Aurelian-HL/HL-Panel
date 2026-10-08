@@ -88,6 +88,7 @@ try {
 
     $deploymentFiles = @(
         'README.md',
+        'backup-and-restore.md',
         'install.sh',
         'install-node.sh',
         'reinstall-node.py',
@@ -101,6 +102,8 @@ try {
         'nginx\hl-panel.conf.template',
         'nginx\conf.d\hl-panel-rate-limit.conf',
         'nginx\snippets\hl-panel-api-proxy.conf',
+        'nginx\snippets\hl-panel-migration-proxy.conf',
+        'node-control-url.py',
         'nginx\snippets\hl-panel-app-locations.conf',
         'nginx\snippets\hl-panel-security-headers.conf',
         'systemd\hl-panel-control-api.service',

@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,8 +31,10 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
+	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
+	"github.com/hongle/hl-panel/internal/control/postgressnapshot"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -45,6 +49,7 @@ import (
 
 var platformVersion = "development"
 var platformBuildTime string
+var errMigrationReload = errors.New("reload migrated panel state")
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -74,9 +79,16 @@ func main() {
 	}
 	panelLogs := panelruntime.NewLogStore(logPath)
 	logger = slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, panelLogs), nil))
-	if err := run(logger, panelLogs); err != nil {
-		logger.Error("control api stopped", "error", err)
-		os.Exit(1)
+	for {
+		err := run(logger, panelLogs)
+		if errors.Is(err, errMigrationReload) {
+			continue
+		}
+		if err != nil {
+			logger.Error("control api stopped", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 }
 
@@ -122,6 +134,19 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return err
 	}
 	defer closeStore()
+	if durable, ok := store.(*postgressnapshot.Store); ok {
+		migrated, exists, err := durable.MigrationRuntime(context.Background())
+		if err != nil {
+			return err
+		}
+		if exists {
+			configuration.CustomerPasswordFingerprintKey = migrated.PasswordFingerprintKey
+			configuration.GatewayPoolTokens = migrated.GatewayPoolTokens
+			panelLogs.MergeMigration(migrated.Logs)
+		}
+	}
+	reloadRequested := make(chan struct{}, 1)
+	var migrationPending atomic.Bool
 	usageRepository, closeUsageRepository, err := openUsageRepository(context.Background(), configuration)
 	if err != nil {
 		return err
@@ -159,6 +184,38 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		usage.WithLimitPolicyProvider(usage.NewRuntimeLimitPolicyAdapter(store, store)),
 		usage.WithLegacyRuleMetadataProvider(usage.NewLegacyRuleMetadataProvider(deploymentreceipts.Repository(store))),
 	)
+	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var backgroundMu sync.Mutex
+	var background sync.WaitGroup
+	var cancelBackground context.CancelFunc
+	startBackground := func() {
+		backgroundMu.Lock()
+		defer backgroundMu.Unlock()
+		ctx, cancel := context.WithCancel(shutdownContext)
+		cancelBackground = cancel
+		background.Add(2)
+		go func() {
+			defer background.Done()
+			_ = usageService.RunRuleTraffic(ctx, logger)
+		}()
+		go func() {
+			defer background.Done()
+			if err := protocolRunner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				logger.Warn("VLESS protocol observer stopped", "error", err)
+			}
+		}()
+	}
+	stopBackground := func() {
+		backgroundMu.Lock()
+		defer backgroundMu.Unlock()
+		if cancelBackground != nil {
+			cancelBackground()
+			background.Wait()
+			cancelBackground = nil
+		}
+	}
+	defer stopBackground()
 	options := []httpapi.Option{
 		httpapi.WithReleases(releases.New(platformVersion)),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
@@ -171,6 +228,25 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		httpapi.WithNezha(configuration.Nezha),
 		httpapi.WithHostGeo(hostgeo.New()),
 		httpapi.WithTargetProbe(targetprobe.New(targetprobe.DefaultTimeout)),
+	}
+	if durable, ok := store.(*postgressnapshot.Store); ok {
+		directory := strings.TrimSpace(os.Getenv("CONTROL_MIGRATION_BACKUP_DIR"))
+		if directory == "" {
+			directory = "migration-backups"
+		}
+		options = append(options, httpapi.WithMigrationBackup(migrationbackup.New(durable, authService, auditService, platformVersion, directory, func() migrationbackup.RuntimeSecrets {
+			return migrationbackup.RuntimeSecrets{PasswordFingerprintKey: configuration.CustomerPasswordFingerprintKey, GatewayPoolTokens: configuration.GatewayPoolTokens, Logs: panelLogs.Read(2000).Items}
+		}, func() {
+			migrationPending.Store(true)
+			time.AfterFunc(750*time.Millisecond, func() { reloadRequested <- struct{}{} })
+		}).WithRestoreGuard(func() func() {
+			stopBackground()
+			return func() {
+				if !migrationPending.Load() && shutdownContext.Err() == nil {
+					startBackground()
+				}
+			}
+		})))
 	}
 	if len(configuration.GatewayPoolTokens) > 0 {
 		gatewayHandler, err := gatewaymembership.NewHandler(gatewayMembershipService, configuration.GatewayPoolTokens)
@@ -185,24 +261,33 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return fmt.Errorf("configure customer API: %w", err)
 	}
 	handler := mountCustomerRoutes(controlHandler, customerHandler)
+	var migrationGate sync.RWMutex
+	guardedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/panel/migration/import" {
+			migrationGate.Lock()
+			defer migrationGate.Unlock()
+		} else {
+			migrationGate.RLock()
+			defer migrationGate.RUnlock()
+		}
+		if migrationPending.Load() {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, "面板正在恢复，请稍后重新登录", http.StatusServiceUnavailable)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 	server := &http.Server{
 		Addr:              configuration.ListenAddress,
-		Handler:           handler,
+		Handler:           guardedHandler,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		WriteTimeout:      120 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
-	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	serverErrors := make(chan error, 1)
-	go func() { _ = usageService.RunRuleTraffic(shutdownContext, logger) }()
-	go func() {
-		if err := protocolRunner.Run(shutdownContext); err != nil && !errors.Is(err, context.Canceled) {
-			logger.Warn("VLESS protocol observer stopped", "error", err)
-		}
-	}()
+	startBackground()
 	go func() {
 		if configuration.DatabaseURL == "" {
 			logger.Warn("using volatile in-memory repository; data is lost on restart")
@@ -218,6 +303,14 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	}()
 
 	select {
+	case <-reloadRequested:
+		stop()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			return fmt.Errorf("migration reload shutdown failed: %w", err)
+		}
+		return errMigrationReload
 	case <-shutdownContext.Done():
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

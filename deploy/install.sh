@@ -257,6 +257,7 @@ for existing_path in \
   /etc/nginx/conf.d/hl-panel-rate-limit.conf \
   /etc/nginx/snippets/hl-panel-security-headers.conf \
   /etc/nginx/snippets/hl-panel-api-proxy.conf \
+  /etc/nginx/snippets/hl-panel-migration-proxy.conf \
   /etc/nginx/snippets/hl-panel-app-locations.conf \
   /usr/local/sbin/hl-panel-enable-domain-tls \
   /usr/local/sbin/hl-panel-update \
@@ -642,6 +643,8 @@ sed -e "s|http://127.0.0.1:8080;|http://127.0.0.1:$API_PORT;|" \
   "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-api-proxy.conf" > "$WORK_DIR/hl-panel-api-proxy.conf"
 grep -Fxq "proxy_pass http://127.0.0.1:$API_PORT;" "$WORK_DIR/hl-panel-api-proxy.conf" || fail "HL-panel API 代理端口渲染失败"
 install_new_file "$WORK_DIR/hl-panel-api-proxy.conf" /etc/nginx/snippets/hl-panel-api-proxy.conf root root 0644
+sed "s/127.0.0.1:8080/127.0.0.1:$API_PORT/" "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-migration-proxy.conf" > "$WORK_DIR/hl-panel-migration-proxy.conf"
+install_new_file "$WORK_DIR/hl-panel-migration-proxy.conf" /etc/nginx/snippets/hl-panel-migration-proxy.conf root root 0644
 install_new_file "$FINAL_RELEASE/deploy/nginx/snippets/hl-panel-app-locations.conf" /etc/nginx/snippets/hl-panel-app-locations.conf root root 0644
 sed -e "s|__HL_PANEL_DOMAIN__|$DOMAIN|g" -e "s|__HL_PANEL_IP__|$PUBLIC_IP|g" \
   -e "s|__HL_PANEL_IP_HTTPS_PORT__|$IP_HTTPS_PORT|g" \

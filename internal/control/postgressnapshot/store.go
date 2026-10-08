@@ -87,6 +87,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	if _, err := readState(ctx, tx, false); err != nil {
 		return err
 	}
+	if err := migrationTables(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return errors.New("PostgreSQL initialization commit failed")
 	}

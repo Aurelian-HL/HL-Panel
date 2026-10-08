@@ -93,6 +93,9 @@ jobs:
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
           python3 tests/install/test_subscription_nginx.py
+          python3 -m py_compile deploy/node-control-url.py
+          python3 tests/install/test_node_control_url.py
+          python3 -m py_compile tests/install/panel_migration.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |
@@ -121,6 +124,7 @@ jobs:
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md
+            deploy/backup-and-restore.md
             deploy/install.sh
             deploy/install-node.sh
             deploy/reinstall-node.py
@@ -137,6 +141,8 @@ jobs:
             deploy/nginx/hl-panel.conf.template
             deploy/nginx/conf.d/hl-panel-rate-limit.conf
             deploy/nginx/snippets/hl-panel-api-proxy.conf
+            deploy/nginx/snippets/hl-panel-migration-proxy.conf
+            deploy/node-control-url.py
             deploy/nginx/snippets/hl-panel-app-locations.conf
             deploy/nginx/snippets/hl-panel-security-headers.conf
             deploy/systemd/hl-panel-control-api.service
@@ -285,8 +291,45 @@ jobs:
           path: |
             node-install.log
             node-install-result.json
+  panel-migration:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Prepare bounded HTTPS package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Prepare isolated PostgreSQL and candidate binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql openssl
+          sudo systemctl start postgresql
+          (cd "$RUNNER_TEMP/candidate" && sha256sum --check hl-panel-linux-amd64.tar.gz.sha256)
+          mkdir -p "$RUNNER_TEMP/migration-candidate"
+          tar -xzf "$RUNNER_TEMP/candidate/hl-panel-linux-amd64.tar.gz" -C "$RUNNER_TEMP/migration-candidate"
+          # The postgres service user needs read/traverse access to candidate binaries.
+          sudo install -d -m 755 /var/tmp/hl-panel-migration-ci
+          sudo cp -R "$RUNNER_TEMP/migration-candidate/bin" /var/tmp/hl-panel-migration-ci/
+      - name: Restore real panels, switch the real agent and verify loopback forwarding
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          sudo env HL_PANEL_DISPOSABLE_MIGRATION_TEST=true python3 tests/install/panel_migration.py \
+            --binaries /var/tmp/hl-panel-migration-ci/bin --version "$RELEASE_TAG" | tee panel-migration-result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panel-migration
+          path: panel-migration-result.log
   publish:
-    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install]
+    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install, panel-migration]
     if: ${{ inputs.verification_only != true }}
     runs-on: ubuntu-latest
     steps:

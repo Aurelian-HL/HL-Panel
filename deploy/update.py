@@ -27,11 +27,18 @@ REPO = 'https://github.com/Aurelian-HL/HL-Panel'
 TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
 WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
 APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
+API_PROXY = Path('/etc/nginx/snippets/hl-panel-api-proxy.conf')
+MIGRATION_PROXY = Path('/etc/nginx/snippets/hl-panel-migration-proxy.conf')
 PROC_OVERRIDE = Path('/etc/systemd/system/hl-panel-control-api.service.d/20-host-metrics.conf')
 PROC_OVERRIDE_CONTENT = '# Managed by HL-panel: allow read-only host metrics.\n[Service]\nProcSubset=all\n'
 SUBSCRIPTION_LOCATION = '''location ^~ /api/v1/public/subscriptions/ {
     access_log off;
     include /etc/nginx/snippets/hl-panel-api-proxy.conf;
+}'''
+MIGRATION_LOCATION = '''location ^~ /api/v1/panel/migration/ {
+    client_max_body_size 65m;
+    include /etc/nginx/snippets/hl-panel-migration-proxy.conf;
+    access_log off;
 }'''
 
 
@@ -168,21 +175,37 @@ def switch(target):
 
 
 def subscription_nginx_update(destination, backup):
-    """Add only the subscription location; preserve custom domains/TLS/routes."""
+    """Add bounded managed locations; preserve custom domains/TLS/routes."""
     packaged = destination/'deploy/nginx/snippets/hl-panel-app-locations.conf'
-    if not packaged.is_file() or SUBSCRIPTION_LOCATION not in packaged.read_text():
+    if not packaged.is_file():
         return
+    packaged_text = packaged.read_text()
     private_regular(APP_LOCATIONS)
     current = APP_LOCATIONS.read_text()
-    if SUBSCRIPTION_LOCATION in current:
+    additions = []
+    for location, path in [(SUBSCRIPTION_LOCATION, '/api/v1/public/subscriptions/'), (MIGRATION_LOCATION, '/api/v1/panel/migration/')]:
+        if location in packaged_text and location not in current:
+            require(path not in current, '自定义 Nginx 路由已存在；现有配置未覆盖，请核对：'+path)
+            additions.append(location)
+    if not additions:
         return
-    require('/api/v1/public/subscriptions/' not in current,
-            '自定义订阅 Nginx 路由已存在；请为该路由设置 access_log off 后重试，现有配置未覆盖。')
+    proxy = None
+    if MIGRATION_LOCATION in additions:
+        require(not MIGRATION_PROXY.exists() and not MIGRATION_PROXY.is_symlink(), '迁移代理配置已被占用，现有配置未覆盖')
+        private_regular(API_PROXY)
+        proxy = API_PROXY.read_text()
+        for directive in ('proxy_read_timeout', 'proxy_send_timeout'):
+            proxy, count = re.subn(r'(?m)^\s*'+directive+r'\s+[^;]+;', directive+' 120s;', proxy)
+            require(count == 1, '自定义 API 超时配置不兼容，现有配置未覆盖')
     saved = backup/'nginx-app-locations.conf'
     shutil.copyfile(APP_LOCATIONS, saved)
     pending = APP_LOCATIONS.with_name('.hl-panel-app-locations-'+str(os.getpid()))
     try:
-        pending.write_text(current.rstrip()+'\n\n'+SUBSCRIPTION_LOCATION+'\n')
+        if proxy is not None:
+            (backup/'migration-proxy-added').write_text('hl-panel-migration-proxy.conf\n')
+            MIGRATION_PROXY.write_text(proxy)
+            MIGRATION_PROXY.chmod(0o644)
+        pending.write_text(current.rstrip()+'\n\n'+'\n\n'.join(additions)+'\n')
         pending.chmod(0o644)
         pending.replace(APP_LOCATIONS)
         run(['nginx','-t'])
@@ -190,6 +213,8 @@ def subscription_nginx_update(destination, backup):
     except Exception:
         shutil.copyfile(saved, APP_LOCATIONS)
         APP_LOCATIONS.chmod(0o644)
+        if (backup/'migration-proxy-added').is_file() and MIGRATION_PROXY.exists():
+            MIGRATION_PROXY.unlink()
         run(['nginx','-t'])
         run(['systemctl','reload','nginx'])
         raise
@@ -204,6 +229,9 @@ def restore_subscription_nginx(backup):
         private_regular(saved)
         shutil.copyfile(saved, APP_LOCATIONS)
         APP_LOCATIONS.chmod(0o644)
+        if (backup/'migration-proxy-added').is_file() and MIGRATION_PROXY.exists():
+            private_regular(MIGRATION_PROXY)
+            MIGRATION_PROXY.unlink()
         run(['nginx','-t'])
         run(['systemctl','reload','nginx'])
 

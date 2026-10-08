@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,29 @@ type LogStore struct {
 	path       string
 	items      []LogEntry
 	persistent bool
+}
+
+// MergeMigration restores bounded, sanitized panel logs without duplicating
+// already-imported records on subsequent service restarts.
+func (s *LogStore) MergeMigration(entries []LogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[LogEntry]bool{}
+	for _, entry := range s.items {
+		seen[entry] = true
+	}
+	for _, entry := range entries {
+		if clean, ok := normalizeLog(entry); ok && !seen[clean] {
+			s.items = append(s.items, clean)
+			seen[clean] = true
+		}
+	}
+	sort.SliceStable(s.items, func(i, j int) bool {
+		a, _ := time.Parse(time.RFC3339Nano, s.items[i].Time)
+		b, _ := time.Parse(time.RFC3339Nano, s.items[j].Time)
+		return a.Before(b)
+	})
+	s.persist()
 }
 
 var sensitiveLog = regexp.MustCompile(`(?i)(bearer\s+\S+|(?:enr_|ncr_|sub_)[A-Za-z0-9_-]+|(?:password|token|secret|credential|private[_ -]?key)\s*[:=]\s*[^\s,;]+|postgres(?:ql)?://\S+|https?://\S+[?]\S+)`)

@@ -6,6 +6,7 @@ import { api, type EdgeNode, type PanelControlResult, type OverviewResponse } fr
 import StatePanel from '@/components/StatePanel.vue'
 import PanelLogsDialog from '@/features/panel/PanelLogsDialog.vue'
 import PanelVersionDialog from '@/features/panel/PanelVersionDialog.vue'
+import PanelMigrationDialog from '@/features/panel/PanelMigrationDialog.vue'
 import { displayError } from '@/lib/displayFormatters'
 import { siteStore } from '@/stores/site'
 
@@ -17,6 +18,7 @@ const controlResult = ref<PanelControlResult | null>(null)
 const refreshTimer = ref<number | undefined>()
 const showLogs = ref(false)
 const showVersions = ref(false)
+const showMigration = ref(false)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -185,6 +187,7 @@ onBeforeUnmount(() => {
                 <button type="button" :disabled="controlBusy" @click="runControl('stop')"><Power :size="14" />停止</button>
                 <button type="button" :disabled="controlBusy" @click="runControl('restart')"><RotateCw :size="14" />重启</button>
                 <button type="button" @click="showVersions = true"><Terminal :size="14" />版本</button>
+                <button type="button" @click="showMigration = true"><Archive :size="14" />迁移备份</button>
               </div>
               <div v-if="controlResult" class="xpanel-result" :class="`xpanel-result--${controlResult.status}`"><CheckCircle2 v-if="controlResult.status === 'succeeded'" :size="14" /><XCircle v-else-if="controlResult.status === 'failed'" :size="14" /><RefreshCw v-else :size="14" class="spin" />{{ controlStatusLabel(controlResult.status) }}：{{ controlResult.message || '等待面板返回' }}</div>
             </div>
@@ -210,5 +213,6 @@ onBeforeUnmount(() => {
     </template>
     <PanelLogsDialog v-if="showLogs" @close="showLogs = false" />
     <PanelVersionDialog v-if="showVersions" :current="panelRuntime?.version || ''" @close="showVersions = false" />
+    <PanelMigrationDialog v-if="showMigration" @close="showMigration = false" />
   </div>
 </template>

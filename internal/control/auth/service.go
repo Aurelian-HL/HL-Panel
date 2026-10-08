@@ -19,6 +19,19 @@ type Service struct {
 	sessionTTL   time.Duration
 }
 
+// ConfirmAdministratorPassword returns a confidential concurrency guard for
+// privileged backup/restore; it must never be encoded in an HTTP response.
+func (s *Service) ConfirmAdministratorPassword(ctx context.Context, id, password string) ([]byte, error) {
+	if password == "" || len(password) > 4096 {
+		return nil, fmt.Errorf("%w: 请填写当前管理员密码", faults.ErrValidation)
+	}
+	a, err := s.repository.AdministratorByID(ctx, id)
+	if err != nil || checkPassword(a.PasswordHash, password) != nil {
+		return nil, fmt.Errorf("%w: 当前管理员密码错误", faults.ErrValidation)
+	}
+	return append([]byte(nil), a.PasswordHash...), nil
+}
+
 func (s *Service) CurrentAdministrator(ctx context.Context, adminID string) (AdministratorView, error) {
 	admin, err := s.repository.AdministratorByID(ctx, adminID)
 	if err != nil {

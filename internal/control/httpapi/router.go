@@ -17,6 +17,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
+	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
@@ -62,6 +63,11 @@ type API struct {
 	hostGeo           *hostgeo.Service
 	targetProbe       *targetprobe.Service
 	releases          *releases.Service
+	migration         *migrationbackup.Service
+}
+
+func WithMigrationBackup(service *migrationbackup.Service) Option {
+	return func(api *API) { api.migration = service }
 }
 
 func WithTargetProbe(service *targetprobe.Service) Option {
@@ -159,6 +165,12 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))
+	if api.migration != nil {
+		mux.HandleFunc("POST /api/v1/panel/migration/export", api.requireAdministrator(api.exportMigration))
+		mux.HandleFunc("POST /api/v1/panel/migration/preview", api.requireAdministrator(api.inspectMigration))
+		mux.HandleFunc("POST /api/v1/panel/migration/import", api.requireAdministrator(api.importMigration))
+		mux.HandleFunc("GET /api/v1/panel/migration/recovery/{backup_id}", api.requireAdministrator(api.migrationRecovery))
+	}
 	if api.panelRuntime != nil {
 		mux.HandleFunc("GET /api/v1/panel/logs", api.requireAdministrator(api.panelLogs))
 		mux.HandleFunc("GET /api/v1/panel/runtime", api.requireAdministrator(api.panelRuntimeStatus))

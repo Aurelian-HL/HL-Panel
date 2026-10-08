@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('subscription_updater', ROOT/'deploy/update.py')
@@ -12,6 +13,48 @@ spec.loader.exec_module(update)
 
 
 class SubscriptionNginxTests(unittest.TestCase):
+    def test_migration_port_timeout_idempotency_and_failure_rollback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root/'release'
+            snippet = target/'deploy/nginx/snippets/hl-panel-app-locations.conf'
+            snippet.parent.mkdir(parents=True)
+            snippet.write_text(update.SUBSCRIPTION_LOCATION+'\n'+update.MIGRATION_LOCATION)
+            backup = root/'backup'; backup.mkdir()
+            update.APP_LOCATIONS = root/'app.conf'
+            update.API_PROXY = root/'api.conf'
+            update.MIGRATION_PROXY = root/'migration.conf'
+            original = 'location /custom { return 200; }\n'
+            update.APP_LOCATIONS.write_text(original)
+            update.API_PROXY.write_text('proxy_pass http://127.0.0.1:18245;\nproxy_read_timeout 30s;\nproxy_send_timeout 30s;\n')
+            update.private_regular = lambda path: None
+            calls=[];update.run=lambda args:calls.append(args)
+            # A backup-copy failure must not create a new proxy or alter routes.
+            with patch.object(update.shutil,'copyfile',side_effect=OSError('isolated disk failure')):
+                with self.assertRaises(OSError):update.subscription_nginx_update(target,backup)
+            self.assertFalse(update.MIGRATION_PROXY.exists())
+            self.assertEqual(update.APP_LOCATIONS.read_text(),original)
+            update.subscription_nginx_update(target,backup)
+            proxy=update.MIGRATION_PROXY.read_text()
+            self.assertIn('127.0.0.1:18245',proxy)
+            self.assertEqual(proxy.count('proxy_read_timeout'),1)
+            self.assertEqual(proxy.count('proxy_send_timeout'),1)
+            self.assertEqual(proxy.count('120s'),2)
+            update.subscription_nginx_update(target,backup)
+            self.assertEqual(len(calls),2)
+            self.assertEqual(update.APP_LOCATIONS.read_text().count(update.MIGRATION_LOCATION),1)
+            update.restore_subscription_nginx(backup)
+            self.assertFalse(update.MIGRATION_PROXY.exists())
+            self.assertEqual(update.APP_LOCATIONS.read_text(),original)
+            failed=False
+            def reject_once(args):
+                nonlocal failed
+                if not failed:failed=True;raise update.UpdateError('isolated nginx rejection')
+            update.run=reject_once
+            with self.assertRaises(update.UpdateError):update.subscription_nginx_update(target,backup)
+            self.assertEqual(update.APP_LOCATIONS.read_text(),original)
+            self.assertFalse(update.MIGRATION_PROXY.exists())
+
     def test_host_metrics_dropin_preserves_custom_unit_and_rolls_back(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
