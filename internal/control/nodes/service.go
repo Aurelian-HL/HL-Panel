@@ -35,7 +35,14 @@ func (s *Service) AuthenticateCredential(ctx context.Context, rawCredential stri
 	if rawCredential == "" {
 		return Node{}, faults.ErrUnauthorized
 	}
-	return s.repository.NodeByCredentialHash(ctx, securetoken.Hash(rawCredential))
+	node, err := s.repository.NodeByCredentialHash(ctx, securetoken.Hash(rawCredential))
+	if err != nil {
+		return Node{}, err
+	}
+	if node.DeletedAt != nil {
+		return Node{}, faults.ErrUnauthorized
+	}
+	return node, nil
 }
 
 // RotateCredential atomically invalidates the current node credential and
@@ -155,8 +162,10 @@ func (s *Service) RequestControl(ctx context.Context, administratorID, nodeID, c
 	}
 	now := s.now().UTC()
 	event, err := audit.NewEvent(now, "administrator", administratorID, "node.control."+command, "node", nodeID, "succeeded", map[string]any{"command": command})
-	if err != nil { return ControlCommandResult{}, false, err }
-	return s.repository.RequestControl(ctx, ControlCommandInput{NodeID: nodeID, Command: command, AdministratorID: administratorID, IdempotencyKey: idempotencyKey, RequestSHA256: rotationDigest(nodeID+"\x00"+command), CommandID: newControlID(now), UpdatedAt: now}, event)
+	if err != nil {
+		return ControlCommandResult{}, false, err
+	}
+	return s.repository.RequestControl(ctx, ControlCommandInput{NodeID: nodeID, Command: command, AdministratorID: administratorID, IdempotencyKey: idempotencyKey, RequestSHA256: rotationDigest(nodeID + "\x00" + command), CommandID: newControlID(now), UpdatedAt: now}, event)
 }
 
 func (s *Service) ControlForNode(ctx context.Context, nodeID string) (ControlCommandResult, error) {
@@ -166,13 +175,20 @@ func (s *Service) ControlForNode(ctx context.Context, nodeID string) (ControlCom
 func (s *Service) RecordControlResult(ctx context.Context, nodeID string, result ControlCommandResult) error {
 	now := s.now().UTC()
 	event, err := audit.NewEvent(now, "node", nodeID, "node.control.result", "node", nodeID, result.Status, map[string]any{"command": result.Command, "status": result.Status})
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	result.UpdatedAt = now
 	return s.repository.RecordControlResult(ctx, nodeID, result, event)
 }
 
 func validControlCommand(command string) bool {
-	switch command { case "status", "logs", "stop", "restart", "version": return true; default: return false }
+	switch command {
+	case "status", "logs", "stop", "restart", "version":
+		return true
+	default:
+		return false
+	}
 }
 
 func newControlID(now time.Time) string { return fmt.Sprintf("control_%d", now.UnixNano()) }

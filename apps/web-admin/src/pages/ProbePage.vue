@@ -3,8 +3,9 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Settings2 } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
-import { probeApi, type ProbeGroupResponse } from '@/api/probe'
+import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
 import StatePanel from '@/components/StatePanel.vue'
+import DeleteNodeDialog from '@/features/nodes/DeleteNodeDialog.vue'
 import ProbeMembers from '@/features/probe/ProbeMembers.vue'
 import ProbeRefreshSettingsDialog from '@/features/probe/ProbeRefreshSettingsDialog.vue'
 import MemberWeightDialog from '@/features/groups/MemberWeightDialog.vue'
@@ -29,6 +30,7 @@ const groupMembers = ref<DeviceGroupMember[]>([])
 const allGroupMembers = ref<Record<string, DeviceGroupMember[]>>({})
 const groupMembersError = ref('')
 const editingMember = ref<DeviceGroupMember | null>(null)
+const deletingNode = ref<ProbeMember | null>(null)
 
 const availableGroups = computed(() => groups.value.filter((group) => !group.hide_in_probe))
 const selectedGroup = computed(() => availableGroups.value.find((group) => group.id === selectedGroupId.value))
@@ -120,6 +122,15 @@ function selectGroup(): void {
   editingMember.value = null
   void loadGroupMembers()
   void loadMonitoring(true)
+}
+
+async function nodeDeleted(nodeId: string): Promise<void> {
+  deletingNode.value = null
+  requestId++
+  memberRequestId++
+  if (response.value) response.value = { ...response.value, items: response.value.items.filter((item) => item.node_id !== nodeId) }
+  if (editingMember.value?.node_id === nodeId) editingMember.value = null
+  await loadGroups()
 }
 
 function weightSaved(member: DeviceGroupMember): void {
@@ -218,19 +229,20 @@ onUnmounted(() => {
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">
-        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="filteredMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" />
+        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="filteredMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="deletingNode = $event" />
         <div v-else class="probe-sections">
           <section v-for="section in groupedMembers" :key="section.group.id" class="probe-section" :aria-label="`${section.group.name}探针`">
             <header class="probe-section__heading"><span class="probe-section__name">{{ section.group.name }}</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(section.items, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(section.items, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="section.items" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" />
+            <ProbeMembers :items="section.items" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="deletingNode = $event" />
           </section>
           <section v-if="ungroupedMembers.length" class="probe-section" aria-label="未入组机器探针">
             <header class="probe-section__heading"><span class="probe-section__name">未入组机器</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(ungroupedMembers, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(ungroupedMembers, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="ungroupedMembers" :upstream-status="upstreamStatus" :now="now" />
+            <ProbeMembers :items="ungroupedMembers" :upstream-status="upstreamStatus" :now="now" @delete-node="deletingNode = $event" />
           </section>
         </div>
       </template>
     </template>
+    <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null" @deleted="nodeDeleted" />
     <ProbeRefreshSettingsDialog v-if="settingsOpen" :intervals="refreshIntervals" @close="settingsOpen = false" @save="updateIntervals" />
     <MemberWeightDialog v-if="editingMember" :member="editingMember" :label="[members.find((item) => item.node_id === editingMember?.node_id)?.name || editingMember.node_id, members.find((item) => item.node_id === editingMember?.node_id)?.ipv4 || editingMember.dial_host].filter(Boolean).join(' · ')" @close="editingMember = null" @saved="weightSaved" />
   </div>

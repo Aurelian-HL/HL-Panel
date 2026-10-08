@@ -81,7 +81,7 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 		// Only the original private attempt and unchanged identity can recover
 		// its response, for 24 hours after the first successful transaction.
 		node, found := s.nodes[input.Node.ID]
-		if input.AllowReplay && found && now.Before(token.UsedAt.Add(24*time.Hour)) &&
+		if input.AllowReplay && found && node.DeletedAt == nil && now.Before(token.UsedAt.Add(24*time.Hour)) &&
 			node.CredentialHash == input.CredentialHash && s.nodesByCredential[input.CredentialHash] == node.ID &&
 			node.Hostname == input.Node.Hostname && node.Platform == input.Node.Platform &&
 			node.Architecture == input.Node.Architecture && node.DialHost == input.Node.DialHost {

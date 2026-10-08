@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Cpu, Eye, Server } from '@lucide/vue'
+import { Cpu, Eye, Server, Trash2 } from '@lucide/vue'
 
 import type { EdgeNode } from '@/api'
 import StatusBadge from '@/components/StatusBadge.vue'
@@ -7,7 +7,7 @@ import { engineSummary, formatDateTime, formatRelativeTime } from '@/lib/display
 import { formatResourceBytes, hasFreshTelemetry } from './nodeTelemetry'
 
 defineProps<{ nodes: EdgeNode[] }>()
-defineEmits<{ inspect: [node: EdgeNode] }>()
+defineEmits<{ inspect: [node: EdgeNode]; deleteNode: [node: EdgeNode] }>()
 </script>
 
 <template>
@@ -33,7 +33,7 @@ defineEmits<{ inspect: [node: EdgeNode] }>()
               <small :class="node.applied_generation === node.desired_generation ? 'text-success' : 'text-warning'">{{ node.applied_generation === node.desired_generation ? '已同步' : '等待追平' }}</small>
             </td>
             <td><strong class="table-primary">{{ formatRelativeTime(node.last_heartbeat_at) }}</strong><small class="table-secondary">{{ formatDateTime(node.last_heartbeat_at) }}</small></td>
-            <td><button class="button button--secondary node-inspect" type="button" :aria-label="`查看${node.name || node.hostname}详情`" @click="$emit('inspect', node)"><Eye :size="15" />详情</button></td>
+            <td><div class="node-row-actions"><button class="button button--secondary node-inspect" type="button" :aria-label="`查看${node.name || node.hostname}详情`" @click="$emit('inspect', node)"><Eye :size="15" />详情</button><button v-if="node.status === 'offline'" class="button button--quiet node-delete-button" type="button" :aria-label="'删除' + (node.name || node.hostname)" @click="$emit('deleteNode', node)"><Trash2 :size="15" />删除</button></div></td>
           </tr>
         </tbody>
       </table>
@@ -52,7 +52,7 @@ defineEmits<{ inspect: [node: EdgeNode] }>()
           <div><dt><Cpu :size="14" /> 运行环境</dt><dd>{{ node.platform || '未知' }} / {{ node.architecture || '未知' }}</dd></div>
           <div><dt>引擎</dt><dd>{{ engineSummary(node.engine_versions) }}</dd></div>
         </dl>
-        <footer><button class="button button--secondary node-inspect" type="button" :aria-label="`查看${node.name || node.hostname}详情`" @click="$emit('inspect', node)"><Eye :size="15" />详情</button></footer>
+        <footer><button class="button button--secondary node-inspect" type="button" :aria-label="`查看${node.name || node.hostname}详情`" @click="$emit('inspect', node)"><Eye :size="15" />详情</button><button v-if="node.status === 'offline'" class="button button--quiet node-delete-button" type="button" :aria-label="'删除' + (node.name || node.hostname)" @click="$emit('deleteNode', node)"><Trash2 :size="15" />删除</button></footer>
       </article>
     </div>
   </div>

@@ -25,7 +25,7 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	}
 	if token.UsedAt != nil {
 		member, joined := s.membersByGroup[token.GroupID][previous.ID]
-		if token.UsedNodeID == previous.ID && joined && member.RetiredAt == nil {
+		if previous.DeletedAt == nil && token.UsedNodeID == previous.ID && joined && member.RetiredAt == nil {
 			// A lost response or repeated command is harmless. A superseded token
 			// never moves the machine back to an older group.
 			return cloneNode(previous), nil
@@ -44,6 +44,11 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	// Preserve the current telemetry and usage even if a heartbeat arrived
 	// between HTTP authentication and this transaction.
 	node := cloneNode(previous)
+	node.DeletedAt = nil
+	if previous.DeletedAt != nil {
+		node.LastHeartbeatAt = nil
+		node.Resources = nil
+	}
 	node.Name, node.Hostname, node.DialHost = token.Name, input.Node.Hostname, input.Node.DialHost
 	node.Platform, node.Architecture, node.AgentVersion = input.Node.Platform, input.Node.Architecture, input.Node.AgentVersion
 	node.UpdatedAt = now

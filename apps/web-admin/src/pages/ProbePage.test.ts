@@ -3,13 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { completeProbeSample, probeGroups, unavailableProbeSample } from '@/test/fixtures/probe'
 
-const mocked = vi.hoisted(() => ({ getDeviceGroups: vi.fn(), getDeviceGroupMembers: vi.fn(), updateDeviceGroupMemberWeight: vi.fn(), getGroup: vi.fn(), getInventory: vi.fn() }))
-vi.mock('@/api', () => ({ api: { getDeviceGroups: mocked.getDeviceGroups, getDeviceGroupMembers: mocked.getDeviceGroupMembers, updateDeviceGroupMemberWeight: mocked.updateDeviceGroupMemberWeight } }))
+const mocked = vi.hoisted(() => ({ deleteNode: vi.fn(), getDeviceGroups: vi.fn(), getDeviceGroupMembers: vi.fn(), updateDeviceGroupMemberWeight: vi.fn(), getGroup: vi.fn(), getInventory: vi.fn() }))
+vi.mock('@/api', () => ({ api: { deleteNode: mocked.deleteNode, getDeviceGroups: mocked.getDeviceGroups, getDeviceGroupMembers: mocked.getDeviceGroupMembers, updateDeviceGroupMemberWeight: mocked.updateDeviceGroupMemberWeight } }))
 vi.mock('@/api/probe', () => ({ probeApi: { getGroup: mocked.getGroup, getInventory: mocked.getInventory } }))
 
 import ProbePage from './ProbePage.vue'
 
 beforeEach(() => {
+  mocked.deleteNode.mockReset().mockResolvedValue({ node_id: 'offline-native', replayed: false })
   localStorage.removeItem('hl_probe_refresh_intervals_v1')
   mocked.getDeviceGroups.mockReset().mockResolvedValue({ items: probeGroups })
   mocked.getGroup.mockReset().mockResolvedValue(completeProbeSample)
@@ -210,4 +211,21 @@ describe('ProbePage', () => {
       vi.useRealTimers()
     }
   })
+})
+
+it.each(['grouped', 'ungrouped'])('deletes an offline HL probe in the %s section and refreshes inventory', async (placement) => {
+  const sample = { upstream_status: 'disabled', items: [{ node_id: 'offline-native', link_status: 'native', source: 'hl', online: false, name: '离线待清理', ipv4: '192.0.2.43' }] }
+  mocked.getInventory.mockResolvedValueOnce(sample).mockResolvedValue({ ...sample, items: [] })
+  mocked.getDeviceGroupMembers.mockResolvedValue({ items: placement === 'grouped' ? [{ group_id: 'group-gz', node_id: 'offline-native', weight: 100, priority: 0 }] : [] })
+  const wrapper = mount(ProbePage)
+  await flushPromises()
+  expect(wrapper.get('.probe-table tbody').text()).toContain('删除')
+  await wrapper.get('[aria-label="删除离线待清理"]').trigger('click')
+  await flushPromises()
+  document.body.querySelector<HTMLButtonElement>('.modal .button--danger')!.click()
+  await flushPromises()
+  expect(mocked.deleteNode).toHaveBeenCalledWith('offline-native', expect.any(String))
+  expect(wrapper.find('[aria-label="删除离线待清理"]').exists()).toBe(false)
+  expect(wrapper.text()).toContain('尚未注册节点')
+  wrapper.unmount()
 })

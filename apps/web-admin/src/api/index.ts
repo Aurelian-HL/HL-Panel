@@ -55,6 +55,7 @@ const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_acce
 interface AdminApi {
   login(request: LoginRequest): Promise<LoginResponse>
   getOverview(): Promise<OverviewResponse>
+  deleteNode(nodeId: string, key: string): Promise<{ node_id: string; replayed: boolean }>
   getNodes(): Promise<NodesResponse>
   controlNode(nodeId: string, command: NodeControlResult['command']): Promise<NodeControlResult>
   getNodeControl(nodeId: string): Promise<NodeControlResult | null>
@@ -83,6 +84,10 @@ const realApi: AdminApi = {
   },
   async getOverview() {
     return parseOverviewResponse(await http.request('/overview'))
+  },
+  async deleteNode(nodeId, key) {
+    const body = await http.request('/nodes/' + encodeURIComponent(nodeId), { method: 'DELETE', headers: { 'Idempotency-Key': key } })
+    return { node_id: nodeId, ...parseDeleteDeviceGroupResponse(body) }
   },
   async getNodes() {
     return parseNodesResponse(await http.request('/nodes'))

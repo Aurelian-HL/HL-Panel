@@ -102,3 +102,19 @@ describe('ProbeMembers', () => {
     wrapper.unmount()
   })
 })
+
+it('offers deletion only for offline HL nodes in desktop and mobile layouts', async () => {
+  const wrapper = mount(ProbeMembers, { props: { upstreamStatus: 'ok', now: Date.now(), items: [
+    { node_id: 'offline', link_status: 'native', source: 'hl', online: false, name: '离线主机' },
+    { node_id: 'online', link_status: 'native', source: 'hl', online: true, sampled_at: new Date().toISOString(), name: '在线主机' },
+    { node_id: 'external', link_status: 'unmanaged', source: 'nezha', online: false, name: '第三方主机' },
+  ] } })
+  const buttons = wrapper.findAll('[aria-label="删除离线主机"]')
+  expect(buttons).toHaveLength(2)
+  expect(wrapper.find('[aria-label="删除在线主机"]').exists()).toBe(false)
+  expect(wrapper.find('[aria-label="删除第三方主机"]').exists()).toBe(false)
+  await buttons[0]!.trigger('click')
+  await buttons[1]!.trigger('click')
+  expect(wrapper.emitted('deleteNode')).toHaveLength(2)
+  wrapper.unmount()
+})

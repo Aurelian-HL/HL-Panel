@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EdgeNode } from '@/api'
 
-const mocked = vi.hoisted(() => ({ getNodes: vi.fn() }))
-vi.mock('@/api', () => ({ api: { getNodes: mocked.getNodes } }))
+const mocked = vi.hoisted(() => ({ deleteNode: vi.fn(), getNodes: vi.fn() }))
+vi.mock('@/api', () => ({ api: { deleteNode: mocked.deleteNode, getNodes: mocked.getNodes } }))
 
 import NodesPage from './NodesPage.vue'
 
@@ -18,6 +18,7 @@ const base: EdgeNode = {
 }
 
 beforeEach(() => {
+  mocked.deleteNode.mockReset().mockResolvedValue({ node_id: 'node-43', replayed: false })
   mocked.getNodes.mockReset().mockResolvedValue({ items: [base, {
     ...base, id: 'node-2', name: '香港出口', hostname: 'hk-01', status: 'failed',
     desired_generation: 3, applied_generation: 2, last_apply_status: 'failed',
@@ -84,4 +85,22 @@ describe('NodesPage', () => {
     setIntervalSpy.mockRestore()
     clearIntervalSpy.mockRestore()
   })
+})
+
+it('deletes an offline node from desktop and mobile lists while retaining online nodes', async () => {
+  const offline = { ...base, id: 'node-43', name: '过期节点', status: 'offline' }
+  mocked.getNodes.mockResolvedValueOnce({ items: [base, offline] }).mockResolvedValue({ items: [base] })
+  const wrapper = mount(NodesPage)
+  await flushPromises()
+  expect(wrapper.findAll('[aria-label="删除过期节点"]')).toHaveLength(2)
+  expect(wrapper.find('[aria-label="删除广州入口"]').exists()).toBe(false)
+  await wrapper.get('[aria-label="删除过期节点"]').trigger('click')
+  await flushPromises()
+  document.body.querySelector<HTMLButtonElement>('.modal .button--danger')!.click()
+  await flushPromises()
+  expect(mocked.deleteNode).toHaveBeenCalledWith('node-43', expect.any(String))
+  expect(wrapper.findAll('.node-table tbody tr')).toHaveLength(1)
+  expect(wrapper.findAll('.node-mobile-card')).toHaveLength(1)
+  expect(wrapper.text()).not.toContain('过期节点')
+  wrapper.unmount()
 })

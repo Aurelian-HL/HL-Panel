@@ -9,6 +9,7 @@ import (
 
 type Repository interface {
 	NodeByCredentialHash(context.Context, string) (Node, error)
+	DeleteOffline(context.Context, DeleteInput, audit.Event) (DeleteResult, bool, error)
 	ListNodes(context.Context) ([]Node, error)
 	RotateCredential(context.Context, RotateCredentialInput, audit.Event) (CredentialRotationResult, bool, error)
 	UpdateHeartbeat(context.Context, string, Heartbeat, time.Time, audit.Event) (Node, error)

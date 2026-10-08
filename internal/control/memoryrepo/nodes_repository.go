@@ -30,7 +30,9 @@ func (s *Store) ListNodes(_ context.Context) ([]nodes.Node, error) {
 	defer s.mu.RUnlock()
 	items := make([]nodes.Node, 0, len(s.nodes))
 	for _, node := range s.nodes {
-		items = append(items, cloneNode(node))
+		if node.DeletedAt == nil {
+			items = append(items, cloneNode(node))
+		}
 	}
 	sort.Slice(items, func(left, right int) bool {
 		if items[left].Name == items[right].Name {
@@ -46,7 +48,7 @@ func (s *Store) ListNezhaBindings(_ context.Context) (map[string]uint64, error) 
 	defer s.mu.RUnlock()
 	bindings := make(map[string]uint64)
 	for id, node := range s.nodes {
-		if node.NezhaServerID != 0 {
+		if node.DeletedAt == nil && node.NezhaServerID != 0 {
 			bindings[id] = node.NezhaServerID
 		}
 	}
@@ -66,6 +68,9 @@ func (s *Store) RotateCredential(_ context.Context, input nodes.RotateCredential
 	}
 	node, exists := s.nodes[input.NodeID]
 	if !exists {
+		return nodes.CredentialRotationResult{}, false, faults.ErrNotFound
+	}
+	if node.DeletedAt != nil {
 		return nodes.CredentialRotationResult{}, false, faults.ErrNotFound
 	}
 	if _, collision := s.nodesByCredential[input.CredentialHash]; collision {
@@ -92,6 +97,9 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 	node, exists := s.nodes[nodeID]
 	if !exists {
 		return nodes.Node{}, faults.ErrNotFound
+	}
+	if node.DeletedAt != nil {
+		return nodes.Node{}, faults.ErrUnauthorized
 	}
 	if heartbeat.CurrentAppliedGeneration > node.DesiredGeneration {
 		return nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
@@ -125,8 +133,12 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 func (s *Store) Overview(_ context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	overview := nodes.Overview{NodeCount: len(s.nodes), GroupCount: len(s.deviceGroups)}
+	overview := nodes.Overview{GroupCount: len(s.deviceGroups)}
 	for _, node := range s.nodes {
+		if node.DeletedAt != nil {
+			continue
+		}
+		overview.NodeCount++
 		if node.LastHeartbeatAt != nil && now.Sub(*node.LastHeartbeatAt) <= onlineFor {
 			overview.OnlineNodeCount++
 		}
@@ -141,9 +153,12 @@ func (s *Store) Overview(_ context.Context, now time.Time, onlineFor time.Durati
 }
 
 func (s *Store) RequestControl(_ context.Context, input nodes.ControlCommandInput, event audit.Event) (nodes.ControlCommandResult, bool, error) {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	node, ok := s.nodes[input.NodeID]
-	if !ok { return nodes.ControlCommandResult{}, false, faults.ErrNotFound }
+	if !ok || node.DeletedAt != nil {
+		return nodes.ControlCommandResult{}, false, faults.ErrNotFound
+	}
 	if node.ControlCommandID != "" && node.ControlIdempotencyKey == input.IdempotencyKey {
 		return controlResult(node), true, nil
 	}
@@ -162,15 +177,25 @@ func (s *Store) RequestControl(_ context.Context, input nodes.ControlCommandInpu
 }
 
 func (s *Store) ControlForNode(_ context.Context, nodeID string) (nodes.ControlCommandResult, error) {
-	s.mu.RLock(); defer s.mu.RUnlock()
-	node, ok := s.nodes[nodeID]; if !ok { return nodes.ControlCommandResult{}, faults.ErrNotFound }
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	node, ok := s.nodes[nodeID]
+	if !ok || node.DeletedAt != nil {
+		return nodes.ControlCommandResult{}, faults.ErrNotFound
+	}
 	return controlResult(node), nil
 }
 
 func (s *Store) RecordControlResult(_ context.Context, nodeID string, result nodes.ControlCommandResult, event audit.Event) error {
-	s.mu.Lock(); defer s.mu.Unlock()
-	node, ok := s.nodes[nodeID]; if !ok { return faults.ErrNotFound }
-	if node.ControlCommandID != result.CommandID || node.ControlCommand != result.Command { return faults.ErrConflict }
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.nodes[nodeID]
+	if !ok || node.DeletedAt != nil {
+		return faults.ErrNotFound
+	}
+	if node.ControlCommandID != result.CommandID || node.ControlCommand != result.Command {
+		return faults.ErrConflict
+	}
 	node.ControlCommandStatus = result.Status
 	node.ControlCommandMessage = result.Message
 	node.ControlCommandLogs = result.Logs
@@ -185,4 +210,9 @@ func controlResult(node nodes.Node) nodes.ControlCommandResult {
 	return nodes.ControlCommandResult{NodeID: node.ID, CommandID: node.ControlCommandID, Command: node.ControlCommand, Status: node.ControlCommandStatus, Message: node.ControlCommandMessage, Logs: node.ControlCommandLogs, UpdatedAt: valueTime(node.ControlCommandUpdatedAt)}
 }
 
-func valueTime(value *time.Time) time.Time { if value == nil { return time.Time{} }; return value.UTC() }
+func valueTime(value *time.Time) time.Time {
+	if value == nil {
+		return time.Time{}
+	}
+	return value.UTC()
+}

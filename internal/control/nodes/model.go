@@ -3,34 +3,35 @@ package nodes
 import "time"
 
 type Node struct {
-	ID                  string            `json:"id"`
-	Name                string            `json:"name"`
-	Hostname            string            `json:"hostname"`
-	DialHost            string            `json:"dial_host,omitempty"`
-	NezhaServerID       uint64            `json:"nezha_server_id,omitempty"`
-	Platform            string            `json:"platform"`
-	Architecture        string            `json:"architecture"`
-	AgentVersion        string            `json:"agent_version"`
-	Capabilities        []string          `json:"capabilities"`
-	BootID              string            `json:"boot_id"`
-	EngineVersions      map[string]string `json:"engine_versions"`
-	Resources           map[string]any    `json:"resources"`
-	DesiredGeneration   int64             `json:"desired_generation"`
-	AppliedGeneration   int64             `json:"applied_generation"`
-	LastApplyGeneration int64             `json:"last_apply_generation"`
-	LastApplyStatus     string            `json:"last_apply_status"`
-	LastHeartbeatAt     *time.Time        `json:"last_heartbeat_at"`
-	CredentialHash      string            `json:"-"`
-	CreatedAt           time.Time         `json:"created_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	ControlCommandID    string            `json:"control_command_id,omitempty"`
-	ControlCommand      string            `json:"control_command,omitempty"`
-	ControlCommandStatus string           `json:"control_command_status,omitempty"`
-	ControlCommandMessage string          `json:"control_command_message,omitempty"`
-	ControlCommandLogs  string            `json:"control_command_logs,omitempty"`
-	ControlCommandUpdatedAt *time.Time    `json:"control_command_updated_at,omitempty"`
-	ControlIdempotencyKey string          `json:"-"`
-	ControlRequestSHA256 string           `json:"-"`
+	ID                      string            `json:"id"`
+	Name                    string            `json:"name"`
+	Hostname                string            `json:"hostname"`
+	DialHost                string            `json:"dial_host,omitempty"`
+	NezhaServerID           uint64            `json:"nezha_server_id,omitempty"`
+	Platform                string            `json:"platform"`
+	Architecture            string            `json:"architecture"`
+	AgentVersion            string            `json:"agent_version"`
+	Capabilities            []string          `json:"capabilities"`
+	BootID                  string            `json:"boot_id"`
+	EngineVersions          map[string]string `json:"engine_versions"`
+	Resources               map[string]any    `json:"resources"`
+	DesiredGeneration       int64             `json:"desired_generation"`
+	AppliedGeneration       int64             `json:"applied_generation"`
+	LastApplyGeneration     int64             `json:"last_apply_generation"`
+	LastApplyStatus         string            `json:"last_apply_status"`
+	LastHeartbeatAt         *time.Time        `json:"last_heartbeat_at"`
+	DeletedAt               *time.Time        `json:"deleted_at,omitempty"`
+	CredentialHash          string            `json:"-"`
+	CreatedAt               time.Time         `json:"created_at"`
+	UpdatedAt               time.Time         `json:"updated_at"`
+	ControlCommandID        string            `json:"control_command_id,omitempty"`
+	ControlCommand          string            `json:"control_command,omitempty"`
+	ControlCommandStatus    string            `json:"control_command_status,omitempty"`
+	ControlCommandMessage   string            `json:"control_command_message,omitempty"`
+	ControlCommandLogs      string            `json:"control_command_logs,omitempty"`
+	ControlCommandUpdatedAt *time.Time        `json:"control_command_updated_at,omitempty"`
+	ControlIdempotencyKey   string            `json:"-"`
+	ControlRequestSHA256    string            `json:"-"`
 }
 
 type View struct {
@@ -55,13 +56,13 @@ type Heartbeat struct {
 }
 
 type ControlCommandInput struct {
-	NodeID         string
-	Command        string
+	NodeID          string
+	Command         string
 	AdministratorID string
-	IdempotencyKey string
-	RequestSHA256  string
-	CommandID      string
-	UpdatedAt      time.Time
+	IdempotencyKey  string
+	RequestSHA256   string
+	CommandID       string
+	UpdatedAt       time.Time
 }
 
 type ControlCommandResult struct {

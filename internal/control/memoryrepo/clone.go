@@ -16,6 +16,9 @@ func cloneAdministrator(admin auth.Administrator) auth.Administrator {
 }
 
 func cloneNode(node nodes.Node) nodes.Node {
+	if node.DeletedAt != nil {
+		node.DeletedAt = timePointer(*node.DeletedAt)
+	}
 	node.Capabilities = cloneStrings(node.Capabilities)
 	node.EngineVersions = cloneStringMap(node.EngineVersions)
 	node.Resources = cloneAnyMap(node.Resources)

@@ -6,6 +6,7 @@ import { api, type EdgeNode } from '@/api'
 import StatePanel from '@/components/StatePanel.vue'
 import CreateEnrollmentTokenDialog from '@/features/enrollment/CreateEnrollmentTokenDialog.vue'
 import NodeDetailsDialog from '@/features/nodes/NodeDetailsDialog.vue'
+import DeleteNodeDialog from '@/features/nodes/DeleteNodeDialog.vue'
 import NodeInventory from '@/features/nodes/NodeInventory.vue'
 import { displayError } from '@/lib/displayFormatters'
 
@@ -16,6 +17,7 @@ const query = ref('')
 type NodeFilter = 'all' | 'online' | 'syncing' | 'failed' | 'offline'
 const statusFilter = ref<NodeFilter>('all')
 const showEnrollmentDialog = ref(false)
+const deletingNode = ref<EdgeNode | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const selectedNode = computed(() => nodes.value.find((node) => node.id === selectedNodeId.value) ?? null)
 
@@ -42,20 +44,31 @@ const filteredNodes = computed(() => {
   })
 })
 
+let requestId = 0
 let inFlight = false
 async function load(): Promise<void> {
   if (inFlight) return
+  const currentRequest = ++requestId
   inFlight = true
   loading.value = true
   errorMessage.value = ''
   try {
-    nodes.value = (await api.getNodes()).items
+    const result = await api.getNodes()
+    if (currentRequest === requestId) nodes.value = result.items
   } catch (error) {
-    errorMessage.value = displayError(error)
+    if (currentRequest === requestId) errorMessage.value = displayError(error)
   } finally {
-    inFlight = false
-    loading.value = false
+    if (currentRequest === requestId) { inFlight = false; loading.value = false }
   }
+}
+
+async function nodeDeleted(nodeId: string): Promise<void> {
+  deletingNode.value = null
+  if (selectedNodeId.value === nodeId) selectedNodeId.value = null
+  nodes.value = nodes.value.filter((node) => node.id !== nodeId)
+  requestId++
+  inFlight = false
+  await load()
 }
 
 let refreshTimer: ReturnType<typeof setInterval> | undefined
@@ -66,6 +79,7 @@ onMounted(() => {
   }, 30_000)
 })
 onUnmounted(() => {
+  requestId++
   if (refreshTimer) clearInterval(refreshTimer)
 })
 </script>
@@ -95,10 +109,11 @@ onUnmounted(() => {
     <StatePanel v-else-if="errorMessage && !nodes.length" state="error" title="节点加载失败" :message="errorMessage" @retry="load" />
     <StatePanel v-else-if="!nodes.length" state="empty" title="还没有节点" message="生成一次性注册令牌后，可在目标机器完成节点注册。" />
     <StatePanel v-else-if="!filteredNodes.length" state="empty" title="没有符合条件的节点" message="调整搜索词或状态筛选后重试。" />
-    <NodeInventory v-else :nodes="filteredNodes" @inspect="selectedNodeId = $event.id" />
+    <NodeInventory v-else :nodes="filteredNodes" @inspect="selectedNodeId = $event.id" @delete-node="deletingNode = $event" />
 
     <p v-if="errorMessage && nodes.length" class="inline-warning">刷新失败，当前显示上一次成功读取的数据：{{ errorMessage }}</p>
     <CreateEnrollmentTokenDialog v-if="showEnrollmentDialog" @close="showEnrollmentDialog = false" />
+    <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.id" :label="deletingNode.name || deletingNode.hostname" @close="deletingNode = null" @deleted="nodeDeleted" />
     <NodeDetailsDialog v-if="selectedNode" :node="selectedNode" @close="selectedNodeId = null" />
   </div>
 </template>

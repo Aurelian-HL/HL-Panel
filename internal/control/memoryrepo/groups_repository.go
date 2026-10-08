@@ -267,7 +267,7 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 	if _, exists := s.deviceGroups[member.GroupID]; !exists {
 		return groups.Member{}, nil, faults.ErrNotFound
 	}
-	if _, exists := s.nodes[member.NodeID]; !exists {
+	if node, exists := s.nodes[member.NodeID]; !exists || node.DeletedAt != nil {
 		return groups.Member{}, nil, faults.ErrNotFound
 	}
 	if err := s.validateForwardingMemberListenersLocked(member); err != nil {

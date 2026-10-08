@@ -20,3 +20,7 @@
 .node-mobile-card dd small.text-warning { color: var(--amber-700); }
 .node-mobile-card footer { display: flex; justify-content: flex-end; margin-top: 12px; }
 @media (max-width: 600px) { .node-details__grid { grid-template-columns: 1fr; } .node-status-summary { gap: 7px 14px; } }
+
+.node-row-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.node-table th:last-child, .node-table td:last-child { min-width: 170px; }
+.node-mobile-card footer { gap: 8px; flex-wrap: wrap; }

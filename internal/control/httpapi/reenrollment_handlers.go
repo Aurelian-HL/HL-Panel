@@ -4,11 +4,15 @@ import (
 	"net/http"
 
 	"github.com/hongle/hl-panel/internal/control/enrollment"
-	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
-func (api *API) reenrollNode(writer http.ResponseWriter, request *http.Request, node nodes.Node) {
+func (api *API) reenrollNode(writer http.ResponseWriter, request *http.Request) {
+	node, err := api.nodes.AuthenticateReenrollmentCredential(request.Context(), bearerToken(request.Header.Get("Authorization")))
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
 	var input agentv1.EnrollmentRequest
 	if err := decodeJSON(writer, request, &input); err != nil {
 		writeProblem(writer, request, err)

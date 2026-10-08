@@ -25,20 +25,23 @@
 .probe-section__name { max-width: 100%; padding: 6px 14px; border: 1px solid var(--ny-border-dark); border-radius: 20px; background: #fff; color: var(--gray-900); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .probe-section__rate { display: inline-flex; flex-wrap: wrap; gap: 14px; padding: 7px 12px; border-radius: 4px; background: #ece8f8; color: #26384d; font-size: 12px; font-variant-numeric: tabular-nums; }
 .probe-section__rate span { white-space: nowrap; }
-.probe-table { min-width: 1170px; table-layout: fixed; font-size: 11px; }
+.probe-table { min-width: 1280px; table-layout: fixed; font-size: 11px; }
 .probe-table th, .probe-table td { padding: 10px 7px; overflow-wrap: anywhere; vertical-align: middle; }
 .probe-table th { white-space: nowrap; }
-.probe-table th:first-child, .probe-table td:first-child { width: 8%; padding-left: 12px; }
-.probe-table th:nth-child(2), .probe-table td:nth-child(2) { width: 8%; }
-.probe-table th:nth-child(3), .probe-table td:nth-child(3) { width: 20%; }
+.probe-table th:first-child, .probe-table td:first-child { width: 6%; padding-left: 12px; }
+.probe-table th:nth-child(2), .probe-table td:nth-child(2) { width: 7%; }
+.probe-table th:nth-child(3), .probe-table td:nth-child(3) { width: 17%; }
 .probe-table th:nth-child(4), .probe-table td:nth-child(4),
 .probe-table th:nth-child(5), .probe-table td:nth-child(5),
 .probe-table th:nth-child(6), .probe-table td:nth-child(6),
 .probe-table th:nth-child(7), .probe-table td:nth-child(7),
 .probe-table th:nth-child(8), .probe-table td:nth-child(8),
-.probe-table th:nth-child(9), .probe-table td:nth-child(9) { width: 10%; }
-.probe-table th:last-child, .probe-table td:last-child { width: 4%; padding-right: 10px; text-align: center; }
+.probe-table th:nth-child(9), .probe-table td:nth-child(9) { width: 9.5%; }
+.probe-table th:last-child, .probe-table td:last-child { width: 13%; padding-right: 10px; text-align: center; }
 .probe-table .table-secondary { max-width: 100%; white-space: normal; font-size: 10px; }
+.probe-row-actions { display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
+.probe-delete-button, .node-delete-button { color: #b3423e; white-space: nowrap; }
+.probe-delete-button:hover, .node-delete-button:hover { background: #fff0ee; color: #a02824; }
 .probe-address { line-height: 1.6; overflow-wrap: anywhere; }
 .probe-address > span { display: block; white-space: nowrap; }
 .probe-address small { display: block; color: var(--gray-500); font-size: 10px; }
