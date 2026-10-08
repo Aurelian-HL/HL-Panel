@@ -75,6 +75,7 @@ async function submit(): Promise<void> {
           </button>
         </label>
         <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+        <p v-else-if="route.query.reason === 'expired'" role="status">登录已过期，请重新登录后继续。</p>
         <button class="ny-login-submit" type="submit" :disabled="submitting">
           <LoaderCircle v-if="submitting" class="spin" :size="15" />
           {{ submitting ? '登录中' : '登录' }}

@@ -438,6 +438,7 @@ USER_CREATED=false
 DB_ROLE_CREATED=false
 DB_CREATE_STARTED=false
 SYSTEMD_UNIT_CREATED=false
+UPDATE_UNITS_CREATED=false
 NGINX_RELOAD_ATTEMPTED=false
 DB_OWNERSHIP_TOKEN=""
 cleanup() {
@@ -449,6 +450,10 @@ cleanup() {
     if [[ "$SYSTEMD_UNIT_CREATED" == true ]]; then
       systemctl disable --now hl-panel-control-api.service >/dev/null 2>&1 || true
       systemctl stop hl-panel-control-api.service >/dev/null 2>&1 || true
+    fi
+    if [[ "$UPDATE_UNITS_CREATED" == true ]]; then
+      systemctl disable --now hl-panel-update.socket >/dev/null 2>&1 || true
+      systemctl stop hl-panel-update.service >/dev/null 2>&1 || true
     fi
     remove_owned_files
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -654,6 +659,10 @@ if ! ln -s "$NGINX_AVAILABLE" "$NGINX_ENABLED"; then fail "Nginx 启用路径在
 OWNED_SYMLINKS["$NGINX_ENABLED"]="$NGINX_AVAILABLE"
 install_new_file "$FINAL_RELEASE/deploy/systemd/hl-panel-control-api.service" /etc/systemd/system/hl-panel-control-api.service root root 0644
 SYSTEMD_UNIT_CREATED=true
+for update_unit in hl-panel-update.socket hl-panel-update.service; do
+  install_new_file "$FINAL_RELEASE/deploy/systemd/$update_unit" "/etc/systemd/system/$update_unit" root root 0644
+  UPDATE_UNITS_CREATED=true
+done
 printf 'DOMAIN=%s\nPUBLIC_IP=%s\nIP_HTTPS_PORT=%s\nCERTBOT_CERT_NAME=%s\n' "$DOMAIN" "$PUBLIC_IP" "$IP_HTTPS_PORT" "$CERTBOT_CERT_NAME" > "$CONFIG_DIR/domain.conf"
 chown root:root "$CONFIG_DIR/domain.conf"
 chmod 0600 "$CONFIG_DIR/domain.conf"
@@ -669,6 +678,7 @@ nginx -t
 check_api_port_available
 check_ip_https_port_available
 systemctl enable --now hl-panel-control-api.service
+systemctl enable --now hl-panel-update.socket
 
 log "等待 API 本机健康检查（127.0.0.1:$API_PORT）"
 for attempt in {1..20}; do

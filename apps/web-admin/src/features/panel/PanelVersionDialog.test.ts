@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { checkVersion, type VersionStatus } from '@/api/releases'
 import PanelVersionDialog from './PanelVersionDialog.vue'
+vi.mock('@/api/panelUpdate', () => ({ panelUpdateStatus: vi.fn().mockResolvedValue({ available: false, message: '请先终端更新', task: null }), startPanelUpdate: vi.fn() }))
 vi.mock('@/api/releases', async original => ({ ...await original<typeof import('@/api/releases')>(), checkVersion: vi.fn() }))
 const check = vi.mocked(checkVersion)
 const sample: VersionStatus = {
@@ -42,6 +43,7 @@ describe('panel version dialog', () => {
   expect(root().querySelector('[role="alert"]')!.textContent).toContain('网络错误')
   root().querySelector<HTMLButtonElement>('[role="alert"] button')!.click()
   await flushPromises()
+  expect(check).toHaveBeenLastCalledWith(true)
   expect(root().querySelectorAll('input[type="radio"]')).toHaveLength(3)
  }),
  it('does not claim current when GitHub is unreachable', async () => {

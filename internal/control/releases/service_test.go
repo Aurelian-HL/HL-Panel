@@ -116,6 +116,32 @@ func TestSemverAndUnpublishedBuilds(t *testing.T) {
 	}
 }
 
+func TestManualRefreshBypassesSuccessCacheWithRequestFloor(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		fmt.Fprintf(w, `[{"tag_name":"v0.1.%d","published_at":"2026-01-01T00:00:00Z"}]`, calls)
+	}))
+	defer server.Close()
+	now := time.Now()
+	s := New("v0.1.1")
+	s.endpoint = server.URL
+	s.now = func() time.Time { return now }
+	s.Check(context.Background())
+	now = now.Add(30 * time.Second)
+	s.Refresh(context.Background())
+	if calls != 1 {
+		t.Fatal("manual refresh ignored the request floor")
+	}
+	now = now.Add(30 * time.Second)
+	if s.Check(context.Background()).Latest != "v0.1.1" {
+		t.Fatal("ordinary check lost its cache")
+	}
+	if s.Refresh(context.Background()).Latest != "v0.1.2" || calls != 2 {
+		t.Fatal("manual refresh did not fetch a new release")
+	}
+}
+
 func TestReleaseResponseMustBePublishedAndValid(t *testing.T) {
 	for _, body := range []string{"not json", "[]", `[{"tag_name":"v9.0.0","draft":true}]`} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))

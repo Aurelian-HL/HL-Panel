@@ -187,6 +187,10 @@ for metric in ('cpu_percent', 'memory_used_bytes', 'memory_total_bytes', 'swap_u
 assert resources['memory_total_bytes'] > 0
 assert 0 <= resources['cpu_percent'] <= 100
 assert request('GET', '/device-groups', token=session['access_token'])['items'] == []
+web_update = request('GET', '/panel/update', token=session['access_token'])
+assert web_update['available'] is True and web_update['task'] is None
+request('GET', '/panel/update', expected=401)
+request('POST', '/panel/update', {}, expected=401)
 subprocess.run(['nginx', '-t'], check=True)
 with urllib.request.urlopen('https://127.0.0.1:19443/', context=ssl._create_unverified_context(), timeout=15) as page:
     assert b'<html' in page.read()
@@ -204,6 +208,7 @@ Path('fresh-install-result.json').write_text(json.dumps({
     'restart_durability': True, 'repeat_install_rejected': True, 'local_password_reset': True,
     'unbound_domain_ip_https': True,
     'panel_host_metrics': True,
+    'web_update_socket_and_admin_authorization': True,
     'nginx_automatic_adaptation': 'Nginx 自动适配完成' in transcript,
 }, indent=2))
 print('FRESH_INSTALL_ACCEPTED: ' + args.credentials)

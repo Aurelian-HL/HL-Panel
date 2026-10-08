@@ -21,6 +21,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
+	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -64,6 +65,7 @@ type API struct {
 	targetProbe       *targetprobe.Service
 	releases          *releases.Service
 	migration         *migrationbackup.Service
+	panelUpdate       *panelupdate.Service
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {
@@ -162,6 +164,10 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("GET /api/v1/auth/me", api.requireAdministratorSession(api.currentAdministrator))
 	if api.releases != nil {
 		mux.HandleFunc("GET /api/v1/system/version", api.requireAdministratorSession(api.checkVersion))
+	}
+	if api.panelUpdate != nil {
+		mux.HandleFunc("GET /api/v1/panel/update", api.requireAdministrator(api.panelUpdateStatus))
+		mux.HandleFunc("POST /api/v1/panel/update", api.requireAdministrator(api.startPanelUpdate))
 	}
 	mux.HandleFunc("PUT /api/v1/auth/password", api.requireAdministratorSession(api.changeAdministratorPassword))
 	mux.HandleFunc("GET /api/v1/overview", api.requireAdministrator(api.overview))

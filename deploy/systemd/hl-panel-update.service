@@ -1,0 +1,20 @@
+# Managed by HL-panel: local fixed-purpose update worker.
+[Unit]
+Description=HL-Panel data-preserving update worker
+Requires=hl-panel-update.socket
+After=network-online.target hl-panel-update.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I /opt/hl-panel/current/deploy/panel-update-worker.py
+StateDirectory=hl-panel-update
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=null
+StandardError=null

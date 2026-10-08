@@ -95,6 +95,10 @@ try {
         'fetch-node-engines.py',
         'update.sh',
         'update.py',
+        'update-node.py',
+        'panel-update-worker.py',
+        'configure-reality.sh',
+        'configure-reality.py',
         'enable-domain-tls.sh',
         'edge-agent\enroll.sh',
         'edge-agent\install.sh',
@@ -107,6 +111,8 @@ try {
         'nginx\snippets\hl-panel-app-locations.conf',
         'nginx\snippets\hl-panel-security-headers.conf',
         'systemd\hl-panel-control-api.service',
+        'systemd\hl-panel-update.socket',
+        'systemd\hl-panel-update.service',
         'systemd\hl-panel-edge-agent.service'
     )
     foreach ($relativePath in $deploymentFiles) {

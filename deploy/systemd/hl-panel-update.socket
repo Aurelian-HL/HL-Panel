@@ -1,0 +1,13 @@
+# Managed by HL-panel: local fixed-purpose update channel.
+[Unit]
+Description=HL-Panel local update socket
+
+[Socket]
+ListenStream=/run/hl-panel-update.sock
+SocketUser=root
+SocketGroup=hlpanel
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

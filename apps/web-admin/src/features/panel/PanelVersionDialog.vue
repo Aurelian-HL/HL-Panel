@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { RefreshCw } from '@lucide/vue'
 import BaseModal from '@/components/BaseModal.vue'
+import PanelUpdateForm from './PanelUpdateForm.vue'
 import { checkVersion, repositoryUrl, updateCommand, type VersionStatus } from '@/api/releases'
 import { displayError } from '@/lib/displayFormatters'
 
@@ -15,20 +16,20 @@ const copied = ref(false)
 const versions = computed(() => status.value?.versions ?? [])
 const target = computed(() => versions.value.find(v => v.tag === selected.value))
 const command = computed(() => !busy.value && !error.value && target.value?.can_update && /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(selected.value) ? `${updateCommand} -s -- --version ${selected.value}` : '')
-async function load(): Promise<void> {
+async function load(refresh = false): Promise<void> {
   if (busy.value) return
   busy.value = true; error.value = ''
-  try { status.value = await checkVersion(); selected.value = status.value.current_version; copied.value = false } catch (cause) { error.value = displayError(cause) } finally { busy.value = false }
+  try { status.value = await checkVersion(refresh); selected.value = status.value.current_version; copied.value = false } catch (cause) { error.value = displayError(cause) } finally { busy.value = false }
 }
 async function copy(): Promise<void> { try { await navigator.clipboard.writeText(command.value); copied.value = true } catch { error.value = '复制失败，请选中命令手动复制' } }
-onMounted(load)
+onMounted(() => { void load() })
 </script>
 
 <template>
   <BaseModal title="版本" width="small" dialog-class="panel-version-modal" @close="$emit('close')">
-    <div class="version-panel-heading"><strong>HL-Panel</strong><button class="icon-button" type="button" aria-label="刷新版本列表" :disabled="busy" @click="load"><RefreshCw :size="15" :class="{ spin: busy }" /></button></div>
+    <div class="version-panel-heading"><strong>HL-Panel</strong><button class="icon-button" type="button" aria-label="刷新版本列表" :disabled="busy" @click="load(true)"><RefreshCw :size="15" :class="{ spin: busy }" /></button></div>
     <div class="version-warning">更新前请查看发布说明。保数据更新会先备份账号、规则与配置。</div>
-    <p v-if="error" class="form-error" role="alert">{{ error }} <button @click="load">重试</button></p>
+    <p v-if="error" class="form-error" role="alert">{{ error }} <button @click="load(true)">重试</button></p>
     <p v-if="busy && !status" class="version-loading">正在读取 GitHub 正式版本…</p>
     <p v-else-if="status?.state === 'check_failed'" class="form-error" role="alert">{{ status.message }}</p>
     <div v-if="versions.length" class="panel-version-list" role="radiogroup" aria-label="HL-Panel 正式版本">
@@ -37,7 +38,8 @@ onMounted(load)
       </label>
     </div>
     <p v-if="!busy && !versions.some(v => v.current)" class="version-current">当前版本：{{ status?.current_version || current }}</p>
-    <div v-if="command" class="selected-update"><strong>保数据更新至 {{ selected }}</strong><p>在面板机终端以 root 执行：</p><pre aria-label="保数据更新命令">{{ command }}</pre><button type="button" class="button button--primary" @click="copy">{{ copied ? '已复制' : '复制更新命令' }}</button><p>更新会短暂停止本面板；终端会显示备份目录及回滚命令。完成后刷新页面。</p></div>
+    <PanelUpdateForm :version="command ? selected : ''" />
+    <div v-if="command" class="selected-update"><strong>终端保数据更新至 {{ selected }}</strong><p>也可在面板机终端以 root 执行：</p><pre aria-label="保数据更新命令">{{ command }}</pre><button type="button" class="button button--secondary" @click="copy">{{ copied ? '已复制' : '复制更新命令' }}</button><p>旧安装先执行一次终端更新，即可启用网页更新服务。更新会显示备份目录和回滚命令。</p></div>
     <p class="version-footnote">当前版本已标记。旧版本仅供查看，自动更新不支持降级。</p>
     <a :href="target?.release_url || repositoryUrl + '/releases'" target="_blank" rel="noopener noreferrer" class="version-release-link">查看 GitHub 发布说明 ↗</a>
   </BaseModal>

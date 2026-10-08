@@ -1,8 +1,17 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises } from '@vue/test-utils'
+import { HttpClient } from './api/http'
 
 import { router } from './router'
 import { authStore } from './stores/auth'
 import { parseLoginResponse } from './api/validators'
+
+afterEach(async () => {
+  authStore.logout()
+  await router.replace('/login')
+  await flushPromises()
+  vi.unstubAllGlobals()
+})
 
 describe('admin routes', () => {
   it('preserves the password change flag from login and prevents navigation bypass', async () => {
@@ -11,7 +20,6 @@ describe('admin routes', () => {
     sessionStorage.setItem('ny_admin_access_token', 'test')
     // The singleton store cannot be changed from readonly references; login
     // goes through the real parser with a local mocked HTTP response.
-    const { vi } = await import('vitest')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...response, user: { ...response.user, must_change_password: true } }), { headers: { 'content-type': 'application/json' } })))
     await authStore.login({ username: 'admin', password: '123456' })
     await router.push('/nodes')
@@ -19,7 +27,17 @@ describe('admin routes', () => {
     await router.push('/login')
     expect(router.currentRoute.value.name).toBe('userinfo')
     authStore.logout()
-    vi.unstubAllGlobals()
+    await flushPromises()
+  })
+  it('sends an expired session to login with the original destination', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: 'expired-session-test', expires_at: '2030-01-01T00:00:00Z', user: { id: 'adm-1', username: 'admin', must_change_password: false } }), { headers: { 'content-type': 'application/json' } })))
+    await authStore.login({ username: 'admin', password: 'test-only-password' })
+    await router.push('/system-settings')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'unauthenticated', message: 'authentication failed' } }), { status: 401, headers: { 'content-type': 'application/json' } })))
+    const client = new HttpClient('/api/v1', () => 'expired-session-test')
+    await expect(client.request('/system/version')).rejects.toMatchObject({ code: 'session_expired' })
+    await vi.waitFor(() => expect(router.currentRoute.value.name).toBe('login'), { timeout: 5000 })
+    expect(router.currentRoute.value.query).toMatchObject({ redirect: '/system-settings', reason: 'expired' })
   })
   it('opens the probe in its own workspace outside the panel shell', () => {
     expect(router.resolve('/probe').matched.map((record) => record.path)).toEqual(['/probe', '/probe'])

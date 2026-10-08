@@ -18,6 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	controlusage "github.com/hongle/hl-panel/internal/control/usage"
 	usagememory "github.com/hongle/hl-panel/internal/control/usage/memory"
@@ -34,10 +35,12 @@ func TestInitialPasswordRequiresDurableChangeBeforeBusinessAccess(t *testing.T) 
 	}
 	store := memoryrepo.New(auth.Administrator{ID: "adm_initial", Username: "customadmin", PasswordHash: hash, CreatedAt: now, MustChangePassword: true})
 	makeHandler := func(s *memoryrepo.Store) http.Handler {
+		authService := auth.NewService(s, audit.NewService(s), time.Now, time.Hour)
+		versions := releases.New("development")
 		return httpapi.New(auth.NewService(s, audit.NewService(s), time.Now, time.Hour),
 			enrollment.NewService(s, time.Now, time.Hour), nodes.NewService(s, time.Now, time.Minute),
 			groups.NewService(s, time.Now), endpoints.NewService(s, time.Now), generations.NewService(s, time.Now),
-			slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithReleases(releases.New("development")), httpapi.WithUsage(controlusage.NewService(usagememory.New(), loopbackPolicy{limit: 100}, time.Now)))
+			slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithReleases(versions), httpapi.WithPanelUpdate(panelupdate.New(authService, audit.NewService(s), versions)), httpapi.WithUsage(controlusage.NewService(usagememory.New(), loopbackPolicy{limit: 100}, time.Now)))
 	}
 	handler := makeHandler(store)
 	var login auth.LoginResult
@@ -60,6 +63,7 @@ func TestInitialPasswordRequiresDurableChangeBeforeBusinessAccess(t *testing.T) 
 		{http.MethodPost, "/api/v1/device-groups"},
 		{http.MethodGet, "/api/v1/usage"},
 		{http.MethodPost, "/api/v1/usage/enforcement/test/revoke"},
+		{http.MethodGet, "/api/v1/panel/update"}, {http.MethodPost, "/api/v1/panel/update"},
 	} {
 		body := requestJSON(t, handler, route.method, route.path, login.AccessToken, nil, http.StatusForbidden)
 		if !bytes.Contains(body, []byte("password_change_required")) {
@@ -68,6 +72,8 @@ func TestInitialPasswordRequiresDurableChangeBeforeBusinessAccess(t *testing.T) 
 	}
 	requestJSON(t, handler, http.MethodGet, "/api/v1/auth/me", login.AccessToken, nil, http.StatusOK)
 	requestJSON(t, handler, http.MethodGet, "/api/v1/system/version", "", nil, http.StatusUnauthorized)
+	requestJSON(t, handler, http.MethodGet, "/api/v1/panel/update", "", nil, http.StatusUnauthorized)
+	requestJSON(t, handler, http.MethodPost, "/api/v1/panel/update", "", nil, http.StatusUnauthorized)
 	requestJSON(t, handler, http.MethodGet, "/api/v1/system/version", login.AccessToken, nil, http.StatusOK)
 	for _, input := range []map[string]string{
 		{"current_password": "wrong", "new_password": "replacement-secret"},

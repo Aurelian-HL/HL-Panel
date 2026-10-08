@@ -96,6 +96,8 @@ jobs:
           python3 -m py_compile deploy/node-control-url.py
           sudo python3 tests/install/test_node_control_url.py
           python3 -m py_compile tests/install/panel_migration.py
+          python3 -m py_compile deploy/panel-update-worker.py
+          python3 tests/install/test_panel_update_worker.py
       - name: Build web admin
         working-directory: apps/web-admin
         run: |
@@ -131,6 +133,7 @@ jobs:
             deploy/fetch-node-engines.py
             deploy/update.sh
             deploy/update.py
+            deploy/panel-update-worker.py
             deploy/update-node.py
             deploy/configure-reality.sh
             deploy/configure-reality.py
@@ -146,6 +149,8 @@ jobs:
             deploy/nginx/snippets/hl-panel-app-locations.conf
             deploy/nginx/snippets/hl-panel-security-headers.conf
             deploy/systemd/hl-panel-control-api.service
+            deploy/systemd/hl-panel-update.socket
+            deploy/systemd/hl-panel-update.service
             deploy/systemd/hl-panel-edge-agent.service
           )
           for source_file in "${deployment_files[@]}"; do
@@ -229,7 +234,11 @@ jobs:
             nginx-compatibility-result.json
   safe-update:
     needs: release
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -261,7 +270,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: preserve-update
+          name: preserve-update-${{ matrix.os }}
           path: |
             fresh-install.log
             preserve-update-result.json
@@ -351,3 +360,43 @@ jobs:
             --title "HL-panel $tag" \
             --verify-tag \
             --generate-notes
+  web-update:
+    # This job needs published assets: it uses GitHub's real release transport.
+    needs: [release, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.commit }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: hl-panel-candidate
+          path: ${{ runner.temp }}/candidate
+      - name: Build isolated older baseline with the update channel
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags '-X main.platformVersion=v0.1.0' -o "$RUNNER_TEMP/baseline-control-api" ./apps/control-api
+          python3 tests/install/web_update.py --prepare --version "$RELEASE_TAG" \
+            --archive-directory "$RUNNER_TEMP/candidate" --baseline-binary "$RUNNER_TEMP/baseline-control-api" \
+            --output-directory "$RUNNER_TEMP/web-baseline"
+      - name: Prepare package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Install the isolated baseline
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/web-baseline" --version v0.1.0 --credentials default
+      - name: Verify two real HTTP upgrades and a real rollback
+        env:
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/web_update.py --version "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: web-update
+          path: |
+            fresh-install.log
+            web-update-result.json

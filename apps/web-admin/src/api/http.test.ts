@@ -57,7 +57,7 @@ describe('HttpClient', () => {
     })))
     const client = new HttpClient('/api/v1', () => 'expired-token')
 
-    await expect(client.request('/nodes')).rejects.toMatchObject({ status: 401, code: 'expired' })
+    await expect(client.request('/nodes')).rejects.toMatchObject({ status: 401, code: 'session_expired', message: '登录已过期，请重新登录后继续' })
     expect(handler).toHaveBeenCalledOnce()
   })
 })

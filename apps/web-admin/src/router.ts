@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { watch } from 'vue'
 
 import AppShell from '@/layouts/AppShell.vue'
 import { authStore } from '@/stores/auth'
@@ -55,4 +56,10 @@ router.beforeEach((to) => {
     return { name: 'userinfo' }
   }
   return true
+})
+
+watch(authStore.isAuthenticated, (authenticated, wasAuthenticated) => {
+  if (!authenticated && wasAuthenticated && !router.currentRoute.value.meta.public) {
+    void router.replace({ name: 'login', query: { redirect: router.currentRoute.value.fullPath, reason: 'expired' } })
+  }
 })

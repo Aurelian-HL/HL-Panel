@@ -48,7 +48,8 @@ previous = Path('/opt/hl-panel/current').resolve()
 def fingerprint():
     values={}
     for directory in ('/etc/hl-panel','/etc/nginx','/etc/systemd/system/hl-panel-control-api.service',
-                      '/etc/systemd/system/hl-panel-control-api.service.d'):
+                      '/etc/systemd/system/hl-panel-control-api.service.d',
+                      '/etc/systemd/system/hl-panel-update.socket', '/etc/systemd/system/hl-panel-update.service'):
         root=Path(directory)
         for path in ([root] if root.is_file() else root.rglob('*')):
             if path.is_symlink():
@@ -103,9 +104,21 @@ def verify(version):
             assert metric in resources, 'Host metrics missing after update: ' + metric
         original = (previous/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
         candidate = (repository/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
-        if update.SUBSCRIPTION_LOCATION in candidate and update.SUBSCRIPTION_LOCATION not in original:
-            expected[str(locations)] = hashlib.sha256((original.rstrip()+'\n\n'+update.SUBSCRIPTION_LOCATION+'\n').encode()).hexdigest()
-    assert fingerprint()==expected,'Configuration changed beyond managed subscription location and metrics drop-in'
+        additions = [location for location in (update.SUBSCRIPTION_LOCATION, update.MIGRATION_LOCATION) if location in candidate and location not in original]
+        if additions:
+            expected[str(locations)] = hashlib.sha256((original.rstrip()+'\n\n'+'\n\n'.join(additions)+'\n').encode()).hexdigest()
+        if update.MIGRATION_LOCATION in additions:
+            import re
+            proxy = Path('/etc/nginx/snippets/hl-panel-api-proxy.conf').read_text()
+            for directive in ('proxy_read_timeout', 'proxy_send_timeout'):
+                proxy, count = re.subn(r'(?m)^\s*'+directive+r'\s+[^;]+;', directive+' 120s;', proxy)
+                assert count == 1
+            expected[str(update.MIGRATION_PROXY)] = hashlib.sha256(proxy.encode()).hexdigest()
+        for name in ('hl-panel-update.socket', 'hl-panel-update.service'):
+            expected['/etc/systemd/system/'+name] = hashlib.sha256((repository/'deploy/systemd'/name).read_bytes()).hexdigest()
+        web = request('GET', '/panel/update', token=token)
+        assert web['available'] is True and web['task'] is None
+    assert fingerprint()==expected,'Configuration changed beyond explicitly managed locations, metrics and update units'
     subprocess.run(['nginx','-t'],check=True)
 
 # Invalid SHA must fail without stopping the service or switching binaries.

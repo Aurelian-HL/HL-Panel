@@ -11,5 +11,10 @@ func WithReleases(service *releases.Service) Option {
 }
 
 func (api *API) checkVersion(w http.ResponseWriter, r *http.Request, _ auth.Session) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Query().Get("refresh") == "true" {
+		writeJSON(w, http.StatusOK, api.releases.Refresh(r.Context()))
+		return
+	}
 	writeJSON(w, http.StatusOK, api.releases.Check(r.Context()))
 }

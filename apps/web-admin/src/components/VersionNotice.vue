@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BaseModal from './BaseModal.vue'
+import PanelUpdateForm from '@/features/panel/PanelUpdateForm.vue'
 import { canDeferVersion, checkVersion, repositoryUrl, updateCommand, type VersionStatus } from '@/api/releases'
 
 const status = ref<VersionStatus | null>(null)
@@ -24,7 +25,7 @@ async function load(open = false): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    status.value = await checkVersion()
+    status.value = await checkVersion(open)
     deferred.value = false
     if (canDeferVersion(status.value)) {
       try {
@@ -72,6 +73,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); window.removeEventListe
         <p v-if="error" role="alert">{{ error }}</p>
         <p v-if="status">当前版本 <strong>{{ status.current_version }}</strong> · GitHub 正式版本 <strong>{{ status.latest_version || '暂未核实' }}</strong></p>
         <p v-if="status">{{ status.message }}</p>
+        <PanelUpdateForm :version="pending ? (status?.latest_version ?? '') : ''" />
         <p>登录安装面板的 VPS，以 root 执行下面的更新命令。更新会短暂停止本面板，先备份数据库和配置，再安装官方发布包；管理员账号、已修改密码、规则、域名和证书全部保留。</p>
         <pre class="version-command"><code>{{ command }}</code></pre>
         <div class="version-actions"><button class="button button--secondary" @click="copy">{{ copied ? '已复制' : '复制更新命令' }}</button><a class="button button--secondary" :href="repositoryUrl + '/releases'" target="_blank" rel="noopener noreferrer">查看发布说明</a></div>

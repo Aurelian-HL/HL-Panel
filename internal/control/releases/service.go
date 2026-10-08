@@ -97,10 +97,20 @@ func newer(a, b [3]uint64) bool {
 // Check caches all outcomes, including network failures. Refreshing pages cannot
 // fan out unlimited requests or bypass the backend's version policy.
 func (s *Service) Check(ctx context.Context) Status {
+	return s.check(ctx, false)
+}
+
+// Refresh bypasses the successful 15 minute cache, while retaining a one minute
+// request floor for manual refreshes and failures to avoid GitHub rate limiting.
+func (s *Service) Refresh(ctx context.Context) Status {
+	return s.check(ctx, true)
+}
+
+func (s *Service) check(ctx context.Context, refresh bool) Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now().UTC()
-	if now.Before(s.expires) {
+	if now.Before(s.expires) && (!refresh || now.Before(s.cached.CheckedAt.Add(time.Minute))) {
 		return s.cached
 	}
 	result := Status{Current: s.current, State: "check_failed", CheckedAt: now, Versions: []Version{},

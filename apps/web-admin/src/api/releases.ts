@@ -16,8 +16,8 @@ export interface VersionStatus {
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
 const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_access_token'))
 
-export async function checkVersion(): Promise<VersionStatus> {
-  return http.request<VersionStatus>('/system/version')
+export async function checkVersion(refresh = false): Promise<VersionStatus> {
+  return http.request<VersionStatus>(`/system/version${refresh ? '?refresh=true' : ''}`, { cache: 'no-store' })
 }
 
 export const repositoryUrl = 'https://github.com/Aurelian-HL/HL-Panel'

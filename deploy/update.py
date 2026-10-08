@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -126,8 +127,11 @@ def healthy(origin, version):
 
 
 def digest(path):
+    checksum = hashlib.sha256()
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream,'sha256').hexdigest()
+        for chunk in iter(lambda: stream.read(1024*1024), b''):
+            checksum.update(chunk)
+    return checksum.hexdigest()
 
 
 def extract_verified(archive, destination):
@@ -158,7 +162,8 @@ def extract_verified(archive, destination):
         verified.add(name)
     files={str(path.relative_to(destination)) for path in destination.rglob('*') if path.is_file()}
     require(files==verified|{'SHA256SUMS'},'安装包包含未校验文件')
-    for asset in ('bin/control-api','bin/usage-migrate','bin/edge-agent','web-admin/index.html','deploy/update.py'):
+    for asset in ('bin/control-api','bin/usage-migrate','bin/edge-agent','web-admin/index.html','deploy/update.py',
+                  'deploy/panel-update-worker.py','deploy/systemd/hl-panel-update.socket','deploy/systemd/hl-panel-update.service'):
         require(asset in verified,'安装包缺少必需资产：'+asset)
     for path in destination.rglob('*'):
         path.chmod(0o755 if path.is_dir() or str(path.relative_to(destination)).startswith('bin/') else 0o644)
@@ -267,7 +272,60 @@ def restore_host_metrics(backup):
         run(['systemctl','daemon-reload'])
 
 
+def web_update_channel(destination, backup):
+    """Install only the fixed-purpose, locally permissioned update units."""
+    sources = [destination/'deploy/systemd'/name for name in ('hl-panel-update.socket', 'hl-panel-update.service')]
+    require(all(path.is_file() for path in sources), '发布包缺少网页更新服务')
+    changes = []
+    for source in sources:
+        target = Path('/etc/systemd/system')/source.name
+        if target.exists() or target.is_symlink():
+            private_regular(target)
+            require(target.read_text().startswith('# Managed by HL-panel:'), '网页更新服务路径已被其他配置占用，未覆盖')
+            if target.read_bytes() == source.read_bytes():
+                continue
+            shutil.copyfile(target, backup/source.name)
+            changes.append({'name': source.name, 'added': False})
+        else:
+            changes.append({'name': source.name, 'added': True})
+        # Record intent before writing so a partial write can be undone.
+        (backup/'web-update-units.json').write_text(json.dumps(changes))
+        pending = target.with_name('.'+target.name+'-'+str(os.getpid()))
+        try:
+            shutil.copyfile(source, pending)
+            pending.chmod(0o644)
+            pending.replace(target)
+        finally:
+            if pending.exists():
+                pending.unlink()
+    run(['systemctl','daemon-reload'])
+
+
+def restore_web_update_channel(backup):
+    journal = backup/'web-update-units.json'
+    if not journal.is_file():
+        return
+    changes = json.loads(journal.read_text())
+    if any(change['added'] for change in changes):
+        run(['systemctl','disable','--now','hl-panel-update.socket'])
+        run(['systemctl','stop','hl-panel-update.service'])
+    for change in changes:
+        require(change['name'] in ('hl-panel-update.socket','hl-panel-update.service'), '网页更新恢复记录无效')
+        target = Path('/etc/systemd/system')/change['name']
+        if target.exists():
+            private_regular(target)
+        if change['added']:
+            target.unlink(missing_ok=True)
+        else:
+            private_regular(backup/change['name'])
+            shutil.copyfile(backup/change['name'], target)
+            target.chmod(0o644)
+    run(['systemctl','daemon-reload'])
+
+
 def rollback(backup):
+    # Finish restoring even when a second stop signal arrives during rollback.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     backup=backup.resolve()
     require(backup.parent==Path('/var/backups/hl-panel') and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
     private_regular(backup/'update-state.json')
@@ -279,6 +337,7 @@ def rollback(backup):
     run(['systemctl','stop',SERVICE])
     restore_subscription_nginx(backup)
     restore_host_metrics(backup)
+    restore_web_update_channel(backup)
     with (backup/'database.dump').open('rb') as stream:
         run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
     switch(old)
@@ -377,7 +436,9 @@ def main():
             run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
             subscription_nginx_update(destination, backup)
             host_metrics_update(destination, backup)
+            web_update_channel(destination, backup)
             switch(destination)
+            run(['systemctl','enable','--now','hl-panel-update.socket'])
             run(['systemctl','start',SERVICE])
             healthy(origin,target)
         except Exception:
@@ -396,6 +457,9 @@ def main():
 
 
 if __name__=='__main__':
+    def interrupted(*_):
+        raise UpdateError('更新被中断；已进入恢复流程，请核对备份与服务状态')
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         main()
     except UpdateError as error:

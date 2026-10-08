@@ -52,7 +52,10 @@ export class HttpClient {
       throw new ApiError(error instanceof Error ? `网络连接失败：${error.message}` : '网络连接失败')
     }
 
-    if (response.status === 401) unauthorizedHandler?.()
+    if (response.status === 401 && token && path !== '/auth/login') {
+      unauthorizedHandler?.()
+      throw new ApiError('登录已过期，请重新登录后继续', 401, 'session_expired')
+    }
     if (response.status === 204) return undefined as T
 
     const contentType = response.headers.get('content-type') ?? ''

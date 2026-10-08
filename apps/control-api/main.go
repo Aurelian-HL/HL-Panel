@@ -34,6 +34,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
+	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/postgressnapshot"
 	"github.com/hongle/hl-panel/internal/control/releases"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
@@ -216,8 +217,10 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 	}
 	defer stopBackground()
+	versionService := releases.New(platformVersion)
 	options := []httpapi.Option{
-		httpapi.WithReleases(releases.New(platformVersion)),
+		httpapi.WithReleases(versionService),
+		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
