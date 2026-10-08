@@ -73,6 +73,9 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 	if !exists {
 		return nodes.Node{}, faults.ErrUnauthorized
 	}
+	if input.Reenroll {
+		return s.reenrollNodeLocked(input, token, now, event)
+	}
 	if token.UsedAt != nil {
 		// Possession of the token alone never permits a second registration.
 		// Only the original private attempt and unchanged identity can recover
@@ -108,6 +111,7 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 
 	usedAt := now
 	token.UsedAt = &usedAt
+	token.UsedNodeID = input.Node.ID
 	node := cloneNode(input.Node)
 	node.Name = token.Name
 	node.NezhaServerID = token.NezhaServerID

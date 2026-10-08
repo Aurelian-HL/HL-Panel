@@ -33,10 +33,6 @@ done
 if [[ -n "$ca_file" ]]; then
   [[ -f "$ca_file" && ! -L "$ca_file" ]] || { echo 'CA 文件不存在或是链接；未修改节点。' >&2; exit 2; }
 fi
-if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
-  echo '此节点已注册，保留已有身份；无需重复安装。查看：systemctl status hl-panel-edge-agent' >&2
-  exit 1
-fi
 if [[ -z "$archive" ]]; then
   if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then
     command -v apt-get >/dev/null || { echo '请先安装 curl、python3、ca-certificates。' >&2; exit 1; }
@@ -149,6 +145,16 @@ for asset in bin/xray bin/gost; do
   [[ -f "$release/$asset" ]] || { echo '安装包缺少转发引擎；未修改节点，请使用新版本。' >&2; exit 1; }
   chmod 0755 "$release/$asset"
 done
+if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
+  [[ -f "$release/deploy/reinstall-node.py" ]] || { echo '该版本不支持重装换组，请先更新面板后重新复制安装命令。' >&2; exit 1; }
+  echo '[HL-panel 节点] 发现已有节点，按本次有效命令重新安装并切换设备组…'
+  HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" python3 "$release/deploy/reinstall-node.py" \
+    --release "$release" --panel-url "$origin" --node-address "$node_address" --version "$version" --ca-file "$ca_file"
+  unset enrollment_token
+  echo '[HL-panel 节点] 重装完成，节点身份与流量历史保留，旧组已撤下，以本次命令的设备组为准。'
+  echo '请返回面板刷新设备组成员与探针，并核对新组规则下发结果。'
+  exit 0
+fi
 for directory in /opt/hl-panel /opt/hl-panel/node-engines /etc/hl-panel /var/lib/hl-panel-edge; do
   [[ ! -L "$directory" ]] || { echo '安装目录是链接，拒绝修改。' >&2; exit 1; }
 done

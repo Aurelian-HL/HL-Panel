@@ -90,6 +90,7 @@ try {
         'README.md',
         'install.sh',
         'install-node.sh',
+        'reinstall-node.py',
         'fetch-node-engines.py',
         'update.sh',
         'update.py',

@@ -187,6 +187,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("DELETE /api/v1/endpoint-pools/{pool_id}", api.requireAdministrator(api.deleteEndpointPool))
 	mux.HandleFunc("POST /api/v1/endpoint-pools/{pool_id}/members", api.requireAdministrator(api.addEndpointPoolMember))
 	mux.HandleFunc("POST /api/v1/agent/enroll", api.enrollNode)
+	mux.HandleFunc("POST /api/v1/agent/reenroll", api.requireNode(api.reenrollNode))
 	mux.HandleFunc("POST /api/v1/agent/heartbeat", api.requireNode(api.heartbeat))
 	mux.HandleFunc("GET /api/v1/agent/control", api.requireNode(api.desiredControl))
 	mux.HandleFunc("POST /api/v1/agent/control-results", api.requireNode(api.recordControlResult))

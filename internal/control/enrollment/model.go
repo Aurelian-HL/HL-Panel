@@ -16,6 +16,7 @@ type Token struct {
 	TokenHash     string
 	ExpiresAt     time.Time
 	UsedAt        *time.Time
+	UsedNodeID    string `json:",omitempty"`
 	RevokedAt     *time.Time
 	CreatedBy     string
 	CreatedAt     time.Time
@@ -61,6 +62,7 @@ type ConsumeInput struct {
 	Node           nodes.Node
 	CredentialHash string
 	AllowReplay    bool
+	Reenroll       bool
 }
 
 type RevokeInput struct {

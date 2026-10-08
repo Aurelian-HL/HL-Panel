@@ -80,7 +80,7 @@ try:
         control_origin = f'https://127.0.0.1:{port}'
         context = ssl.create_default_context(cafile=str(cert))
         fault_state = {'enabled': False, 'enroll_calls': 0, 'lost_response': False,
-                       'attempts': [], 'panel_versions': []}
+                       'attempts': [], 'panel_versions': [], 'reenroll_fault': False, 'reenroll_calls': 0}
 
         class NodeProxy(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -89,6 +89,13 @@ try:
             def forward(self):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
                 enroll = self.path == '/api/v1/agent/enroll' and fault_state['enabled']
+                reenroll = self.path == '/api/v1/agent/reenroll' and fault_state['reenroll_fault']
+                if reenroll:
+                    fault_state['reenroll_calls'] += 1
+                    if fault_state['reenroll_calls'] == 1:
+                        self.send_response(503)
+                        self.end_headers()
+                        return
                 if enroll:
                     recovery = json.loads(body)['enrollment_secret']
                     secrets.append(recovery)
@@ -112,6 +119,11 @@ try:
                     if enroll and fault_state['enroll_calls'] == 3:
                         assert response.code == 201, 'Fault injection did not consume the real token'
                         fault_state['lost_response'] = True
+                        self.close_connection = True
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        return
+                    if reenroll and fault_state['reenroll_calls'] == 2:
+                        assert response.code == 200, 'Reinstall response loss did not follow a committed group switch'
                         self.close_connection = True
                         self.connection.shutdown(socket.SHUT_RDWR)
                         return
@@ -170,9 +182,9 @@ try:
             group = request('POST', '/device-groups', {'name':'isolated node', 'kind':'ENTRY',
                             'selection_policy':'weighted_least_connections', 'description':'loopback acceptance'}, 201)['group']
 
-            def issue(ttl=900):
+            def issue(ttl=900, group_id=None):
                 token = request('POST', '/enrollment-tokens', {'name':'isolated node',
-                                'group_id':group['id'], 'expires_in_seconds':ttl}, 201)['token']
+                                'group_id':group_id or group['id'], 'expires_in_seconds':ttl}, 201)['token']
                 secrets.append(token)
                 return token
 
@@ -259,11 +271,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 assert item['source'] == 'hl' and item['link_status'] == 'native' and item['online']
                 assert item['memory_total_bytes'] > 0
             checks.append('native host probe works without Nezha in inventory and group')
-            assert install(token).returncode != 0
+            assert install(token).returncode == 0, 'Same-command reinstall failed'
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
             request('POST','/agent/enroll', {'token':token,'hostname':'reused',
                     'platform':'linux','architecture':'amd64','agent_version':args.version}, 401)
-            checks.append('repeat install preserves identity and used token cannot enroll again')
+            checks.append('repeat install succeeds with the same identity; token alone cannot enroll a second machine')
 
             marker = b'hl-installed-engines-real-traffic'
             listener = socket.socket()
@@ -358,6 +370,79 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                           '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
             assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits
             checks.append('controlled updates retain systemd automatic crash rate limits')
+            # Two real same-port group switches; both old group memberships
+            # must be removed, not merely masked in the UI.
+            changed_marker = b'hl-reinstalled-new-group-traffic'
+            changed_listener = socket.socket()
+            changed_listener.bind(('127.0.0.1',0)); changed_listener.listen()
+            changed_port = changed_listener.getsockname()[1]
+            def serve_changed():
+                while True:
+                    try:
+                        connection,_ = changed_listener.accept()
+                        with connection: connection.sendall(changed_marker)
+                    except OSError: return
+            threading.Thread(target=serve_changed,daemon=True).start()
+            switched = request('POST','/device-groups',{'name':'reinstalled GOST','kind':'ENTRY',
+                'selection_policy':'weighted_least_connections'},201)['group']
+            switched_config = json.loads(json.dumps(gost_config))
+            switched_config['services'][0]['forwarder']['nodes'][0]['addr'] = f'127.0.0.1:{changed_port}'
+            request('POST',f"/device-groups/{switched['id']}/generations",{'engine':'gost',
+                'config':switched_config,'idempotency_key':'switch-gost'},201)
+            switch_token = issue(group_id=switched['id'])
+            fault_state['reenroll_fault'] = True
+            assert install(switch_token).returncode == 0, 'Full command did not switch existing node'
+            assert fault_state['reenroll_calls'] == 3
+            fault_state['reenroll_fault'] = False
+            registered_groups = [group,second,switched]
+            def assert_group(active_id):
+                for g in registered_groups:
+                    members=request('GET',f"/device-groups/{g['id']}/members")['items']
+                    active=[m for m in members if not m.get('retired_at')]
+                    assert len(active) == (1 if g['id']==active_id else 0)
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+                assert len(request('GET','/nodes')['items']) == 1
+            def gost_after_switch():
+                desired_applied()
+                with socket.create_connection(('127.0.0.1',gost_port),timeout=3) as s:
+                    assert receive_exact(s,len(changed_marker)) == changed_marker
+                return True
+            wait_for(gost_after_switch)
+            assert_group(switched['id'])
+            assert install(switch_token).returncode == 0
+            assert install(token).returncode != 0
+            assert_group(switched['id'])
+            expired_switch = issue(1,group_id=group['id'])
+            time.sleep(2)
+            assert install(expired_switch).returncode != 0
+            wait_for(gost_after_switch)
+            checks.append('full reinstall recovers HTTP 503 and lost confirmation, replaces GOST at the same port, retires both old groups and preserves identity')
+            xray_group = request('POST','/device-groups',{'name':'reinstalled Xray','kind':'ENTRY',
+                'selection_policy':'weighted_least_connections'},201)['group']
+            registered_groups.append(xray_group)
+            request('POST',f"/device-groups/{xray_group['id']}/generations",{'engine':'xray',
+                'config':xray_config,'idempotency_key':'switch-xray'},201)
+            assert install(issue(group_id=xray_group['id'])).returncode == 0
+            assert_group(xray_group['id'])
+            def xray_after_switch():
+                desired_applied()
+                with socket.create_connection(('127.0.0.1',socks_port),timeout=3) as s:
+                    s.sendall(b'\x05\x01\x00'); assert receive_exact(s,2)==b'\x05\x00'
+                    s.sendall(b'\x05\x01\x00\x01\x7f\x00\x00\x01'+changed_port.to_bytes(2,'big'))
+                    assert receive_exact(s,10)[:2]==b'\x05\x00'
+                    assert receive_exact(s,len(changed_marker))==changed_marker
+                assert run(['ss','-H','-ltn','sport','=',str(gost_port)]).stdout.strip()==''
+                return True
+            wait_for(xray_after_switch)
+            assert install(switch_token).returncode != 0
+            wait_for(xray_after_switch)
+            checks.append('second full reinstall activates Xray at the same port and removes old GOST listener; superseded commands cannot restore old groups')
+            # Return to the original dual-engine fixture before offline restart.
+            assert install(issue()).returncode == 0
+            request('POST',f"/device-groups/{second['id']}/members",{'node_id':credential['node_id'],'weight':100,'priority':0})
+            wait_for(real_clients)
+            assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+            changed_listener.close()
             # Separate operator restart scenarios from the expired-token fault
             # and repeated install/update/rollback starts in the same minute.
             assert run(['systemctl','reset-failed','hl-panel-edge-agent']).returncode == 0

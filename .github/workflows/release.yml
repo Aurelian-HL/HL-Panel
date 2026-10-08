@@ -89,7 +89,7 @@ jobs:
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
           python3 -m py_compile tests/install/prepare_ci_apt.py
-          python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py
+          python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
           python3 tests/install/test_subscription_nginx.py
       - name: Build web admin
@@ -122,6 +122,7 @@ jobs:
             deploy/README.md
             deploy/install.sh
             deploy/install-node.sh
+            deploy/reinstall-node.py
             deploy/fetch-node-engines.py
             deploy/update.sh
             deploy/update.py
