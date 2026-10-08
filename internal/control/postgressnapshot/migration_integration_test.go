@@ -19,6 +19,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/generations"
+	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
@@ -60,7 +61,9 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	require(err)
 	_, err = source.UpdateHeartbeat(ctx, "node-one", nodes.Heartbeat{Resources: map[string]any{"memory_bytes": 1024.0}}, now, event)
 	require(err)
-	require(source.CreateDeviceGroup(ctx, groups.DeviceGroup{ID: "group-one", Name: "migration-group", Kind: groups.KindEdge, SelectionPolicy: endpoints.SelectionWeightedRoundRobin, CreatedAt: now}, event))
+	require(source.CreateDeviceGroup(ctx, groups.DeviceGroup{ID: "group-one", Name: "migration-group", Kind: groups.KindEntry, SelectionPolicy: endpoints.SelectionWeightedRoundRobin, CreatedAt: now}, event))
+	_, _, err = source.UpdateGroupNetwork(ctx, groupconfig.UpdateInput{Network: groupconfig.GroupNetwork{GroupID: "group-one", ConnectHost: "127.0.0.1", PortStart: 12000, PortEnd: 12010, AllowDirect: true, TrafficMultiplier: 1, Revision: 1, UpdatedAt: now}, IdempotencyKey: "migration-network", RequestSHA256: "migration-network-request", CreatedBy: "admin-one"}, event)
+	require(err)
 	_, _, err = source.UpsertGroupMember(ctx, groups.Member{GroupID: "group-one", NodeID: "node-one", Weight: 1, CreatedAt: now, UpdatedAt: now}, event)
 	require(err)
 	rule, _, err := forwarding.NewService(source, nil).CreateForAdministrator(ctx, "admin-one", forwarding.Request{Name: "迁移测试规则", EntryGroupID: "group-one", EgressMode: forwarding.EgressDirect, Protocol: forwarding.ProtocolTCP, ListenPort: 12000, Targets: []forwarding.Target{{Host: "127.0.0.1", Port: 19001}}, SelectionPolicy: forwarding.SelectionRoundRobin, TrafficLimitBytes: 1000000}, "migration-rule-fixture")
