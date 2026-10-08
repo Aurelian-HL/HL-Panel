@@ -47,12 +47,7 @@ var platformVersion = "development"
 var platformBuildTime string
 
 func main() {
-	logPath := strings.TrimSpace(os.Getenv("CONTROL_PANEL_LOG_FILE"))
-	if cwd, _ := os.Getwd(); logPath == "" && cwd == "/var/lib/hl-panel" {
-		logPath = "/var/lib/hl-panel/panel.log"
-	}
-	panelLogs := panelruntime.NewLogStore(logPath)
-	logger := slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, panelLogs), nil))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if len(os.Args) > 1 {
 		if os.Args[1] == "reset-admin-password" && len(os.Args) == 3 {
 			if err := resetAdministratorPassword(os.Args[2], os.Stdin); err != nil {
@@ -72,6 +67,13 @@ func main() {
 		}
 		return
 	}
+	// Privileged CLI tools must not change the panel service's log ownership.
+	logPath := strings.TrimSpace(os.Getenv("CONTROL_PANEL_LOG_FILE"))
+	if cwd, _ := os.Getwd(); logPath == "" && cwd == "/var/lib/hl-panel" {
+		logPath = "/var/lib/hl-panel/panel.log"
+	}
+	panelLogs := panelruntime.NewLogStore(logPath)
+	logger = slog.New(slog.NewJSONHandler(io.MultiWriter(os.Stdout, panelLogs), nil))
 	if err := run(logger, panelLogs); err != nil {
 		logger.Error("control api stopped", "error", err)
 		os.Exit(1)
