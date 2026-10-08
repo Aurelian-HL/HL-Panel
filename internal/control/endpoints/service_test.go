@@ -23,6 +23,7 @@ func TestCreateRejectsCredentialsAndMultipleHostsBeforePersistence(t *testing.T)
 type listRepository struct {
 	pools   []EndpointPool
 	members map[string][]EndpointPoolMember
+	lists   int
 }
 
 func (r *listRepository) CreateEndpointPool(context.Context, CreatePoolInput, audit.Event) (EndpointPool, bool, error) {
@@ -30,6 +31,7 @@ func (r *listRepository) CreateEndpointPool(context.Context, CreatePoolInput, au
 }
 
 func (r *listRepository) ListEndpointPools(context.Context) ([]EndpointPool, error) {
+	r.lists++
 	return append([]EndpointPool(nil), r.pools...), nil
 }
 
@@ -39,7 +41,7 @@ func (r *listRepository) EndpointPool(_ context.Context, poolID string) (Endpoin
 			return pool, nil
 		}
 	}
-	panic("not used")
+	return EndpointPool{}, faults.ErrNotFound
 }
 
 func (r *listRepository) EndpointPoolMembers(_ context.Context, poolID string) ([]EndpointPoolMember, error) {
@@ -57,6 +59,30 @@ func (r *listRepository) DeleteEndpointPool(context.Context, DeletePoolInput, au
 type readyCandidateSource struct {
 	counts map[string]int
 	err    error
+}
+
+func TestGetPoolForAdministratorReadsOnlyOwnedPool(t *testing.T) {
+	repository := &listRepository{pools: []EndpointPool{
+		{ID: "owned", OwnerID: "admin"},
+		{ID: "other", OwnerID: "another-admin"},
+		{ID: "legacy"},
+	}}
+	service := NewServiceWithReadyCandidateSource(repository, time.Now, readyCandidateSource{err: errors.New("unrelated readiness must not run")})
+	pool, err := service.GetPoolForAdministrator(context.Background(), "admin", "owned")
+	if err != nil || pool.ID != "owned" {
+		t.Fatalf("owned pool unavailable: pool=%+v err=%v", pool, err)
+	}
+	for _, id := range []string{"other", "legacy", "missing"} {
+		if _, err := service.GetPoolForAdministrator(context.Background(), "admin", id); !errors.Is(err, faults.ErrNotFound) {
+			t.Fatalf("pool %s exposed: %v", id, err)
+		}
+	}
+	if _, err := service.GetPoolForAdministrator(context.Background(), " ", "owned"); !errors.Is(err, faults.ErrValidation) {
+		t.Fatalf("invalid administrator accepted: %v", err)
+	}
+	if repository.lists != 0 {
+		t.Fatal("single pool lookup scanned all pools")
+	}
 }
 
 func (s readyCandidateSource) ReadyCandidateCount(_ context.Context, poolID string) (int, error) {

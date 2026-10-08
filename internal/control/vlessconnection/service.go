@@ -62,19 +62,9 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
 		return Connection{}, unavailable{"Reality 参数不完整，请检查规则配置"}
 	}
-	pools, err := s.endpoints.ListPoolsForAdministrator(ctx, admin)
+	pool, err := s.endpoints.GetPoolForAdministrator(ctx, admin, record.Binding.EndpointPoolID)
 	if err != nil {
 		return Connection{}, err
-	}
-	var pool endpoints.EndpointPool
-	for _, candidate := range pools {
-		if candidate.ID == record.Binding.EndpointPoolID {
-			pool = candidate
-			break
-		}
-	}
-	if pool.ID == "" {
-		return Connection{}, faults.ErrNotFound
 	}
 	if pool.GroupID != rule.EntryGroupID || pool.RuleID != rule.ID || pool.Protocol != "vless" {
 		return Connection{}, faults.ErrConflict

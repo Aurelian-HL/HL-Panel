@@ -122,6 +122,21 @@ func validAdministratorID(id string) bool {
 	return strings.TrimSpace(id) != "" && id == strings.TrimSpace(id)
 }
 
+// GetPoolForAdministrator reads one owned pool without probing unrelated pools.
+func (s *Service) GetPoolForAdministrator(ctx context.Context, administratorID, poolID string) (EndpointPool, error) {
+	if !validAdministratorID(administratorID) {
+		return EndpointPool{}, fmt.Errorf("%w: administrator is required", faults.ErrValidation)
+	}
+	pool, err := s.repository.EndpointPool(ctx, poolID)
+	if err != nil {
+		return EndpointPool{}, err
+	}
+	if pool.OwnerID != administratorID {
+		return EndpointPool{}, faults.ErrNotFound
+	}
+	return pool, nil
+}
+
 func (s *Service) AddMember(ctx context.Context, adminID, poolID, nodeID string, weight, priority int, idempotencyKey string) (EndpointPoolMember, bool, error) {
 	poolID = strings.TrimSpace(poolID)
 	nodeID = strings.TrimSpace(nodeID)
