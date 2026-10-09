@@ -90,7 +90,7 @@ async function onMemberRetired(assignmentCount: number): Promise<void> {
 async function onNetworkSaved(): Promise<void> {
   const savedKind = networkGroup.value?.kind
   networkGroup.value = null
-  toast.success('设备组网络配置已保存', savedKind === 'ENTRY' ? '规则可使用该入口地址、端口范围和出站策略' : '出口组已可作为规则的落地出口')
+  toast.success('设备组网络配置已保存', savedKind === 'ENTRY' ? '原生规则订阅已跟随入口地址，客户端刷新订阅后生效' : '出口组已可作为规则的落地出口')
   await load()
 }
 
