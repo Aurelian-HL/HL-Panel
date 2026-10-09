@@ -1,17 +1,89 @@
 package httpapi_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
+
+func TestSubscriptionPackageURLsFetchMatchingPublicFeeds(t *testing.T) {
+	f := newBusinessFixture(t)
+	input := subscriptions.Request{Name: "导入包链接验证", CustomerID: f.customer.ID, Lines: []subscriptions.Line{{Name: "线路", URI: "socks5://user:test-password@edge.example.test:1080"}}}
+	var created struct {
+		Subscription subscriptions.Item `json:"subscription"`
+	}
+	decodeResponse(t, businessRequest(t, f, "POST", "/api/v1/subscriptions", "package-url-create", input, http.StatusOK), &created)
+	businessRequest(t, f, "POST", "/api/v1/subscriptions/"+created.Subscription.ID+"/actions/publish", "package-url-publish", map[string]any{"revision": created.Subscription.Revision}, http.StatusOK)
+	var pack struct {
+		Data string `json:"data_base64"`
+	}
+	decodeResponse(t, businessRequest(t, f, "POST", "/api/v1/subscriptions/"+created.Subscription.ID+"/package", "", map[string]any{"base_url": "https://panel.example.test"}, http.StatusOK), &pack)
+	data, err := base64.StdEncoding.DecodeString(pack.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var packagedYAML []byte
+	var onlineYAML []byte
+	checked := 0
+	for _, file := range archive.File {
+		if !strings.HasSuffix(file.Name, "订阅链接.txt") && !strings.HasSuffix(file.Name, ".yaml") {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents, err := io.ReadAll(reader)
+		reader.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(file.Name, ".yaml") {
+			packagedYAML = bytes.TrimPrefix(contents, []byte{0xef, 0xbb, 0xbf})
+			continue
+		}
+		// Ordinary clipboard whitespace trimming must yield a usable URL.
+		copied := strings.TrimSpace(string(contents))
+		address, err := url.ParseRequestURI(copied)
+		if err != nil || address.Scheme != "https" || address.Host != "panel.example.test" {
+			t.Fatalf("copied %s is not a valid subscription URL", file.Name)
+		}
+		recorder := httptest.NewRecorder()
+		f.handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, address.RequestURI(), nil))
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("public feed from %s returned %d", file.Name, recorder.Code)
+		}
+		if strings.HasSuffix(file.Name, "-Clash订阅链接.txt") {
+			if !strings.HasSuffix(address.Path, ".yaml") || !strings.Contains(recorder.Header().Get("Content-Type"), "application/yaml") {
+				t.Fatal("Clash URL does not return YAML")
+			}
+			onlineYAML = recorder.Body.Bytes()
+		} else {
+			decoded, err := base64.StdEncoding.DecodeString(recorder.Body.String())
+			if err != nil || !bytes.HasPrefix(decoded, []byte("socks://")) {
+				t.Fatal("TXT URL does not return the published proxy")
+			}
+		}
+		checked++
+	}
+	if checked != 3 || len(onlineYAML) == 0 || !bytes.Equal(packagedYAML, onlineYAML) {
+		t.Fatal("package links did not fetch the same configuration as the static YAML")
+	}
+}
 
 func TestSubscriptionHTTPPublishDraftRotateRevokeAndAuthorization(t *testing.T) {
 	f := newBusinessFixture(t)

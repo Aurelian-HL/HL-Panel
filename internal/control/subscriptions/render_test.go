@@ -63,8 +63,12 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 				t.Fatal(e)
 			}
 		case "随遇而安-电脑手机通用v2rayN订阅链接.txt", "随遇而安-小火箭订阅链接.txt":
-			if string(raw) != "\xef\xbb\xbfhttps://panel.example.test"+Paths(r.Token).TXT+"\r\n" {
+			if string(raw) != "https://panel.example.test"+Paths(r.Token).TXT+"\r\n" || bytes.HasPrefix(raw, []byte{0xef, 0xbb, 0xbf}) {
 				t.Fatal("wrong feed address")
+			}
+		case "随遇而安-Clash订阅链接.txt":
+			if string(raw) != "https://panel.example.test"+Paths(r.Token).YAML+"\r\n" || bytes.HasPrefix(raw, []byte{0xef, 0xbb, 0xbf}) {
+				t.Fatal("wrong Clash feed address")
 			}
 		case "随遇而安-电脑Clash直接拖入使用.yaml":
 			var parsed any
