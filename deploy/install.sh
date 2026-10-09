@@ -290,6 +290,42 @@ check_database_names() {
 }
 check_database_names
 command -v systemctl >/dev/null 2>&1 || fail "缺少 systemctl；当前系统不支持 systemd 服务管理"
+
+ensure_time_synchronization() {
+  local synchronized provider unit
+  if ! command -v timedatectl >/dev/null 2>&1; then
+    log "警告：系统没有 timedatectl，无法自动确认时间同步；请手动配置 NTP"
+    return 0
+  fi
+  synchronized="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  if [[ "$synchronized" == yes ]]; then
+    log "系统时间已同步（NTP）"
+    return 0
+  fi
+  timedatectl set-ntp true >/dev/null 2>&1 || true
+  provider=""
+  for unit in systemd-timesyncd.service chrony.service ntp.service; do
+    if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "$unit"; then
+      provider="$unit"
+      break
+    fi
+  done
+  if [[ -z "$provider" ]]; then
+    log "警告：未找到可用的 NTP 服务，安装继续；请安装 systemd-timesyncd 或 chrony 后执行 timedatectl set-ntp true"
+    return 0
+  fi
+  systemctl enable --now "$provider" >/dev/null 2>&1 || log "警告：无法启动 $provider，安装继续；请检查 systemd 服务状态"
+  for _ in {1..12}; do
+    synchronized="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+    if [[ "$synchronized" == yes ]]; then
+      log "系统时间同步已启用：$provider"
+      return 0
+    fi
+    sleep 1
+  done
+  log "警告：$provider 尚未报告已同步；安装继续，但 TLS、节点租约和订阅有效期可能受时钟漂移影响"
+}
+
 POSTGRESQL_ACTIVE_BEFORE=false
 NGINX_ACTIVE_BEFORE=false
 POSTGRESQL_ENABLED_BEFORE="$(systemctl is-enabled postgresql 2>/dev/null || true)"
@@ -513,11 +549,18 @@ WORK_DIR="$(mktemp -d /tmp/hl-panel-install.XXXXXX)"
 export DEBIAN_FRONTEND=noninteractive
 log "安装运行依赖"
 apt-get update
-if command -v nginx >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client
-else
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client
+TIME_SYNC_PACKAGE=""
+if ! systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+  | awk '{print $1}' \
+  | grep -Eq '^(systemd-timesyncd|chrony|ntp)\.service$'; then
+  TIME_SYNC_PACKAGE="systemd-timesyncd"
 fi
+if command -v nginx >/dev/null 2>&1; then
+  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
+else
+  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
+fi
+ensure_time_synchronization
 ensure_nginx_compatibility
 systemctl enable --now postgresql
 check_database_names
