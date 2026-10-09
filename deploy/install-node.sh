@@ -33,6 +33,49 @@ done
 if [[ -n "$ca_file" ]]; then
   [[ -f "$ca_file" && ! -L "$ca_file" ]] || { echo 'CA 文件不存在或是链接；未修改节点。' >&2; exit 2; }
 fi
+
+ensure_time_synchronization() {
+  local synchronized provider unit
+  if ! command -v timedatectl >/dev/null 2>&1; then
+    echo '[HL-panel 节点] 警告：系统没有 timedatectl，无法自动确认时间同步；请手动配置 NTP' >&2
+    return 0
+  fi
+  synchronized="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+  if [[ "$synchronized" == yes ]]; then
+    echo '[HL-panel 节点] 系统时间已同步（NTP）'
+    return 0
+  fi
+  timedatectl set-ntp true >/dev/null 2>&1 || true
+  provider=""
+  for unit in systemd-timesyncd.service chrony.service ntp.service; do
+    if systemctl list-unit-files "$unit" --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "$unit"; then
+      provider="$unit"
+      break
+    fi
+  done
+  if [[ -z "$provider" && -z "$archive" && -x "$(command -v apt-get 2>/dev/null || true)" ]]; then
+    if apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends systemd-timesyncd >/dev/null 2>&1; then
+      provider="systemd-timesyncd.service"
+    else
+      echo '[HL-panel 节点] 警告：无法安装 systemd-timesyncd，安装继续；请手动配置 NTP' >&2
+    fi
+  fi
+  if [[ -z "$provider" ]]; then
+    echo '[HL-panel 节点] 警告：未找到可用的 NTP 服务，安装继续；请安装 systemd-timesyncd 或 chrony 后执行 timedatectl set-ntp true' >&2
+    return 0
+  fi
+  systemctl enable --now "$provider" >/dev/null 2>&1 || echo "[HL-panel 节点] 警告：无法启动 $provider，请检查 systemd 服务状态" >&2
+  for _ in {1..12}; do
+    synchronized="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
+    if [[ "$synchronized" == yes ]]; then
+      echo "[HL-panel 节点] 系统时间同步已启用：$provider"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "[HL-panel 节点] 警告：$provider 尚未报告已同步；TLS、节点租约和订阅有效期可能受时钟漂移影响" >&2
+}
+
 if [[ -z "$archive" ]]; then
   if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then
     command -v apt-get >/dev/null || { echo '请先安装 curl、python3、ca-certificates。' >&2; exit 1; }
@@ -43,6 +86,7 @@ else
   command -v python3 >/dev/null || { echo '离线模式需要预装 python3。' >&2; exit 1; }
   [[ -f "$archive" && -f "$checksum" ]] || { echo '离线安装必须同时提供 --archive 和 --sha256 文件。' >&2; exit 2; }
 fi
+ensure_time_synchronization
 # Public address is separate from the operating-system hostname.
 if [[ -z "$node_address" ]]; then
   for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
