@@ -276,17 +276,19 @@ func Package(r Record, lines []Resolved, baseURL string) ([]byte, error) {
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
 	name := PackageBaseName(r.Item.Name)
-	// UTF-8 BOM lets Windows text editors detect Chinese reliably. The public
-	// feed remains UTF-8 without BOM for subscription client compatibility.
-	textFile := func(value string) []byte { return []byte("\xef\xbb\xbf" + strings.ReplaceAll(value, "\n", "\r\n")) }
+	// Keep URL files free of a BOM: some clients include the invisible prefix
+	// when users copy the whole file, turning the subscription URL invalid.
+	urlFile := func(value string) []byte { return []byte(strings.ReplaceAll(value, "\n", "\r\n")) }
+	// The instructions are intended for Windows editors, so retain a BOM there.
+	textFile := func(value string) []byte { return append([]byte{0xef, 0xbb, 0xbf}, urlFile(value)...) }
 	for _, entry := range []struct {
 		name string
 		data []byte
 	}{
 		{name + "-电脑Clash直接拖入使用.yaml", append([]byte{0xef, 0xbb, 0xbf}, yaml...)},
-		{name + "-Clash订阅链接.txt", textFile(yamlURL + "\n")},
-		{name + "-电脑手机通用v2rayN订阅链接.txt", textFile(txtURL + "\n")},
-		{name + "-小火箭订阅链接.txt", textFile(txtURL + "\n")},
+		{name + "-Clash订阅链接.txt", urlFile(yamlURL + "\n")},
+		{name + "-电脑手机通用v2rayN订阅链接.txt", urlFile(txtURL + "\n")},
+		{name + "-小火箭订阅链接.txt", urlFile(txtURL + "\n")},
 		{name + "-苹果小火箭订阅二维码.png", qr},
 		{name + "-导入使用说明.txt", textFile("HL-panel 订阅导入包\n规则 / 订阅：" + r.Item.Name + "\n请先解压 ZIP。\nClash/Mihomo：导入同名 YAML 文件，或从 Clash订阅链接.txt 中复制地址并从 URL 导入。\nv2rayN：使用电脑手机通用v2rayN订阅链接.txt 中的地址。\nShadowrocket（小火箭）：使用小火箭订阅链接.txt 中的地址，或扫描苹果小火箭订阅二维码.png。\n二维码内容为 TXT 订阅地址。静态 YAML 为下载时的快照；需要自动更新请使用订阅地址。\n设备组入口域名修改后，原生线路在客户端刷新订阅时更新，订阅地址不变。手工链接需自行修改并发布；已导入的静态 YAML 或单条节点链接需重新导入。\n面板域名更换且旧地址无法访问时，需重新导入新面板的订阅地址。\n规则暂停、额度用完或尚未就绪时暂不下发该线路；恢复后请更新客户端订阅。\n订阅地址含访问凭据，请勿公开。\n")},
 	} {
