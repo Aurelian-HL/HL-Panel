@@ -1,8 +1,14 @@
 import type { ForwardRule, ForwardRuleInput, IngressProtocol, IngressStatus } from '@/api/business'
 
+export const BYTES_PER_KB = 1024
+export const BYTES_PER_MB = BYTES_PER_KB * 1024
+export const BYTES_PER_GB = BYTES_PER_MB * 1024
+export const BYTES_PER_TB = BYTES_PER_GB * 1024
+
+/** Traffic uses binary conversion while keeping the product's GB/TB labels. */
 export function byteAmount(value: number): string {
-  if (!value) return '0 B'
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
   const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1)
   return `${(value / 1024 ** index).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} ${units[index]}`
 }

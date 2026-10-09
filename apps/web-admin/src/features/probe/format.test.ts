@@ -42,7 +42,7 @@ describe('probe measurement formatting', () => {
     expect(formatRate(125)).toBe('1.0 Kbps')
     expect(formatRate(1048576)).toBe('8.4 Mbps')
     expect(formatRate(125000000)).toBe('1.0 Gbps')
-    expect(formatBytes(1073741824)).toBe('1.0 GiB')
+    expect(formatBytes(1073741824)).toBe('1.0 GB')
   })
 
   it('expires samples after 30 seconds and rejects invalid or future timestamps', () => {

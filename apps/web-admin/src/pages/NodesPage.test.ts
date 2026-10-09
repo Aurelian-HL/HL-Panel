@@ -46,7 +46,7 @@ describe('NodesPage', () => {
     await wrapper.get('[aria-label="查看香港出口详情"]').trigger('click')
     expect(document.body.textContent).toContain('配置校验失败')
     expect(document.body.textContent).toContain('Agent 已分配内存')
-    expect(document.body.textContent).toContain('1.0 MiB')
+    expect(document.body.textContent).toContain('1.0 MB')
     expect(document.body.textContent).toContain('不代表整机内存占用')
     expect(document.body.textContent).toContain('CPU 使用率、整机内存、磁盘、网络速率和连接数尚未接入')
     expect(document.body.textContent).toContain('以下仅为历史采样')

@@ -29,7 +29,7 @@ describe('ProbeMembers', () => {
     expect(wrapper.get('.probe-mobile-item header').text()).toContain(completeProbeSample.items[0]!.ipv4)
     expect(wrapper.get('.probe-mobile-item header').text()).not.toContain('广州电信入口')
     expect(row.text()).toContain('8.4 Mbps')
-    expect(row.text()).toContain('1.0 GiB')
+    expect(row.text()).toContain('1.0 GB')
     expect(row.text()).toContain('1 天 1 小时')
     expect(row.text()).toContain('37%')
     expect(row.text()).toContain('50%')
