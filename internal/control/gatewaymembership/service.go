@@ -12,8 +12,8 @@ import (
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
-	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 	"github.com/hongle/hl-panel/internal/gateway/membership"
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
 	"github.com/hongle/hl-panel/internal/serviceaddress"
 )
@@ -60,9 +60,14 @@ type ProtocolHealthPublisher interface {
 	PublishProtocolHealth(context.Context, ProtocolObservation) error
 }
 
-type Service struct{ repository Repository }
+type Service struct {
+	repository Repository
+	clock      func() time.Time
+}
 
-func NewService(repository Repository) *Service { return &Service{repository: repository} }
+func NewService(repository Repository) *Service {
+	return &Service{repository: repository, clock: time.Now}
+}
 
 // ReadyCandidateCount uses the same authorized view published to the gateway.
 // It must not count heartbeat-only or TCP-reachable members as healthy.
@@ -71,7 +76,7 @@ func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, 
 	if err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC()
+	now := s.clock().UTC()
 	count := 0
 	for _, endpoint := range snapshot.Endpoints {
 		if endpoint.Status == endpointrouter.EndpointReady && endpoint.HealthLeaseExpiresAt.After(now) {
@@ -81,10 +86,10 @@ func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, 
 	return count, nil
 }
 
-// Snapshot emits ready members only when current real-engine deployment and
-// independent, bounded protocol health refer to the same rule and node config.
-// The current repository does not yet ingest protocol observations, so live
-// members remain offline until that authenticated integration is supplied.
+// Snapshot publishes deployment- and protocol-bound membership. A ready
+// endpoint is selectable only before its original health lease expires.
+// Expiry is enforced by the router and ReadyCandidateCount, without changing
+// the snapshot's content at an unchanged repository revision.
 func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snapshot, error) {
 	state, err := s.repository.GatewayMembershipState(ctx, poolID)
 	if err != nil {
@@ -92,13 +97,8 @@ func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snaps
 	}
 	items := make([]endpointrouter.Endpoint, 0, len(state.Members))
 	rule := state.Rule
-	if state.Pool.Mode.Valid() && state.Pool.RuleID != "" && rule.ID == state.Pool.RuleID &&
-		rule.Revision > 0 && rule.EntryGroupID == state.Pool.GroupID &&
-		rule.ListenPort == state.Pool.Port && rule.Protocol == forwarding.ProtocolTCP &&
-		state.Pool.Protocol == "vless" && rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality &&
-		!rule.Paused && (rule.Status == forwarding.StatusPendingActivation || rule.Status == forwarding.StatusActive) && rule.ActivationReason == "" &&
-		rule.IngressReadiness() == forwarding.IngressReady {
-		now := time.Now().UTC()
+	if poolAuthorizesRule(state.Pool, rule) {
+		now := s.clock().UTC()
 		for _, member := range state.Members {
 			if member.PoolID != state.Pool.ID || member.GroupID != state.Pool.GroupID ||
 				member.State != endpoints.CandidateEligible || member.Weight < 1 || member.ActiveConnections < 0 {
@@ -109,13 +109,11 @@ func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snaps
 				continue
 			}
 			status := endpointrouter.EndpointOffline
-			leaseExpiresAt := now
+			leaseExpiresAt := time.Unix(0, 0).UTC()
 			deployment := state.Deployments[member.NodeID]
-			if deploymentReady(deployment, rule, member.NodeID) && protocolHealthy(state.ProtocolHealth[member.NodeID], deployment.Status, rule, member, host, now) {
+			if deploymentReady(deployment, rule, member.NodeID) && protocolEvidenceMatches(state.ProtocolHealth[member.NodeID], deployment.Status, rule, member, host, now) {
 				status = endpointrouter.EndpointReady
-				if observedExpiry := state.ProtocolHealth[member.NodeID].LeaseExpiresAt; observedExpiry.Before(leaseExpiresAt) {
-					leaseExpiresAt = observedExpiry
-				}
+				leaseExpiresAt = state.ProtocolHealth[member.NodeID].LeaseExpiresAt
 			}
 			items = append(items, endpointrouter.Endpoint{
 				ID: member.NodeID, Address: net.JoinHostPort(host, strconv.Itoa(rule.ListenPort)),
@@ -128,6 +126,44 @@ func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snaps
 	return membership.Snapshot{Revision: state.Revision, Endpoints: items}, nil
 }
 
+func poolAuthorizesRule(pool endpoints.EndpointPool, rule forwarding.Rule) bool {
+	return pool.Mode.Valid() && pool.RuleID != "" && rule.ID == pool.RuleID &&
+		rule.Revision > 0 && rule.EntryGroupID == pool.GroupID &&
+		rule.ListenPort == pool.Port && rule.Protocol == forwarding.ProtocolTCP &&
+		pool.Protocol == "vless" && rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality &&
+		!rule.Paused && (rule.Status == forwarding.StatusPendingActivation || rule.Status == forwarding.StatusActive) && rule.ActivationReason == "" &&
+		rule.IngressReadiness() == forwarding.IngressReady
+}
+
+// MatchesCurrentDeployment must be checked again when publishing a probe:
+// its rule, address or node configuration may have changed during the challenge.
+// A newly published observation must still be live, even though an existing
+// snapshot retains expired leases for stable revision content.
+func (o ProtocolObservation) MatchesCurrentDeployment(pool endpoints.EndpointPool, rule forwarding.Rule, member endpoints.EndpointPoolMember, evidence DeploymentEvidence, now time.Time) bool {
+	if !poolAuthorizesRule(pool, rule) || member.PoolID != pool.ID || member.GroupID != pool.GroupID ||
+		member.State != endpoints.CandidateEligible || member.Weight < 1 || member.ActiveConnections < 0 ||
+		!deploymentReady(evidence, rule, member.NodeID) {
+		return false
+	}
+	host, err := serviceaddress.NormalizeHost(member.DialHost)
+	return err == nil && host != "" && protocolHealthy(o, evidence.Status, rule, member, host, now)
+}
+
+// CanReplace orders observations only within the same deployment and address.
+// An identical retry is safe, but delayed proof must not roll back a newer lease.
+// A different deployment can supersede old evidence after current-state checks.
+func (o ProtocolObservation) CanReplace(previous ProtocolObservation) bool {
+	previousHost, previousErr := serviceaddress.NormalizeHost(previous.DialHost)
+	host, err := serviceaddress.NormalizeHost(o.DialHost)
+	if o.RuleID != previous.RuleID || o.NodeID != previous.NodeID || o.RuleRevision != previous.RuleRevision ||
+		o.NodeConfigGeneration != previous.NodeConfigGeneration || o.ConfigSHA256 != previous.ConfigSHA256 ||
+		o.Protocol != previous.Protocol || err != nil || previousErr != nil || host != previousHost {
+		return true
+	}
+	return !o.VerifiedAt.Before(previous.VerifiedAt) && !o.LeaseExpiresAt.Before(previous.LeaseExpiresAt) &&
+		(!o.VerifiedAt.Equal(previous.VerifiedAt) || o.LeaseExpiresAt.Equal(previous.LeaseExpiresAt))
+}
+
 func deploymentReady(evidence DeploymentEvidence, rule forwarding.Rule, nodeID string) bool {
 	return evidence.RuleRevision == rule.Revision && evidence.Status.RuleID == rule.ID &&
 		evidence.Status.NodeID == nodeID && evidence.Status.ReceiptVerified &&
@@ -137,11 +173,15 @@ func deploymentReady(evidence DeploymentEvidence, rule forwarding.Rule, nodeID s
 }
 
 func protocolHealthy(observation ProtocolObservation, receipt deploymentreceipts.Status, rule forwarding.Rule, member endpoints.EndpointPoolMember, dialHost string, now time.Time) bool {
+	return protocolEvidenceMatches(observation, receipt, rule, member, dialHost, now) && observation.LeaseExpiresAt.After(now)
+}
+
+func protocolEvidenceMatches(observation ProtocolObservation, receipt deploymentreceipts.Status, rule forwarding.Rule, member endpoints.EndpointPoolMember, dialHost string, now time.Time) bool {
 	if observation.RuleID != rule.ID || observation.NodeID != member.NodeID ||
 		observation.RuleRevision != rule.Revision || observation.Protocol != forwarding.IngressVLESSReality ||
 		observation.NodeConfigGeneration != receipt.NodeConfigGeneration || observation.ConfigSHA256 != receipt.ConfigSHA256 ||
 		observation.VerifiedAt.IsZero() ||
-		observation.VerifiedAt.After(now) || !observation.LeaseExpiresAt.After(now) ||
+		observation.VerifiedAt.After(now) || !observation.LeaseExpiresAt.After(observation.VerifiedAt) ||
 		observation.LeaseExpiresAt.After(observation.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
 		return false
 	}

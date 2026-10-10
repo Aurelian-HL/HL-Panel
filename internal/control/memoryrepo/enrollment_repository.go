@@ -16,6 +16,30 @@ import (
 func (s *Store) CreateEnrollmentToken(_ context.Context, token enrollment.Token, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createEnrollmentTokenLocked(token, event)
+}
+
+func (s *Store) CreateEnrollmentTokenIdempotent(_ context.Context, token enrollment.Token, event audit.Event) (enrollment.Token, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if token.IdempotencyKey == "" || token.RequestSHA256 == "" || token.CreatedBy == "" {
+		return enrollment.Token{}, false, fmt.Errorf("%w: invalid enrollment token idempotency metadata", faults.ErrValidation)
+	}
+	for _, existing := range s.tokensByHash {
+		if existing.CreatedBy == token.CreatedBy && existing.IdempotencyKey == token.IdempotencyKey {
+			if existing.RequestSHA256 != token.RequestSHA256 {
+				return enrollment.Token{}, false, faults.ErrIdempotencyConflict
+			}
+			return existing, true, nil
+		}
+	}
+	if err := s.createEnrollmentTokenLocked(token, event); err != nil {
+		return enrollment.Token{}, false, err
+	}
+	return token, false, nil
+}
+
+func (s *Store) createEnrollmentTokenLocked(token enrollment.Token, event audit.Event) error {
 	if token.GroupID != "" {
 		if _, exists := s.deviceGroups[token.GroupID]; !exists {
 			return fmt.Errorf("%w: enrollment group does not exist", faults.ErrValidation)

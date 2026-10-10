@@ -60,6 +60,38 @@ def run(arguments, *, output=None, input_file=None):
     return result.stdout if output is None else None
 
 
+def run_best_effort(arguments):
+    """Run a cleanup/state command without masking the real rollback error."""
+    try:
+        subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        pass
+
+
+def cleanup_incomplete_update(backup, destination, stop_attempted):
+    """Remove only artifacts created before the durable rollback journal exists."""
+    if stop_attempted:
+        run_best_effort(['systemctl', 'start', SERVICE])
+    if destination is not None and destination.parent == ROOT / 'releases' and destination.name.startswith('v'):
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination, ignore_errors=True)
+    if backup.parent == Path('/var/backups/hl-panel') and backup.name.startswith('v'):
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def write_json_atomic(path, value):
+    pending = path.with_name('.' + path.name + '-' + str(os.getpid()))
+    require(not pending.exists() and not pending.is_symlink(), '更新日志临时文件已被占用')
+    try:
+        pending.write_text(json.dumps(value, indent=2) + '\n')
+        pending.chmod(0o600)
+        pending.replace(path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
 def request(url, limit=2*1024*1024):
     # Every URL is constructed from the fixed repository. GitHub asset redirects
     # carry no authentication headers and retain standard TLS verification.
@@ -290,7 +322,13 @@ def restore_domain_access(backup):
     metadata = backup/'domain-access.json'
     if metadata.is_file():
         private_regular(metadata)
-        original = json.loads(metadata.read_text())
+        try:
+            original = json.loads(metadata.read_text())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise UpdateError('域名配置权限恢复记录无效') from None
+        require(isinstance(original, dict) and set(original) == {'uid', 'gid', 'mode'}, '域名配置权限恢复记录无效')
+        require(all(isinstance(original[key], int) and not isinstance(original[key], bool) and original[key] >= 0 for key in ('uid', 'gid')), '域名配置权限恢复记录无效')
+        require(isinstance(original['mode'], int) and not isinstance(original['mode'], bool) and 0 <= original['mode'] <= 0o777, '域名配置权限恢复记录无效')
         path = CONFIG/'domain.conf'
         private_regular(path)
         os.chown(path, original['uid'], original['gid'])
@@ -330,11 +368,11 @@ def web_update_channel(destination, backup):
             if target.read_bytes() == source.read_bytes():
                 continue
             shutil.copyfile(target, backup/source.name)
-            changes.append({'name': source.name, 'added': False})
+            changes.append({'name': source.name, 'added': False, 'enabled': systemd_enabled_state(source.name), 'active': systemd_active_state(source.name)})
         else:
-            changes.append({'name': source.name, 'added': True})
+            changes.append({'name': source.name, 'added': True, 'enabled': 'not-found', 'active': False})
         # Record intent before writing so a partial write can be undone.
-        (backup/'web-update-units.json').write_text(json.dumps(changes))
+        write_json_atomic(backup/'web-update-units.json', changes)
         pending = target.with_name('.'+target.name+'-'+str(os.getpid()))
         try:
             shutil.copyfile(source, pending)
@@ -346,26 +384,76 @@ def web_update_channel(destination, backup):
     run(['systemctl','daemon-reload'])
 
 
+def systemd_enabled_state(name):
+    result = subprocess.run(['systemctl', 'is-enabled', name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    value = result.stdout.strip().splitlines()
+    return value[0] if value else ('not-found' if result.returncode != 0 else 'unknown')
+
+
+def systemd_active_state(name):
+    result = subprocess.run(['systemctl', 'is-active', '--quiet', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def restore_systemd_unit_state(name, enabled, active):
+    enabled_states = {'enabled', 'enabled-runtime', 'linked', 'linked-runtime'}
+    masked_states = {'masked', 'masked-runtime'}
+    if enabled in masked_states:
+        run_best_effort(['systemctl', 'unmask', name])
+        mask_command = ['systemctl', 'mask']
+        if enabled == 'masked-runtime':
+            mask_command.append('--runtime')
+        run_best_effort(mask_command + [name])
+    elif enabled in enabled_states:
+        run_best_effort(['systemctl', 'unmask', name])
+        enable_command = ['systemctl', 'enable']
+        if enabled == 'enabled-runtime':
+            enable_command.append('--runtime')
+        run_best_effort(enable_command + [name])
+    elif enabled in {'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}:
+        run_best_effort(['systemctl', 'unmask', name])
+        disable_command = ['systemctl', 'disable']
+        if enabled == 'disabled-runtime':
+            disable_command.append('--runtime')
+        run_best_effort(disable_command + [name])
+    else:
+        raise UpdateError('网页更新服务状态记录无效')
+    run_best_effort(['systemctl', 'start' if active else 'stop', name])
+
+
 def restore_web_update_channel(backup):
     journal = backup/'web-update-units.json'
     if not journal.is_file():
         return
-    changes = json.loads(journal.read_text())
-    if any(change['added'] for change in changes):
-        run(['systemctl','disable','--now','hl-panel-update.socket'])
-        run(['systemctl','stop','hl-panel-update.service'])
+    private_regular(journal)
+    try:
+        changes = json.loads(journal.read_text())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise UpdateError('网页更新服务恢复记录无效') from None
+    require(isinstance(changes, list) and changes, '网页更新服务恢复记录无效')
+    allowed = {'hl-panel-update.socket', 'hl-panel-update.service'}
     for change in changes:
-        require(change['name'] in ('hl-panel-update.socket','hl-panel-update.service'), '网页更新恢复记录无效')
+        require(isinstance(change, dict) and set(change) == {'name', 'added', 'enabled', 'active'}, '网页更新服务恢复记录无效')
+        require(change['name'] in allowed and isinstance(change['added'], bool) and isinstance(change['enabled'], str) and isinstance(change['active'], bool), '网页更新服务恢复记录无效')
+        require(change['enabled'] in {'enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'masked', 'masked-runtime', 'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}, '网页更新服务状态记录无效')
         target = Path('/etc/systemd/system')/change['name']
-        if target.exists():
+        if target.exists() or target.is_symlink():
             private_regular(target)
+        if not change['added']:
+            private_regular(backup/change['name'])
+    run_best_effort(['systemctl','disable','--now','hl-panel-update.socket'])
+    run_best_effort(['systemctl','stop','hl-panel-update.service'])
+    for change in changes:
+        target = Path('/etc/systemd/system')/change['name']
         if change['added']:
             target.unlink(missing_ok=True)
         else:
-            private_regular(backup/change['name'])
             shutil.copyfile(backup/change['name'], target)
             target.chmod(0o644)
     run(['systemctl','daemon-reload'])
+    for change in changes:
+        if not change['added']:
+            restore_systemd_unit_state(change['name'], change['enabled'], change['active'])
 
 
 def rollback(backup):
@@ -379,24 +467,30 @@ def rollback(backup):
     require(old.parent==ROOT/'releases' and (old/'bin/control-api').is_file(),'旧版本路径无效')
     database,origin=configuration()
     require(digest(backup/'database.dump')==state['database_sha256'],'数据库备份摘要不一致，拒绝恢复')
-    run(['systemctl','stop',SERVICE])
-    restore_subscription_nginx(backup)
-    restore_host_metrics(backup)
-    restore_web_update_channel(backup)
-    restore_domain_access(backup)
-    with (backup/'database.dump').open('rb') as stream:
-        run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
-    # pg_restore --clean only removes objects present in the old archive.
-    # Remove the journal added by an unsuccessful schema-18 upgrade, otherwise
-    # retrying the upgrade would append the restored legacy history twice.
-    manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
-    if not re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+hl_panel_audit_journal\s', manifest):
-        run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
-             '-c','DROP TABLE IF EXISTS public.hl_panel_audit_journal'])
-    switch(old)
-    run(['systemctl','start',SERVICE])
-    healthy(origin,state['previous_version'])
-    print('[HL-panel 更新] 已恢复升级前程序和数据库。')
+    try:
+        run(['systemctl','stop',SERVICE])
+        restore_subscription_nginx(backup)
+        restore_host_metrics(backup)
+        restore_web_update_channel(backup)
+        restore_domain_access(backup)
+        with (backup/'database.dump').open('rb') as stream:
+            run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
+        # pg_restore --clean only removes objects present in the old archive.
+        # Remove the journal added by an unsuccessful schema-18 upgrade, otherwise
+        # retrying the upgrade would append the restored legacy history twice.
+        manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
+        if not re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+hl_panel_audit_journal\s', manifest):
+            run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
+                 '-c','DROP TABLE IF EXISTS public.hl_panel_audit_journal'])
+        switch(old)
+        run(['systemctl','start',SERVICE])
+        healthy(origin,state['previous_version'])
+        print('[HL-panel 更新] 已恢复升级前程序和数据库。')
+    except Exception:
+        # A failed rollback must not leave the control API stopped. The original
+        # exception is re-raised after this best-effort recovery attempt.
+        run_best_effort(['systemctl', 'start', SERVICE])
+        raise
 
 
 def main():
@@ -449,29 +543,30 @@ def main():
         backup.parent.chmod(0o700)
         print('[HL-panel 更新] 本次备份目录：'+str(backup),flush=True)
         archive=backup/'release.tar.gz'
-        base=REPO+'/releases/download/'+target+'/'
-        assets={item['name'] for item in metadata.get('assets',[])}
-        require({'hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256'}<=assets,'发布包不完整')
-        print('[HL-panel 更新] 下载同标签安装包，当前服务继续运行。',flush=True)
-        archive.write_bytes(request(base+'hl-panel-linux-amd64.tar.gz',256*1024*1024))
-        checksum=request(base+'hl-panel-linux-amd64.tar.gz.sha256',4096).decode().strip().split()
-        require(len(checksum)==2 and checksum[1]=='hl-panel-linux-amd64.tar.gz' and re.fullmatch('[0-9a-f]{64}',checksum[0]),'发布包摘要格式无效')
-        require(digest(archive)==checksum[0],'发布包 SHA256 校验失败')
-        destination=ROOT/'releases'/(target+'-'+stamp)
-        destination.mkdir(mode=0o755)
-        extract_verified(archive,destination)
-        # Domains, TLS and custom routes remain intact. A bounded subscription
-        # location is added below, with its own backup and rollback.
-        # Runtime/schema changes are handled by the verified new binaries.
-        with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
-            saved.add(CONFIG,arcname='etc/hl-panel')
-            if STATE.is_dir():
-                saved.add(STATE,arcname='var/lib/hl-panel')
-        stopped=False
+        destination=None
+        stop_attempted=False
         try:
+            base=REPO+'/releases/download/'+target+'/'
+            assets={item['name'] for item in metadata.get('assets',[])}
+            require({'hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256'}<=assets,'发布包不完整')
+            print('[HL-panel 更新] 下载同标签安装包，当前服务继续运行。',flush=True)
+            archive.write_bytes(request(base+'hl-panel-linux-amd64.tar.gz',256*1024*1024))
+            checksum=request(base+'hl-panel-linux-amd64.tar.gz.sha256',4096).decode().strip().split()
+            require(len(checksum)==2 and checksum[1]=='hl-panel-linux-amd64.tar.gz' and re.fullmatch('[0-9a-f]{64}',checksum[0]),'发布包摘要格式无效')
+            require(digest(archive)==checksum[0],'发布包 SHA256 校验失败')
+            destination=ROOT/'releases'/(target+'-'+stamp)
+            destination.mkdir(mode=0o755)
+            extract_verified(archive,destination)
+            # Domains, TLS and custom routes remain intact. A bounded subscription
+            # location is added below, with its own backup and rollback.
+            # Runtime/schema changes are handled by the verified new binaries.
+            with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
+                saved.add(CONFIG,arcname='etc/hl-panel')
+                if STATE.is_dir():
+                    saved.add(STATE,arcname='var/lib/hl-panel')
             print('[HL-panel 更新] 暂停本面板，备份数据库；账号、规则和证书全部保留。',flush=True)
+            stop_attempted=True
             run(['systemctl','stop',SERVICE])
-            stopped=True
             with (backup/'database.dump').open('wb') as stream:
                 run(['runuser','-u','postgres','--','pg_dump','-Fc','--dbname='+database],output=stream)
             require((backup/'database.dump').stat().st_size>0,'数据库备份为空')
@@ -499,8 +594,8 @@ def main():
             if (backup/'update-state.json').is_file():
                 print('[HL-panel 更新] 新版本未通过检查，正在恢复升级前程序与数据库。',flush=True)
                 rollback(backup)
-            elif stopped:
-                run(['systemctl','start',SERVICE])
+            else:
+                cleanup_incomplete_update(backup, destination, stop_attempted)
             raise
         updater.write_text(WRAPPER)
         updater.chmod(0o755)

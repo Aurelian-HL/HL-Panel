@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
@@ -113,6 +114,10 @@ func (s *Store) ExportMigration(parent context.Context) (migrationbackup.State, 
 }
 func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.RestoreInput) (migrationbackup.Result, error) {
 	var result migrationbackup.Result
+	runtimePayload, err := validateRestoreInput(input)
+	if err != nil {
+		return result, err
+	}
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -153,15 +158,21 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if err != nil {
 		return result, err
 	}
-	recoveryID, err := input.SaveRecovery(before)
-	if err != nil {
-		return result, err
-	}
 	restored, err := memoryrepo.PrepareMigrationRestore(input.Bundle.State.Snapshot, input.Event)
 	if err != nil {
 		return result, errors.New("migration snapshot validation failed")
 	}
 	restoredState, err := memoryrepo.DecodeSnapshot(restored)
+	if err != nil {
+		return result, err
+	}
+	if input.SaveRecovery == nil {
+		return result, errors.New("migration recovery unavailable")
+	}
+	// All archive, snapshot, runtime, and ledger-shape validation is complete
+	// before writing the external recovery file. SQL changes still remain inside
+	// the transaction below, so an error leaves the database unchanged.
+	recoveryID, err := input.SaveRecovery(before)
 	if err != nil {
 		return result, err
 	}
@@ -207,8 +218,7 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if _, err = tx.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload=$1,format_version=$2,revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true`, restored, memoryrepo.SnapshotVersion); err != nil {
 		return result, errors.New("migration snapshot restore failed")
 	}
-	runtime, _ := json.Marshal(input.Bundle.Runtime)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO hl_panel_migration_runtime(singleton,payload) VALUES(true,$1) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload`, runtime); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO hl_panel_migration_runtime(singleton,payload) VALUES(true,$1) ON CONFLICT(singleton) DO UPDATE SET payload=excluded.payload`, runtimePayload); err != nil {
 		return result, errors.New("migration runtime restore failed")
 	}
 	result = migrationbackup.Result{RecoveryID: recoveryID, RestoredAt: time.Now().UTC()}
@@ -218,8 +228,54 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if err = tx.Commit(); err != nil {
 		return result, errors.New("migration commit failed")
 	}
+	// A restore can add, update, or remove nodes. Notify the union so every
+	// affected agent rereads the durable post-commit configuration.
+	ids := make(map[string]struct{})
 	for id := range current.DesiredGenerationIndex() {
+		ids[id] = struct{}{}
+	}
+	for id := range restoredState.DesiredGenerationIndex() {
+		ids[id] = struct{}{}
+	}
+	for id := range ids {
 		s.desiredChanges.Notify(id)
 	}
 	return result, nil
+}
+
+func validateRestoreInput(input migrationbackup.RestoreInput) ([]byte, error) {
+	if strings.TrimSpace(input.AdministratorID) == "" {
+		return nil, faults.ErrValidation
+	}
+	if len(input.Key) < 8 || len(input.Key) > 128 || strings.TrimSpace(input.Key) != input.Key {
+		return nil, faults.ErrValidation
+	}
+	if len(input.Digest) != 64 {
+		return nil, faults.ErrValidation
+	}
+	for _, char := range input.Digest {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return nil, faults.ErrValidation
+		}
+	}
+	if auth.ValidatePasswordHash(input.AdministratorHash) != nil {
+		return nil, faults.ErrValidation
+	}
+	if err := migrationbackup.Validate(input.Bundle, input.Bundle.Manifest.Version); err != nil {
+		return nil, err
+	}
+	runtimePayload, err := json.Marshal(input.Bundle.Runtime)
+	if err != nil {
+		return nil, errors.New("migration runtime encoding failed")
+	}
+	if _, err = migrationbackup.DecodeRuntime(runtimePayload); err != nil {
+		return nil, errors.New("migration runtime validation failed")
+	}
+	for _, table := range migrationbackup.Tables() {
+		raw, ok := input.Bundle.State.Usage[table]
+		if !ok || len(raw) == 0 || raw[0] != '[' {
+			return nil, faults.ErrValidation
+		}
+	}
+	return runtimePayload, nil
 }

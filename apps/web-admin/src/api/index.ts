@@ -67,10 +67,10 @@ interface AdminApi {
   createEnrollmentToken(request: EnrollmentTokenRequest): Promise<EnrollmentTokenResponse>
   getPendingGroupEnrollmentTokens(groupId: string): Promise<PendingEnrollmentTokensResponse>
   revokeEnrollmentToken(tokenId: string, key: string): Promise<RevokeEnrollmentTokenResponse>
-  createDeviceGroup(request: CreateDeviceGroupRequest): Promise<DeviceGroup>
+  createDeviceGroup(request: CreateDeviceGroupRequest, key?: string): Promise<DeviceGroup>
   updateDeviceGroup(groupId: string, request: UpdateDeviceGroupRequest, key: string): Promise<DeviceGroup>
   deleteDeviceGroup(groupId: string, key: string): Promise<DeleteDeviceGroupResponse>
-  addDeviceGroupMember(groupId: string, request: AddDeviceGroupMemberRequest): Promise<AddDeviceGroupMemberResponse>
+  addDeviceGroupMember(groupId: string, request: AddDeviceGroupMemberRequest, key?: string): Promise<AddDeviceGroupMemberResponse>
   retireDeviceGroupMember(groupId: string, nodeId: string, key: string): Promise<RetireDeviceGroupMemberResponse>
   updateDeviceGroupMemberWeight(groupId: string, nodeId: string, weight: number, updatedAt: string, key: string): Promise<UpdateDeviceGroupMemberWeightResponse>
   createGroupRevision(groupId: string, request: CreateGenerationRequest): Promise<CreateGroupRevisionResponse>
@@ -103,7 +103,8 @@ const realApi: AdminApi = {
     return value === undefined ? null : parseNodeControlResult(value)
   },
   async controlPanel(command) {
-    const body = await http.request('/panel/control', { method: 'POST', body: JSON.stringify({ command }) })
+    const key = `panel:${command}:${crypto.randomUUID()}`
+    const body = await http.request('/panel/control', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ command }) })
     return parsePanelControlResult(body, 'panel_control')
   },
   async getPanelControl() {
@@ -120,7 +121,8 @@ const realApi: AdminApi = {
     return parseEndpointPoolsResponse(await http.request('/endpoint-pools'))
   },
   async createEnrollmentToken(request) {
-    return parseEnrollmentToken(await http.request('/enrollment-tokens', { method: 'POST', body: JSON.stringify(request) }))
+    const key = `enrollment:${crypto.randomUUID()}`
+    return parseEnrollmentToken(await http.request('/enrollment-tokens', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify(request) }))
   },
   async getPendingGroupEnrollmentTokens(groupId) {
     return parsePendingEnrollmentTokensResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/enrollment-tokens`), groupId)
@@ -128,8 +130,8 @@ const realApi: AdminApi = {
   async revokeEnrollmentToken(tokenId, key) {
     return parseRevokeEnrollmentTokenResponse(await http.request(`/enrollment-tokens/${encodeURIComponent(tokenId)}/revoke`, { method: 'POST', headers: { 'Idempotency-Key': key } }))
   },
-  async createDeviceGroup(request) {
-    return parseDeviceGroup(await http.request('/device-groups', { method: 'POST', body: JSON.stringify(request) }))
+  async createDeviceGroup(request, key) {
+    return parseDeviceGroup(await http.request('/device-groups', { method: 'POST', headers: key ? { 'Idempotency-Key': key } : undefined, body: JSON.stringify(request) }))
   },
   async updateDeviceGroup(groupId, request, key) {
     return parseDeviceGroup(await http.request(`/device-groups/${encodeURIComponent(groupId)}`, { method: 'PUT', headers: { 'Idempotency-Key': key }, body: JSON.stringify(request) }))
@@ -137,8 +139,8 @@ const realApi: AdminApi = {
   async deleteDeviceGroup(groupId, key) {
     return parseDeleteDeviceGroupResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key } }))
   },
-  async addDeviceGroupMember(groupId, request) {
-    return parseAddDeviceGroupMemberResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members`, { method: 'POST', body: JSON.stringify(request) }))
+  async addDeviceGroupMember(groupId, request, key) {
+    return parseAddDeviceGroupMemberResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members`, { method: 'POST', headers: key ? { 'Idempotency-Key': key } : undefined, body: JSON.stringify(request) }))
   },
   async retireDeviceGroupMember(groupId, nodeId, key) {
     return parseRetireDeviceGroupMemberResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(nodeId)}/retire`, { method: 'POST', headers: { 'Idempotency-Key': key } }))

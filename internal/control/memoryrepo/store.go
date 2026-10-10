@@ -28,6 +28,9 @@ type Store struct {
 	mu                  sync.RWMutex
 	desiredChanges      generations.ChangeSignals
 	persistenceRevision uint64
+	// Unaudited protocol/configuration projections must also advance gateway
+	// membership. PostgreSQL uses its row revision instead of this local offset.
+	gatewayMutationRevision uint64
 
 	adminsByUsername map[string]auth.Administrator
 	sessionsByHash   map[string]auth.Session

@@ -32,14 +32,13 @@ type snapshotReadCache struct {
 	version       int
 	revision      int64
 	transactionID string
-	state         *memoryrepo.Store
+	payload       []byte
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
 	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
 	// xmin also detects restores or external repairs that do not bump revision.
 	s.readMu.Lock()
-	defer s.readMu.Unlock()
 	cached := s.readCache
 	var next snapshotReadCache
 	var raw []byte
@@ -48,21 +47,39 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
  FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
+		s.readMu.Unlock()
 		return nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
+		s.readMu.Unlock()
 		return nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
-	if raw == nil && cached.state != nil {
-		return cached.state, nil
+	if raw == nil && cached.payload != nil {
+		// The cached bytes are immutable. Decode into request-private state
+		// outside the lock so independent reads do not serialize their CPU work.
+		s.readMu.Unlock()
+		return decodeReadSnapshot(cached.payload, next.version, uint64(next.revision))
 	}
-	next.state, err = memoryrepo.DecodeSnapshotAtVersion(raw, next.version)
+	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
 	if err != nil {
+		s.readMu.Unlock()
 		return nil, err
 	}
-	next.state.SetPersistenceRevision(uint64(next.revision))
+	next.payload = raw
 	s.readCache = next
-	return next.state, nil
+	s.readMu.Unlock()
+	return state, nil
+}
+
+// Each request owns its decoded maps, slices and runtime material. Retaining
+// the database payload avoids encoding the entire cache again on every read.
+func decodeReadSnapshot(raw []byte, version int, revision uint64) (*memoryrepo.Store, error) {
+	clone, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
+	if err != nil {
+		return nil, errors.New("PostgreSQL snapshot clone failed")
+	}
+	clone.SetPersistenceRevision(revision)
+	return clone, nil
 }
 
 func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
@@ -176,15 +193,21 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return zero, err
 	}
 	var before map[string]int64
+	var auditCount int
 	if write {
 		before = state.DesiredGenerationIndex()
+		auditCount = len(state.AuditEvents())
 	}
 	result, err := operation(state)
 	if err != nil {
 		return result, err
 	}
 	if write {
-		if err := appendAuditJournal(ctx, tx, state.AuditEvents()); err != nil {
+		events := state.AuditEvents()
+		if auditCount > len(events) {
+			return zero, errors.New("audit state changed unexpectedly")
+		}
+		if err := appendAuditJournal(ctx, tx, events[auditCount:]); err != nil {
 			return zero, err
 		}
 		raw, err := state.EncodeSnapshotWithAudit(nil)

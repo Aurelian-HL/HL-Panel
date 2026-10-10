@@ -70,13 +70,25 @@ func Seal(bundle Bundle, password string) ([]byte, error) {
 		return nil, err
 	}
 	parts := map[string][]byte{"control.json": bundle.State.Snapshot}
-	parts["usage.json"], _ = json.Marshal(bundle.State.Usage)
-	parts["runtime.json"], _ = json.Marshal(bundle.Runtime)
+	usage, err := json.Marshal(bundle.State.Usage)
+	if err != nil {
+		return nil, fmt.Errorf("encode usage backup: %w", err)
+	}
+	runtimeSecrets, err := json.Marshal(bundle.Runtime)
+	if err != nil {
+		return nil, fmt.Errorf("encode runtime backup: %w", err)
+	}
+	parts["usage.json"] = usage
+	parts["runtime.json"] = runtimeSecrets
 	bundle.Manifest.SHA256 = map[string]string{}
 	for name, raw := range parts {
 		bundle.Manifest.SHA256[name] = Digest(raw)
 	}
-	parts["manifest.json"], _ = json.Marshal(bundle.Manifest)
+	manifest, err := json.Marshal(bundle.Manifest)
+	if err != nil {
+		return nil, fmt.Errorf("encode backup manifest: %w", err)
+	}
+	parts["manifest.json"] = manifest
 	total := 0
 	limits := partLimits()
 	for name, raw := range parts {
@@ -138,8 +150,14 @@ func Open(raw []byte, password, targetVersion string) (Bundle, error) {
 	if err != nil {
 		return b, err
 	}
-	block, _ := aes.NewCipher(key)
-	gcm, _ := cipher.NewGCM(block)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return b, invalid("备份加密参数无效")
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return b, invalid("备份加密参数无效")
+	}
 	plain, err := gcm.Open(nil, raw[len(magic)+16:headerSize], raw[headerSize:], raw[:headerSize])
 	if err != nil {
 		return b, invalid("备份密码错误或文件已损坏")

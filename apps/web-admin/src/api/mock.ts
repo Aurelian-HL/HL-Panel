@@ -219,6 +219,7 @@ export const mockApi = {
     return pause(clone({
       member: addedMember,
       assignments: [],
+      replayed: false,
     }))
   },
   async retireDeviceGroupMember(groupId: string, nodeId: string, _key: string): Promise<RetireDeviceGroupMemberResponse> {

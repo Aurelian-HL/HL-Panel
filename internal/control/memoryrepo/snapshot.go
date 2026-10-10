@@ -128,43 +128,44 @@ type storedVLESSSOCKS5Upstream struct {
 }
 
 type snapshot struct {
-	Version               int
-	Administrators        map[string]storedAdministrator
-	Sessions              map[string]auth.Session
-	CustomerSessions      map[string]customeridentity.Session
-	Tokens                map[string]enrollment.Token
-	Nodes                 map[string]storedNode
-	NodesByCredential     map[string]string
-	DeviceGroups          map[string]groups.DeviceGroup
-	MembersByGroup        map[string]map[string]groups.Member
-	EndpointPools         map[string]endpoints.EndpointPool
-	EndpointMembers       map[string]map[string]endpoints.EndpointPoolMember
-	EndpointCreateKeys    map[string]string
-	EndpointMemberKeys    map[string]string
-	EndpointCreateHashes  map[string]string
-	EndpointMemberHashes  map[string]string
-	RevisionsByGroup      map[string][]storedRevision
-	RevisionByIdempotency map[string]map[string]string
-	NodeConfigsByNode     map[string]map[int64]generations.NodeConfigGeneration
-	NodeConfigsByRevision map[string][]generations.NodeConfigGeneration
-	ApplyResultsByNode    map[string]map[int64]map[string]generations.ApplyResult
-	ApplyAttemptsByNode   map[string]map[int64]generations.ApplyAttemptState
-	AuditEvents           []audit.Event
-	Customers             map[string]storedCustomer
-	UserGroups            map[string]customers.UserGroup
-	GroupNetworks         map[string]groupconfig.GroupNetwork
-	ForwardRules          map[string]forwarding.Rule
-	AutoRealityKeys       map[string]string
-	VLESSSOCKS5Upstreams  map[string]storedVLESSSOCKS5Upstream
-	RuleGroups            map[string]rulegroups.RuleGroup
-	SiteSettings          siteconfig.Settings
-	Subscriptions         map[string]storedSubscription
-	Announcements         map[string]announcements.Announcement
-	VLESSBindings         map[string]storedVLESSBinding
-	VLESSRuntimeMaterials map[string]storedVLESSRuntimeMaterial
-	ProtocolHealth        map[string]map[string]gatewaymembership.ProtocolObservation
-	ProtocolProbes        map[string]gatewaymembership.ProtocolProbeConfig
-	BusinessIdempotency   map[string]businessMutation
+	Version                 int
+	GatewayMutationRevision uint64
+	Administrators          map[string]storedAdministrator
+	Sessions                map[string]auth.Session
+	CustomerSessions        map[string]customeridentity.Session
+	Tokens                  map[string]enrollment.Token
+	Nodes                   map[string]storedNode
+	NodesByCredential       map[string]string
+	DeviceGroups            map[string]groups.DeviceGroup
+	MembersByGroup          map[string]map[string]groups.Member
+	EndpointPools           map[string]endpoints.EndpointPool
+	EndpointMembers         map[string]map[string]endpoints.EndpointPoolMember
+	EndpointCreateKeys      map[string]string
+	EndpointMemberKeys      map[string]string
+	EndpointCreateHashes    map[string]string
+	EndpointMemberHashes    map[string]string
+	RevisionsByGroup        map[string][]storedRevision
+	RevisionByIdempotency   map[string]map[string]string
+	NodeConfigsByNode       map[string]map[int64]generations.NodeConfigGeneration
+	NodeConfigsByRevision   map[string][]generations.NodeConfigGeneration
+	ApplyResultsByNode      map[string]map[int64]map[string]generations.ApplyResult
+	ApplyAttemptsByNode     map[string]map[int64]generations.ApplyAttemptState
+	AuditEvents             []audit.Event
+	Customers               map[string]storedCustomer
+	UserGroups              map[string]customers.UserGroup
+	GroupNetworks           map[string]groupconfig.GroupNetwork
+	ForwardRules            map[string]forwarding.Rule
+	AutoRealityKeys         map[string]string
+	VLESSSOCKS5Upstreams    map[string]storedVLESSSOCKS5Upstream
+	RuleGroups              map[string]rulegroups.RuleGroup
+	SiteSettings            siteconfig.Settings
+	Subscriptions           map[string]storedSubscription
+	Announcements           map[string]announcements.Announcement
+	VLESSBindings           map[string]storedVLESSBinding
+	VLESSRuntimeMaterials   map[string]storedVLESSRuntimeMaterial
+	ProtocolHealth          map[string]map[string]gatewaymembership.ProtocolObservation
+	ProtocolProbes          map[string]gatewaymembership.ProtocolProbeConfig
+	BusinessIdempotency     map[string]businessMutation
 }
 
 // EncodeSnapshot is only for the confidential persistence adapter.
@@ -225,11 +226,12 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		VLESSSOCKS5Upstreams: make(map[string]storedVLESSSOCKS5Upstream, len(s.vlessSOCKS5Upstreams)),
 		Subscriptions:        make(map[string]storedSubscription, len(s.subscriptions)),
 		SiteSettings:         s.siteSettings, Announcements: s.announcements,
-		VLESSBindings:         make(map[string]storedVLESSBinding, len(s.vlessBindings)),
-		VLESSRuntimeMaterials: make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
-		BusinessIdempotency:   s.businessIdempotency,
-		ProtocolHealth:        s.protocolHealth,
-		ProtocolProbes:        s.protocolProbes,
+		VLESSBindings:           make(map[string]storedVLESSBinding, len(s.vlessBindings)),
+		VLESSRuntimeMaterials:   make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
+		BusinessIdempotency:     s.businessIdempotency,
+		ProtocolHealth:          s.protocolHealth,
+		GatewayMutationRevision: s.gatewayMutationRevision,
+		ProtocolProbes:          s.protocolProbes,
 	}
 	if events != nil {
 		state.AuditEvents = *events
@@ -435,6 +437,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.ProtocolHealth != nil {
 			s.protocolHealth = state.ProtocolHealth
 		}
+		s.gatewayMutationRevision = state.GatewayMutationRevision
 		if state.ProtocolProbes != nil {
 			for ruleID, probe := range state.ProtocolProbes {
 				if ruleID == "" || !vlessruntime.ValidCredentialUUID(probe.UUID) || probe.EchoPort < 1 || probe.EchoPort > 65535 {

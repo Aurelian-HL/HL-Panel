@@ -1,6 +1,6 @@
 export function bytes(value: number): string {
   if (!Number.isFinite(value) || value < 0) return '0 B'
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
   let amount = value
   let index = 0
   while (amount >= 1024 && index < units.length - 1) { amount /= 1024; index++ }

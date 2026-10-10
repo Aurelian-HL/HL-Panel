@@ -165,7 +165,10 @@ func (s *Service) RequestControl(ctx context.Context, administratorID, nodeID, c
 	if err != nil {
 		return ControlCommandResult{}, false, err
 	}
-	return s.repository.RequestControl(ctx, ControlCommandInput{NodeID: nodeID, Command: command, AdministratorID: administratorID, IdempotencyKey: idempotencyKey, RequestSHA256: rotationDigest(nodeID + "\x00" + command), CommandID: newControlID(now), UpdatedAt: now}, event)
+	// Scope the request digest to the authenticated administrator as well as the
+	// node and command. A reused key with different content must conflict rather
+	// than replacing an earlier command.
+	return s.repository.RequestControl(ctx, ControlCommandInput{NodeID: nodeID, Command: command, AdministratorID: administratorID, IdempotencyKey: idempotencyKey, RequestSHA256: rotationDigest(administratorID + "\x00" + nodeID + "\x00" + command), CommandID: newControlID(now), UpdatedAt: now}, event)
 }
 
 func (s *Service) ControlForNode(ctx context.Context, nodeID string) (ControlCommandResult, error) {

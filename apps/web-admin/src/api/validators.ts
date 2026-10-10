@@ -312,9 +312,11 @@ function parseAssignments(value: unknown) {
 
 export function parseAddDeviceGroupMemberResponse(value: unknown): AddDeviceGroupMemberResponse {
   const body = record(value, 'add_device_group_member')
+  if (body.replayed !== undefined && typeof body.replayed !== 'boolean') throw new ContractError('add_device_group_member.replayed 必须是布尔值')
   return {
     member: parseDeviceGroupMember(body.member),
     assignments: parseAssignments(body.assignments),
+    replayed: body.replayed === true,
   }
 }
 

@@ -125,10 +125,14 @@ PY
 temporary=$(mktemp -d)
 created_install=0
 install_ready=0
+installed_ca=0
 cleanup_install() {
   if [[ "$created_install" == 1 && "$install_ready" == 0 ]]; then
     rm -f /opt/hl-panel/edge-agent /opt/hl-panel/enroll-node.sh /etc/hl-panel/edge-agent.json /etc/systemd/system/hl-panel-edge-agent.service
     rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost
+    if [[ "$installed_ca" == 1 ]]; then
+      rm -f /etc/hl-panel/edge-agent-ca.pem
+    fi
     rmdir /opt/hl-panel/node-engines 2>/dev/null || true
     systemctl daemon-reload >/dev/null 2>&1 || true
   fi
@@ -245,9 +249,9 @@ else
   fi
   install -m 0700 -o root -g root "$release/deploy/edge-agent/enroll.sh" /opt/hl-panel/enroll-node.sh
 fi
-install_ready=1
 if [[ -n "$ca_file" ]]; then
   install -m 0640 -o root -g hl-edge "$ca_file" /etc/hl-panel/edge-agent-ca.pem
+  installed_ca=1
   python3 - <<'PY'
 import json,os,pathlib,tempfile
 p=pathlib.Path('/etc/hl-panel/edge-agent.json')
@@ -272,6 +276,7 @@ PY
 echo '[HL-panel 节点] 自动注册并启用开机自启…'
 HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh
 unset enrollment_token
+install_ready=1
 echo '[HL-panel 节点] 服务已注册并启动。请回面板刷新设备组成员与探针，等待最多 30 秒核对在线状态。'
 echo '状态：systemctl status hl-panel-edge-agent --no-pager'
 echo '排障：journalctl -u hl-panel-edge-agent -n 50 --no-pager'

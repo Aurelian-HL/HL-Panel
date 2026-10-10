@@ -37,7 +37,7 @@ func readyState() State {
 			IngressProtocol: forwarding.IngressVLESSReality, ListenPort: 443,
 			VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5, VLESSSOCKS5Host: "landing.example.test", VLESSSOCKS5Port: 1080,
 			VLESSSOCKS5Username: "landing-user",
-			RealityServerName: "example.com", RealityPublicKey: "public", RealityShortID: "12345678",
+			RealityServerName:   "example.com", RealityPublicKey: "public", RealityShortID: "12345678",
 			Status: forwarding.StatusPendingActivation, Revision: 7},
 		Members: []endpoints.EndpointPoolMember{{PoolID: "pool-1", GroupID: "group-1", NodeID: "node-1",
 			DialHost: "node.example.com", Weight: 5, State: endpoints.CandidateEligible, LastHealthAt: &now}},
@@ -113,6 +113,9 @@ func TestSnapshotRequiresCurrentReceiptAndBoundProtocolObservation(t *testing.T)
 	if err != nil || len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].Status != endpointrouter.EndpointReady {
 		t.Fatalf("matching evidence not published: snapshot=%+v err=%v", snapshot, err)
 	}
+	if got := snapshot.Endpoints[0].HealthLeaseExpiresAt; !got.Equal(observation.LeaseExpiresAt) || !got.After(time.Now()) {
+		t.Fatalf("candidate lease=%s, want original future observation expiry %s", got, observation.LeaseExpiresAt)
+	}
 
 	tests := map[string]func(*State){
 		"missing receipt": func(s *State) { delete(s.Deployments, "node-1") },
@@ -152,9 +155,9 @@ func TestSnapshotRequiresCurrentReceiptAndBoundProtocolObservation(t *testing.T)
 			proof.DialHost = "other.example.com"
 			s.ProtocolHealth["node-1"] = proof
 		},
-		"expired observation": func(s *State) {
+		"expiry before observation": func(s *State) {
 			proof := s.ProtocolHealth["node-1"]
-			proof.LeaseExpiresAt = time.Now().Add(-time.Second)
+			proof.LeaseExpiresAt = proof.VerifiedAt.Add(-time.Second)
 			s.ProtocolHealth["node-1"] = proof
 		},
 		"overlong observation": func(s *State) {
@@ -182,20 +185,110 @@ func TestSnapshotRequiresCurrentReceiptAndBoundProtocolObservation(t *testing.T)
 			if err != nil || len(snapshot.Endpoints) != 1 || snapshot.Endpoints[0].Status != endpointrouter.EndpointOffline {
 				t.Fatalf("invalid evidence authorized candidate: snapshot=%+v err=%v", snapshot, err)
 			}
+			if snapshot.Endpoints[0].HealthLeaseExpiresAt.After(time.Now()) {
+				t.Fatal("invalid evidence received a future health lease")
+			}
 		})
 	}
 }
 
 func TestReadyCandidateCountRequiresVerifiedProtocolHealth(t *testing.T) {
-	t.Skip("covered by SnapshotRequiresCurrentReceiptAndBoundProtocolObservation")
 	state := stateWithVerifiedEvidence()
 	service := NewService(&stateRepository{state})
 	count, err := service.ReadyCandidateCount(context.Background(), state.Pool.ID)
-	if err != nil || count != 1 { t.Fatalf("verified candidate count=%d err=%v, want 1", count, err) }
+	if err != nil || count != 1 {
+		t.Fatalf("verified candidate count=%d err=%v, want 1", count, err)
+	}
 	delete(state.ProtocolHealth, "node-1")
 	count, err = service.ReadyCandidateCount(context.Background(), state.Pool.ID)
 	if err != nil || count != 0 {
 		t.Fatalf("receipt and heartbeat without protocol health counted ready: count=%d err=%v", count, err)
+	}
+}
+
+func TestRepeatedMembershipCanBeAppliedAtTheSameRevision(t *testing.T) {
+	for _, verified := range []bool{false, true} {
+		t.Run(strconv.FormatBool(verified), func(t *testing.T) {
+			state := readyState()
+			if verified {
+				state = stateWithVerifiedEvidence()
+			}
+			service := NewService(&stateRepository{state})
+			clock := time.Now().UTC()
+			service.clock = func() time.Time { return clock }
+			router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				clock = clock.Add(time.Second)
+				snapshot, err := service.Snapshot(context.Background(), state.Pool.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := router.ReplaceVersionedMembership(snapshot.Revision, snapshot.Endpoints); err != nil {
+					t.Fatalf("membership refresh %d rejected without any repository mutation: %v", attempt, err)
+				}
+			}
+			_, err = router.Select()
+			if verified && err != nil {
+				t.Fatalf("verified endpoint not selectable: %v", err)
+			}
+			if !verified && !errors.Is(err, endpointrouter.ErrNoHealthyEndpoint) {
+				t.Fatalf("unverified endpoint selectable: %v", err)
+			}
+		})
+	}
+}
+
+func TestSnapshotLeaseExpiryPreservesRevisionContent(t *testing.T) {
+	state := stateWithVerifiedEvidence()
+	service := NewService(&stateRepository{state})
+	clock := state.ProtocolHealth["node-1"].VerifiedAt
+	service.clock = func() time.Time { return clock }
+	before, err := service.Snapshot(context.Background(), state.Pool.ID)
+	if err != nil || len(before.Endpoints) != 1 {
+		t.Fatalf("initial snapshot=%+v err=%v", before, err)
+	}
+	if count, err := service.ReadyCandidateCount(context.Background(), state.Pool.ID); err != nil || count != 1 {
+		t.Fatalf("unexpired candidate count=%d err=%v", count, err)
+	}
+	clock = state.ProtocolHealth["node-1"].LeaseExpiresAt.Add(time.Second)
+	after, err := service.Snapshot(context.Background(), state.Pool.ID)
+	if err != nil || len(after.Endpoints) != 1 || after.Revision != before.Revision || after.Endpoints[0] != before.Endpoints[0] {
+		t.Fatalf("expiry changed content at the same revision: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if count, err := service.ReadyCandidateCount(context.Background(), state.Pool.ID); err != nil || count != 0 {
+		t.Fatalf("expired candidate count=%d err=%v", count, err)
+	}
+}
+
+func TestExpiredProtocolLeaseNeverAuthorizesSelection(t *testing.T) {
+	state := stateWithVerifiedEvidence()
+	proof := state.ProtocolHealth["node-1"]
+	proof.VerifiedAt = time.Now().Add(-2 * time.Minute)
+	proof.LeaseExpiresAt = proof.VerifiedAt.Add(endpoints.DefaultHealthTTL)
+	state.ProtocolHealth["node-1"] = proof
+	service := NewService(&stateRepository{state})
+	snapshot, err := service.Snapshot(context.Background(), state.Pool.ID)
+	if err != nil || len(snapshot.Endpoints) != 1 || !snapshot.Endpoints[0].HealthLeaseExpiresAt.Equal(proof.LeaseExpiresAt) {
+		t.Fatalf("original expired lease not preserved: snapshot=%+v err=%v", snapshot, err)
+	}
+	if count, err := service.ReadyCandidateCount(context.Background(), state.Pool.ID); err != nil || count != 0 {
+		t.Fatalf("expired candidate counted ready: count=%d err=%v", count, err)
+	}
+	if protocolHealthy(proof, state.Deployments["node-1"].Status, state.Rule, state.Members[0], state.Members[0].DialHost, time.Now()) {
+		t.Fatal("expired proof can activate a rule")
+	}
+	router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ReplaceVersionedMembership(snapshot.Revision, snapshot.Endpoints); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := router.Select(); !errors.Is(err, endpointrouter.ErrNoHealthyEndpoint) {
+		t.Fatalf("expired lease authorized selection: %v", err)
 	}
 }
 

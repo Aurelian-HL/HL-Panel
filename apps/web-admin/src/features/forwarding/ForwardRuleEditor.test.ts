@@ -43,7 +43,7 @@ beforeEach(() => { mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValu
 describe('ForwardRuleEditor', () => {
   it('follows the NY field order without an endpoint-pool workflow', () => {
     const wrapper = mountEditor()
-    expect(wrapper.findAll('form > label.field').map((item) => item.find('span').text())).toEqual(['名称', '接入协议', '入口', '监听端口', '出口', '目标地址', '规则流量额度（GB）'])
+    expect(wrapper.findAll('form > label.field').map((item) => item.find('span').text())).toEqual(['名称', '接入协议', '入口', '监听端口', '出口', '目标地址', '规则流量额度（GB）', '每月清零额度'])
     expect(wrapper.text()).not.toContain('服务端点')
     expect(wrapper.text()).not.toContain('转发路径')
     wrapper.unmount()
@@ -211,17 +211,32 @@ describe('ForwardRuleEditor', () => {
     expect(mocked.saveRule.mock.calls[0]?.[0]).not.toHaveProperty('customer_id')
     wrapper.unmount()
   })
-  it('converts a decimal GB quota and preserves it when editing', async () => {
-    const wrapper = mountEditor({ rule: { ...rule, traffic_limit_bytes: 2_500_000_000, traffic_used_bytes: 1_000_000_000 } })
+  it('converts a binary GB quota and preserves it when editing', async () => {
+    const wrapper = mountEditor({ rule: { ...rule, traffic_limit_bytes: 2.5 * 1024 ** 3, traffic_used_bytes: 1024 ** 3 } })
     expect(field(wrapper, '规则流量额度（GB）').get('input').element.value).toBe('2.5')
     expect(wrapper.text()).toContain('已累计 1.000 GB')
     await field(wrapper, '规则流量额度（GB）').get('input').setValue('0.125')
     await submit(wrapper)
-    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ traffic_limit_bytes: 125_000_000 })
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ traffic_limit_bytes: 0.125 * 1024 ** 3 })
     expect(mocked.saveRule.mock.calls[0]?.[0]).not.toHaveProperty('traffic_used_bytes')
     await field(wrapper, '规则流量额度（GB）').get('input').setValue('0')
     await submit(wrapper)
     expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ traffic_limit_bytes: 0 })
+    wrapper.unmount()
+  })
+  it('submits the monthly quota mode and preserves it while editing', async () => {
+    const wrapper = mountEditor({ rule: { ...rule, traffic_quota_monthly: true } })
+    expect(field(wrapper, '每月清零额度').get('input').element.checked).toBe(true)
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ traffic_quota_monthly: true })
+    wrapper.unmount()
+  })
+  it('keeps the 1024 GB to 1 TB boundary exact', async () => {
+    const wrapper = mountEditor()
+    await populate(wrapper)
+    await field(wrapper, '规则流量额度（GB）').get('input').setValue('1024')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ traffic_limit_bytes: 1024 ** 4 })
     wrapper.unmount()
   })
   it('rejects negative or unsafe quotas', async () => {

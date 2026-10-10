@@ -34,8 +34,8 @@ func TestReadCacheTracksOtherWritersAndSameRevisionRepairs(t *testing.T) {
 	if _, err = first.SessionByTokenHash(ctx, tokenHash, now); err != nil {
 		t.Fatal(err)
 	}
-	cached := first.readCache.state
-	if _, err = first.SessionByTokenHash(ctx, tokenHash, now); err != nil || first.readCache.state != cached {
+	cached := &first.readCache.payload[0]
+	if _, err = first.SessionByTokenHash(ctx, tokenHash, now); err != nil || &first.readCache.payload[0] != cached {
 		t.Fatal("unchanged reads did not reuse validated state")
 	}
 	projection, err := first.AdministratorByID(ctx, admin.ID)
@@ -49,7 +49,7 @@ func TestReadCacheTracksOtherWritersAndSameRevisionRepairs(t *testing.T) {
 	if _, err = first.SessionByTokenHash(ctx, tokenHash, now); !errors.Is(err, faults.ErrUnauthorized) {
 		t.Fatal("cached session survived password reset in another instance")
 	}
-	cached = first.readCache.state
+	cached = &first.readCache.payload[0]
 	err = mutate(ctx, second, func(state *memoryrepo.Store) error {
 		_ = state.AppendAudit(ctx, audit.Event{ID: "rollback"})
 		return faults.ErrConflict
@@ -58,7 +58,7 @@ func TestReadCacheTracksOtherWritersAndSameRevisionRepairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	events, err := first.AuditEvents(ctx)
-	if err != nil || len(events) != 2 || first.readCache.state != cached {
+	if err != nil || len(events) != 2 || &first.readCache.payload[0] != cached {
 		t.Fatal("rollback invalidated or contaminated read state")
 	}
 	replacement, err := memoryrepo.New(admin).EncodeSnapshot()
@@ -69,7 +69,7 @@ func TestReadCacheTracksOtherWritersAndSameRevisionRepairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	events, err = first.AuditEvents(ctx)
-	if err != nil || len(events) != 2 || first.readCache.state == cached {
+	if err != nil || len(events) != 2 || &first.readCache.payload[0] == cached {
 		t.Fatal("same-revision replacement was hidden by cache")
 	}
 	if _, err = second.db.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload=$1`, []byte(`{"Version":17}`)); err != nil {

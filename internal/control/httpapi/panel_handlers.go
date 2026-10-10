@@ -24,7 +24,7 @@ func (api *API) panelRuntimeStatus(writer http.ResponseWriter, request *http.Req
 	writeJSON(writer, http.StatusOK, api.panelRuntime.Runtime(request.Context()))
 }
 
-func (api *API) requestPanelControl(writer http.ResponseWriter, request *http.Request, _ auth.Session) {
+func (api *API) requestPanelControl(writer http.ResponseWriter, request *http.Request, session auth.Session) {
 	var input struct {
 		Command string `json:"command"`
 	}
@@ -32,7 +32,11 @@ func (api *API) requestPanelControl(writer http.ResponseWriter, request *http.Re
 		writeProblem(writer, request, err)
 		return
 	}
-	result := api.panelRuntime.Control(request.Context(), input.Command)
+	result, err := api.panelRuntime.ControlWithIdempotencyAs(request.Context(), input.Command, request.Header.Get("Idempotency-Key"), session.AdminID)
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
 	status := http.StatusOK
 	if result.Status == "failed" {
 		status = http.StatusServiceUnavailable

@@ -4,7 +4,7 @@ import { serverNow } from '@/lib/serverClock'
 export function formatBytes(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value) || value < 0) return '未采集'
   if (value < 1024) return `${Math.round(value)} B`
-  const units = ['KiB', 'MiB', 'GiB', 'TiB', 'PiB']
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB']
   let amount = value
   let unit = -1
   do { amount /= 1024; unit++ } while (amount >= 1024 && unit < units.length - 1)

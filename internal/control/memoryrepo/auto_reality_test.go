@@ -27,7 +27,7 @@ func TestAutomaticRealityRuleRoundTripAndIdentityProjection(t *testing.T) {
 		EntryGroupID: fixture.rule.EntryGroupID, EgressMode: forwarding.EgressDirect,
 		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolTCP,
 		VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5,
-		VLESSSOCKS5Host: "landing.example.test", VLESSSOCKS5Port: 1080,
+		VLESSSOCKS5Host:   "landing.example.test", VLESSSOCKS5Port: 1080,
 		VLESSSOCKS5Username: "landing-user", VLESSSOCKS5Password: "landing-secret",
 		ListenPort: 12001, Targets: fixture.rule.Targets, SelectionPolicy: forwarding.SelectionRoundRobin,
 	}

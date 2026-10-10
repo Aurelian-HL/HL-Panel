@@ -160,6 +160,9 @@ func (s *Store) RequestControl(_ context.Context, input nodes.ControlCommandInpu
 		return nodes.ControlCommandResult{}, false, faults.ErrNotFound
 	}
 	if node.ControlCommandID != "" && node.ControlIdempotencyKey == input.IdempotencyKey {
+		if node.ControlRequestSHA256 != input.RequestSHA256 {
+			return nodes.ControlCommandResult{}, false, faults.ErrIdempotencyConflict
+		}
 		return controlResult(node), true, nil
 	}
 	node.ControlCommandID = input.CommandID

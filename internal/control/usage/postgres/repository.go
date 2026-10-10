@@ -142,12 +142,20 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	if repository == nil || repository.db == nil {
 		return usage.QueryResult{}, errors.New("usage PostgreSQL repository is unavailable")
 	}
+	// Aggregates and pagination must observe the same committed ledger, even
+	// when an agent reports usage between the two SELECTs. MVCC adds no write
+	// locks and lets ingest continue while this bounded request reads.
+	tx, err := repository.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return usage.QueryResult{}, errors.New("usage query transaction unavailable")
+	}
+	defer tx.Rollback()
 	where, args := queryFilter(query)
 	var result usage.QueryResult
 	totalsSQL := `SELECT count(*), COALESCE(sum(rule_actual_bytes),0)::bigint,
 		COALESCE(sum(customer_actual_bytes),0)::bigint, COALESCE(sum(charged_bytes),0)::bigint
 		FROM usage_events e` + where
-	if err := repository.db.QueryRowContext(ctx, totalsSQL, args...).Scan(
+	if err := tx.QueryRowContext(ctx, totalsSQL, args...).Scan(
 		&result.Total, &result.Totals.RuleActualBytes, &result.Totals.CustomerActualBytes, &result.Totals.ChargedBytes,
 	); err != nil {
 		return usage.QueryResult{}, errors.New("usage aggregate query failed")
@@ -158,7 +166,7 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	pageArgs = append(pageArgs, query.PageSize)
 	offsetParameter := fmt.Sprintf("$%d", len(pageArgs)+1)
 	pageArgs = append(pageArgs, (query.Page-1)*query.PageSize)
-	rows, err := repository.db.QueryContext(ctx, `SELECT
+	rows, err := tx.QueryContext(ctx, `SELECT
 		e.node_id,e.boot_id,e.sequence,e.customer_id,e.rule_id,e.entry_group_id,e.exit_group_id,e.protocol,
 		e.occurred_at,e.period_started_at,e.period_ended_at,e.rule_actual_bytes,e.customer_actual_bytes,
 		e.entry_multiplier_micros,e.exit_multiplier_micros,e.charged_bytes,e.payload_sha256,e.received_at,
@@ -182,6 +190,12 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	}
 	if err := rows.Err(); err != nil {
 		return usage.QueryResult{}, errors.New("usage detail iteration failed")
+	}
+	if err := rows.Close(); err != nil {
+		return usage.QueryResult{}, errors.New("usage detail close failed")
+	}
+	if err := tx.Commit(); err != nil {
+		return usage.QueryResult{}, errors.New("usage query transaction commit failed")
 	}
 	result.Page, result.PageSize = query.Page, query.PageSize
 	return result, nil

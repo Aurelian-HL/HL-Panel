@@ -26,7 +26,7 @@ describe('node telemetry', () => {
   })
 
   it('only formats valid Agent process memory samples', () => {
-    expect(formatResourceBytes(node, 'memory_alloc_bytes')).toBe('1.0 MiB')
+    expect(formatResourceBytes(node, 'memory_alloc_bytes')).toBe('1.0 MB')
     expect(formatResourceBytes({ ...node, resources: { memory_alloc_bytes: -1 } }, 'memory_alloc_bytes')).toBe('未上报')
     expect(formatResourceBytes({ ...node, resources: { memory_alloc_bytes: '1048576' } }, 'memory_alloc_bytes')).toBe('未上报')
   })

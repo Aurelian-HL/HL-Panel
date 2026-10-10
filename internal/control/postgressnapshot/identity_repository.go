@@ -75,6 +75,18 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, token enrollment.Toke
 	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.CreateEnrollmentToken(ctx, token, event) })
 }
 
+func (s *Store) CreateEnrollmentTokenIdempotent(ctx context.Context, token enrollment.Token, event audit.Event) (enrollment.Token, bool, error) {
+	type result struct {
+		token    enrollment.Token
+		replayed bool
+	}
+	v, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+		value, replayed, err := state.CreateEnrollmentTokenIdempotent(ctx, token, event)
+		return result{token: value, replayed: replayed}, err
+	})
+	return v.token, v.replayed, err
+}
+
 func (s *Store) ListPendingEnrollmentTokens(ctx context.Context, groupID string, now time.Time) ([]enrollment.PendingToken, error) {
 	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]enrollment.PendingToken, error) {
 		return state.ListPendingEnrollmentTokens(ctx, groupID, now)

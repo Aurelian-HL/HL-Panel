@@ -120,6 +120,8 @@ type Rule struct {
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
 	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
 	TrafficUsedBytes    int64             `json:"traffic_used_bytes,omitempty"`
+	TrafficQuotaMonthly bool              `json:"traffic_quota_monthly,omitempty"`
+	TrafficUsagePeriod  string            `json:"traffic_usage_period,omitempty"`
 	Paused              bool              `json:"paused"`
 	Description         string            `json:"description"`
 	Revision            int64             `json:"revision"`
@@ -139,6 +141,30 @@ func (r Rule) OwnedByAdministrator(adminID string) bool {
 
 func (r Rule) OwnedByCustomer(customerID string) bool {
 	return r.OwnerKind != OwnerAdministrator && r.CustomerID == customerID
+}
+
+// TrafficQuotaPeriodBounds returns the half-open UTC natural-month interval
+// used by monthly rule quotas. Keeping this in the forwarding package makes
+// ledger queries and quota snapshots use exactly the same boundary.
+func TrafficQuotaPeriodBounds(at time.Time) (time.Time, time.Time) {
+	at = at.UTC()
+	start := time.Date(at.Year(), at.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return start, start.AddDate(0, 1, 0)
+}
+
+func TrafficQuotaPeriod(at time.Time) string {
+	start, _ := TrafficQuotaPeriodBounds(at)
+	return start.Format("2006-01")
+}
+
+// RuleTrafficProjection binds a ledger query to the rule version and accounting
+// scope it read. An edit during that query invalidates the projection.
+type RuleTrafficProjection struct {
+	RuleID           string
+	ExpectedRevision int64
+	Monthly          bool
+	TotalBytes       int64
+	At               time.Time
 }
 
 // PendingActivationReason reports a bounded, non-secret reason for a rule
@@ -202,6 +228,7 @@ type Request struct {
 	IPLimit             int               `json:"ip_limit,omitempty"`
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
 	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
+	TrafficQuotaMonthly bool              `json:"traffic_quota_monthly,omitempty"`
 	Paused              bool              `json:"paused"`
 	Description         string            `json:"description"`
 	Revision            int64             `json:"revision"`

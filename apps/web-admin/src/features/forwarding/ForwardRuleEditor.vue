@@ -6,7 +6,7 @@ import { businessApi, type ForwardRule, type ForwardRuleInput, type GroupNetwork
 import { ApiError } from '@/api/http'
 import BaseModal from '@/components/BaseModal.vue'
 import { useMutationKey } from '@/composables/useMutationKey'
-import { parseTargetAddresses, parseVLESSSOCKS5Target, ruleInput, targetAddress } from '@/lib/businessFormatters'
+import { BYTES_PER_GB, parseTargetAddresses, parseVLESSSOCKS5Target, ruleInput, targetAddress } from '@/lib/businessFormatters'
 import { displayError } from '@/lib/displayFormatters'
 import { networkAllowsDirect, networkAllowsExitGroup } from '@/lib/forwardingRoutes'
 
@@ -19,9 +19,9 @@ const form = reactive<ForwardRuleInput>(props.rule ? { ...ruleInput(props.rule),
   name: '', rule_group_id: '', entry_group_id: '', exit_group_id: '', egress_mode: 'DIRECT', ingress_protocol: 'tcp', vless_flow: '', reality_server_name: '', reality_public_key: '', reality_short_id: '', reality_destination: '', vless_outbound_mode: 'SOCKS5', vless_socks5_host: '', vless_socks5_port: 0, vless_socks5_username: '', vless_socks5_password: '', protocol: 'tcp',
   listen_port: 0, targets: [{ host: '', port: 443 }], selection_policy: 'round_robin', accept_proxy_protocol: false,
   send_proxy_protocol: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0,
-  traffic_limit_bytes: 0, paused: false, description: '', revision: 0,
+  traffic_limit_bytes: 0, traffic_quota_monthly: false, paused: false, description: '', revision: 0,
 })
-const trafficLimitGB = ref((form.traffic_limit_bytes ?? 0) / 1_000_000_000)
+const trafficLimitGB = ref((form.traffic_limit_bytes ?? 0) / BYTES_PER_GB)
 const targetsText = ref(props.rule
   ? props.rule.ingress_protocol === 'vless_reality' && props.rule.vless_socks5_host && props.rule.vless_socks5_port
     ? targetAddress(props.rule.vless_socks5_host, props.rule.vless_socks5_port)
@@ -174,7 +174,7 @@ async function save(): Promise<void> {
   // generate it once. Keep already-issued material stable during edits;
   // clearing it would rotate the customer's URI on an unrelated change.
   const input: ForwardRuleInput = { ...form, name: form.name.trim(), description: form.description.trim(), ingress_protocol: selectedIngress, vless_flow: selectedIngress === 'vless_reality' ? 'xtls-rprx-vision' : '', reality_server_name: selectedIngress === 'vless_reality' ? form.reality_server_name : '', reality_public_key: selectedIngress === 'vless_reality' ? form.reality_public_key : '', reality_short_id: selectedIngress === 'vless_reality' ? form.reality_short_id : '', reality_destination: selectedIngress === 'vless_reality' ? form.reality_destination : '', vless_outbound_mode: selectedIngress === 'vless_reality' ? 'SOCKS5' : 'DIRECT', vless_socks5_host: selectedIngress === 'vless_reality' ? form.vless_socks5_host?.trim() : '', vless_socks5_port: selectedIngress === 'vless_reality' ? form.vless_socks5_port : 0, vless_socks5_username: selectedIngress === 'vless_reality' ? form.vless_socks5_username?.trim() : '', vless_socks5_password: selectedIngress === 'vless_reality' ? (form.vless_socks5_password || '') : '', exit_group_id: form.egress_mode === 'DIRECT' ? '' : form.exit_group_id, targets: form.targets.map((item) => ({ host: item.host.trim(), port: item.port })) }
-  const quotaBytes = Math.round(Number(trafficLimitGB.value) * 1_000_000_000)
+  const quotaBytes = Math.round(Number(trafficLimitGB.value) * BYTES_PER_GB)
   if (!Number.isFinite(Number(trafficLimitGB.value)) || Number(trafficLimitGB.value) < 0 || !Number.isSafeInteger(quotaBytes) || (Number(trafficLimitGB.value) > 0 && quotaBytes < 1)) { error.value = '请输入有效的流量额度'; return }
   input.traffic_limit_bytes = quotaBytes
   busy.value = true
@@ -195,7 +195,9 @@ async function save(): Promise<void> {
       <label class="field"><span>出口</span><select :value="form.exit_group_id" :disabled="!form.entry_group_id || isVlessReality" @change="chooseExit(($event.target as HTMLSelectElement).value)"><option v-if="directAllowed || !form.entry_group_id || isVlessReality || !network" value="">入口组直出</option><option v-else value="" disabled>请选择出口设备组</option><option v-if="form.exit_group_id && !exits.some(item => item.id === form.exit_group_id)" :value="form.exit_group_id">原出口已不可用</option><option v-for="item in exits" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
       <div v-if="form.entry_group_id && form.exit_group_id" class="rule-connection-summary">入口组 → {{ exits.find(item => item.id === form.exit_group_id)?.name || '出口组' }} → 目标地址</div>
       <label class="field"><span>目标地址</span><textarea v-model="targetsText" required rows="4" spellcheck="false" :placeholder="targetPlaceholder" /><small v-if="isVlessReality" class="field-help">新建填写 IP:端口:账号:密码；编辑已有规则可直接保留 IP:端口，服务端沿用已保存的上游凭据。</small></label>
-      <label class="field"><span>规则流量额度（GB）</span><input v-model="trafficLimitGB" type="number" min="0" max="9007199" step="any" placeholder="0 为不限量" /><small class="field-help">0 为不限量；1 GB = 10 亿字节。按本规则累计计费流量（含设备组倍率）计算，达到额度后自动暂停，不按月清零。提高或取消额度可恢复，手动暂停仍需手动恢复。</small><small v-if="rule && !copy" class="field-help">已累计 {{ ((rule.traffic_used_bytes ?? 0) / 1_000_000_000).toFixed(3) }} GB</small></label>
+      <label class="field"><span>规则流量额度（GB）</span><input v-model="trafficLimitGB" type="number" min="0" max="8388607" step="any" placeholder="0 为不限量" /><small class="field-help">0 为不限量；1024 MB = 1 GB，1024 GB = 1 TB（按 1024 进制换算）。达到额度后规则自动暂停，提高或取消额度可恢复，手动暂停仍需手动恢复。</small></label>
+      <label class="field field--checkbox"><input v-model="form.traffic_quota_monthly" type="checkbox" /><span>每月清零额度</span><small class="field-help">开启后按 UTC 自然月计算：每月 1 日从 0 GB 重新累计，额度上限每月重新可用；关闭后持续累计历史用量。</small></label>
+      <small v-if="rule && !copy" class="field-help">已累计 {{ ((rule.traffic_used_bytes ?? 0) / BYTES_PER_GB).toFixed(3) }} GB{{ form.traffic_quota_monthly ? '（按月清零）' : '（持续累计）' }}</small>
       <details class="ny-advanced"><summary>高级选项</summary><div class="form-stack">
         <label class="field"><span>规则分组</span><select v-model="form.rule_group_id"><option value="">未分组</option><option v-if="form.rule_group_id && !ruleGroups.some(item => item.id === form.rule_group_id)" :value="form.rule_group_id">原分组已不可用</option><option v-for="item in ruleGroups" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
         <label class="field"><span>目标协议</span><select v-model="form.protocol" disabled><option value="tcp">TCP</option><option value="udp">UDP</option></select><small class="field-help">{{ isVlessReality ? 'VLESS + Reality + Vision 解密后固定转为 TCP 目标。' : ingressProtocol === 'udp' ? 'NY UDP 接入固定转发到 UDP 目标。' : ingressProtocol === 'socks5' ? 'NY SOCKS5 客户端入口固定转发到 TCP 目标。' : 'NY TCP 接入固定转发到 TCP 目标。' }}</small></label>

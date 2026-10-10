@@ -39,7 +39,7 @@ describe('ForwardRuleInventory', () => {
     const missingRule: ForwardRule = { ...baseRule, id: 'missing' }
     const zeroRule: ForwardRule = { ...baseRule, id: 'zero' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [baseRule, missingRule, zeroRule], devices, ruleGroups: [], selectedIds: [], busyId: '', trafficByRule: { [baseRule.id]: 1024 ** 3 * 12.5, zero: 0 } } })
-    expect(wrapper.findAll('td.rule-used-traffic').map((item) => item.text())).toEqual(['12.5 GiB不限量', '—不限量', '0 B不限量'])
+    expect(wrapper.findAll('td.rule-used-traffic').map((item) => item.text())).toEqual(['12.5 GB不限量', '—不限量', '0 B不限量'])
     wrapper.unmount()
   })
 

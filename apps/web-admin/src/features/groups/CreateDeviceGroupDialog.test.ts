@@ -26,7 +26,7 @@ describe('CreateDeviceGroupDialog', () => {
 
     expect(apiMocks.createDeviceGroup).toHaveBeenCalledWith({
       name: '广州入口', kind: 'ENTRY', user_group_id: 'user-group-1', hide_in_probe: true, selection_policy: 'weighted_least_connections', description: '',
-    })
+    }, expect.any(String))
     expect(wrapper.emitted('created')).toHaveLength(1)
   })
 })

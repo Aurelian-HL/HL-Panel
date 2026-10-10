@@ -22,7 +22,7 @@ func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewa
 		return gatewaymembership.State{}, faults.ErrNotFound
 	}
 	state := gatewaymembership.State{
-		Revision: uint64(len(s.auditEvents)) + 1, Pool: cloneEndpointPool(pool),
+		Revision: uint64(len(s.auditEvents)) + s.gatewayMutationRevision + 1, Pool: cloneEndpointPool(pool),
 		Deployments:    make(map[string]gatewaymembership.DeploymentEvidence),
 		ProtocolHealth: make(map[string]gatewaymembership.ProtocolObservation),
 	}
@@ -93,6 +93,17 @@ func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymemb
 	if member.DialHost == "" {
 		return faults.ErrValidation
 	}
+	input, err := s.ruleNodeDeploymentInputLocked(observation.RuleID, observation.NodeID)
+	if err != nil {
+		return err
+	}
+	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+	if !observation.MatchesCurrentDeployment(s.endpointPools[poolID], input.Rule, member, evidence, time.Now().UTC()) {
+		return faults.ErrValidation
+	}
+	if previous, exists := s.protocolHealth[poolID][observation.NodeID]; exists && !observation.CanReplace(previous) {
+		return faults.ErrConflict
+	}
 	if s.protocolHealth[poolID] == nil {
 		s.protocolHealth[poolID] = make(map[string]gatewaymembership.ProtocolObservation)
 	}
@@ -102,6 +113,7 @@ func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymemb
 	member.LastHealthReason = "protocol_probe"
 	member.UpdatedAt = verifiedAt
 	members[observation.NodeID] = member
+	s.gatewayMutationRevision++
 	return nil
 }
 
@@ -159,6 +171,7 @@ func (s *Store) ConfigureProtocolProbe(_ context.Context, ruleID string, config 
 		}
 		return err
 	}
+	s.gatewayMutationRevision++
 	return nil
 }
 

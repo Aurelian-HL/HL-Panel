@@ -292,7 +292,10 @@ def rollback(data):
     marker = load_marker(data['id'])
     require(marker['state'] != 'active', 'marker')
     if Path('/etc/systemd/system/hl-panel-control-api.service').exists():
-        require(FENCE.is_file() and json.loads(FENCE.read_text()) == {'role': 'receiver', 'id': data['id']}, 'marker')
+        # A restored target must still be fenced until it is explicitly active.
+        # Treat a missing or mismatched fence as an unsafe inconsistent state;
+        # silently cancelling here could leave the receiver serving traffic.
+        require(FENCE.is_file() and not FENCE.is_symlink() and json.loads(FENCE.read_text()) == {'role': 'receiver', 'id': data['id']}, 'marker')
         command(['systemctl', 'stop', 'hl-panel-control-api.service'])
         check = subprocess.run(['systemctl', 'is-active', '--quiet', 'hl-panel-control-api.service'])
         require(check.returncode != 0, 'health')

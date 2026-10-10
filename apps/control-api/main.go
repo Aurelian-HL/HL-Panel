@@ -158,6 +158,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	auditService := audit.NewService(store)
 	authService := auth.NewService(store, auditService, time.Now, 8*time.Hour)
 	var enrollmentOptions []enrollment.Option
+	enrollmentOptions = append(enrollmentOptions, enrollment.WithIdempotencySecret(configuration.CustomerPasswordFingerprintKey))
 	if configuration.Nezha != nil {
 		configuration.Nezha.SetBindingSource(store)
 		enrollmentOptions = append(enrollmentOptions, enrollment.WithNezhaServerValidator(configuration.Nezha.ValidateAvailableServer))
@@ -228,13 +229,19 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	}
 	defer stopBackground()
 	versionService := releases.New(platformVersion)
+	controlStatePath := strings.TrimSpace(os.Getenv("CONTROL_PANEL_CONTROL_STATE_FILE"))
+	if controlStatePath == "" {
+		if cwd, _ := os.Getwd(); cwd == "/var/lib/hl-panel" {
+			controlStatePath = "/var/lib/hl-panel/panel-control.json"
+		}
+	}
 	options := []httpapi.Option{
 		httpapi.WithReleases(versionService),
 		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
-		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, nil, logger, time.Now).WithLogs(panelLogs)),
+		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, panelruntime.NewSystemdController("hl-panel-control-api.service"), logger, time.Now).WithLogs(panelLogs).WithAudit(auditService).WithStatePath(controlStatePath)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
 		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService), time.Now)),
 		httpapi.WithUsage(usageService),

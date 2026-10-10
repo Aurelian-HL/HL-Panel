@@ -337,8 +337,10 @@ declare -A OWNED_FILES=()
 declare -A OWNED_SYMLINKS=()
 install_new_file() {
   local source_file="$1" destination="$2" owner="$3" group="$4" mode="$5"
-  local temp_file digest
-  temp_file="$(mktemp "$(dirname "$destination")/.hl-panel-install.XXXXXX")"
+  local destination_dir temp_file digest
+  destination_dir="$(dirname -- "$destination")"
+  [[ -d "$destination_dir" && ! -L "$destination_dir" ]] || fail "安装目标目录不存在或是链接：$destination_dir"
+  temp_file="$(mktemp "$destination_dir/.hl-panel-install.XXXXXX")"
   if ! install -o "$owner" -g "$group" -m "$mode" "$source_file" "$temp_file"; then
     rm -f -- "$temp_file"
     return 1
@@ -492,6 +494,7 @@ ACME_WEBROOT_CREATED=false
 USER_CREATED=false
 DB_ROLE_CREATED=false
 DB_CREATE_STARTED=false
+DB_CREATED=false
 SYSTEMD_UNIT_CREATED=false
 UPDATE_UNITS_CREATED=false
 NGINX_RELOAD_ATTEMPTED=false
@@ -518,11 +521,14 @@ cleanup() {
       nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     fi
     if [[ "$DB_CREATE_STARTED" == true ]]; then
-      database_marker="$(runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'hl_panel_control'" 2>/dev/null || true)"
       role_marker="$(runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = 'hl_panel_app'" 2>/dev/null || true)"
       database_owner="$(runuser -u postgres -- psql -XAtqc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'hl_panel_control'" 2>/dev/null || true)"
-      database_empty="$(runuser -u postgres -- psql -XAtqc "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public')) AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public')" --dbname=hl_panel_control 2>/dev/null || true)"
-      if [[ -n "$DB_OWNERSHIP_TOKEN" && "$database_owner" == hl_panel_app && "$role_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]] && { [[ "$database_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]] || [[ "$database_empty" == t ]]; }; then
+      # createdb succeeds only after the preflight confirmed the database did
+      # not exist. The role marker and owner then identify this install even if
+      # a later COMMENT or migration step failed before the database marker was
+      # written. Never use an "empty database" heuristic: migrations can have
+      # created tables before the installer reports an error.
+      if [[ "$DB_CREATED" == true && -n "$DB_OWNERSHIP_TOKEN" && "$database_owner" == hl_panel_app && "$role_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]]; then
         runuser -u postgres -- dropdb --if-exists hl_panel_control >/dev/null 2>&1 || log "警告：本次新建数据库 hl_panel_control 未能自动删除"
       fi
     fi
@@ -645,6 +651,7 @@ check_database_names
 printf "BEGIN; CREATE ROLE hl_panel_app LOGIN PASSWORD '%s'; COMMENT ON ROLE hl_panel_app IS 'HL-panel installer %s'; COMMIT;\n" "$DB_PASSWORD" "$DB_OWNERSHIP_TOKEN" | runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 >/dev/null
 DB_CREATE_STARTED=true
 if runuser -u postgres -- createdb --owner=hl_panel_app hl_panel_control; then
+  DB_CREATED=true
   runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -c "COMMENT ON DATABASE hl_panel_control IS 'HL-panel installer $DB_OWNERSHIP_TOKEN'" >/dev/null
 else
   DB_CREATE_STARTED=false

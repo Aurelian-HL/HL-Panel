@@ -31,11 +31,41 @@ func (s *Store) MarkActivated(_ context.Context, ruleID string, expectedRevision
 	if rule.Revision != expectedRevision {
 		return faults.ErrConflict
 	}
-	if rule.Paused || rule.Status == forwarding.StatusPaused || rule.Status == forwarding.StatusCustomerDisabled || rule.Status == forwarding.StatusCustomerExpired || rule.Status == forwarding.StatusQuotaExhausted {
+	current := s.forwardingBaseViewLocked(rule)
+	if current.Paused || (current.Status != forwarding.StatusPendingActivation && current.Status != forwarding.StatusActive) {
 		return faults.ErrConflict
 	}
 	if rule.Deployed {
 		return nil
+	}
+	if current.EffectiveIngressProtocol() != forwarding.IngressVLESSReality {
+		return faults.ErrConflict
+	}
+	// The challenge and this write are separate operations. Revalidate the
+	// current receipt, membership and bounded protocol lease under the lock;
+	// an in-flight probe cannot activate a retired or reconfigured candidate.
+	ready := false
+	for poolID, pool := range s.endpointPools {
+		if pool.RuleID != ruleID {
+			continue
+		}
+		for nodeID, member := range s.endpointMembers[poolID] {
+			input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
+			if err != nil {
+				continue
+			}
+			evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+			if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
+				ready = true
+				break
+			}
+		}
+		if ready {
+			break
+		}
+	}
+	if !ready {
+		return faults.ErrConflict
 	}
 	rule.Deployed = true
 	rule.ActivationReason = ""
@@ -151,7 +181,7 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 		return forwarding.Rule{}, false, fmt.Errorf("%w: forwarding rule changed; reload before saving", faults.ErrConflict)
 	}
 	item.CreatedAt = previous.CreatedAt
-	item.TrafficUsedBytes = previous.TrafficUsedBytes
+	preserveRuleTraffic(&item, previous)
 	if item.ListenPort == 0 && item.EntryGroupID == previous.EntryGroupID && item.Protocol == previous.Protocol {
 		item.ListenPort = previous.ListenPort
 	}

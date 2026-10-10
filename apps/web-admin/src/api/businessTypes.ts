@@ -92,6 +92,7 @@ export interface ForwardRuleInput {
   ip_limit?: number
   connection_limit?: number
   traffic_limit_bytes?: number
+  traffic_quota_monthly?: boolean
   paused: boolean
   description: string
   revision: number

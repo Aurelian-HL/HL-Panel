@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { effectiveIngressProtocol, ingressProtocolLabel, ingressStatusFor, parseTargetAddresses, parseVLESSSOCKS5Target, targetAddress, validateRealityParameters } from './businessFormatters'
+import { BYTES_PER_GB, BYTES_PER_TB, byteAmount, effectiveIngressProtocol, ingressProtocolLabel, ingressStatusFor, parseTargetAddresses, parseVLESSSOCKS5Target, targetAddress, validateRealityParameters } from './businessFormatters'
 import { displayError } from './displayFormatters'
 
 describe('forwarding target entry', () => {
@@ -15,6 +15,14 @@ describe('forwarding target entry', () => {
   it('only permits an empty target list when explicitly requested by dynamic VLESS SOCKS5', () => {
     expect(() => parseTargetAddresses('')).toThrow('请填写 1 至 32 行目标地址')
     expect(parseTargetAddresses('', true)).toEqual([])
+  })
+})
+
+describe('traffic byte formatting', () => {
+  it('uses binary GB and TB boundaries with product labels', () => {
+    expect(byteAmount(BYTES_PER_GB)).toBe('1 GB')
+    expect(byteAmount(BYTES_PER_TB)).toBe('1 TB')
+    expect(byteAmount(1024 * BYTES_PER_GB)).toBe('1 TB')
   })
 })
 

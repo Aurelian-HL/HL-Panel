@@ -15,6 +15,7 @@ const priority = ref(0)
 const submitting = ref(false)
 const errorMessage = ref('')
 const autoDialHost = ref('')
+const operationKey = crypto.randomUUID()
 
 const availableNodes = computed(() => props.nodes.filter((node) => node.status !== 'retired'))
 
@@ -63,7 +64,7 @@ async function submit(): Promise<void> {
   }
   submitting.value = true
   try {
-    const result = await api.addDeviceGroupMember(props.group.id, { node_id: nodeId.value, dial_host: normalizedDialHost, weight: weight.value, priority: priority.value })
+    const result = await api.addDeviceGroupMember(props.group.id, { node_id: nodeId.value, dial_host: normalizedDialHost, weight: weight.value, priority: priority.value }, operationKey)
     emit('added', result.assignments.length)
   } catch (error) {
     errorMessage.value = displayError(error)
