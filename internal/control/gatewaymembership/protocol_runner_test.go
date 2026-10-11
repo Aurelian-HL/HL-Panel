@@ -221,7 +221,14 @@ func TestNewRuleBypassesLargePoolBacklog(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	close(release)
+	// Free one worker so the next dispatched job is observable. Releasing all
+	// workers lets their check callbacks race, which does not preserve dispatch
+	// order and can falsely report that a correctly prioritized job was delayed.
+	select {
+	case release <- struct{}{}:
+	case <-time.After(time.Second):
+		t.Fatal("blocked worker did not finish")
+	}
 	select {
 	case host := <-started:
 		if host != "new-rule-0.example.test" {
