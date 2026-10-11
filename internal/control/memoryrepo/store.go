@@ -25,9 +25,10 @@ import (
 )
 
 type Store struct {
-	mu                  sync.RWMutex
-	desiredChanges      generations.ChangeSignals
-	persistenceRevision uint64
+	mu                      sync.RWMutex
+	desiredChanges          generations.ChangeSignals
+	persistenceRevision     uint64
+	nodeConfigHistoryReader NodeConfigHistoryReader
 	// Unaudited protocol/configuration projections must also advance gateway
 	// membership. PostgreSQL uses its row revision instead of this local offset.
 	gatewayMutationRevision uint64

@@ -144,6 +144,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	if err := initializeAuditJournal(ctx, tx); err != nil {
 		return err
 	}
+	if err := initializeNodeConfigHistory(ctx, tx); err != nil {
+		return err
+	}
 	if err := migrationTables(ctx, tx); err != nil {
 		return err
 	}
@@ -192,6 +195,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	if err != nil {
 		return zero, err
 	}
+	attachNodeConfigHistoryReader(ctx, tx, state)
 	var before map[string]int64
 	var auditCount int
 	if write {
@@ -210,7 +214,10 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		if err := appendAuditJournal(ctx, tx, events[auditCount:]); err != nil {
 			return zero, err
 		}
-		raw, err := state.EncodeSnapshotWithAudit(nil)
+		if err := persistNodeConfigHistory(ctx, tx, state.DetachHistoricalNodeConfigs()); err != nil {
+			return zero, err
+		}
+		raw, err := encodeHotSnapshot(state)
 		if err != nil {
 			return zero, err
 		}

@@ -44,7 +44,9 @@ const protocolHealthSnapshotVersion = 12
 const protocolProbeSnapshotVersion = 13
 const nezhaBindingSnapshotVersion = 14
 const vlessSOCKS5SnapshotVersion = 15
-const MaxSnapshotBytes = 16 << 20
+// Full migration exports include archived configuration generations. The hot
+// PostgreSQL row remains capped separately at 16 MiB.
+const MaxSnapshotBytes = 64 << 20
 
 func SupportsSnapshotVersion(version int) bool {
 	return version >= 1 && version <= SnapshotVersion

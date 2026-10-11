@@ -6,6 +6,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -25,6 +26,30 @@ func fixture(t *testing.T) Bundle {
 		usage[table] = json.RawMessage("[]")
 	}
 	return Bundle{Manifest: Manifest{Format: 1, Version: "v0.1.47", CreatedAt: time.Now().UTC(), SourceURL: "https://panel.example.com"}, State: State{Snapshot: raw, Usage: usage}, Runtime: RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{9}, 32)}}
+}
+
+func TestLargerControlAllowancePreservesLegacyLargeLedgerArchive(t *testing.T) {
+	b := fixture(t)
+	// A ledger over 60 MiB fitted the old 16 MiB control allowance. Increasing
+	// the control allowance to 64 MiB must not reduce that compatibility.
+	row := make(map[string]any)
+	for _, column := range ledgerColumns[Tables()[0]] {
+		row[column] = nil
+	}
+	row[ledgerColumns[Tables()[0]][0]] = strings.Repeat("x", 61<<20)
+	ledger, err := json.Marshal([]map[string]any{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.State.Usage[Tables()[0]] = ledger
+	raw, err := Seal(b, "isolated-backup-pass")
+	if err != nil {
+		t.Fatal("legacy-sized ledger rejected", err)
+	}
+	restored, err := Open(raw, "isolated-backup-pass", b.Manifest.Version)
+	if err != nil || !bytes.Equal(restored.State.Usage[Tables()[0]], ledger) {
+		t.Fatal("large ledger archive round trip failed", err)
+	}
 }
 func TestArchiveEncryptionIntegrityAndCompatibility(t *testing.T) {
 	b := fixture(t)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
@@ -22,10 +23,26 @@ import (
 type publicFeedRepository struct {
 	subscriptions.Repository
 	record subscriptions.Record
+	err    error
 }
 
 func (s publicFeedRepository) SubscriptionByToken(context.Context, string) (subscriptions.Record, error) {
-	return s.record, nil
+	return s.record, s.err
+}
+
+func TestPublicSubscriptionRepositoryOutageReturnsRedactedRetryableError(t *testing.T) {
+	for _, err := range []error{errors.New("private connection detail"), faults.ErrNotFound} {
+		handler := httpapi.New(nil, nil, nil, nil, nil, nil, nil, httpapi.WithSubscriptions(subscriptions.NewService(publicFeedRepository{err: err}, nil, nil)))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/public/subscriptions/sub_"+strings.Repeat("a", 43)+".txt", nil))
+		if errors.Is(err, faults.ErrNotFound) {
+			if response.Code != http.StatusNotFound {
+				t.Fatal(response.Code)
+			}
+		} else if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "15" || strings.Contains(response.Body.String(), "private connection detail") {
+			t.Fatal("repository outage was hidden or leaked", response.Code, response.Body.String())
+		}
+	}
 }
 
 type recoveringNativeResolver struct{ healthy bool }

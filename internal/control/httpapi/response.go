@@ -52,6 +52,9 @@ func writeProblem(writer http.ResponseWriter, _ *http.Request, err error) {
 	code := "internal_error"
 	message := "internal server error"
 	switch {
+	case errors.Is(err, faults.ErrUnavailable):
+		status, code, message = http.StatusServiceUnavailable, "temporarily_unavailable", "服务暂时不可用，请稍后重试"
+		writer.Header().Set("Retry-After", "15")
 	case errors.Is(err, faults.ErrValidation):
 		status, code, message = http.StatusBadRequest, "validation_error", err.Error()
 	case errors.Is(err, faults.ErrUnauthorized), errors.Is(err, faults.ErrExpired), errors.Is(err, faults.ErrAlreadyUsed):

@@ -3,6 +3,7 @@ package memoryrepo
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -91,7 +92,7 @@ func (s *Store) DesiredNodeConfig(_ context.Context, nodeID string) (generations
 	return cloneNodeConfig(configuration), node.AppliedGeneration, nil
 }
 
-func (s *Store) RecordApplyResult(_ context.Context, result generations.ApplyResult, event audit.Event) (nodes.Node, error) {
+func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyResult, event audit.Event) (nodes.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node, exists := s.nodes[result.NodeID]
@@ -100,7 +101,15 @@ func (s *Store) RecordApplyResult(_ context.Context, result generations.ApplyRes
 	}
 	configuration, exists := s.nodeConfigsByNode[result.NodeID][result.Generation]
 	if !exists {
-		return nodes.Node{}, fmt.Errorf("%w: generation was not assigned to node", faults.ErrConflict)
+		history, err := s.nodeConfigHistoryLocked(ctx, result.NodeID, result.Generation)
+		if errors.Is(err, faults.ErrNotFound) {
+			return nodes.Node{}, fmt.Errorf("%w: generation was not assigned to node", faults.ErrConflict)
+		}
+		if err != nil {
+			return nodes.Node{}, err
+		}
+		s.restoreNodeConfigHistoryLocked(history)
+		configuration = history.Config
 	}
 	if subtle.ConstantTimeCompare([]byte(configuration.ConfigSHA256), []byte(result.ConfigSHA256)) != 1 {
 		return nodes.Node{}, fmt.Errorf("%w: config hash does not match assigned generation", faults.ErrConflict)

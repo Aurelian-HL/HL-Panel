@@ -274,7 +274,10 @@ func Describe(b Bundle, digest string) Preview {
 	return Preview{Manifest: b.Manifest, Digest: digest, Counts: counts}
 }
 func partLimits() map[string]int64 {
-	return map[string]int64{"manifest.json": 8192, "control.json": memoryrepo.MaxSnapshotBytes, "usage.json": MaxExpandedBytes - memoryrepo.MaxSnapshotBytes - (4 << 20) - 8192, "runtime.json": 4 << 20}
+	// The total expanded-size check reserves actual control bytes, not the
+	// maximum control allowance. Raising that allowance must not reject an
+	// existing archive whose larger ledger still fits the overall budget.
+	return map[string]int64{"manifest.json": 8192, "control.json": memoryrepo.MaxSnapshotBytes, "usage.json": MaxExpandedBytes - (4 << 20) - 8192, "runtime.json": 4 << 20}
 }
 
 var ledgerColumns = map[string][]string{

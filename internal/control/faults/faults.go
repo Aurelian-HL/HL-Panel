@@ -3,6 +3,7 @@ package faults
 import "errors"
 
 var (
+	ErrUnavailable            = errors.New("service temporarily unavailable")
 	ErrNotFound               = errors.New("not found")
 	ErrUnauthorized           = errors.New("unauthorized")
 	ErrPasswordChangeRequired = errors.New("password change required")
