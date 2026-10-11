@@ -235,6 +235,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	attachNodeConfigHistoryReader(ctx, tx, state)
 	var before map[string]int64
 	var auditCount int
+	var committedCache snapshotReadCache
 	if write {
 		before = state.DesiredGenerationIndex()
 		auditCount = len(state.AuditEvents())
@@ -258,7 +259,10 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		if err != nil {
 			return zero, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload = $1, format_version = $2, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = true`, raw, memoryrepo.SnapshotVersion); err != nil {
+		committedCache.version = memoryrepo.SnapshotVersion
+		committedCache.payload = raw
+		if err := tx.QueryRowContext(ctx, `UPDATE nyvp_control_snapshots SET payload = $1, format_version = $2, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = true RETURNING revision, xmin::text`, raw, memoryrepo.SnapshotVersion).
+			Scan(&committedCache.revision, &committedCache.transactionID); err != nil {
 			return zero, errors.New("PostgreSQL snapshot write failed")
 		}
 	}
@@ -266,6 +270,15 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return zero, errors.New("PostgreSQL transaction commit failed")
 	}
 	if write {
+		// Publish only committed bytes and detached identities. The next request
+		// still validates the database row, but need not decode the entire state
+		// again merely because this instance just recorded a heartbeat or probe.
+		committedCache.identities = state.IdentityReadView()
+		s.readMu.Lock()
+		if s.readCache.revision <= committedCache.revision {
+			s.readCache = committedCache
+		}
+		s.readMu.Unlock()
 		after := state.DesiredGenerationIndex()
 		for id, generation := range after {
 			if generation != before[id] {

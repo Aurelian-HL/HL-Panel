@@ -81,6 +81,14 @@ func BenchmarkReadSnapshot(b *testing.B) {
 			}
 		}
 	})
+	b.Run("publish_committed_identities", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if state.IdentityReadView() == nil {
+				b.Fatal("missing committed identity view")
+			}
+		}
+	})
 	b.Run("cached_administrator_authentication", func(b *testing.B) {
 		b.ReportAllocs()
 		ctx := context.Background()
