@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Copy, Link, Pause, Pencil, Play, Trash2 } from '@lucide/vue'
+import { Copy, Link, LoaderCircle, Pause, Pencil, Play, Trash2 } from '@lucide/vue'
 import type { ForwardRule } from '@/api/business'
 import { effectiveIngressProtocol } from '@/lib/businessFormatters'
 
-const props = defineProps<{ rule: ForwardRule; busyId: string; compact?: boolean }>()
+const props = defineProps<{ rule: ForwardRule; busyId: string; downloadBusyId?: string; compact?: boolean }>()
+const downloading = computed(() => props.downloadBusyId === props.rule.id)
 const quotaExhausted = computed(() => (props.rule.traffic_limit_bytes ?? 0) > 0 && (props.rule.traffic_used_bytes ?? 0) >= props.rule.traffic_limit_bytes!)
 defineEmits<{ edit: []; copy: []; connection: []; toggle: []; delete: [] }>()
 </script>
@@ -13,7 +14,7 @@ defineEmits<{ edit: []; copy: []; connection: []; toggle: []; delete: [] }>()
   <div class="rule-actions" :class="{ 'rule-actions--compact': compact }">
     <button type="button" class="rule-action" :disabled="!!busyId" title="编辑规则" :aria-label="`编辑规则 ${rule.name}`" @click="$emit('edit')"><Pencil :size="15" /><span v-if="!compact">编辑</span></button>
     <button type="button" class="rule-action" :disabled="!!busyId" title="复制规则" :aria-label="`复制规则 ${rule.name}`" @click="$emit('copy')"><Copy :size="15" /><span v-if="!compact">复制</span></button>
-    <button v-if="effectiveIngressProtocol(rule) === 'vless_reality'" type="button" class="rule-action" :disabled="!!busyId" title="生成订阅并下载导入包" :aria-label="`生成订阅并下载导入包 ${rule.name}`" @click="$emit('connection')"><Link :size="15" /><span v-if="!compact">订阅包</span></button>
+    <button v-if="effectiveIngressProtocol(rule) === 'vless_reality'" type="button" class="rule-action" :disabled="!!busyId" :aria-busy="downloading" :title="downloading ? '订阅包生成中，请稍候' : '生成订阅并下载导入包'" :aria-label="`${downloading ? '订阅包生成中' : '生成订阅并下载导入包'} ${rule.name}`" @click="$emit('connection')"><LoaderCircle v-if="downloading" class="spin" :size="15" /><Link v-else :size="15" /><span v-if="!compact">{{ downloading ? '生成中' : '订阅包' }}</span></button>
     <button v-if="quotaExhausted" type="button" class="rule-action" :disabled="!!busyId" title="调整流量额度" :aria-label="`调整流量额度 ${rule.name}`" @click="$emit('edit')"><Pencil :size="15" /><span v-if="!compact">调整额度</span></button>
     <button v-else type="button" class="rule-action" :disabled="!!busyId" :title="rule.paused ? '恢复规则' : '暂停规则'" :aria-label="`${rule.paused ? '恢复规则' : '暂停规则'} ${rule.name}`" @click="$emit('toggle')"><Play v-if="rule.paused" :size="15" /><Pause v-else :size="15" /><span v-if="!compact">{{ rule.paused ? '恢复' : '暂停' }}</span></button>
     <button type="button" class="rule-action rule-action--delete" :disabled="!!busyId" title="删除规则" :aria-label="`删除规则 ${rule.name}`" @click="$emit('delete')"><Trash2 :size="15" /><span v-if="!compact">删除</span></button>

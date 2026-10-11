@@ -42,6 +42,8 @@ type controlRepository interface {
 	gatewaymembership.Repository
 	gatewaymembership.ProtocolProbeConfigSource
 	gatewaymembership.ProtocolProbeConfigurator
+	ProtocolProbeStates(context.Context) ([]gatewaymembership.ProbeState, error)
+	PublishProtocolHealthBatch(context.Context, []gatewaymembership.ProtocolObservation) ([]error, error)
 	groupconfig.Repository
 	rulegroups.Repository
 	siteconfig.Repository

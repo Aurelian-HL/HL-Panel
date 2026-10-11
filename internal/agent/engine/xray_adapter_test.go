@@ -251,7 +251,11 @@ func TestCompileXrayBundleKeepsEachInboundOnItsOwnOutbound(t *testing.T) {
 	if document.Inbounds[2].Tag != "hl-stats-api-in" || document.Outbounds[2].Tag != "hl-stats-api" {
 		t.Fatalf("stats entries missing from merged bundle: %s", compiled)
 	}
-	for index, rule := range document.Routing.Rules[:2] {
+	statsRule := document.Routing.Rules[0]
+	if len(statsRule.InboundTag) != 1 || statsRule.InboundTag[0] != "hl-stats-api-in" || statsRule.OutboundTag != "hl-stats-api" {
+		t.Fatalf("managed stats route must precede business routes: %s", compiled)
+	}
+	for index, rule := range document.Routing.Rules[1:] {
 		if len(rule.InboundTag) != 1 || rule.InboundTag[0] != document.Inbounds[index].Tag || rule.OutboundTag != document.Outbounds[index].Tag {
 			t.Fatalf("route %d crossed rule boundaries: %s", index, compiled)
 		}

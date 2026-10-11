@@ -102,6 +102,20 @@ func (api *API) publicSubscription(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, r, err)
 		return
 	}
+	available := false
+	for _, line := range lines {
+		if line.URI != "" && line.Error == "" {
+			available = true
+			break
+		}
+	}
+	if !available {
+		// Do not replace a client's last working configuration with a successful
+		// but empty feed when runtime health is temporarily unavailable.
+		w.Header().Set("Retry-After", "15")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "订阅线路暂不可用，请稍后重试或联系管理员"})
+		return
+	}
 	w.Header().Set("profile-update-interval", "1")
 	if format == "yaml" {
 		content, err := subscriptions.YAML(lines)

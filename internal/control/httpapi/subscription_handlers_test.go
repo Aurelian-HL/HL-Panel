@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/httpapi"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"image/png"
 	"io"
@@ -15,6 +18,57 @@ import (
 	"strings"
 	"testing"
 )
+
+type publicFeedRepository struct {
+	subscriptions.Repository
+	record subscriptions.Record
+}
+
+func (s publicFeedRepository) SubscriptionByToken(context.Context, string) (subscriptions.Record, error) {
+	return s.record, nil
+}
+
+type recoveringNativeResolver struct{ healthy bool }
+
+func (s *recoveringNativeResolver) ResolveSubscriptionLine(context.Context, string, string, string) (string, error) {
+	if !s.healthy {
+		return "", faults.ErrConflict
+	}
+	return "socks://user:test@edge.example.test:1080", nil
+}
+
+func TestUnavailablePublicFeedPreservesClientConfigurationAndRecovers(t *testing.T) {
+	resolver := &recoveringNativeResolver{}
+	record := subscriptions.Record{OwnerID: "admin", Item: subscriptions.Item{State: "active", ForwardingRuleID: "rule", CustomerID: forwarding.AdministratorSubjectID("admin")}, Published: []subscriptions.Line{{Name: "rule", BindingID: "binding"}}}
+	service := subscriptions.NewService(publicFeedRepository{record: record}, resolver, nil)
+	handler := httpapi.New(nil, nil, nil, nil, nil, nil, nil, httpapi.WithSubscriptions(service))
+	for _, suffix := range []string{".txt", ".yaml"} {
+		path := "/api/v1/public/subscriptions/sub_" + strings.Repeat("a", 43) + suffix
+		get := func() *httptest.ResponseRecorder {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			return response
+		}
+		resolver.healthy = false
+		response := get()
+		if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "15" || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("unavailable feed can erase client configuration: status=%d headers=%v", response.Code, response.Header())
+		}
+		resolver.healthy = true
+		response = get()
+		if response.Code != http.StatusOK || response.Body.Len() == 0 {
+			t.Fatal("health recovery did not restore the stable subscription")
+		}
+		if suffix == ".txt" {
+			content, err := base64.StdEncoding.DecodeString(response.Body.String())
+			if err != nil || !bytes.Contains(content, []byte("edge.example.test")) {
+				t.Fatal("recovered TXT has no usable proxy")
+			}
+		} else if !strings.Contains(response.Body.String(), "edge.example.test") {
+			t.Fatal("recovered YAML has no usable proxy")
+		}
+	}
+}
 
 func TestSubscriptionPackageURLsFetchMatchingPublicFeeds(t *testing.T) {
 	f := newBusinessFixture(t)

@@ -26,6 +26,7 @@ var (
 type ProtocolObserver struct {
 	repository Repository
 	clock      func() time.Time
+	check      func(context.Context, protocolprobe.Spec) (time.Time, error)
 }
 
 type ProtocolProbeConfig struct {
@@ -45,7 +46,7 @@ func NewProtocolObserver(repository Repository, clock func() time.Time) *Protoco
 	if clock == nil {
 		clock = time.Now
 	}
-	return &ProtocolObserver{repository: repository, clock: clock}
+	return &ProtocolObserver{repository: repository, clock: clock, check: protocolprobe.Check}
 }
 
 // ObserveNode performs one probe. The caller must provide a probe-only UUID
@@ -60,18 +61,34 @@ func (o *ProtocolObserver) ObserveNode(ctx context.Context, poolID, nodeID strin
 	if err != nil {
 		return ProtocolObservation{}, err
 	}
-	rule := state.Rule
 	configSource, ok := o.repository.(ProtocolProbeConfigSource)
 	if !ok {
 		return ProtocolObservation{}, ErrProtocolObservationUnavailable
 	}
-	probeConfig, err := configSource.ProtocolProbeConfig(ctx, rule.ID)
-	if err != nil || probeConfig.UUID == "" || probeConfig.UUID != spec.UUID || probeConfig.EchoPort != spec.EchoPort {
+	probeConfig, err := configSource.ProtocolProbeConfig(ctx, state.Rule.ID)
+	if err != nil {
+		return ProtocolObservation{}, err
+	}
+	observation, err := o.observeState(ctx, state, probeConfig, nodeID, spec)
+	if err != nil {
+		return ProtocolObservation{}, err
+	}
+	if err := publisher.PublishProtocolHealth(ctx, observation); err != nil {
+		return ProtocolObservation{}, err
+	}
+	return observation, nil
+}
+
+// observeState reuses one consistent scan snapshot. Publishing must revalidate
+// the current deployment in its transaction after the network challenge.
+func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeConfig ProtocolProbeConfig, nodeID string, spec protocolprobe.Spec) (ProtocolObservation, error) {
+	rule := state.Rule
+	if probeConfig.UUID == "" || probeConfig.UUID != spec.UUID || probeConfig.EchoPort != spec.EchoPort {
 		return ProtocolObservation{}, ErrProtocolObservationTarget
 	}
-	if state.Pool.ID != poolID || state.Pool.Protocol != "vless" || state.Pool.RuleID != rule.ID ||
+	if state.Pool.ID == "" || state.Pool.Protocol != "vless" || state.Pool.RuleID != rule.ID ||
 		rule.ID == "" || rule.Protocol != forwarding.ProtocolTCP || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
-		 rule.Paused || (rule.Status != forwarding.StatusPendingActivation && rule.Status != forwarding.StatusActive) || rule.IngressReadiness() != forwarding.IngressReady {
+		rule.Paused || (rule.Status != forwarding.StatusPendingActivation && rule.Status != forwarding.StatusActive) || rule.IngressReadiness() != forwarding.IngressReady {
 		return ProtocolObservation{}, ErrProtocolObservationUnavailable
 	}
 	var member endpoints.EndpointPoolMember
@@ -98,7 +115,7 @@ func (o *ProtocolObserver) ObserveNode(ctx context.Context, poolID, nodeID strin
 	if err != nil || host == "" || spec.DialHost != host || spec.DialPort != rule.ListenPort || !loopbackHost(spec.EchoHost) {
 		return ProtocolObservation{}, ErrProtocolObservationTarget
 	}
-	verifiedAt, err := protocolprobe.Check(ctx, spec)
+	verifiedAt, err := o.check(ctx, spec)
 	if err != nil {
 		return ProtocolObservation{}, err
 	}
@@ -111,9 +128,6 @@ func (o *ProtocolObserver) ObserveNode(ctx context.Context, poolID, nodeID strin
 		NodeConfigGeneration: receipt.Status.NodeConfigGeneration, ConfigSHA256: receipt.Status.ConfigSHA256,
 		Protocol: forwarding.IngressVLESSReality, DialHost: host, VerifiedAt: verifiedAt,
 		LeaseExpiresAt: verifiedAt.Add(endpoints.DefaultHealthTTL),
-	}
-	if err := publisher.PublishProtocolHealth(ctx, observation); err != nil {
-		return ProtocolObservation{}, err
 	}
 	return observation, nil
 }

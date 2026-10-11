@@ -26,6 +26,13 @@ type ReadyCandidateSource interface {
 	ReadyCandidateCount(context.Context, string) (int, error)
 }
 
+func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, error) {
+	if s.readyCandidates == nil {
+		return 0, nil
+	}
+	return s.readyCandidates.ReadyCandidateCount(ctx, poolID)
+}
+
 // DefaultHealthTTL limits the age of a successful protocol-forwarding health
 // observation. It is intentionally independent from agent heartbeat liveness,
 // even though both currently use the same duration.

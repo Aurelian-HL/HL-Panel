@@ -134,7 +134,10 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 			if stored.EntryGroupID != groupID {
 				continue
 			}
-			rule := s.forwardingViewLocked(stored)
+			// Runtime health controls customer readiness, never desired config.
+			// Recompilation must keep a temporarily unhealthy rule installed so
+			// the protocol observer can verify its recovery.
+			rule := s.forwardingBaseViewLocked(stored)
 			if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
 				// forwardingViewLocked intentionally redacts SOCKS5 credentials;
 				// restore only the non-public username for this internal compiler

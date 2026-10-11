@@ -72,18 +72,26 @@ func NewService(repository Repository) *Service {
 // ReadyCandidateCount uses the same authorized view published to the gateway.
 // It must not count heartbeat-only or TCP-reachable members as healthy.
 func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, error) {
-	snapshot, err := s.Snapshot(ctx, poolID)
+	state, err := s.repository.GatewayMembershipState(ctx, poolID)
 	if err != nil {
 		return 0, err
 	}
-	now := s.clock().UTC()
+	return ReadyCandidateCount(state, s.clock().UTC()), nil
+}
+
+// ReadyCandidateCount is shared by rule status, subscriptions and the gateway.
+// A persisted activation flag or heartbeat timestamp cannot grant readiness.
+func ReadyCandidateCount(state State, now time.Time) int {
+	if !poolAuthorizesRule(state.Pool, state.Rule) {
+		return 0
+	}
 	count := 0
-	for _, endpoint := range snapshot.Endpoints {
-		if endpoint.Status == endpointrouter.EndpointReady && endpoint.HealthLeaseExpiresAt.After(now) {
+	for _, member := range state.Members {
+		if state.ProtocolHealth[member.NodeID].MatchesCurrentDeployment(state.Pool, state.Rule, member, state.Deployments[member.NodeID], now) {
 			count++
 		}
 	}
-	return count, nil
+	return count
 }
 
 // Snapshot publishes deployment- and protocol-bound membership. A ready

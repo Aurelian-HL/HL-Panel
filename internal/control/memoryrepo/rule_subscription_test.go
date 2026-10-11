@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
@@ -19,7 +20,7 @@ func TestAutomaticRuleSubscriptionConcurrentClicksAndQuota(t *testing.T) {
 	f := newVLESSBundleFixture(t, true)
 	ctx := context.Background()
 	identity, _ := vlessidentity.NewService(f.store, nil, nil)
-	service := subscriptions.NewService(f.store, vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewService(f.store, nil)), nil)
+	service := subscriptions.NewService(f.store, vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewServiceWithReadyCandidateSource(f.store, nil, gatewaymembership.NewService(f.store))), nil)
 	rule := f.store.forwardRules[f.rule.ID]
 	rule.Deployed = true
 	rule.RealityDestination = "www.example.com:443"
@@ -29,6 +30,7 @@ func TestAutomaticRuleSubscriptionConcurrentClicksAndQuota(t *testing.T) {
 	now := time.Now().UTC()
 	member.LastHealthAt = &now
 	f.store.endpointMembers[f.endpointID][f.nodeID] = member
+	grantFixtureProtocolHealth(t, f.store, rule.ID, f.endpointID, f.nodeID)
 	request := subscriptions.Request{Name: rule.Name, CustomerID: rule.CustomerID, Lines: []subscriptions.Line{{Name: rule.Name, BindingID: f.bindingID}}}
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {

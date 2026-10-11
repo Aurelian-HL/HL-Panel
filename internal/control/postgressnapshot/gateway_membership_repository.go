@@ -35,3 +35,15 @@ func (s *Store) ConfigureProtocolProbe(ctx context.Context, ruleID string, confi
 		return state.ConfigureProtocolProbe(ctx, ruleID, config)
 	})
 }
+
+func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
+	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]gatewaymembership.ProbeState, error) {
+		return state.ProtocolProbeStates(ctx)
+	})
+}
+
+func (s *Store) PublishProtocolHealthBatch(ctx context.Context, observations []gatewaymembership.ProtocolObservation) ([]error, error) {
+	return transact(ctx, s, true, func(state *memoryrepo.Store) ([]error, error) {
+		return state.PublishProtocolHealthBatch(ctx, observations)
+	})
+}

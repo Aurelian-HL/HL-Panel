@@ -23,6 +23,8 @@ import urllib.request
 ROOT = Path('/opt/hl-panel')
 CONFIG = Path('/etc/hl-panel')
 STATE = Path('/var/lib/hl-panel')
+BACKUPS = Path('/var/backups/hl-panel')
+SYSTEMD_UNITS = Path('/etc/systemd/system')
 SERVICE = 'hl-panel-control-api.service'
 API = 'https://api.github.com/repos/Aurelian-HL/HL-Panel'
 REPO = 'https://github.com/Aurelian-HL/HL-Panel'
@@ -75,7 +77,7 @@ def cleanup_incomplete_update(backup, destination, stop_attempted):
     if destination is not None and destination.parent == ROOT / 'releases' and destination.name.startswith('v'):
         if destination.is_dir() and not destination.is_symlink():
             shutil.rmtree(destination, ignore_errors=True)
-    if backup.parent == Path('/var/backups/hl-panel') and backup.name.startswith('v'):
+    if backup.parent == BACKUPS and backup.name.startswith('v'):
         if backup.is_dir() and not backup.is_symlink():
             shutil.rmtree(backup, ignore_errors=True)
 
@@ -361,18 +363,21 @@ def web_update_channel(destination, backup):
     require(all(path.is_file() for path in sources), '发布包缺少网页更新服务')
     changes = []
     for source in sources:
-        target = Path('/etc/systemd/system')/source.name
+        target = SYSTEMD_UNITS/source.name
         if target.exists() or target.is_symlink():
             private_regular(target)
             require(target.read_text().startswith('# Managed by HL-panel:'), '网页更新服务路径已被其他配置占用，未覆盖')
-            if target.read_bytes() == source.read_bytes():
-                continue
             shutil.copyfile(target, backup/source.name)
             changes.append({'name': source.name, 'added': False, 'enabled': systemd_enabled_state(source.name), 'active': systemd_active_state(source.name)})
         else:
             changes.append({'name': source.name, 'added': True, 'enabled': 'not-found', 'active': False})
-        # Record intent before writing so a partial write can be undone.
-        write_json_atomic(backup/'web-update-units.json', changes)
+    # Capture both runtime states before changing either unit, including an
+    # unchanged socket that the update later enables or the rollback stops.
+    write_json_atomic(backup/'web-update-units.json', changes)
+    for source in sources:
+        target = SYSTEMD_UNITS/source.name
+        if target.exists() and target.read_bytes() == source.read_bytes():
+            continue
         pending = target.with_name('.'+target.name+'-'+str(os.getpid()))
         try:
             shutil.copyfile(source, pending)
@@ -395,30 +400,39 @@ def systemd_active_state(name):
     return result.returncode == 0
 
 
-def restore_systemd_unit_state(name, enabled, active):
+def inside_update_worker():
+    try:
+        cgroups = Path('/proc/self/cgroup').read_text().splitlines()
+    except OSError:
+        return False
+    return any('hl-panel-update.service' in line.split(':', 2)[-1].split('/') for line in cgroups)
+
+
+def restore_systemd_unit_state(name, enabled, active, *, preserve_runtime=False):
     enabled_states = {'enabled', 'enabled-runtime', 'linked', 'linked-runtime'}
     masked_states = {'masked', 'masked-runtime'}
     if enabled in masked_states:
-        run_best_effort(['systemctl', 'unmask', name])
+        run(['systemctl', 'unmask', name])
         mask_command = ['systemctl', 'mask']
         if enabled == 'masked-runtime':
             mask_command.append('--runtime')
-        run_best_effort(mask_command + [name])
+        run(mask_command + [name])
     elif enabled in enabled_states:
-        run_best_effort(['systemctl', 'unmask', name])
+        run(['systemctl', 'unmask', name])
         enable_command = ['systemctl', 'enable']
         if enabled == 'enabled-runtime':
             enable_command.append('--runtime')
-        run_best_effort(enable_command + [name])
+        run(enable_command + [name])
     elif enabled in {'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}:
-        run_best_effort(['systemctl', 'unmask', name])
+        run(['systemctl', 'unmask', name])
         disable_command = ['systemctl', 'disable']
         if enabled == 'disabled-runtime':
             disable_command.append('--runtime')
-        run_best_effort(disable_command + [name])
+        run(disable_command + [name])
     else:
         raise UpdateError('网页更新服务状态记录无效')
-    run_best_effort(['systemctl', 'start' if active else 'stop', name])
+    if not preserve_runtime:
+        run(['systemctl', 'start' if active else 'stop', name])
 
 
 def restore_web_update_channel(backup):
@@ -432,19 +446,30 @@ def restore_web_update_channel(backup):
         raise UpdateError('网页更新服务恢复记录无效') from None
     require(isinstance(changes, list) and changes, '网页更新服务恢复记录无效')
     allowed = {'hl-panel-update.socket', 'hl-panel-update.service'}
+    preserve_runtime = inside_update_worker()
     for change in changes:
         require(isinstance(change, dict) and set(change) == {'name', 'added', 'enabled', 'active'}, '网页更新服务恢复记录无效')
         require(change['name'] in allowed and isinstance(change['added'], bool) and isinstance(change['enabled'], str) and isinstance(change['active'], bool), '网页更新服务恢复记录无效')
         require(change['enabled'] in {'enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'masked', 'masked-runtime', 'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}, '网页更新服务状态记录无效')
-        target = Path('/etc/systemd/system')/change['name']
+        if preserve_runtime:
+            require(not change['added'] and change['active'], '运行中的网页更新服务恢复记录不一致')
+        target = SYSTEMD_UNITS/change['name']
         if target.exists() or target.is_symlink():
             private_regular(target)
         if not change['added']:
             private_regular(backup/change['name'])
-    run_best_effort(['systemctl','disable','--now','hl-panel-update.socket'])
-    run_best_effort(['systemctl','stop','hl-panel-update.service'])
+    # The updater is a child in the web worker's cgroup. Stopping that service
+    # would kill the rollback itself; keep its existing live socket/process.
+    if not preserve_runtime:
+        for change in changes:
+            if not (SYSTEMD_UNITS/change['name']).exists():
+                continue
+            if change['name'] == 'hl-panel-update.socket':
+                run(['systemctl','disable','--now',change['name']])
+            else:
+                run(['systemctl','stop',change['name']])
     for change in changes:
-        target = Path('/etc/systemd/system')/change['name']
+        target = SYSTEMD_UNITS/change['name']
         if change['added']:
             target.unlink(missing_ok=True)
         else:
@@ -453,14 +478,14 @@ def restore_web_update_channel(backup):
     run(['systemctl','daemon-reload'])
     for change in changes:
         if not change['added']:
-            restore_systemd_unit_state(change['name'], change['enabled'], change['active'])
+            restore_systemd_unit_state(change['name'], change['enabled'], change['active'], preserve_runtime=preserve_runtime)
 
 
 def rollback(backup):
     # Finish restoring even when a second stop signal arrives during rollback.
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     backup=backup.resolve()
-    require(backup.parent==Path('/var/backups/hl-panel') and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
+    require(backup.parent==BACKUPS and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
     private_regular(backup/'update-state.json')
     state=json.loads((backup/'update-state.json').read_text())
     old=Path(state['previous_target'])
@@ -474,7 +499,7 @@ def rollback(backup):
         restore_web_update_channel(backup)
         restore_domain_access(backup)
         with (backup/'database.dump').open('rb') as stream:
-            run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--dbname='+database],input_file=stream)
+            run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--single-transaction','--dbname='+database],input_file=stream)
         # pg_restore --clean only removes objects present in the old archive.
         # Remove the journal added by an unsuccessful schema-18 upgrade, otherwise
         # retrying the upgrade would append the restored legacy history twice.
@@ -487,9 +512,9 @@ def rollback(backup):
         healthy(origin,state['previous_version'])
         print('[HL-panel 更新] 已恢复升级前程序和数据库。')
     except Exception:
-        # A failed rollback must not leave the control API stopped. The original
-        # exception is re-raised after this best-effort recovery attempt.
-        run_best_effort(['systemctl', 'start', SERVICE])
+        # Do not serve an incompletely restored database/configuration, including
+        # a service that started but failed the old-version health check.
+        run_best_effort(['systemctl', 'stop', SERVICE])
         raise
 
 
@@ -538,7 +563,7 @@ def main():
             private_regular(updater)
             require('# Managed by HL-panel.' in updater.read_text(),'更新命令路径已被其他程序占用')
         stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+os.urandom(3).hex()
-        backup=Path('/var/backups/hl-panel')/(target+'-'+stamp)
+        backup=BACKUPS/(target+'-'+stamp)
         backup.mkdir(parents=True,mode=0o700)
         backup.parent.chmod(0o700)
         print('[HL-panel 更新] 本次备份目录：'+str(backup),flush=True)

@@ -10,7 +10,6 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 	"net"
 	"strconv"
-	"time"
 )
 
 type Service struct {
@@ -69,11 +68,11 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if pool.GroupID != rule.EntryGroupID || pool.RuleID != rule.ID || pool.Protocol != "vless" {
 		return Connection{}, faults.ErrConflict
 	}
-	members, err := s.endpoints.CandidateSet(ctx, pool.ID, time.Now().UTC(), endpoints.DefaultHealthTTL)
+	count, err := s.endpoints.ReadyCandidateCount(ctx, pool.ID)
 	if err != nil {
 		return Connection{}, err
 	}
-	if len(members) == 0 {
+	if count == 0 {
 		return Connection{}, unavailable{"设备组暂无健康在线节点，请检查节点状态"}
 	}
 	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: rule.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.VLESSFlow}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})

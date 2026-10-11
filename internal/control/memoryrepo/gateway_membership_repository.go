@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -17,6 +18,10 @@ import (
 func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewaymembership.State, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.gatewayMembershipStateLocked(poolID)
+}
+
+func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.State, error) {
 	pool, found := s.endpointPools[poolID]
 	if !found {
 		return gatewaymembership.State{}, faults.ErrNotFound
@@ -34,7 +39,9 @@ func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewa
 	}
 	if pool.RuleID != "" {
 		if rule, exists := s.forwardRules[pool.RuleID]; exists {
-			state.Rule = s.forwardingViewLocked(rule)
+			// The gateway derives readiness from evidence below, independently
+			// from the public rule projection, to avoid a circular health check.
+			state.Rule = s.forwardingBaseViewLocked(rule)
 		}
 	}
 	state.Members = make([]endpoints.EndpointPoolMember, 0, len(s.endpointMembers[poolID]))
@@ -69,6 +76,10 @@ func (s *Store) SetPersistenceRevision(revision uint64) {
 func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymembership.ProtocolObservation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.publishProtocolHealthLocked(observation)
+}
+
+func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.ProtocolObservation) error {
 	if observation.RuleID == "" || observation.NodeID == "" || observation.RuleRevision < 1 ||
 		observation.NodeConfigGeneration < 1 || len(observation.ConfigSHA256) != 64 ||
 		observation.VerifiedAt.IsZero() || !observation.LeaseExpiresAt.After(observation.VerifiedAt) ||
@@ -183,4 +194,64 @@ func (s *Store) ProtocolProbeConfig(_ context.Context, ruleID string) (gatewayme
 		return gatewaymembership.ProtocolProbeConfig{}, faults.ErrNotFound
 	}
 	return config, nil
+}
+
+// ProtocolProbeStates decodes the control-plane snapshot once per scheduling
+// refresh, rather than once per rule and again for each node challenge.
+func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]gatewaymembership.ProbeState, 0, len(s.endpointPools))
+	for id, pool := range s.endpointPools {
+		if pool.Protocol != "vless" || pool.RuleID == "" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		state, err := s.gatewayMembershipStateLocked(id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, gatewaymembership.ProbeState{State: state, Config: s.protocolProbes[pool.RuleID]})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].State.Pool.ID < items[j].State.Pool.ID })
+	return items, nil
+}
+
+// PublishProtocolHealthBatch validates each observation independently against
+// current state. A stale probe cannot discard unrelated fresh health results.
+// Activation happens once per newly ready rule in this same transaction.
+func (s *Store) PublishProtocolHealthBatch(ctx context.Context, observations []gatewaymembership.ProtocolObservation) ([]error, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	errors := make([]error, len(observations))
+	ready := make(map[string]int64)
+	for i, observation := range observations {
+		errors[i] = s.publishProtocolHealthLocked(observation)
+		if errors[i] == nil {
+			ready[observation.RuleID] = observation.RuleRevision
+		}
+	}
+	for id, revision := range ready {
+		alreadyActive := s.forwardRules[id].Deployed
+		if alreadyActive {
+			continue
+		}
+		event, err := audit.NewEvent(time.Now().UTC(), "system", "protocol-runner", "forwarding_rule.activate", "forwarding_rule", id, "succeeded", nil)
+		if err == nil {
+			err = s.markActivatedLocked(id, revision, event)
+		}
+		if err != nil {
+			for i, observation := range observations {
+				if observation.RuleID == id && errors[i] == nil {
+					errors[i] = err
+				}
+			}
+		}
+	}
+	return errors, nil
 }

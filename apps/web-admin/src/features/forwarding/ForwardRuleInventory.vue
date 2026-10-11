@@ -15,6 +15,7 @@ const props = withDefaults(defineProps<{
   trafficByRule?: Record<string, number>
   selectedIds: string[]
   busyId: string
+  downloadBusyId?: string
 }>(), { networks: () => [], trafficByRule: () => ({}) })
 const emit = defineEmits<{ select: [rule: ForwardRule, selected: boolean]; edit: [rule: ForwardRule]; copy: [rule: ForwardRule]; connection: [rule: ForwardRule]; toggle: [rule: ForwardRule]; delete: [rule: ForwardRule] }>()
 
@@ -66,7 +67,7 @@ function selectVisible(selected: boolean): void {
           <td class="rule-exit-cell"><div class="rule-route-heading"><span>出口：{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></td>
           <td class="rule-used-traffic">{{ usedTraffic(rule.id) }}<small class="table-secondary">{{ rule.traffic_limit_bytes ? `限额 ${byteAmount(rule.traffic_limit_bytes)}` : '不限量' }}</small><small v-if="rule.traffic_quota_monthly" class="table-secondary">每月清零</small><small v-if="rule.traffic_limit_bytes && (rule.traffic_used_bytes ?? 0) >= rule.traffic_limit_bytes" class="table-secondary">额度用完，自动暂停</small></td>
           <td><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></td>
-          <td><ForwardRuleActions :rule="rule" :busy-id="busyId" compact @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></td>
+          <td><ForwardRuleActions :rule="rule" :busy-id="busyId" :download-busy-id="downloadBusyId" compact @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></td>
         </tr></tbody>
       </table>
     </div>
@@ -79,7 +80,7 @@ function selectVisible(selected: boolean): void {
           <div><dt>已用流量 / 额度</dt><dd>{{ usedTraffic(rule.id) }} / {{ rule.traffic_limit_bytes ? byteAmount(rule.traffic_limit_bytes) : '不限量' }}<small v-if="rule.traffic_quota_monthly" class="table-secondary">每月清零</small></dd></div>
           <div v-if="rule.description"><dt>备注</dt><dd>{{ rule.description }}</dd></div>
         </dl>
-        <footer><ForwardRuleActions :rule="rule" :busy-id="busyId" @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></footer>
+        <footer><ForwardRuleActions :rule="rule" :busy-id="busyId" :download-busy-id="downloadBusyId" @edit="$emit('edit', rule)" @copy="$emit('copy', rule)" @connection="$emit('connection', rule)" @toggle="$emit('toggle', rule)" @delete="$emit('delete', rule)" /></footer>
       </article>
     </div>
   </div>

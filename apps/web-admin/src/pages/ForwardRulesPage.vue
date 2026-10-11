@@ -41,6 +41,7 @@ const editor = ref(false)
 const selected = ref<ForwardRule | null>(null)
 const copying = ref(false)
 const busyId = ref('')
+const downloadBusyId = ref('')
 const transferDialog = ref(false)
 const exportBusy = ref(false)
 const trafficByRule = ref<Record<string, number>>({})
@@ -229,15 +230,22 @@ async function imported(count: number): Promise<void> {
 }
 async function copyConnection(rule: ForwardRule): Promise<void> {
   if (!ready.value || busyId.value || batchBusy.value) return
-  busyId.value = rule.id; actionError.value = ''
+  busyId.value = rule.id; downloadBusyId.value = rule.id; actionError.value = ''
   try {
     const generated = await subscriptionApi.generateRule(rule.id, mutationKey({ operation: 'generate-subscription', rule_id: rule.id, revision: rule.revision }))
     const pack = await subscriptionApi.package(generated.subscription.id)
     downloadSubscriptionPackage(pack)
     toast.success('订阅已生成，已开始下载导入包', '文件名和客户端昵称使用规则名，可在订阅管理查看固定地址和二维码')
   } catch (cause) {
-    if (isUnauthorized(cause)) invalidateSession(); else actionError.value = displayError(cause)
-  } finally { busyId.value = '' }
+    if (isUnauthorized(cause)) invalidateSession()
+    else {
+      actionError.value = displayError(cause)
+      toast.error('订阅包下载失败', actionError.value)
+    }
+  } finally {
+    busyId.value = ''; downloadBusyId.value = ''
+    void refreshTraffic()
+  }
 }
 async function exportRules(): Promise<void> {
   if (!ready.value || exportBusy.value || batchBusy.value || busyId.value) return
@@ -277,7 +285,7 @@ onUnmounted(() => {
     <StatePanel v-else-if="error" state="error" title="规则加载失败" :message="error" @retry="load" />
     <StatePanel v-else-if="!rules.length" state="empty" title="暂无转发规则" message="点击添加规则创建。" />
     <StatePanel v-else-if="!filtered.length" state="empty" title="没有匹配的规则" message="调整搜索词或开关筛选。" />
-    <ForwardRuleInventory v-else :rules="pagedRules" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
+    <ForwardRuleInventory v-else :rules="pagedRules" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" :download-busy-id="downloadBusyId" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
     <nav v-if="ready && filtered.length" class="rule-pagination" aria-label="转发规则分页">
       <span class="rule-pagination__summary">显示 {{ pageStart }}-{{ pageEnd }}，共 {{ filtered.length }} 条</span>
       <label class="rule-pagination__size"><span>每页</span><select v-model.number="pageSize" aria-label="每页规则数量"><option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option></select><span>条</span></label>

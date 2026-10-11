@@ -24,6 +24,10 @@ var _ forwarding.Repository = (*Store)(nil)
 func (s *Store) MarkActivated(_ context.Context, ruleID string, expectedRevision int64, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.markActivatedLocked(ruleID, expectedRevision, event)
+}
+
+func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event audit.Event) error {
 	rule, ok := s.forwardRules[ruleID]
 	if !ok {
 		return faults.ErrNotFound
@@ -497,6 +501,25 @@ func (s *Store) updatedVLESSSOCKS5Upstream(rule, previous forwarding.Rule, passw
 
 func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
 	item = s.forwardingBaseViewLocked(item)
+	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !item.Paused &&
+		(item.Status == forwarding.StatusPendingActivation || item.Status == forwarding.StatusActive) {
+		ready := false
+		for id, pool := range s.endpointPools {
+			if pool.RuleID != item.ID {
+				continue
+			}
+			state, err := s.gatewayMembershipStateLocked(id)
+			if err == nil && gatewaymembership.ReadyCandidateCount(state, time.Now().UTC()) > 0 {
+				ready = true
+				break
+			}
+		}
+		item.Deployed = item.Deployed && ready
+		if !item.Deployed {
+			item.Status = forwarding.StatusPendingActivation
+		}
+		return item
+	}
 	if item.EffectiveIngressProtocol() != forwarding.IngressTCP || item.Protocol != forwarding.ProtocolTCP || item.Paused ||
 		(item.Status != forwarding.StatusPendingActivation && item.Status != forwarding.StatusActive) {
 		return item

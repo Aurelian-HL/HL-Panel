@@ -160,11 +160,16 @@ def restore_programs(backup):
         require(digest(source_path) == checksum, '备份文件摘要不符')
         seen.add(destination)
     require(str(CONFIG) in seen, '回滚清单缺少节点配置')
+    private_file(CONFIG, mask=0o027)
+    if CA_FILE.exists():
+        private_file(CA_FILE, mask=0o027)
     run(['systemctl', 'stop', SERVICE])
     for item in items:
+        if item['destination'] in (str(CONFIG), str(CA_FILE)):
+            continue
         atomic_install(backup / item['source'], Path(item['destination']), item['mode'], item.get('uid', 0), item.get('gid', 0))
-    # Membership is the latest confirmed registration; never restore old usage
-    # counters or credentials while rolling the executables back.
+    # Keep the latest confirmed panel address and trust settings, as well as
+    # credentials/usage. A program rollback must not undo a later registration.
     start_service()
 
 
@@ -184,7 +189,7 @@ def reinstall(args):
     require(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', args.version), '版本无效')
     token = os.environ.pop('HL_INSTALL_ENROLLMENT_TOKEN', '')
     require(re.fullmatch(r'[A-Za-z0-9_-]{8,256}', token), '缺少有效注册令牌')
-    context = ssl.create_default_context(cafile=args.ca_file or config.get('ca_file') or None)
+    context = ssl.create_default_context(cafile=args.ca_file or None)
     sources = [(ROOT / 'edge-agent', 'bin/edge-agent', 0o755),
                (ROOT / 'node-engines/xray', 'bin/xray', 0o755),
                (ROOT / 'node-engines/gost', 'bin/gost', 0o755),
@@ -213,7 +218,10 @@ def reinstall(args):
     # scope: the confirmed node identity and usage history must survive.
     for destination in (CONFIG, CA_FILE):
         if destination.exists():
-            private_file(destination, owner=0, mask=0o077)
+            private_file(destination, owner=0, mask=0o027)
+            info = destination.stat()
+            require(info.st_gid == account.pw_gid and info.st_mode & 0o777 == 0o640,
+                    '节点配置所有者或权限无效')
             name = 'file-' + str(len(files))
             shutil.copy2(destination, backup / name)
             info = destination.stat()
@@ -228,27 +236,37 @@ def reinstall(args):
     shutil.copy2(args.release / 'deploy/reinstall-node.py', backup / 'reinstall-node.py')
     (backup / 'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' + str(backup / 'reinstall-node.py') + ' --rollback ' + str(backup) + '\n')
     (backup / 'rollback.sh').chmod(0o700)
+    config['control_plane_url'], config['dial_host'] = args.panel_url, args.node_address
+    config['ca_file'] = str(CA_FILE) if args.ca_file else ''
+    candidate = backup / 'new-config.json'
+    candidate.write_text(json.dumps(config) + '\n')
+    candidate.chmod(0o600)
+    candidate_ca = backup / 'new-ca.pem'
+    if args.ca_file:
+        shutil.copyfile(args.ca_file, candidate_ca)
+        candidate_ca.chmod(0o600)
+
+    def install_confirmed_connection():
+        if args.ca_file:
+            atomic_install(candidate_ca, CA_FILE, 0o640, gid=account.pw_gid)
+        atomic_install(candidate, CONFIG, 0o640, gid=account.pw_gid)
+
     print('[HL-panel 节点] 已备份现有程序，正在确认本次设备组注册…', flush=True)
     request_reenrollment(args.panel_url, context, credential, {'token': token, 'hostname': socket.gethostname(),
         'dial_host': args.node_address, 'platform': 'linux', 'architecture': 'amd64', 'agent_version': args.version, 'capabilities': []})
     token = ''
-    config['control_plane_url'], config['dial_host'] = args.panel_url, args.node_address
     print('[HL-panel 节点] 注册已确认，保留节点身份，更新 Agent、探针及双引擎…', flush=True)
     try:
-        if args.ca_file:
-            atomic_install(Path(args.ca_file), CONFIG.parent / 'edge-agent-ca.pem', 0o640, gid=account.pw_gid)
-            config['ca_file'] = str(CONFIG.parent / 'edge-agent-ca.pem')
-        candidate = backup / 'new-config.json'
-        candidate.write_text(json.dumps(config) + '\n')
-        candidate.chmod(0o600)
         run(['systemctl', 'stop', SERVICE])
+        install_confirmed_connection()
         for destination, source, mode in sources:
             atomic_install(args.release / source, destination, mode)
-        atomic_install(candidate, CONFIG, 0o640, gid=account.pw_gid)
         start_service()
         require(digest(STATE / 'credentials.json') == manifest['credential_sha256'], '重装意外改变节点身份')
     except Exception:
         try:
+            run(['systemctl', 'stop', SERVICE])
+            install_confirmed_connection()
             restore_programs(backup)
         except Exception:
             raise ReinstallError('设备组注册已确认，但程序更新及自动恢复失败；备份：' + str(backup) + '；运行 bash ' + str(backup / 'rollback.sh')) from None

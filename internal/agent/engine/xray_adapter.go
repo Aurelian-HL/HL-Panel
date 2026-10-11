@@ -645,7 +645,9 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	if !hasRouting {
 		routingSettings = make(map[string]json.RawMessage)
 	}
-	routingRules = append(routingRules, json.RawMessage(`{"type":"field","inboundTag":["hl-stats-api-in"],"outboundTag":"hl-stats-api"}`))
+	// The managed API must match before any catch-all business routing rule.
+	statsRule := json.RawMessage(`{"type":"field","inboundTag":["hl-stats-api-in"],"outboundTag":"hl-stats-api"}`)
+	routingRules = append([]json.RawMessage{statsRule}, routingRules...)
 	encodedRules, err := json.Marshal(routingRules)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode routing rules", ErrInvalidConfiguration)
