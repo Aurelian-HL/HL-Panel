@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,7 +131,11 @@ func TestArchivedHistoryLargerThanHotLimitRoundTripsMigration(t *testing.T) {
 	}
 	runtime := migrationbackup.RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{7}, 32)}
 	newBackupService := func(s *Store) *migrationbackup.Service {
-		return migrationbackup.New(s, auth.NewService(s, audit.NewService(s), time.Now, time.Hour), audit.NewService(s), "v0.1.64", t.TempDir(), func() migrationbackup.RuntimeSecrets { return runtime }, nil)
+		directory := t.TempDir()
+		if err := os.Chmod(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+		return migrationbackup.New(s, auth.NewService(s, audit.NewService(s), time.Now, time.Hour), audit.NewService(s), "v0.1.65", directory, func() migrationbackup.RuntimeSecrets { return runtime }, nil)
 	}
 	exporter := newBackupService(source)
 	archive, err := exporter.Export(ctx, "admin-one", "isolated-test-password", "isolated-backup-pass", "https://source.example.com")
