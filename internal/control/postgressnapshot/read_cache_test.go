@@ -60,6 +60,7 @@ func TestReadSnapshotDecodesIndependentConfidentialState(t *testing.T) {
 
 func BenchmarkReadSnapshot(b *testing.B) {
 	state, raw := snapshotReadFixture(b, 1000)
+	identities := state.IdentityReadView()
 	b.Run("encode_and_decode", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
@@ -76,6 +77,21 @@ func BenchmarkReadSnapshot(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			if _, err := decodeReadSnapshot(raw, memoryrepo.SnapshotVersion, 3); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("cached_administrator_authentication", func(b *testing.B) {
+		b.ReportAllocs()
+		ctx := context.Background()
+		now := time.Now().UTC()
+		hash := fmt.Sprintf("%064x", 0)
+		for i := 0; i < b.N; i++ {
+			session, err := identities.SessionByTokenHash(ctx, hash, now)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := identities.AdministratorByID(ctx, session.AdminID); err != nil {
 				b.Fatal(err)
 			}
 		}

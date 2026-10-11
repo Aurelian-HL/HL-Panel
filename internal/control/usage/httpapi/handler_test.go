@@ -16,6 +16,7 @@ import (
 )
 
 type stubService struct {
+	calls        int
 	report       usage.Report
 	ingestResult usage.IngestResult
 	ingestErr    error
@@ -34,27 +35,32 @@ type stubService struct {
 }
 
 func (service *stubService) Ingest(_ context.Context, report usage.Report) (usage.IngestResult, error) {
+	service.calls++
 	service.report = report
 	return service.ingestResult, service.ingestErr
 }
 
 func (service *stubService) Query(_ context.Context, query usage.Query) (usage.QueryResult, error) {
+	service.calls++
 	service.query = query
 	return service.queryResult, service.queryErr
 }
 
 func (service *stubService) DesiredEnforcement(_ context.Context, nodeID string) (*agentv1.EnforcementCommand, error) {
+	service.calls++
 	service.commandNode = nodeID
 	return service.command, service.commandErr
 }
 
 func (service *stubService) RecordEnforcementResult(_ context.Context, nodeID string, input agentv1.EnforcementResultRequest) (usage.EnforcementDecision, bool, error) {
+	service.calls++
 	service.resultNode = nodeID
 	service.resultInput = input
 	return usage.EnforcementDecision{}, false, service.resultErr
 }
 
 func (service *stubService) RequestRevoke(_ context.Context, administratorID, decisionID, key string) (usage.EnforcementDecision, bool, error) {
+	service.calls++
 	service.revokeAdmin, service.revokeID, service.revokeKey = administratorID, decisionID, key
 	return usage.EnforcementDecision{ID: decisionID, Status: usage.EnforcementRevokePending}, false, nil
 }

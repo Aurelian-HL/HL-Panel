@@ -19,13 +19,13 @@ var _ enrollment.Repository = (*Store)(nil)
 var _ nodes.Repository = (*Store)(nil)
 
 func (s *Store) AdministratorByUsername(ctx context.Context, username string) (auth.Administrator, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Administrator, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Administrator, error) {
 		return state.AdministratorByUsername(ctx, username)
 	})
 }
 
 func (s *Store) AdministratorByID(ctx context.Context, id string) (auth.Administrator, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Administrator, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Administrator, error) {
 		return state.AdministratorByID(ctx, id)
 	})
 }
@@ -41,7 +41,9 @@ func (s *Store) CreateSession(ctx context.Context, session auth.Session, event a
 }
 
 func (s *Store) SessionByTokenHash(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Session, error) { return state.SessionByTokenHash(ctx, hash, now) })
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Session, error) {
+		return state.SessionByTokenHash(ctx, hash, now)
+	})
 }
 
 func (s *Store) AppendAudit(ctx context.Context, event audit.Event) error {
@@ -112,7 +114,9 @@ func (s *Store) RevokeEnrollmentToken(ctx context.Context, input enrollment.Revo
 }
 
 func (s *Store) NodeByCredentialHash(ctx context.Context, hash string) (nodes.Node, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) { return state.NodeByCredentialHash(ctx, hash) })
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.Node, error) {
+		return state.NodeByCredentialHash(ctx, hash)
+	})
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]nodes.Node, error) {

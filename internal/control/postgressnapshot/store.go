@@ -33,9 +33,22 @@ type snapshotReadCache struct {
 	revision      int64
 	transactionID string
 	payload       []byte
+	identities    *memoryrepo.IdentityReadView
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
+	cached, state, err := s.validatedReadSnapshot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if state != nil {
+		return state, nil
+	}
+	// Business reads still own their mutable state and history reader.
+	return decodeReadSnapshot(cached.payload, cached.version, uint64(cached.revision))
+}
+
+func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshotReadCache, *memoryrepo.Store, error) {
 	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
 	// xmin also detects restores or external repairs that do not bump revision.
 	s.readMu.Lock()
@@ -48,27 +61,51 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
 		s.readMu.Unlock()
-		return nil, errors.New("PostgreSQL snapshot read failed")
+		return snapshotReadCache{}, nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
 		s.readMu.Unlock()
-		return nil, errors.New("unsupported PostgreSQL snapshot version")
+		return snapshotReadCache{}, nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
 	if raw == nil && cached.payload != nil {
-		// The cached bytes are immutable. Decode into request-private state
-		// outside the lock so independent reads do not serialize their CPU work.
+		// The bytes and detached identity projection are immutable. Database
+		// identity is checked even when a request only needs authentication.
 		s.readMu.Unlock()
-		return decodeReadSnapshot(cached.payload, next.version, uint64(next.revision))
+		return cached, nil, nil
 	}
 	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
 	if err != nil {
 		s.readMu.Unlock()
-		return nil, err
+		return snapshotReadCache{}, nil, err
 	}
 	next.payload = raw
+	next.identities = state.IdentityReadView()
 	s.readCache = next
 	s.readMu.Unlock()
-	return state, nil
+	return next, state, nil
+}
+
+func readIdentity[T any](parent context.Context, s *Store, operation func(*memoryrepo.IdentityReadView) (T, error)) (T, error) {
+	var zero T
+	ctx, cancel := context.WithTimeout(parent, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return zero, errors.New("PostgreSQL transaction unavailable")
+	}
+	defer tx.Rollback()
+	cached, _, err := s.validatedReadSnapshot(ctx, tx)
+	if err != nil {
+		return zero, err
+	}
+	result, err := operation(cached.identities)
+	if err != nil {
+		return result, err
+	}
+	if err := tx.Commit(); err != nil {
+		return zero, errors.New("PostgreSQL transaction commit failed")
+	}
+	return result, nil
 }
 
 // Each request owns its decoded maps, slices and runtime material. Retaining

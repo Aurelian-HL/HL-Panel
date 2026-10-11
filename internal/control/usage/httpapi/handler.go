@@ -61,8 +61,7 @@ func (handler *Handler) Register(mux *http.ServeMux) error {
 func (handler *Handler) ingest(writer http.ResponseWriter, request *http.Request) {
 	nodeID, err := handler.authenticateNode(request)
 	if err != nil || nodeID == "" {
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		writeAuthenticationProblem(writer, err)
 		return
 	}
 	var report usage.Report
@@ -90,13 +89,8 @@ func (handler *Handler) ingest(writer http.ResponseWriter, request *http.Request
 }
 
 func (handler *Handler) query(writer http.ResponseWriter, request *http.Request) {
-	if _, err := handler.authorizeAdmin(request); err != nil {
-		if errors.Is(err, faults.ErrPasswordChangeRequired) {
-			writeProblem(writer, http.StatusForbidden, "password_change_required", "请先在个人中心修改初始密码")
-			return
-		}
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+	if id, err := handler.authorizeAdmin(request); err != nil || id == "" {
+		writeAuthenticationProblem(writer, err)
 		return
 	}
 	query, err := decodeQuery(request)
@@ -115,8 +109,7 @@ func (handler *Handler) query(writer http.ResponseWriter, request *http.Request)
 func (handler *Handler) desiredEnforcement(writer http.ResponseWriter, request *http.Request) {
 	nodeID, err := handler.authenticateNode(request)
 	if err != nil || nodeID == "" {
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		writeAuthenticationProblem(writer, err)
 		return
 	}
 	command, err := handler.service.DesiredEnforcement(request.Context(), nodeID)
@@ -134,8 +127,7 @@ func (handler *Handler) desiredEnforcement(writer http.ResponseWriter, request *
 func (handler *Handler) recordEnforcementResult(writer http.ResponseWriter, request *http.Request) {
 	nodeID, err := handler.authenticateNode(request)
 	if err != nil || nodeID == "" {
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		writeAuthenticationProblem(writer, err)
 		return
 	}
 	var input agentv1.EnforcementResultRequest
@@ -153,12 +145,7 @@ func (handler *Handler) recordEnforcementResult(writer http.ResponseWriter, requ
 func (handler *Handler) revokeEnforcement(writer http.ResponseWriter, request *http.Request) {
 	administratorID, err := handler.authorizeAdmin(request)
 	if err != nil || administratorID == "" {
-		if errors.Is(err, faults.ErrPasswordChangeRequired) {
-			writeProblem(writer, http.StatusForbidden, "password_change_required", "请先在个人中心修改初始密码")
-			return
-		}
-		writer.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+		writeAuthenticationProblem(writer, err)
 		return
 	}
 	idempotencyKey := request.Header.Get("Idempotency-Key")
@@ -168,6 +155,22 @@ func (handler *Handler) revokeEnforcement(writer http.ResponseWriter, request *h
 		return
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{"decision": decision, "replayed": replayed})
+}
+
+// Infrastructure failures do not establish that a session or node credential
+// was revoked. Returning 401 here would log out an administrator on a transient
+// database outage and mislead agents into treating valid credentials as invalid.
+func writeAuthenticationProblem(writer http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, faults.ErrPasswordChangeRequired):
+		writeProblem(writer, http.StatusForbidden, "password_change_required", "请先在个人中心修改初始密码")
+	case err == nil || errors.Is(err, faults.ErrUnauthorized) || errors.Is(err, faults.ErrNotFound) || errors.Is(err, faults.ErrExpired) || errors.Is(err, faults.ErrAlreadyUsed):
+		writer.Header().Set("WWW-Authenticate", "Bearer")
+		writeProblem(writer, http.StatusUnauthorized, "unauthorized", "authentication failed")
+	default:
+		writer.Header().Set("Retry-After", "15")
+		writeProblem(writer, http.StatusServiceUnavailable, "service_unavailable", "认证服务暂时不可用，请稍后重试")
+	}
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) error {
