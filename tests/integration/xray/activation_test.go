@@ -35,6 +35,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
+	"github.com/hongle/hl-panel/internal/control/vlesssetup"
 	"github.com/hongle/hl-panel/internal/gateway/endpointselector"
 	"github.com/hongle/hl-panel/internal/gateway/tcpproxy"
 	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
@@ -139,22 +140,40 @@ func TestRuleActivationNotificationsWithRealAgentAndRealityTwice(t *testing.T) {
 	for round := 1; round <= 2; round++ {
 		started := time.Now()
 		request := forwarding.Request{Name: fmt.Sprintf("activation-%d", round), EntryGroupID: group.ID, EgressMode: forwarding.EgressDirect, Protocol: forwarding.ProtocolTCP, IngressProtocol: forwarding.IngressVLESSReality, ListenPort: freeLoopbackPort(t), SelectionPolicy: forwarding.SelectionRoundRobin, VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5, VLESSSOCKS5Host: socks.SOCKS5.Hostname, VLESSSOCKS5Port: socks.SOCKS5.Port, VLESSSOCKS5Username: socks.SOCKS5.Username, VLESSSOCKS5Password: socks.SOCKS5.Password}
-		encoded, _ := json.Marshal(request)
-		httpRequest, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/api/v1/forwarding-rules", bytes.NewReader(encoded))
-		httpRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
-		httpRequest.Header.Set("Content-Type", "application/json")
-		httpRequest.Header.Set("Idempotency-Key", fmt.Sprintf("activation-%d", round))
-		response, err := server.Client().Do(httpRequest)
-		if err != nil {
-			t.Fatal(err)
-		}
 		var created struct {
 			Rule forwarding.Rule `json:"rule"`
 		}
-		err = json.NewDecoder(response.Body).Decode(&created)
-		response.Body.Close()
-		if response.StatusCode != 201 || err != nil {
-			t.Fatalf("save rule returned %d: %v", response.StatusCode, err)
+		if round == 2 {
+			// Simulate the original failure: the HTTP request ended immediately
+			// after committing the rule, before endpoint/identity setup.
+			created.Rule, _, err = forward.CreateForAdministrator(ctx, "activation-admin", request, "interrupted-save")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pools, err := store.ListEndpointPools(ctx); err != nil || len(pools) != 1 {
+				t.Fatal("interrupted rule already has setup resources")
+			}
+			setup := vlesssetup.NewService(networks, endpoints.NewService(store, time.Now), identities)
+			for replay := 0; replay < 2; replay++ {
+				if err := setup.Reconcile(ctx, forward); err != nil {
+					t.Fatal(err)
+				}
+			}
+		} else {
+			encoded, _ := json.Marshal(request)
+			httpRequest, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/api/v1/forwarding-rules", bytes.NewReader(encoded))
+			httpRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+			httpRequest.Header.Set("Content-Type", "application/json")
+			httpRequest.Header.Set("Idempotency-Key", fmt.Sprintf("activation-%d", round))
+			response, err := server.Client().Do(httpRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = json.NewDecoder(response.Body).Decode(&created)
+			response.Body.Close()
+			if response.StatusCode != 201 || err != nil {
+				t.Fatalf("save rule returned %d: %v", response.StatusCode, err)
+			}
 		}
 		deadline := started.Add(12 * time.Second)
 		for {

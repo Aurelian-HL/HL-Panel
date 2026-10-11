@@ -21,6 +21,58 @@ import (
 
 type stateRepository struct{ state State }
 
+type batchStates struct {
+	states []State
+	calls  int
+	err    error
+}
+
+func (r *batchStates) GatewayMembershipState(context.Context, string) (State, error) {
+	panic("per-pool query must not run")
+}
+func (r *batchStates) GatewayMembershipStates(context.Context, []string) ([]State, error) {
+	r.calls++
+	return r.states, r.err
+}
+
+func TestBatchReadinessPreservesProtocolEvidenceBoundaries(t *testing.T) {
+	now := time.Now().UTC()
+	for name, mutate := range map[string]func(*State){
+		"ready": func(*State) {},
+		"expired": func(s *State) {
+			proof := s.ProtocolHealth["node-1"]
+			proof.LeaseExpiresAt = now
+			s.ProtocolHealth["node-1"] = proof
+		},
+		"no proof": func(s *State) { delete(s.ProtocolHealth, "node-1") },
+		"old generation": func(s *State) {
+			proof := s.Deployments["node-1"]
+			proof.Status.NodeConfigGeneration++
+			s.Deployments["node-1"] = proof
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := stateWithVerifiedEvidence()
+			mutate(&state)
+			repository := &batchStates{states: []State{state}}
+			service := NewService(repository)
+			service.clock = time.Now
+			counts, err := service.ReadyCandidateCounts(context.Background(), []string{"pool-1", "deleted"})
+			want := 0
+			if name == "ready" {
+				want = 1
+			}
+			if err != nil || counts["pool-1"] != want || counts["deleted"] != 0 || repository.calls != 1 {
+				t.Fatalf("batch authorized incorrect health: %v err=%v calls=%d", counts, err, repository.calls)
+			}
+		})
+	}
+	repository := &batchStates{err: errors.New("database unavailable")}
+	if _, err := NewService(repository).ReadyCandidateCounts(context.Background(), []string{"pool-1"}); !errors.Is(err, repository.err) {
+		t.Fatal("storage error hidden")
+	}
+}
+
 func (r *stateRepository) GatewayMembershipState(_ context.Context, poolID string) (State, error) {
 	if poolID != r.state.Pool.ID {
 		return State{}, errors.New("pool not found")

@@ -47,6 +47,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
+	"github.com/hongle/hl-panel/internal/control/vlesssetup"
 	"github.com/hongle/hl-panel/internal/idgen"
 )
 
@@ -180,6 +181,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	if err != nil {
 		return fmt.Errorf("configure VLESS runtime service: %w", err)
 	}
+	vlessSetupService := vlesssetup.NewService(groupconfig.NewService(store, time.Now), endpointService, vlessIdentityService)
 	usageService := usage.NewService(
 		usageRepository,
 		usage.NewCustomerPolicyAdapter(store),
@@ -206,7 +208,11 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 		ctx, cancel := context.WithCancel(shutdownContext)
 		cancelBackground = cancel
-		background.Add(2)
+		background.Add(3)
+		go func() {
+			defer background.Done()
+			vlessSetupService.Run(ctx, forwardingService, logger)
+		}()
 		go func() {
 			defer background.Done()
 			_ = usageService.RunRuleTraffic(ctx, logger)

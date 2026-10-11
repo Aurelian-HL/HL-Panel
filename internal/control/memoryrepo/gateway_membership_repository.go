@@ -21,6 +21,28 @@ func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewa
 	return s.gatewayMembershipStateLocked(poolID)
 }
 
+func (s *Store) GatewayMembershipStates(ctx context.Context, poolIDs []string) ([]gatewaymembership.State, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	states := make([]gatewaymembership.State, 0, len(poolIDs))
+	for _, poolID := range poolIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		state, err := s.gatewayMembershipStateLocked(poolID)
+		if err == faults.ErrNotFound {
+			// A pool may be deleted between metadata and readiness reads.
+			// Its missing evidence must never make it selectable.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
+
 func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.State, error) {
 	pool, found := s.endpointPools[poolID]
 	if !found {

@@ -53,6 +53,10 @@ type Repository interface {
 	GatewayMembershipState(context.Context, string) (State, error)
 }
 
+type BatchRepository interface {
+	GatewayMembershipStates(context.Context, []string) ([]State, error)
+}
+
 // ProtocolHealthPublisher accepts only observations produced by the protocol
 // observer after a real VLESS challenge. Heartbeat/TCP monitors must not call
 // this interface.
@@ -77,6 +81,31 @@ func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, 
 		return 0, err
 	}
 	return ReadyCandidateCount(state, s.clock().UTC()), nil
+}
+
+// ReadyCandidateCounts evaluates every requested pool at the same time and,
+// where supported, from one database snapshot instead of decoding it per pool.
+func (s *Service) ReadyCandidateCounts(ctx context.Context, poolIDs []string) (map[string]int, error) {
+	counts := make(map[string]int, len(poolIDs))
+	if repository, ok := s.repository.(BatchRepository); ok {
+		states, err := repository.GatewayMembershipStates(ctx, poolIDs)
+		if err != nil {
+			return nil, err
+		}
+		now := s.clock().UTC()
+		for _, state := range states {
+			counts[state.Pool.ID] = ReadyCandidateCount(state, now)
+		}
+		return counts, nil
+	}
+	for _, poolID := range poolIDs {
+		state, err := s.repository.GatewayMembershipState(ctx, poolID)
+		if err != nil {
+			return nil, err
+		}
+		counts[poolID] = ReadyCandidateCount(state, s.clock().UTC())
+	}
+	return counts, nil
 }
 
 // ReadyCandidateCount is shared by rule status, subscriptions and the gateway.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -24,6 +25,26 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
 )
+
+func TestGatewayBatchUsesSameEvidenceAndCancellationAsSingleLookup(t *testing.T) {
+	store, observation := protocolPublicationFixture(t)
+	if err := store.PublishProtocolHealth(context.Background(), observation); err != nil {
+		t.Fatal(err)
+	}
+	single, err := store.GatewayMembershipState(context.Background(), "pool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := store.GatewayMembershipStates(context.Background(), []string{"pool", "deleted"})
+	if err != nil || len(batch) != 1 || !reflect.DeepEqual(single, batch[0]) {
+		t.Fatalf("batch changed authorized evidence: len=%d err=%v", len(batch), err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.GatewayMembershipStates(ctx, []string{"pool"}); err != context.Canceled {
+		t.Fatal("cancelled batch continued")
+	}
+}
 
 func TestGatewayMembershipProjectsCurrentRuleAndNodeReceiptAtomically(t *testing.T) {
 	now := time.Now().UTC()

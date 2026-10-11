@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -45,18 +47,29 @@ func (api *API) saveForwardingRule(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 	if api.vlessSetup != nil {
-		if err := api.vlessSetup.Ensure(r.Context(), session.AdminID, item); err != nil {
+		// Saving the rule must not wait through multiple database operation
+		// timeouts. Background reconciliation resumes any unfinished setup.
+		setupContext, cancelSetup := context.WithTimeout(r.Context(), 3*time.Second)
+		setupErr := api.vlessSetup.Ensure(setupContext, session.AdminID, item)
+		cancelSetup()
+		if setupErr != nil {
 			// The rule repository has already committed the operator's request.
 			// VLESS endpoint/identity setup is resumable and depends on node
 			// runtime material, so a transient setup failure must not be reported
 			// as if the rule itself was rejected. Keep the rule visible as pending
 			// and let the next reconciliation retry Ensure.
-			api.logger.Warn("vless forwarding rule remains pending activation", "rule_id", item.ID, "admin_id", session.AdminID, "error", err)
-		}
-		item, err = api.forwarding.GetForAdministrator(r.Context(), session.AdminID, item.ID)
-		if err != nil {
-			writeProblem(w, r, err)
-			return
+			api.logger.Warn("vless forwarding rule remains pending activation", "rule_id", item.ID, "admin_id", session.AdminID, "error", setupErr)
+		} else {
+			refreshContext, cancelRefresh := context.WithTimeout(r.Context(), time.Second)
+			current, refreshErr := api.forwarding.GetForAdministrator(refreshContext, session.AdminID, item.ID)
+			cancelRefresh()
+			if refreshErr == nil {
+				item = current
+			} else {
+				// The committed rule is a truthful conservative result even if a
+				// post-save refresh fails. Never report a rejected write here.
+				api.logger.Warn("saved forwarding rule refresh deferred", "rule_id", item.ID, "error", refreshErr)
+			}
 		}
 	}
 	writeBusinessResult(w, r, "rule", item, replayed)

@@ -26,6 +26,10 @@ type ReadyCandidateSource interface {
 	ReadyCandidateCount(context.Context, string) (int, error)
 }
 
+type ReadyCandidateBatchSource interface {
+	ReadyCandidateCounts(context.Context, []string) (map[string]int, error)
+}
+
 func (s *Service) ReadyCandidateCount(ctx context.Context, poolID string) (int, error) {
 	if s.readyCandidates == nil {
 		return 0, nil
@@ -91,6 +95,24 @@ func (s *Service) ListPools(ctx context.Context) ([]EndpointPool, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.withReadiness(ctx, items)
+}
+
+func (s *Service) withReadiness(ctx context.Context, items []EndpointPool) ([]EndpointPool, error) {
+	if batch, ok := s.readyCandidates.(ReadyCandidateBatchSource); ok && len(items) > 0 {
+		ids := make([]string, len(items))
+		for i := range items {
+			ids[i] = items[i].ID
+		}
+		counts, err := batch.ReadyCandidateCounts(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for i := range items {
+			items[i].HealthyCandidateCount = counts[items[i].ID]
+		}
+		return items, nil
+	}
 	for index := range items {
 		// No gateway readiness source means there is no verified protocol
 		// health. Never infer it from member timestamps.
@@ -112,7 +134,7 @@ func (s *Service) ListPoolsForAdministrator(ctx context.Context, administratorID
 	if !validAdministratorID(administratorID) {
 		return nil, fmt.Errorf("%w: administrator is required", faults.ErrValidation)
 	}
-	items, err := s.ListPools(ctx)
+	items, err := s.repository.ListEndpointPools(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +144,26 @@ func (s *Service) ListPoolsForAdministrator(ctx context.Context, administratorID
 			visible = append(visible, item)
 		}
 	}
-	return visible, nil
+	return s.withReadiness(ctx, visible)
+}
+
+// FindPoolForRuleForAdministrator reads setup metadata without evaluating
+// unrelated runtime health. An absent pool is a normal provisioning state.
+func (s *Service) FindPoolForRuleForAdministrator(ctx context.Context, administratorID, ruleID string) (EndpointPool, error) {
+	if !validAdministratorID(administratorID) || strings.TrimSpace(ruleID) == "" {
+		return EndpointPool{}, faults.ErrValidation
+	}
+	items, err := s.repository.ListEndpointPools(ctx)
+	if err != nil {
+		return EndpointPool{}, err
+	}
+	for _, pool := range items {
+		if pool.RuleID == ruleID && pool.OwnerID == administratorID {
+			pool.HealthyCandidateCount = 0
+			return pool, nil
+		}
+	}
+	return EndpointPool{}, nil
 }
 
 func validAdministratorID(id string) bool {
