@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -64,7 +65,7 @@ func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfi
 			RequiresLiveProcess() bool
 			ActiveEngineMode() string
 		}); ok && process.RequiresLiveProcess() && process.ActiveEngineMode() == "" {
-			return r.restoreAppliedLocked(ctx, desired)
+			return r.restoreAppliedLocked(ctx, desired, true)
 		}
 		_ = r.flushReceiptsLocked(ctx)
 		return nil
@@ -149,10 +150,40 @@ func (r *Reconciler) RestoreApplied(ctx context.Context) error {
 	if err != nil || !exists {
 		return err
 	}
-	return r.restoreAppliedLocked(ctx, desired)
+	return r.restoreAppliedLocked(ctx, desired, true)
 }
 
-func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
+// EnsureApplied repairs an exited owned process without touching a live one.
+// No control-plane call is made; durable receipts are delivered by the sync loop.
+func (r *Reconciler) EnsureApplied(ctx context.Context) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	process, ok := r.adapter.(interface {
+		RequiresLiveProcess() bool
+		ActiveEngineMode() string
+	})
+	if !ok || !process.RequiresLiveProcess() || process.ActiveEngineMode() != "" {
+		return false, nil
+	}
+	current, err := r.store.Load()
+	if err != nil || current.Applied == nil || current.Pending != nil {
+		return false, err
+	}
+	desired, exists, err := r.store.LastKnownGood()
+	if err != nil || !exists {
+		return false, err
+	}
+	var bundle agentv1.ConfigurationBundle
+	if err := json.Unmarshal(desired.Config, &bundle); err != nil {
+		return false, err
+	}
+	if len(bundle.Fragments) == 0 {
+		return false, nil
+	}
+	return true, r.restoreAppliedLocked(ctx, desired, false)
+}
+
+func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.DesiredNodeConfig, deliver bool) error {
 	if err := r.store.ClearApplyReceipts(); err != nil {
 		return fmt.Errorf("clear previous process receipts: %w", err)
 	}
@@ -162,24 +193,24 @@ func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.D
 	}
 	prepared, err := r.adapter.Prepare(ctx, desired)
 	if err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhasePrepare, err)
+		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhasePrepare, err, deliver)
 	}
-	r.report(ctx, desired, attemptID, agentv1.ApplyPhasePrepare, agentv1.ApplyStatusSucceeded, "previous configuration staged")
 	if err := r.adapter.Validate(ctx, prepared); err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, err)
+		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, err, deliver)
 	}
-	r.report(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, agentv1.ApplyStatusSucceeded, "previous configuration validated")
 	if err := r.adapter.Commit(ctx, prepared); err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseCommit, err)
+		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseCommit, err, deliver)
 	}
 	if err := r.adapter.Verify(ctx, prepared); err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseVerify, err)
+		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseVerify, err, deliver)
 	}
 	if _, err := r.store.RecordResultWithReceipts(agentv1.ApplyPhaseVerify, agentv1.ApplyStatusSucceeded,
 		"previous configuration reactivated and verified", r.verifiedReceipts(desired, attemptID), r.now()); err != nil {
 		return err
 	}
-	_ = r.flushReceiptsLocked(ctx)
+	if deliver {
+		_ = r.flushReceiptsLocked(ctx)
+	}
 	return nil
 }
 
@@ -228,13 +259,15 @@ func (r *Reconciler) FlushReceipts(ctx context.Context) error {
 	return r.flushReceiptsLocked(ctx)
 }
 
-func (r *Reconciler) restoreFailed(ctx context.Context, desired agentv1.DesiredNodeConfig, attemptID string, phase agentv1.ApplyPhase, cause error) error {
+func (r *Reconciler) restoreFailed(ctx context.Context, desired agentv1.DesiredNodeConfig, attemptID string, phase agentv1.ApplyPhase, cause error, deliver bool) error {
 	message := sanitizeMessage(cause.Error())
-	r.report(ctx, desired, attemptID, phase, agentv1.ApplyStatusFailed, message)
 	if err := r.adapter.Rollback(context.WithoutCancel(ctx), nil); err != nil {
 		message = sanitizeMessage(message + "; rollback failed: " + err.Error())
 	}
 	_, _ = r.store.RecordResult(phase, agentv1.ApplyStatusFailed, message, r.now())
+	if deliver {
+		r.report(ctx, desired, attemptID, phase, agentv1.ApplyStatusFailed, message)
+	}
 	return cause
 }
 

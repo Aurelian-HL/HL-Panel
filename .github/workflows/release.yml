@@ -126,7 +126,7 @@ jobs:
           "$release/bin/xray" version
           "$release/bin/gost" -V
           # Real engines and loopback clients, no production services.
-          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -v ./tests/integration/xray ./tests/integration/gost
+          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -v ./internal/agent/runtime ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md

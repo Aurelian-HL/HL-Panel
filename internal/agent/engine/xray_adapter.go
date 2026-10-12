@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,11 +52,12 @@ type XrayRunner interface {
 // fixed absolute BinaryPath runner. AutoStart must be explicitly enabled by a
 // caller that intends to manage a real process.
 type XrayAdapterOptions struct {
-	StagingDir string
-	ActivePath string
-	BinaryPath string
-	Runner     XrayRunner
-	AutoStart  bool
+	StagingDir      string
+	ActivePath      string
+	BinaryPath      string
+	Runner          XrayRunner
+	AutoStart       bool
+	StatsAPIAddress string
 }
 
 // XrayProcessAdapter validates an Xray-only node bundle, compiles its
@@ -63,11 +66,12 @@ type XrayAdapterOptions struct {
 // DryRunFileAdapter so the existing runtime remains dry-run until an explicit
 // integration configuration selects this adapter.
 type XrayProcessAdapter struct {
-	stagingDir string
-	activePath string
-	binaryPath string
-	runner     XrayRunner
-	autoStart  bool
+	stagingDir      string
+	activePath      string
+	binaryPath      string
+	runner          XrayRunner
+	autoStart       bool
+	statsAPIAddress string
 
 	counterEpoch     uint64
 	mu               sync.Mutex
@@ -79,6 +83,10 @@ type XrayProcessAdapter struct {
 // paths. A caller supplying a fake/test Runner may omit BinaryPath; production
 // callers must provide an absolute, regular binary path.
 func NewXrayProcessAdapter(options XrayAdapterOptions) (*XrayProcessAdapter, error) {
+	host, port, err := xrayStatsListener(options.StatsAPIAddress)
+	if err != nil {
+		return nil, err
+	}
 	stagingDir := filepath.Clean(strings.TrimSpace(options.StagingDir))
 	activePath := filepath.Clean(strings.TrimSpace(options.ActivePath))
 	if stagingDir == "." || !filepath.IsAbs(stagingDir) {
@@ -110,11 +118,12 @@ func NewXrayProcessAdapter(options XrayAdapterOptions) (*XrayProcessAdapter, err
 		runner = fixed
 	}
 	return &XrayProcessAdapter{
-		stagingDir: stagingDir,
-		activePath: activePath,
-		binaryPath: binaryPath,
-		runner:     runner,
-		autoStart:  options.AutoStart,
+		stagingDir:      stagingDir,
+		activePath:      activePath,
+		binaryPath:      binaryPath,
+		runner:          runner,
+		autoStart:       options.AutoStart,
+		statsAPIAddress: net.JoinHostPort(host, strconv.Itoa(port)),
 	}, nil
 }
 
@@ -126,7 +135,7 @@ func (a *XrayProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desire
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
-	native, err := compileXrayBundle(prepared.Bundle)
+	native, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
@@ -334,7 +343,7 @@ func (a *XrayProcessAdapter) verifyStaged(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
-	expected, err := compileXrayBundle(prepared.Bundle)
+	expected, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return err
 	}
@@ -349,7 +358,7 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
-	expected, err := compileXrayBundle(prepared.Bundle)
+	expected, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return err
 	}
@@ -510,6 +519,31 @@ func (p *execXrayProcess) Stop(ctx context.Context) error {
 // CompileXrayBundle combines only Xray-native fragments. Inbounds, outbounds,
 // and routing rules are concatenated; other settings must agree across fragments.
 func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
+	return compileXrayBundleWithStats(bundle, "")
+}
+
+func xrayStatsListener(address string) (string, int, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		address = "127.0.0.1:10085"
+	}
+	host, rawPort, err := net.SplitHostPort(address)
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	port, portErr := strconv.Atoi(rawPort)
+	if err != nil || ip == nil || !ip.IsLoopback() || portErr != nil || port < 1 || port > 65535 {
+		return "", 0, errors.New("xray stats API must use a loopback IP and port between 1 and 65535")
+	}
+	return ip.String(), port, nil
+}
+
+func compileXrayBundleWithStats(bundle agentv1.ConfigurationBundle, address string) ([]byte, error) {
+	apiHost, apiPort, err := xrayStatsListener(address)
+	if err != nil {
+		return nil, err
+	}
 	if bundle.SchemaVersion != BundleSchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported bundle schema_version %d", ErrInvalidConfiguration, bundle.SchemaVersion)
 	}
@@ -617,7 +651,7 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	// listener. The bundle compiler owns the singleton listener to avoid port
 	// and tag collisions when several rules are active on the same node.
 	apiInbound, err := json.Marshal(map[string]any{
-		"tag": "hl-stats-api-in", "listen": "127.0.0.1", "port": 10085,
+		"tag": "hl-stats-api-in", "listen": apiHost, "port": apiPort,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 	})
 	if err != nil {

@@ -337,6 +337,8 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update.sh
 
 **全新安装用 install.sh，已有实例更新用 update.sh，两个命令不要混用。** 首次启用网页更新时，建议使用上方仓库的一键更新命令，它会下载目标正式版本的更新器，完成该版本所需的保数据升级。 更新前请查看 [正式版本与发布说明](https://github.com/Aurelian-HL/HL-Panel/releases)，确认目标版本的变化与限制。README 更新和 main 分支提交不会自动升级已安装的面板，也不替代正式 Release。
 
+节点超时、引擎退出及控制面离线的排查与升级，请参考 [节点稳定性维护](docs/node-maintenance.md)。其中包含已修复问题、真实引擎回归、逐台保身份升级、回滚和持续维护清单。面板更新不会自动更新节点。
+
 ## 在面板内自动迁移到新服务器
 
 从 v0.1.50 起，打开 **首页 → HL-Panel 运行状态 → 迁移备份 → 自动迁移**。在当前面板填写新机 SSH 信息即可安装和恢复，无需提供旧机 SSH 密码。

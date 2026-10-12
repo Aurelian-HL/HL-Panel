@@ -39,6 +39,13 @@ func (a *Agent) flushUsage(ctx context.Context) error {
 func (a *Agent) applyWithUsage(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
 	a.usageApplyMu.Lock()
 	defer a.usageApplyMu.Unlock()
+	stopped, err := a.state.EngineStopped()
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return errEngineStopped
+	}
 	if a.usageReporter != nil {
 		current, err := a.state.Load()
 		if err != nil {

@@ -84,6 +84,7 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 		xrayAdapter, err = engine.NewXrayProcessAdapter(engine.XrayAdapterOptions{
 			StagingDir: cfg.XrayStagingDir(), ActivePath: cfg.XrayActivePath(),
 			BinaryPath: cfg.XrayBinaryPath, AutoStart: cfg.XrayAutoStart,
+			StatsAPIAddress: cfg.XrayStatsAPIAddress,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("initialize xray engine adapter: %w", err)
@@ -102,6 +103,7 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 		xrayAdapter, err = engine.NewXrayProcessAdapter(engine.XrayAdapterOptions{
 			StagingDir: cfg.XrayStagingDir(), ActivePath: cfg.XrayActivePath(),
 			BinaryPath: cfg.XrayBinaryPath, AutoStart: cfg.XrayAutoStart,
+			StatsAPIAddress: cfg.XrayStatsAPIAddress,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("initialize xray engine adapter: %w", err)
@@ -262,12 +264,18 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load pending configuration: %w", err)
 	}
-	if err := reconcilerInstance.RecoverPending(ctx); err != nil {
-		return fmt.Errorf("recover pending configuration: %w", err)
+	stopped, err := a.state.EngineStopped()
+	if err != nil {
+		return fmt.Errorf("load engine intent: %w", err)
 	}
-	if !hadPending {
-		if err := reconcilerInstance.RestoreApplied(ctx); err != nil {
-			return fmt.Errorf("restore applied configuration: %w", err)
+	if !stopped {
+		if err := reconcilerInstance.RecoverPending(ctx); err != nil {
+			return fmt.Errorf("recover pending configuration: %w", err)
+		}
+		if !hadPending {
+			if _, err := reconcilerInstance.EnsureApplied(ctx); err != nil {
+				return fmt.Errorf("restore applied configuration: %w", err)
+			}
 		}
 	}
 	a.reconciler = reconcilerInstance
@@ -419,13 +427,13 @@ func (a *Agent) ControlOnce(ctx context.Context) error {
 			}
 		}
 	case agentv1.ControlStop:
-		if err := a.closeEngines(ctx); err != nil {
+		if err := a.stopEngine(ctx); err != nil {
 			result.Status, result.Message = "failed", "停止引擎失败"
 		} else {
 			result.Message = "引擎已停止"
 		}
 	case agentv1.ControlRestart:
-		if err := a.reconciler.RestoreApplied(ctx); err != nil {
+		if err := a.restartEngine(ctx); err != nil {
 			result.Status, result.Message = "failed", "恢复配置并重启失败"
 		} else {
 			result.Message = "引擎已重启并恢复最近配置"
@@ -482,6 +490,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop}
+	if process, ok := a.adapter.(interface{ RequiresLiveProcess() bool }); ok && process.RequiresLiveProcess() {
+		loops = append(loops, a.recoveryLoop)
+	}
 	if a.usageReporter != nil {
 		loops = append(loops, a.usageLoop)
 	}
@@ -577,7 +588,7 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 				return nil
 			}
 			if err := a.applyWithUsage(callContext, *desired); err != nil {
-				if !errors.Is(err, errUsageBeforeApply) {
+				if !errors.Is(err, errUsageBeforeApply) && !errors.Is(err, errEngineStopped) {
 					failedKey = key
 				}
 				return err
