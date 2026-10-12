@@ -273,6 +273,13 @@ export interface RetireDeviceGroupMemberResponse extends AddDeviceGroupMemberRes
   replayed: boolean
 }
 
+export interface DeleteDeviceGroupMemberResponse {
+  group_id: string
+  node_id: string
+  deleted: boolean
+  replayed: boolean
+}
+
 export interface UpdateDeviceGroupMemberWeightResponse extends AddDeviceGroupMemberResponse {
   replayed: boolean
 }

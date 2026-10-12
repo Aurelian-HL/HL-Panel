@@ -14,6 +14,7 @@ import (
 
 var _ groups.Repository = (*Store)(nil)
 var _ groups.IdempotentRepository = (*Store)(nil)
+var _ groups.RetiredMemberDeletionRepository = (*Store)(nil)
 var _ endpoints.Repository = (*Store)(nil)
 var _ generations.Repository = (*Store)(nil)
 
@@ -93,6 +94,12 @@ func (s *Store) UpdateGroupMemberWeight(ctx context.Context, input groups.Update
 func (s *Store) RetireGroupMember(ctx context.Context, groupID, nodeID string, retiredAt time.Time, event audit.Event) (groups.RetireMemberResult, error) {
 	return transact(ctx, s, true, func(state *memoryrepo.Store) (groups.RetireMemberResult, error) {
 		return state.RetireGroupMember(ctx, groupID, nodeID, retiredAt, event)
+	})
+}
+
+func (s *Store) DeleteRetiredGroupMember(ctx context.Context, input groups.DeleteMemberInput, event audit.Event) (groups.DeleteMemberResult, error) {
+	return transact(ctx, s, true, func(state *memoryrepo.Store) (groups.DeleteMemberResult, error) {
+		return state.DeleteRetiredGroupMember(ctx, input, event)
 	})
 }
 

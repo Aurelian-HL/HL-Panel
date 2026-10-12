@@ -25,6 +25,7 @@ import type {
   NodeControlResult,
   PanelControlResult,
   RetireDeviceGroupMemberResponse,
+  DeleteDeviceGroupMemberResponse,
   UpdateDeviceGroupMemberWeightResponse,
 } from './types'
 import {
@@ -37,6 +38,7 @@ import {
   parseEndpointPoolsResponse,
   parseAddDeviceGroupMemberResponse,
   parseRetireDeviceGroupMemberResponse,
+  parseDeleteDeviceGroupMemberResponse,
   parseUpdateDeviceGroupMemberWeightResponse,
   parseEnrollmentToken,
   parsePendingEnrollmentTokensResponse,
@@ -72,6 +74,7 @@ interface AdminApi {
   deleteDeviceGroup(groupId: string, key: string): Promise<DeleteDeviceGroupResponse>
   addDeviceGroupMember(groupId: string, request: AddDeviceGroupMemberRequest, key?: string): Promise<AddDeviceGroupMemberResponse>
   retireDeviceGroupMember(groupId: string, nodeId: string, key: string): Promise<RetireDeviceGroupMemberResponse>
+  deleteRetiredDeviceGroupMember(groupId: string, nodeId: string, updatedAt: string, key: string): Promise<DeleteDeviceGroupMemberResponse>
   updateDeviceGroupMemberWeight(groupId: string, nodeId: string, weight: number, updatedAt: string, key: string): Promise<UpdateDeviceGroupMemberWeightResponse>
   createGroupRevision(groupId: string, request: CreateGenerationRequest): Promise<CreateGroupRevisionResponse>
   createEndpointPool(request: CreateEndpointPoolRequest): Promise<CreateEndpointPoolResponse>
@@ -144,6 +147,11 @@ const realApi: AdminApi = {
   },
   async retireDeviceGroupMember(groupId, nodeId, key) {
     return parseRetireDeviceGroupMemberResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(nodeId)}/retire`, { method: 'POST', headers: { 'Idempotency-Key': key } }))
+  },
+  async deleteRetiredDeviceGroupMember(groupId, nodeId, updatedAt, key) {
+    const result = parseDeleteDeviceGroupMemberResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(nodeId)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ updated_at: updatedAt }) }))
+    if (result.group_id !== groupId || result.node_id !== nodeId) throw new Error('删除结果与设备组成员不匹配，请刷新后重试')
+    return result
   },
   async updateDeviceGroupMemberWeight(groupId, nodeId, weight, updatedAt, key) {
     return parseUpdateDeviceGroupMemberWeightResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(nodeId)}/weight`, { method: 'PUT', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ weight, updated_at: updatedAt }) }))
