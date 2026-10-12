@@ -454,8 +454,13 @@ func (r *ExecXrayRunner) Start(ctx context.Context, configPath string) (XrayProc
 	if err := command.Start(); err != nil {
 		return nil, ErrXrayStart
 	}
-	process := &execXrayProcess{command: command, done: make(chan error, 1)}
-	go func() { process.done <- command.Wait() }()
+	process := &execXrayProcess{command: command, done: make(chan struct{})}
+	go func() {
+		_ = command.Wait()
+		// Completion must remain visible to every heartbeat, metrics and
+		// reconciliation observer; receiving a single buffered error consumes it.
+		close(process.done)
+	}()
 	// Detect immediate startup failure without imposing an arbitrary readiness
 	// delay. Verify observes a process that exits shortly afterwards.
 	select {
@@ -468,7 +473,7 @@ func (r *ExecXrayRunner) Start(ctx context.Context, configPath string) (XrayProc
 
 type execXrayProcess struct {
 	command *exec.Cmd
-	done    chan error
+	done    chan struct{}
 }
 
 func (p *execXrayProcess) PID() int {
