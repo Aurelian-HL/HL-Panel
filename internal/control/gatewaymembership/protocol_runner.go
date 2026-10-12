@@ -14,6 +14,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
+	"github.com/hongle/hl-panel/internal/serviceaddress"
 )
 
 // ProbeState is confidential scheduling input, never a public API response.
@@ -222,6 +223,42 @@ func sameProbe(a, b probeJob) bool {
 	return x.Rule.Revision == y.Rule.Revision && ex.NodeConfigGeneration == ey.NodeConfigGeneration && ex.ConfigSHA256 == ey.ConfigSHA256 && a.member.DialHost == b.member.DialHost && a.input.Config == b.input.Config
 }
 
+// Prefer a recently successful address when a bundle change makes the pool
+// unready. This is a scheduling hint only: old proof cannot authorize the new
+// bundle, and the selected address must pass a fresh protocol challenge.
+func recoveryProbeCandidate(state State, now time.Time) string {
+	var fallback, preferred string
+	var verifiedAt time.Time
+	for _, member := range state.Members {
+		if member.State != endpoints.CandidateEligible || member.Weight < 1 ||
+			!deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
+			continue
+		}
+		if fallback == "" {
+			fallback = member.NodeID
+		}
+		proof := state.ProtocolHealth[member.NodeID]
+		host, err := serviceaddress.NormalizeHost(member.DialHost)
+		observedHost, proofErr := serviceaddress.NormalizeHost(proof.DialHost)
+		if err != nil || proofErr != nil || host == "" || host != observedHost ||
+			proof.RuleID != state.Rule.ID || proof.NodeID != member.NodeID || proof.RuleRevision != state.Rule.Revision ||
+			proof.Protocol != forwarding.IngressVLESSReality || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(now) ||
+			!proof.LeaseExpiresAt.After(proof.VerifiedAt) || proof.LeaseExpiresAt.After(proof.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
+			continue
+		}
+		if !proof.LeaseExpiresAt.After(now) && !protocolEvidenceMatches(proof, state.Deployments[member.NodeID].Status, state.Rule, member, host, now) {
+			continue
+		}
+		if preferred == "" || proof.VerifiedAt.After(verifiedAt) {
+			preferred, verifiedAt = member.NodeID, proof.VerifiedAt
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return fallback
+}
+
 func (r *ProtocolRunner) refresh(ctx context.Context, targets map[string]*scheduledProbe) error {
 	inputs, err := r.repository.ProtocolProbeStates(ctx)
 	if err != nil {
@@ -244,7 +281,8 @@ func (r *ProtocolRunner) refresh(ctx context.Context, targets map[string]*schedu
 			}
 			continue // New bundle must be applied before it can authorize a challenge.
 		}
-		first := true
+		recoveryCandidate := recoveryProbeCandidate(state, now.UTC())
+		poolReady := ReadyCandidateCount(state, now.UTC()) > 0
 		for _, member := range state.Members {
 			if member.State != endpoints.CandidateEligible || member.Weight < 1 || !deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
 				continue
@@ -252,12 +290,11 @@ func (r *ProtocolRunner) refresh(ctx context.Context, targets map[string]*schedu
 			key := state.Pool.ID + ":" + member.NodeID
 			job := probeJob{key: key, input: input, member: member}
 			priority := 1
-			// Give every rule a first candidate and renew proven candidates before
-			// filling large pools. New rules can bypass the remaining backlog.
-			if first || protocolHealthy(state.ProtocolHealth[member.NodeID], state.Deployments[member.NodeID].Status, state.Rule, member, member.DialHost, now.UTC()) {
+			// Restore one candidate per unready pool before filling the remaining
+			// nodes. Once ready, prioritize renewal of current proven candidates.
+			if member.NodeID == recoveryCandidate || (poolReady && protocolEvidenceMatches(state.ProtocolHealth[member.NodeID], state.Deployments[member.NodeID].Status, state.Rule, member, member.DialHost, now.UTC())) {
 				priority = 0
 			}
-			first = false
 			seen[key] = true
 			if previous := targets[key]; previous != nil {
 				if !sameProbe(previous.job, job) {

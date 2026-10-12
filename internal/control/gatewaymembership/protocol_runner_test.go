@@ -55,6 +55,83 @@ func schedulingInput(id string, members int) ProbeState {
 	return ProbeState{State: state, Config: ProtocolProbeConfig{UUID: "probe-only", EchoPort: 39000}}
 }
 
+func TestExpiredProvenCandidateDoesNotFallBehindUnprovenBacklog(t *testing.T) {
+	for _, changedDeployment := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changed-deployment-%v", changedDeployment), func(t *testing.T) {
+			input := schedulingInput("recover", 2)
+			member := input.State.Members[1] // The first member has never passed.
+			evidence := input.State.Deployments[member.NodeID].Status
+			now := time.Now().UTC()
+			proof := ProtocolObservation{
+				RuleID: input.State.Rule.ID, NodeID: member.NodeID, RuleRevision: input.State.Rule.Revision,
+				NodeConfigGeneration: evidence.NodeConfigGeneration, ConfigSHA256: evidence.ConfigSHA256,
+				Protocol: input.State.Rule.EffectiveIngressProtocol(), DialHost: member.DialHost,
+				VerifiedAt: now.Add(-2 * time.Minute), LeaseExpiresAt: now.Add(-30 * time.Second),
+			}
+			if changedDeployment {
+				proof.NodeConfigGeneration--
+			}
+			input.State.ProtocolHealth = map[string]ProtocolObservation{member.NodeID: proof}
+			repo := &schedulingRepository{states: []ProbeState{input, schedulingInput("other", 1)}}
+			runner := NewProtocolRunner(repo, "unused", 39000, 15*time.Second, nil)
+			targets := make(map[string]*scheduledProbe)
+			if err := runner.refresh(context.Background(), targets); err != nil {
+				t.Fatal(err)
+			}
+			targets["recover:recover-0"].due = now.Add(time.Minute)
+			targets["recover:recover-1"].due = now.Add(-time.Minute)
+			targets["other:other-0"].due = now.Add(-time.Second)
+			want := "recover:recover-1"
+			if changedDeployment {
+				want = "other:other-0"
+			}
+			if next := nextProbe(targets, now); next == nil || next.job.key != want {
+				t.Fatalf("previously proven recovery was delayed by unrelated probes: want=%s", want)
+			}
+			// Scheduling an expired proof sooner must not authorize it for use.
+			if ReadyCandidateCount(input.State, now) != 0 {
+				t.Fatal("expired or replaced proof granted readiness")
+			}
+		})
+	}
+}
+
+func TestBundleChangeRecoversRecentlySuccessfulAddressBeforeUnprovenNode(t *testing.T) {
+	input := schedulingInput("existing-rule", 3)
+	member := input.State.Members[1]
+	evidence := input.State.Deployments[member.NodeID].Status
+	now := time.Now().UTC()
+	proof := ProtocolObservation{
+		RuleID: input.State.Rule.ID, NodeID: member.NodeID, RuleRevision: input.State.Rule.Revision,
+		NodeConfigGeneration: evidence.NodeConfigGeneration - 1, ConfigSHA256: evidence.ConfigSHA256,
+		Protocol: input.State.Rule.EffectiveIngressProtocol(), DialHost: member.DialHost,
+		VerifiedAt: now.Add(-10 * time.Second), LeaseExpiresAt: now.Add(80 * time.Second),
+	}
+	input.State.ProtocolHealth = map[string]ProtocolObservation{member.NodeID: proof}
+	repo := &schedulingRepository{states: []ProbeState{input, schedulingInput("new-rule", 1)}}
+	runner := NewProtocolRunner(repo, "unused", 39000, 15*time.Second, nil)
+	targets := make(map[string]*scheduledProbe)
+	if err := runner.refresh(context.Background(), targets); err != nil {
+		t.Fatal(err)
+	}
+	if targets["existing-rule:existing-rule-1"].priority != 0 || targets["existing-rule:existing-rule-0"].priority != 1 ||
+		targets["existing-rule:existing-rule-2"].priority != 1 || targets["new-rule:new-rule-0"].priority != 0 {
+		t.Fatal("bundle recovery did not prioritize one proven address per rule")
+	}
+	if ReadyCandidateCount(input.State, now) != 0 {
+		t.Fatal("previous bundle's proof authorized the new bundle")
+	}
+	proof.DialHost = "replaced.example.test"
+	input.State.ProtocolHealth[member.NodeID] = proof
+	repo.states[0] = input
+	if err := runner.refresh(context.Background(), targets); err != nil {
+		t.Fatal(err)
+	}
+	if targets["existing-rule:existing-rule-1"].priority != 1 || targets["existing-rule:existing-rule-0"].priority != 0 {
+		t.Fatal("a changed address inherited prior protocol success")
+	}
+}
+
 func TestProtocolSchedulerIsFairBoundedAndBatchesWithoutPerNodeReads(t *testing.T) {
 	repo := &schedulingRepository{published: make(chan []ProtocolObservation, 100)}
 	for i := 0; i < 36; i++ {

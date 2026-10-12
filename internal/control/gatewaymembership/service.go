@@ -123,6 +123,49 @@ func ReadyCandidateCount(state State, now time.Time) int {
 	return count
 }
 
+// UnreadyReason explains the same evidence boundary used by routing. An old
+// deployment or expired proof must not be described as first-time activation.
+// This value is for public read projections only, never gateway authorization.
+func UnreadyReason(state State, now time.Time) forwarding.ActivationReason {
+	if !poolAuthorizesRule(state.Pool, state.Rule) {
+		return ""
+	}
+	var eligible, deployed, expired bool
+	for _, member := range state.Members {
+		if member.PoolID != state.Pool.ID || member.GroupID != state.Pool.GroupID ||
+			member.State != endpoints.CandidateEligible || member.Weight < 1 || member.ActiveConnections < 0 {
+			continue
+		}
+		host, err := serviceaddress.NormalizeHost(member.DialHost)
+		if err != nil || host == "" {
+			continue
+		}
+		eligible = true
+		evidence := state.Deployments[member.NodeID]
+		if !deploymentReady(evidence, state.Rule, member.NodeID) {
+			continue
+		}
+		deployed = true
+		proof := state.ProtocolHealth[member.NodeID]
+		if protocolEvidenceMatches(proof, evidence.Status, state.Rule, member, host, now) {
+			if proof.LeaseExpiresAt.After(now) {
+				return ""
+			}
+			expired = true
+		}
+	}
+	if expired {
+		return forwarding.ActivationReasonProtocolHealthExpired
+	}
+	if deployed {
+		return forwarding.ActivationReasonProtocolVerificationPending
+	}
+	if eligible {
+		return forwarding.ActivationReasonNodeConfigurationPending
+	}
+	return forwarding.ActivationReasonNoAvailableNodes
+}
+
 // Snapshot publishes deployment- and protocol-bound membership. A ready
 // endpoint is selectable only before its original health lease expires.
 // Expiry is enforced by the router and ReadyCandidateCount, without changing

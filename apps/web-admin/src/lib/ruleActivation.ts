@@ -8,11 +8,19 @@ export const unsupportedActivationLabels: Record<string, string> = {
   selection_engine_unsupported: '最小连接数暂不支持下发',
 }
 
+export const readinessLabels: Record<string, string> = {
+  node_configuration_pending: '配置同步中',
+  protocol_verification_pending: '验证中',
+  protocol_health_expired: '健康验证过期',
+  no_available_nodes: '暂无可用节点',
+}
+
 export function ruleDisplayStatus(rule: ForwardRule): string {
   if (rule.paused || rule.status === 'quota_exhausted') return rule.status
   if (rule.activation_reason && unsupportedActivationLabels[rule.activation_reason]) return rule.activation_reason
   if (ingressStatusFor(rule) === 'pending_reality_parameters') return 'pending_reality_parameters'
   if (rule.activation_reason === 'vless_runtime_material_pending') return rule.activation_reason
+  if (rule.status === 'pending_activation' && rule.activation_reason && readinessLabels[rule.activation_reason]) return rule.activation_reason
   return rule.status
 }
 
@@ -21,5 +29,5 @@ export function ruleActivationNotice(rule: ForwardRule): string {
   const status = ruleDisplayStatus(rule)
   if (status === 'quota_exhausted') return '额度用完，已自动暂停；提高或取消规则额度后恢复'
   if (status === 'active') return '已激活'
-  return unsupportedActivationLabels[status] ?? (status === 'pending_reality_parameters' ? '待补 Reality 参数' : status === 'vless_runtime_material_pending' ? '等待节点运行材料' : '待激活')
+  return unsupportedActivationLabels[status] ?? readinessLabels[status] ?? (status === 'pending_reality_parameters' ? '待补 Reality 参数' : status === 'vless_runtime_material_pending' ? '等待节点运行材料' : '待激活')
 }

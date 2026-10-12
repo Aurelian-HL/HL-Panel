@@ -385,11 +385,14 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	// Keep the confidential username in the stored rule, while all public
 	// projections (including idempotency replay data) are redacted below.
 	storedItem := cloneForwardingRule(item)
+	baseReason := s.forwardingBaseViewLocked(item).ActivationReason
 	item = s.forwardingViewLocked(item)
 	storedItem.Status = item.Status
 	storedItem.IngressStatus = item.IngressStatus
 	storedItem.Deployed = item.Deployed
-	storedItem.ActivationReason = item.ActivationReason
+	// Transient readiness explanations belong only to the public projection.
+	// Persist the canonical configuration reason accepted by snapshot validation.
+	storedItem.ActivationReason = baseReason
 	previous, hadPrevious := s.forwardRules[item.ID]
 	previousUpstream, hadPreviousUpstream := s.vlessSOCKS5UpstreamLocked(item.ID)
 	// Record the allocated port in the same audit transaction as the rule.
@@ -504,19 +507,32 @@ func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
 	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !item.Paused &&
 		(item.Status == forwarding.StatusPendingActivation || item.Status == forwarding.StatusActive) {
 		ready := false
+		reason := forwarding.ActivationReasonNoAvailableNodes
+		now := time.Now().UTC()
 		for id, pool := range s.endpointPools {
 			if pool.RuleID != item.ID {
 				continue
 			}
 			state, err := s.gatewayMembershipStateLocked(id)
-			if err == nil && gatewaymembership.ReadyCandidateCount(state, time.Now().UTC()) > 0 {
+			if err == nil && gatewaymembership.ReadyCandidateCount(state, now) > 0 {
 				ready = true
 				break
+			}
+			if err == nil {
+				if current := gatewaymembership.UnreadyReason(state, now); current != "" {
+					reason = current
+				}
 			}
 		}
 		item.Deployed = item.Deployed && ready
 		if !item.Deployed {
 			item.Status = forwarding.StatusPendingActivation
+			if item.ActivationReason == "" {
+				if ready {
+					reason = forwarding.ActivationReasonProtocolVerificationPending
+				}
+				item.ActivationReason = reason
+			}
 		}
 		return item
 	}

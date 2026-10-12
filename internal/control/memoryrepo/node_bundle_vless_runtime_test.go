@@ -137,8 +137,11 @@ func TestVLESSRuntimeMaterialCompilesXrayFragmentWithoutPublicSecretLeak(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.ActivationReason != "" {
-		t.Fatalf("fully provisioned VLESS rule remains pending: %q", view.ActivationReason)
+	if view.ActivationReason != forwarding.ActivationReasonNoAvailableNodes || view.Deployed {
+		t.Fatalf("runtime material without a dial address/receipt granted readiness: %q", view.ActivationReason)
+	}
+	if fixture.store.forwardingBaseViewLocked(fixture.store.forwardRules[fixture.rule.ID]).ActivationReason != "" {
+		t.Fatal("complete runtime material is still marked as missing")
 	}
 	list, err := fixture.store.ListForwardingRules(context.Background())
 	if err != nil {
