@@ -67,7 +67,7 @@ async function showQR(kind: 'txt' | 'yaml') {
 }
 async function download(item: Subscription) {
   busy.value = item.id; actionError.value = ''; qrImage.value = ''
-  try { const pack = await subscriptionApi.package(item.id); downloadSubscriptionPackage(pack); toast.success('导入包已下载', '包含 YAML、订阅地址和二维码') }
+  try { const pack = await subscriptionApi.package(item.id); downloadSubscriptionPackage(pack); toast.success('导入包已下载', '包含 YAML、在线订阅和离线节点二维码') }
   catch (cause) { actionError.value = displayError(cause) } finally { busy.value = '' }
 }
 onMounted(load)

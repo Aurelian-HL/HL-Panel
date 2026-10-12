@@ -41,11 +41,11 @@ func TestRenderRoundTripAndPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 	z, err := zip.NewReader(bytes.NewReader(pack), int64(len(pack)))
-	if err != nil || len(z.File) != 6 {
+	if err != nil || len(z.File) != 11 {
 		t.Fatal("invalid import ZIP")
 	}
 	for _, f := range z.File {
-		if !strings.HasPrefix(f.Name, "随遇而安-") || f.Flags&0x800 == 0 {
+		if (!strings.HasPrefix(f.Name, "随遇而安-") && !strings.HasPrefix(f.Name, "离线二维码/")) || f.Flags&0x800 == 0 {
 			t.Fatal("rule name or UTF-8 ZIP flag missing", f.Name)
 		}
 		reader, e := f.Open()
