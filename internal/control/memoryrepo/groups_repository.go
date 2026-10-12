@@ -342,30 +342,28 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 	if exists {
 		member.CreatedAt = existing.CreatedAt
 	}
+	mutation := s.captureGroupMemberMutationLocked(member.GroupID, member.NodeID)
 	s.membersByGroup[member.GroupID][member.NodeID] = member
+	// Automatic Reality material requires both source membership and its
+	// endpoint projection. Establish both before compiling the initial bundle.
+	s.syncGroupMemberToEndpointPoolsLocked(member)
 	assignments := make([]generations.NodeConfigGeneration, 0, 1)
-	if changed {
+	if changed || s.nodes[member.NodeID].DesiredGeneration == 0 {
 		assignment, created, err := s.compileNodeConfigLocked(member.NodeID, member.UpdatedAt)
 		if err != nil {
 			if tolerateCompileFailure {
-				s.syncGroupMemberToEndpointPoolsLocked(member)
 				group := s.deviceGroups[member.GroupID]
 				group.UpdatedAt = member.UpdatedAt
 				s.deviceGroups[member.GroupID] = group
 				return cloneGroupMember(member), nil, nil
 			}
-			if exists {
-				s.membersByGroup[member.GroupID][member.NodeID] = existing
-			} else {
-				delete(s.membersByGroup[member.GroupID], member.NodeID)
-			}
+			s.restoreGroupMemberMutationLocked(mutation)
 			return groups.Member{}, nil, err
 		}
 		if created {
 			assignments = append(assignments, assignment)
 		}
 	}
-	s.syncGroupMemberToEndpointPoolsLocked(member)
 	if changed {
 		group := s.deviceGroups[member.GroupID]
 		group.UpdatedAt = member.UpdatedAt

@@ -119,10 +119,22 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 		node.LastApplyStatus = heartbeat.LastApplyStatus
 	}
 	s.nodes[nodeID] = node
-	if nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) {
+	// Enrollment may predate available engine capabilities, and older panels
+	// could leave new members without an initial configuration. Reconcile those
+	// nodes without reissuing bundles for ordinary heartbeats on existing nodes.
+	if nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
+		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) || node.DesiredGeneration == 0 {
 		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
-			s.nodes[nodeID] = previousNode
-			return nodes.Node{}, err
+			if previousNode.DesiredGeneration > 0 {
+				s.nodes[nodeID] = previousNode
+				return nodes.Node{}, err
+			}
+			// Match initial enrollment: a broken historical rule must not
+			// discard liveness while the node waits for its first valid bundle.
+			if event.Metadata == nil {
+				event.Metadata = make(map[string]any)
+			}
+			event.Metadata["initial_config_pending"] = true
 		}
 		node = s.nodes[nodeID]
 	}
