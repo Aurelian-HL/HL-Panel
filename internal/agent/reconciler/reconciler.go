@@ -305,8 +305,14 @@ func (r *Reconciler) FlushReceipts(ctx context.Context) error {
 
 func (r *Reconciler) restoreFailed(ctx context.Context, desired agentv1.DesiredNodeConfig, attemptID string, phase agentv1.ApplyPhase, cause error, deliver bool) error {
 	message := sanitizeMessage(cause.Error())
-	if err := r.adapter.Rollback(context.WithoutCancel(ctx), nil); err != nil {
-		message = sanitizeMessage(message + "; rollback failed: " + err.Error())
+	// Prepare and Validate only stage/check files. A mixed adapter may still
+	// have a healthy component serving existing sessions while another exited.
+	// Rolling back to nil before Commit would stop that healthy component too.
+	// Retain cleanup once activation has actually been attempted.
+	if phase == agentv1.ApplyPhaseCommit || phase == agentv1.ApplyPhaseVerify {
+		if err := r.adapter.Rollback(context.WithoutCancel(ctx), nil); err != nil {
+			message = sanitizeMessage(message + "; rollback failed: " + err.Error())
+		}
 	}
 	_, _ = r.store.RecordResult(phase, agentv1.ApplyStatusFailed, message, r.now())
 	if deliver {

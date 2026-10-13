@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/engine"
+	"github.com/hongle/hl-panel/internal/agent/reconciler"
+	"github.com/hongle/hl-panel/internal/agent/state"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
@@ -188,6 +191,63 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 				}
 				checkStream()
 			}
+			// The changed engine exits; a temporary recovery staging/validation
+			// error must leave the other engine and this exact TCP session alive.
+			store := state.NewAtomicStateStore(filepath.Join(root, "state.json"), filepath.Join(root, "configurations"))
+			desired := first.DesiredNodeConfig()
+			if _, err := store.Begin(desired, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Complete(desired, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if changed == "xray" {
+				err = xray.Close(ctx)
+			} else {
+				err = gost.Close(ctx)
+			}
+			if err != nil || adapter.ActiveEngineMode() != "" {
+				t.Fatalf("partial failure not established: %v", err)
+			}
+			fault := &recoveryFaultAdapter{MixedProcessAdapter: adapter}
+			r, err := reconciler.New(store, fault, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, phase := range []agentv1.ApplyPhase{agentv1.ApplyPhasePrepare, agentv1.ApplyPhaseValidate} {
+				fault.phase = phase
+				if attempted, err := r.EnsureApplied(ctx); !attempted || err == nil {
+					t.Fatalf("%s failure was not exercised: %v, %v", phase, attempted, err)
+				}
+				checkStream()
+			}
+			fault.phase = ""
+			if attempted, err := r.EnsureApplied(ctx); !attempted || err != nil {
+				t.Fatalf("retry did not recover missing engine: %v, %v", attempted, err)
+			}
+			if err := adapter.Verify(ctx, first); err != nil {
+				t.Fatal(err)
+			}
+			checkStream()
 		})
 	}
+}
+
+type recoveryFaultAdapter struct {
+	*engine.MixedProcessAdapter
+	phase agentv1.ApplyPhase
+}
+
+func (a *recoveryFaultAdapter) Prepare(ctx context.Context, desired agentv1.DesiredNodeConfig) (engine.PreparedConfiguration, error) {
+	if a.phase == agentv1.ApplyPhasePrepare {
+		return engine.PreparedConfiguration{}, errors.New("injected staging failure")
+	}
+	return a.MixedProcessAdapter.Prepare(ctx, desired)
+}
+
+func (a *recoveryFaultAdapter) Validate(ctx context.Context, prepared engine.PreparedConfiguration) error {
+	if a.phase == agentv1.ApplyPhaseValidate {
+		return errors.New("injected validation failure")
+	}
+	return a.MixedProcessAdapter.Validate(ctx, prepared)
 }
