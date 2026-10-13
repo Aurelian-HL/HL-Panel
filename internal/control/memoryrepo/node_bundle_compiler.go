@@ -19,6 +19,10 @@ import (
 )
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
+	// A tombstone preserves history but must never receive fresh assignments.
+	if node, exists := s.nodes[nodeID]; !exists || node.DeletedAt != nil {
+		return generations.NodeConfigGeneration{}, false, nil
+	}
 	fragments := make([]agentv1.ConfigurationFragment, 0)
 	for groupID, members := range s.membersByGroup {
 		member, exists := members[nodeID]

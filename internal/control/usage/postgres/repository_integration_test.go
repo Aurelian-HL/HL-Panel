@@ -79,6 +79,13 @@ func isolatedUsageDatabase(t *testing.T) *sql.DB {
 	if _, err := db.ExecContext(ctx, string(totals)); err != nil {
 		t.Fatal(err)
 	}
+	queryTotals, err := os.ReadFile(filepath.Join(filepath.Dir(migrationPath), "000007_usage_query_totals.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(queryTotals)); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 

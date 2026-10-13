@@ -125,7 +125,7 @@ type Rule struct {
 	IPLimit             int               `json:"ip_limit,omitempty"`
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
 	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
-	TrafficUsedBytes    int64             `json:"traffic_used_bytes,omitempty"`
+	TrafficUsedBytes    int64             `json:"traffic_used_bytes"`
 	TrafficQuotaMonthly bool              `json:"traffic_quota_monthly,omitempty"`
 	TrafficUsagePeriod  string            `json:"traffic_usage_period,omitempty"`
 	Paused              bool              `json:"paused"`

@@ -152,10 +152,8 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	defer tx.Rollback()
 	where, args := queryFilter(query)
 	var result usage.QueryResult
-	totalsSQL := `SELECT count(*), COALESCE(sum(rule_actual_bytes),0)::bigint,
-		COALESCE(sum(customer_actual_bytes),0)::bigint, COALESCE(sum(charged_bytes),0)::bigint
-		FROM usage_events e` + where
-	if err := tx.QueryRowContext(ctx, totalsSQL, args...).Scan(
+	totalsSQL, totalsArgs := queryTotalsSQL(query)
+	if err := tx.QueryRowContext(ctx, totalsSQL, totalsArgs...).Scan(
 		&result.Total, &result.Totals.RuleActualBytes, &result.Totals.CustomerActualBytes, &result.Totals.ChargedBytes,
 	); err != nil {
 		return usage.QueryResult{}, errors.New("usage aggregate query failed")

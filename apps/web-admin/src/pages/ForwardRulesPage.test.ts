@@ -29,6 +29,7 @@ vi.mock('@/api/subscriptions', () => ({ subscriptionApi: mockedSubscription }))
 const mockedDownload = vi.hoisted(() => ({ downloadSubscriptionPackage: vi.fn() }))
 vi.mock('@/lib/subscriptionDownload', () => mockedDownload)
 import ForwardRulesPage from './ForwardRulesPage.vue'
+import ForwardRuleInventory from '@/features/forwarding/ForwardRuleInventory.vue'
 
 const customer: Customer = { id: 'c-1', username: 'user01', display_name: '示例客户', user_group_id: 'ug-1', disabled: false, expires_at: null, traffic_limit_bytes: 0, traffic_used_bytes: 0, max_rules: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0, revision: 1, effective_status: 'active', created_at: '', updated_at: '' }
 const userGroup: UserGroup = { id: 'ug-1', name: '用户组', description: '', allowed_entry_group_ids: ['entry-1'], allowed_exit_group_ids: [], allow_direct: true, revision: 1 }
@@ -298,6 +299,109 @@ describe('ForwardRulesPage', () => {
     pending.splice(0).forEach((resolve) => resolve())
     await flushPromises()
     expect(mockedUsage.query).toHaveBeenCalledTimes(5)
+  })
+
+  it.each([false, true])('coalesces a queued polling refresh with a subsequent ordinary refresh: %s', async (ordinaryRefresh) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const rule: ForwardRule = {
+      id: 'rule-missing', name: 'Rule missing', customer_id: '', rule_group_id: '',
+      entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp',
+      listen_port: 10001, targets: [{ host: '192.0.2.1', port: 443 }],
+      selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active',
+    }
+    const cachedRule: ForwardRule = { ...rule, id: 'rule-cached', name: 'Rule cached', listen_port: 10002, traffic_used_bytes: 100 }
+    mocked.rules.mockResolvedValueOnce({ items: [rule, cachedRule] })
+      .mockResolvedValue({ items: [rule, { ...cachedRule, traffic_used_bytes: 110 }] })
+    const pending: ((bytes: number) => void)[] = []
+    mockedUsage.query.mockImplementation(() => new Promise((resolve) => {
+      pending.push((bytes) => resolve({ items: [], totals: { charged_bytes: bytes }, total: 0 }))
+    }))
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      expect(mockedUsage.query.mock.calls.map(([request]) => request.scope_id)).toEqual(['rule-missing'])
+
+      vi.advanceTimersByTime(2_000)
+      await flushPromises()
+      expect(mocked.rules).toHaveBeenCalledTimes(2)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-cached': 110 })
+      if (ordinaryRefresh) await wrapper.get('input[placeholder="搜索规则、目标或设备组"]').setValue('Rule')
+      expect(mockedUsage.query).toHaveBeenCalledTimes(1)
+
+      pending.splice(0).forEach((resolve) => resolve(999))
+      await flushPromises()
+      expect(mockedUsage.query.mock.calls.map(([request]) => request.scope_id)).toEqual([
+        'rule-missing', 'rule-missing',
+      ])
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-cached': 110 })
+
+      pending.splice(0).forEach((resolve, index) => resolve(200 + index))
+      await flushPromises()
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-missing': 200, 'rule-cached': 110 })
+      expect(mockedUsage.query).toHaveBeenCalledTimes(2)
+    } finally {
+      wrapper.unmount()
+      pending.splice(0).forEach((resolve) => resolve(0))
+      await flushPromises()
+      vi.useRealTimers()
+    }
+  })
+
+  it('uses projected traffic on polling and accepts a monthly reset to zero without ledger queries', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const rule: ForwardRule = {
+      id: 'rule-monthly', name: 'Monthly', customer_id: '', rule_group_id: '',
+      entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp',
+      listen_port: 10001, targets: [{ host: '192.0.2.1', port: 443 }],
+      selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active',
+      traffic_quota_monthly: true, traffic_used_bytes: 300,
+    }
+    mocked.rules.mockResolvedValueOnce({ items: [rule] })
+      .mockResolvedValueOnce({ items: [{ ...rule, traffic_used_bytes: 400 }] })
+      .mockResolvedValue({ items: [{ ...rule, traffic_used_bytes: 0 }] })
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 300 })
+      vi.advanceTimersByTime(2_000)
+      await flushPromises()
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 400 })
+      vi.advanceTimersByTime(2_000)
+      await flushPromises()
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 0 })
+      expect(mocked.rules).toHaveBeenCalledTimes(3)
+      expect(mockedUsage.query).not.toHaveBeenCalled()
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('ignores an obsolete polling authorization failure after a newer page load', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const rule: ForwardRule = {
+      id: 'current-rule', name: 'Current rule', customer_id: '', rule_group_id: '',
+      entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp',
+      listen_port: 10001, targets: [{ host: '192.0.2.1', port: 443 }],
+      selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active', traffic_used_bytes: 0,
+    }
+    let rejectPoll!: (reason: unknown) => void
+    mocked.rules.mockResolvedValueOnce({ items: [rule] })
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPoll = reject }))
+      .mockResolvedValue({ items: [{ ...rule, revision: 2 }] })
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      vi.advanceTimersByTime(2_000)
+      await flushPromises()
+      await wrapper.findAll('.page-heading button').find((button) => button.text().includes('刷新'))!.trigger('click')
+      await flushPromises()
+      rejectPoll(new ApiError('expired', 401))
+      await flushPromises()
+      expect(mocked.rules).toHaveBeenCalledTimes(3)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('rules')[0]?.revision).toBe(2)
+      expect(wrapper.text()).not.toContain('登录已失效')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
   })
 
   it('does not schedule polling when the initial load resolves after unmount', async () => {

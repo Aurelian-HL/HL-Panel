@@ -128,11 +128,18 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 		t.Fatal("preview mutated target")
 	}
 	addedNodeWake := target.DesiredConfigChanges("node-one")
+	_, err = target.db.ExecContext(ctx, `INSERT INTO hl_panel_protocol_health VALUES('target-only-rule','target-only-node','{}')`)
+	require(err)
 	removedNodeWake := target.DesiredConfigChanges("target-only-node")
 	result, err := importer.Restore(ctx, "target-admin", "isolated-test-password", backupPass, "restore-fixture", preview.Digest, "https://target.example.com", raw)
 	require(err)
 	if result.Replayed || result.RecoveryID == "" {
 		t.Fatal("missing restore receipt")
+	}
+	var healthOverlays int
+	require(target.db.QueryRowContext(ctx, `SELECT count(*) FROM hl_panel_protocol_health`).Scan(&healthOverlays))
+	if healthOverlays != 0 {
+		t.Fatal("restore retained target health proofs")
 	}
 	select {
 	case <-addedNodeWake:

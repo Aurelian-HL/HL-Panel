@@ -50,6 +50,9 @@ func captureMigration(ctx context.Context, tx *sql.Tx) (migrationbackup.State, e
 	if err = mergeRuleTrafficOverlays(ctx, tx, decoded); err != nil {
 		return state, err
 	}
+	if err = mergeProtocolHealthOverlays(ctx, tx, decoded); err != nil {
+		return state, err
+	}
 	if err = joinNodeConfigHistory(ctx, tx, decoded); err != nil {
 		return state, err
 	}
@@ -229,6 +232,9 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	}
 	// Imported snapshots carry their own counters. Never overlay counters from
 	// the replaced panel, even when rule IDs and revisions happen to match.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_protocol_health`); err != nil {
+		return result, errors.New("migration protocol health projection replacement failed")
+	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_rule_traffic`); err != nil {
 		return result, errors.New("migration traffic projection replacement failed")
 	}

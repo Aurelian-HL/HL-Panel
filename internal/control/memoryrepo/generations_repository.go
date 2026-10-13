@@ -79,7 +79,7 @@ func (s *Store) DesiredNodeConfig(_ context.Context, nodeID string) (generations
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	node, exists := s.nodes[nodeID]
-	if !exists {
+	if !exists || node.DeletedAt != nil {
 		return generations.NodeConfigGeneration{}, 0, faults.ErrNotFound
 	}
 	if node.DesiredGeneration == 0 || node.AppliedGeneration >= node.DesiredGeneration {
@@ -96,7 +96,7 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node, exists := s.nodes[result.NodeID]
-	if !exists {
+	if !exists || node.DeletedAt != nil {
 		return nodes.Node{}, faults.ErrNotFound
 	}
 	configuration, exists := s.nodeConfigsByNode[result.NodeID][result.Generation]

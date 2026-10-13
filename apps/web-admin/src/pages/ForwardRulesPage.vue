@@ -110,6 +110,13 @@ async function load(): Promise<void> {
 async function loadVisibleTraffic(version = loadVersion): Promise<void> {
   if (!active || version !== loadVersion || loading.value || error.value) return
   trafficLoadEpoch++
+  // Render the authoritative projection immediately, even while an obsolete
+  // legacy ledger request is still draining.
+  for (const rule of pagedRules.value) {
+    if (Number.isFinite(rule.traffic_used_bytes) && (rule.traffic_used_bytes ?? -1) >= 0) {
+      trafficByRule.value[rule.id] = rule.traffic_used_bytes!
+    }
+  }
   trafficReloadPending = true
   if (visibleTrafficInFlight) return visibleTrafficInFlight
   visibleTrafficInFlight = (async () => {
@@ -117,7 +124,13 @@ async function loadVisibleTraffic(version = loadVersion): Promise<void> {
       trafficReloadPending = false
       const epoch = trafficLoadEpoch
       const version = loadVersion
-      await loadRuleTraffic(pagedRules.value.map((rule) => rule.id), {
+      const visibleRules = pagedRules.value
+      const missingTrafficRules = visibleRules.filter((rule) =>
+        !Number.isFinite(rule.traffic_used_bytes) || (rule.traffic_used_bytes ?? -1) < 0,
+      )
+      // The rule projection uses the same accounting period as quota enforcement.
+      // Only legacy responses without a projection need a ledger lookup.
+      await loadRuleTraffic(missingTrafficRules, {
         isCurrent: () => active && epoch === trafficLoadEpoch && version === loadVersion,
         onValue: (id, bytes) => { trafficByRule.value[id] = bytes },
         onUnauthorized: invalidateSession,
@@ -130,7 +143,7 @@ watch([query, filter, groupFilter, pageSize], () => { page.value = 1 })
 watch(totalPages, (value) => { if (page.value > value) page.value = value })
 watch([page, pageSize, query, filter, groupFilter], () => { void loadVisibleTraffic() }, { flush: 'post' })
 async function refreshTraffic(): Promise<void> {
-  if (trafficRequestInFlight || loading.value || error.value || busyId.value || batchBusy.value || !rules.value.length) return
+  if (!active || trafficRequestInFlight || loading.value || error.value || busyId.value || batchBusy.value || !rules.value.length) return
   trafficRequestInFlight = true
   const version = loadVersion
   try {
@@ -141,7 +154,7 @@ async function refreshTraffic(): Promise<void> {
     selectedIds.value = selectedIds.value.filter(id => currentIds.has(id))
     await loadVisibleTraffic(version)
   } catch (cause) {
-    if (isUnauthorized(cause)) invalidateSession()
+    if (version === loadVersion && active && isUnauthorized(cause)) invalidateSession()
   } finally {
     trafficRequestInFlight = false
   }

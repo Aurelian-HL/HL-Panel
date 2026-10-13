@@ -77,6 +77,9 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 	if err := mergeRuleTrafficOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
+	if err := mergeProtocolHealthOverlays(ctx, tx, state); err != nil {
+		return nil, err
+	}
 	return state, nil
 }
 
@@ -238,6 +241,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	if err := initializeRuleTrafficOverlays(ctx, tx); err != nil {
 		return err
 	}
+	if err := initializeProtocolHealthOverlays(ctx, tx); err != nil {
+		return err
+	}
 	if err := initializeAuditJournal(ctx, tx); err != nil {
 		return err
 	}
@@ -271,6 +277,9 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, e
 	if err == nil {
 		state.SetPersistenceRevision(uint64(revision))
 		err = mergeRuleTrafficOverlays(ctx, tx, state)
+		if err == nil {
+			err = mergeProtocolHealthOverlays(ctx, tx, state)
+		}
 	}
 	return state, err
 }
@@ -323,6 +332,11 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		raw, err := encodeHotSnapshot(state)
 		if err != nil {
 			return zero, err
+		}
+		// Proofs were merged before the mutation and are now in the new snapshot.
+		// Clear overlays atomically so an old proof cannot undo a business edit.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hl_panel_protocol_health`); err != nil {
+			return zero, errors.New("protocol health projection fold failed")
 		}
 		committedCache.version = memoryrepo.SnapshotVersion
 		committedCache.payload = raw
