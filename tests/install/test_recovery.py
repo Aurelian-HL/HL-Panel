@@ -122,6 +122,22 @@ class PanelRecoveryTests(IsolatedFiles):
                 self.assertEqual(starts, 1 if phase in ('start', 'health') else 0)
                 self.assertEqual(self.calls[-1], ['systemctl', 'stop', update.SERVICE])
 
+    def test_rollback_removes_only_objects_absent_from_backup(self):
+        self.replace(update, 'run', self.command)
+        manifest = '1; 1 1 TABLE public hl_panel_audit_journal hl_panel_app\n'
+        update.remove_upgrade_only_usage_objects('isolated', manifest)
+        sql = self.calls[-1][-1]
+        self.assertNotIn('DROP TABLE IF EXISTS public.hl_panel_audit_journal', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.hl_panel_rule_traffic', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.usage_rule_totals', sql)
+        self.assertIn('DROP FUNCTION IF EXISTS public.usage_rule_totals_added()', sql)
+        self.assertIn('DROP TRIGGER IF EXISTS usage_rule_totals_insert ON public.usage_events', sql)
+        self.assertTrue(sql.startswith('BEGIN; ') and sql.endswith('; COMMIT;'))
+        self.calls.clear()
+        manifest += '2; 1 2 TABLE public hl_panel_rule_traffic hl_panel_app\n3; 1 3 TABLE public usage_rule_totals hl_panel_app\n'
+        update.remove_upgrade_only_usage_objects('isolated', manifest)
+        self.assertEqual(self.calls, [], 'existing usage projections must survive rollback')
+
 
 class NodeRecoveryTests(IsolatedFiles):
     def setUp(self):

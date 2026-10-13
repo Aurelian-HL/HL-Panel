@@ -481,6 +481,27 @@ def restore_web_update_channel(backup):
             restore_systemd_unit_state(change['name'], change['enabled'], change['active'], preserve_runtime=preserve_runtime)
 
 
+def remove_upgrade_only_usage_objects(database, manifest):
+    # pg_restore --clean only removes objects present in the saved archive.
+    # New derived tables/functions must also disappear when rolling back to a
+    # version before they existed, or the next upgrade sees unmanaged objects.
+    def saved_table(name):
+        return re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+'+re.escape(name)+r'\s', manifest) is not None
+    statements = []
+    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic'):
+        if not saved_table(name):
+            statements.append('DROP TABLE IF EXISTS public.'+name)
+    if not saved_table('usage_rule_totals'):
+        for suffix in ('insert', 'delete', 'update_1_remove', 'update_2_add', 'truncate'):
+            statements.append('DROP TRIGGER IF EXISTS usage_rule_totals_'+suffix+' ON public.usage_events')
+        for suffix in ('added', 'removed', 'cleared'):
+            statements.append('DROP FUNCTION IF EXISTS public.usage_rule_totals_'+suffix+'()')
+        statements.append('DROP TABLE IF EXISTS public.usage_rule_totals')
+    if statements:
+        run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
+             '-c','BEGIN; '+'; '.join(statements)+'; COMMIT;'])
+
+
 def rollback(backup):
     # Finish restoring even when a second stop signal arrives during rollback.
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -500,13 +521,8 @@ def rollback(backup):
         restore_domain_access(backup)
         with (backup/'database.dump').open('rb') as stream:
             run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--single-transaction','--dbname='+database],input_file=stream)
-        # pg_restore --clean only removes objects present in the old archive.
-        # Remove the journal added by an unsuccessful schema-18 upgrade, otherwise
-        # retrying the upgrade would append the restored legacy history twice.
         manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
-        if not re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+hl_panel_audit_journal\s', manifest):
-            run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
-                 '-c','DROP TABLE IF EXISTS public.hl_panel_audit_journal'])
+        remove_upgrade_only_usage_objects(database, manifest)
         switch(old)
         run(['systemctl','start',SERVICE])
         healthy(origin,state['previous_version'])
