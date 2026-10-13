@@ -49,6 +49,11 @@ previous_audit_journal = subprocess.check_output(['runuser','-u','postgres','--'
 usage_schema_query = """SELECT json_build_array(
     to_regclass('public.usage_rule_totals')::text,
     to_regclass('public.hl_panel_rule_traffic')::text,
+    to_regclass('public.hl_panel_protocol_health')::text,
+    to_regclass('public.usage_query_totals')::text,
+    to_regprocedure('public.usage_query_totals_added()')::text,
+    to_regprocedure('public.usage_query_totals_removed()')::text,
+    to_regprocedure('public.usage_query_totals_cleared()')::text,
     to_regprocedure('public.usage_rule_totals_added()')::text,
     to_regprocedure('public.usage_rule_totals_removed()')::text,
     to_regprocedure('public.usage_rule_totals_cleared()')::text)::text"""

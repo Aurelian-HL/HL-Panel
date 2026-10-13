@@ -132,9 +132,23 @@ class PanelRecoveryTests(IsolatedFiles):
         self.assertIn('DROP TABLE IF EXISTS public.usage_rule_totals', sql)
         self.assertIn('DROP FUNCTION IF EXISTS public.usage_rule_totals_added()', sql)
         self.assertIn('DROP TRIGGER IF EXISTS usage_rule_totals_insert ON public.usage_events', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.hl_panel_protocol_health', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.usage_query_totals', sql)
+        for suffix in ('added', 'removed', 'cleared'):
+            self.assertIn('DROP FUNCTION IF EXISTS public.usage_query_totals_'+suffix+'()', sql)
+        for suffix in ('insert', 'delete', 'update_1_remove', 'update_2_add', 'truncate'):
+            self.assertIn('DROP TRIGGER IF EXISTS usage_query_totals_'+suffix+' ON public.usage_events', sql)
         self.assertTrue(sql.startswith('BEGIN; ') and sql.endswith('; COMMIT;'))
         self.calls.clear()
         manifest += '2; 1 2 TABLE public hl_panel_rule_traffic hl_panel_app\n3; 1 3 TABLE public usage_rule_totals hl_panel_app\n'
+        update.remove_upgrade_only_usage_objects('isolated', manifest)
+        sql = self.calls[-1][-1]
+        self.assertNotIn('DROP TABLE IF EXISTS public.usage_rule_totals', sql)
+        self.assertNotIn('DROP FUNCTION IF EXISTS public.usage_rule_totals_added()', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.usage_query_totals', sql)
+        self.assertIn('DROP TABLE IF EXISTS public.hl_panel_protocol_health', sql)
+        self.calls.clear()
+        manifest += '4; 1 4 TABLE public hl_panel_protocol_health hl_panel_app\n5; 1 5 TABLE public usage_query_totals hl_panel_app\n'
         update.remove_upgrade_only_usage_objects('isolated', manifest)
         self.assertEqual(self.calls, [], 'existing usage projections must survive rollback')
 

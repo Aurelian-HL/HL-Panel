@@ -488,15 +488,17 @@ def remove_upgrade_only_usage_objects(database, manifest):
     def saved_table(name):
         return re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+'+re.escape(name)+r'\s', manifest) is not None
     statements = []
-    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic'):
+    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic', 'hl_panel_protocol_health'):
         if not saved_table(name):
             statements.append('DROP TABLE IF EXISTS public.'+name)
-    if not saved_table('usage_rule_totals'):
+    for name in ('usage_rule_totals', 'usage_query_totals'):
+        if saved_table(name):
+            continue
         for suffix in ('insert', 'delete', 'update_1_remove', 'update_2_add', 'truncate'):
-            statements.append('DROP TRIGGER IF EXISTS usage_rule_totals_'+suffix+' ON public.usage_events')
+            statements.append('DROP TRIGGER IF EXISTS '+name+'_'+suffix+' ON public.usage_events')
         for suffix in ('added', 'removed', 'cleared'):
-            statements.append('DROP FUNCTION IF EXISTS public.usage_rule_totals_'+suffix+'()')
-        statements.append('DROP TABLE IF EXISTS public.usage_rule_totals')
+            statements.append('DROP FUNCTION IF EXISTS public.'+name+'_'+suffix+'()')
+        statements.append('DROP TABLE IF EXISTS public.'+name)
     if statements:
         run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
              '-c','BEGIN; '+'; '.join(statements)+'; COMMIT;'])
