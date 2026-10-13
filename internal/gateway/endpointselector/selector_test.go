@@ -50,3 +50,29 @@ func TestNewRouterSelectorRequiresRouter(t *testing.T) {
 		t.Fatalf("NewRouterSelector(nil) error = %v, want ErrRouterRequired", err)
 	}
 }
+
+func TestRouterSelectorCarriesMembershipRevision(t *testing.T) {
+	router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ReplaceVersionedMembership(7, []endpointrouter.Endpoint{
+		{ID: "node-a", Address: "127.0.0.1:10001", Weight: 1, Status: endpointrouter.EndpointReady, HealthLeaseExpiresAt: time.Now().Add(time.Minute)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selector, err := NewRouterSelector(router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := selector.SelectKey("client-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.MembershipRevision != 7 {
+		t.Fatalf("backend membership revision = %d, want 7", backend.MembershipRevision)
+	}
+	if err := selector.Release(backend.ID); err != nil {
+		t.Fatal(err)
+	}
+}

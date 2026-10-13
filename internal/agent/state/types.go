@@ -101,12 +101,19 @@ func (s AgentState) validate() error {
 	if len([]byte(s.LastApplyMessage)) > MaxApplyMessageBytes {
 		return errors.New("last apply message exceeds size limit")
 	}
-	if err := validatePendingReceipts(s.PendingReceipts); err != nil {
+	if err := validateReceiptQueue(s.PendingReceipts); err != nil {
 		return err
 	}
-	if len(s.PendingReceipts) > 0 && (s.Applied == nil || s.PendingReceipts[0].Generation != s.Applied.Generation ||
-		s.PendingReceipts[0].ConfigSHA256 != s.Applied.ConfigSHA256 || s.Pending != nil) {
-		return errors.New("pending apply receipts do not match applied configuration")
+	if len(s.PendingReceipts) > 0 && s.Applied == nil {
+		return errors.New("pending apply receipts require an applied configuration")
+	}
+	for _, receipt := range s.PendingReceipts {
+		// A new generation may already be pending while receipts for the
+		// previous applied generation are being delivered. They must survive
+		// that transition instead of being discarded by Begin.
+		if receipt.Generation > s.Applied.Generation {
+			return errors.New("pending apply receipt is newer than applied configuration")
+		}
 	}
 	return nil
 }

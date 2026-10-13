@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,10 +74,11 @@ type XrayProcessAdapter struct {
 	autoStart       bool
 	statsAPIAddress string
 
-	counterEpoch     uint64
-	mu               sync.Mutex
-	process          XrayProcess
-	processStartedAt time.Time
+	counterEpoch        uint64
+	mu                  sync.Mutex
+	process             XrayProcess
+	processStartedAt    time.Time
+	processConfigSHA256 [sha256.Size]byte
 }
 
 // NewXrayProcessAdapter constructs an adapter rooted at private absolute
@@ -189,6 +191,14 @@ func (a *XrayProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 	}
 	oldProcess := a.process
 	oldRunning := oldProcess != nil && oldProcess.Running()
+	// A complete node generation may only change another engine or metadata.
+	// Preserve existing sessions and the counter epoch when this owned process
+	// already runs the validated native document. File equality alone cannot
+	// attest a process: an external edit may have replaced the active file.
+	if previousExists && bytes.Equal(previous, candidate) &&
+		(!a.autoStart || oldRunning && a.processConfigSHA256 == sha256.Sum256(candidate)) {
+		return nil
+	}
 	if a.autoStart && oldRunning {
 		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop previous xray process: %w", err)
@@ -278,6 +288,29 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var previousBytes []byte
+	if previous != nil {
+		// Validate the rollback before touching a healthy running process.
+		if err := a.checkOwner(*previous); err != nil {
+			return err
+		}
+		if err := a.verifyStaged(*previous); err != nil {
+			return fmt.Errorf("validate rollback xray configuration: %w", err)
+		}
+		var err error
+		previousBytes, err = readRegularFile(previous.adapterPath, MaxConfigurationBytes)
+		if err != nil {
+			return fmt.Errorf("read rollback xray configuration: %w", err)
+		}
+		active, exists, err := readOptionalRegularFile(a.activePath)
+		if err != nil {
+			return fmt.Errorf("read active xray configuration for rollback: %w", err)
+		}
+		if exists && bytes.Equal(active, previousBytes) && (!a.autoStart ||
+			a.process != nil && a.process.Running() && a.processConfigSHA256 == sha256.Sum256(previousBytes)) {
+			return nil
+		}
+	}
 	if a.autoStart && a.process != nil && a.process.Running() {
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop xray process for rollback: %w", err)
@@ -289,16 +322,6 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 			return fmt.Errorf("remove xray configuration during rollback: %w", err)
 		}
 		return nil
-	}
-	if err := a.checkOwner(*previous); err != nil {
-		return err
-	}
-	if err := a.verifyStaged(*previous); err != nil {
-		return fmt.Errorf("validate rollback xray configuration: %w", err)
-	}
-	previousBytes, err := readRegularFile(previous.adapterPath, MaxConfigurationBytes)
-	if err != nil {
-		return fmt.Errorf("read rollback xray configuration: %w", err)
 	}
 	if err := writeFileAtomic(a.activePath, previousBytes, 0o600); err != nil {
 		return fmt.Errorf("restore xray configuration: %w", err)
@@ -369,6 +392,10 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 }
 
 func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (XrayProcess, error) {
+	data, err := readRegularFile(path, MaxConfigurationBytes)
+	if err != nil {
+		return nil, ErrXrayStart
+	}
 	process, err := a.runner.Start(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("%w", ErrXrayStart)
@@ -378,6 +405,7 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 	}
 	a.counterEpoch++
 	a.processStartedAt = time.Now().UTC()
+	a.processConfigSHA256 = sha256.Sum256(data)
 	return process, nil
 }
 

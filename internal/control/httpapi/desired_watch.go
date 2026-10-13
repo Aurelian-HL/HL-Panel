@@ -25,6 +25,7 @@ func (api *API) watchDesiredNodeConfig(writer http.ResponseWriter, request *http
 		wait = time.Duration(milliseconds) * time.Millisecond
 	}
 	changed := api.generations.DesiredConfigChanges(node.ID)
+	defer api.generations.ReleaseDesiredConfigChanges(node.ID, changed)
 	configuration, err := api.generations.DesiredNodeConfig(request.Context(), node.ID)
 	if err == nil {
 		writeDesiredConfig(writer, configuration)

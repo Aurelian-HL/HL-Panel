@@ -4,6 +4,10 @@ func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
 	return s.desiredChanges.ForNode(nodeID)
 }
 
+func (s *Store) ReleaseDesiredConfigChanges(nodeID string, channel <-chan struct{}) {
+	s.desiredChanges.Release(nodeID, channel)
+}
+
 // DesiredGenerationIndex is non-secret metadata used by the PostgreSQL
 // wrapper to publish notifications only after a transaction commits.
 func (s *Store) DesiredGenerationIndex() map[string]int64 {

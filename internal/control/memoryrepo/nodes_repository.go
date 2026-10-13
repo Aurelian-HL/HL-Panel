@@ -116,7 +116,12 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 	node.LastHeartbeatAt = timePointer(now)
 	node.UpdatedAt = now
 	if heartbeat.LastApplyStatus != "" {
+		node.LastApplyPhase = heartbeat.LastApplyPhase
 		node.LastApplyStatus = heartbeat.LastApplyStatus
+		node.LastApplyMessage = heartbeat.LastApplyMessage
+	} else if heartbeat.LastApplyPhase != "" || heartbeat.LastApplyMessage != "" {
+		node.LastApplyPhase = heartbeat.LastApplyPhase
+		node.LastApplyMessage = heartbeat.LastApplyMessage
 	}
 	s.nodes[nodeID] = node
 	// Enrollment may predate available engine capabilities, and older panels
@@ -138,7 +143,13 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 		}
 		node = s.nodes[nodeID]
 	}
-	s.appendAuditLocked(event)
+	// Routine liveness telemetry is persisted separately by the PostgreSQL
+	// adapter and must not grow the audit journal. Keep this conditional so
+	// direct repository callers can still record an explicit event (for
+	// migrations and focused tests).
+	if event.ID != "" {
+		s.appendAuditLocked(event)
+	}
 	return cloneNode(node), nil
 }
 

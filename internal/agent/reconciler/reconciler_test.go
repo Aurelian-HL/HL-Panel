@@ -18,6 +18,19 @@ type recordingReporter struct {
 	failVerifyOnce bool
 }
 
+type blockingReporter struct {
+	started chan struct{}
+}
+
+func (r *blockingReporter) ReportApplyResult(ctx context.Context, _ string, _ agentv1.ApplyResultRequest) error {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (r *recordingReporter) ReportApplyResult(_ context.Context, _ string, result agentv1.ApplyResultRequest) error {
 	if result.Phase == agentv1.ApplyPhaseVerify && r.failVerifyOnce {
 		r.failVerifyOnce = false
@@ -70,6 +83,43 @@ func TestVerifiedReceiptsSurviveReportFailureAndRetrySameGeneration(t *testing.T
 	last := reporter.results[len(reporter.results)-1]
 	if last.Phase != agentv1.ApplyPhaseVerify || last.AttemptID != firstAttempt || last.EngineMode != "gost" {
 		t.Fatalf("retried receipt = %#v", last)
+	}
+}
+
+func TestApplyKeepsLocalStateWhenReceiptReporterBlocks(t *testing.T) {
+	directory := t.TempDir()
+	store := state.NewAtomicStateStore(directory+"/state.json", directory+"/configurations")
+	fileAdapter, err := engine.NewDryRunFileAdapter(directory+"/staging/config.json", directory+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter := &blockingReporter{started: make(chan struct{}, 8)}
+	r, err := New(store, fileAdapter, reporter, "node-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := testDesired(1, `{"schema_version":1,"fragments":[]}`)
+	done := make(chan error, 1)
+	go func() { done <- r.Apply(context.Background(), desired) }()
+	select {
+	case <-reporter.started:
+	case <-time.After(time.Second):
+		t.Fatal("receipt reporter was not invoked")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Apply() remained blocked by receipt reporter")
+	}
+	current, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Applied == nil || current.Applied.Generation != desired.Generation || len(current.PendingReceipts) == 0 {
+		t.Fatalf("local apply state = %#v, want applied generation and durable receipts", current)
 	}
 }
 

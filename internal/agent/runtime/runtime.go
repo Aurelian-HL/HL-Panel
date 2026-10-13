@@ -46,6 +46,7 @@ type Agent struct {
 	accessExecutor usageagent.AccessExecutor
 	usageReporter  *usageagent.Reporter
 	enforcement    *usageagent.EnforcementReconciler
+	probeEchoMu    sync.RWMutex
 	probeEcho      *probeecho.Server
 }
 
@@ -198,10 +199,12 @@ func validateUsageOptions(cfg config.Config, options Options) error {
 // Close releases a locally managed data-plane process. Dry-run mode has no
 // process to stop; callers should invoke this during graceful shutdown.
 func (a *Agent) Close(ctx context.Context) error {
-	var probeErr error
-	if a.probeEcho != nil {
-		probeErr = a.probeEcho.Close()
-	}
+	probeErr := a.closeProbeEcho()
+	// Close must serialize with apply, administrator stop/restart, and the
+	// recovery loop. Otherwise recovery can observe the process disappearing
+	// while Close is still running and start it again during shutdown.
+	a.usageApplyMu.Lock()
+	defer a.usageApplyMu.Unlock()
 	if a.xrayAdapter != nil {
 		xrayErr := a.xrayAdapter.Close(ctx)
 		if a.gostAdapter != nil {
@@ -213,6 +216,89 @@ func (a *Agent) Close(ctx context.Context) error {
 		return errors.Join(probeErr, a.gostAdapter.Close(ctx))
 	}
 	return probeErr
+}
+
+func (a *Agent) closeProbeEcho() error {
+	a.probeEchoMu.Lock()
+	probe := a.probeEcho
+	a.probeEcho = nil
+	a.probeEchoMu.Unlock()
+	if probe == nil {
+		return nil
+	}
+	return probe.Close()
+}
+
+func (a *Agent) probeEchoRunning() bool {
+	a.probeEchoMu.Lock()
+	probe := a.probeEcho
+	if probe == nil {
+		a.probeEchoMu.Unlock()
+		return false
+	}
+	select {
+	case <-probe.Done():
+		if a.probeEcho == probe {
+			a.probeEcho = nil
+		}
+		a.probeEchoMu.Unlock()
+		return false
+	default:
+		a.probeEchoMu.Unlock()
+		return true
+	}
+}
+
+func (a *Agent) startProbeEcho(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	probe, err := probeecho.Listen(a.cfg.ProtocolProbeEchoPort)
+	if err != nil {
+		return err
+	}
+	a.probeEchoMu.Lock()
+	select {
+	case <-ctx.Done():
+		a.probeEchoMu.Unlock()
+		_ = probe.Close()
+		return ctx.Err()
+	default:
+	}
+	if a.probeEcho != nil {
+		a.probeEchoMu.Unlock()
+		_ = probe.Close()
+		return nil
+	}
+	a.probeEcho = probe
+	a.probeEchoMu.Unlock()
+	a.logger.Info("protocol probe echo listening", "port", a.cfg.ProtocolProbeEchoPort)
+	return nil
+}
+
+const defaultProbeEchoRetryInterval = 5 * time.Second
+
+var probeEchoRetryInterval = defaultProbeEchoRetryInterval
+
+// probeEchoLoop keeps the optional local protocol target available without
+// coupling its lifecycle to heartbeat, desired configuration, or usage loops.
+// A transient bind conflict therefore self-heals after the owning process exits.
+func (a *Agent) probeEchoLoop(ctx context.Context) error {
+	defer func() { _ = a.closeProbeEcho() }()
+	ticker := time.NewTicker(probeEchoRetryInterval)
+	defer ticker.Stop()
+	for {
+		if !a.probeEchoRunning() {
+			if err := a.startProbeEcho(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				a.logger.Warn("protocol probe echo unavailable; will retry", "port", a.cfg.ProtocolProbeEchoPort, "error", err)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (a *Agent) Bootstrap(ctx context.Context) error {
@@ -355,20 +441,17 @@ func (a *Agent) DesiredOnce(ctx context.Context) (bool, error) {
 	if err := a.Bootstrap(ctx); err != nil {
 		return false, err
 	}
-	if err := a.reconciler.FlushReceipts(ctx); err != nil {
-		return false, fmt.Errorf("retry apply receipts: %w", err)
-	}
 	desired, err := a.client.Desired(ctx, a.nodeSecret)
 	if err != nil {
 		return false, err
 	}
 	if desired == nil {
-		return false, nil
+		return false, a.reconciler.FlushReceipts(ctx)
 	}
 	if err := a.applyWithUsage(ctx, *desired); err != nil {
 		return true, err
 	}
-	return true, nil
+	return true, a.reconciler.FlushReceipts(ctx)
 }
 
 func (a *Agent) UsageOnce(ctx context.Context) error {
@@ -478,18 +561,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.bootstrapWithRetry(ctx); err != nil {
 		return err
 	}
-	probe, err := probeecho.Listen(a.cfg.ProtocolProbeEchoPort)
-	if err != nil {
-		// The echo target is only needed for the optional protocol probe. A
-		// stale process or another local service may already own the loopback
-		// port; that must not stop the agent heartbeat and host sampling.
-		a.logger.Warn("protocol probe echo unavailable; continuing without local echo target", "port", a.cfg.ProtocolProbeEchoPort, "error", err)
-	} else {
-		a.probeEcho = probe
-	}
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop}
+	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop, a.receiptLoop, a.probeEchoLoop}
 	if process, ok := a.adapter.(interface{ RequiresLiveProcess() bool }); ok && process.RequiresLiveProcess() {
 		loops = append(loops, a.recoveryLoop)
 	}
@@ -526,6 +600,24 @@ func (a *Agent) controlLoop(ctx context.Context) error {
 	return runPeriodic(ctx, interval, backoff, a.ControlOnce, func(err error) { a.logger.Warn("control command failed", "error", err) })
 }
 
+func (a *Agent) receiptLoop(ctx context.Context) error {
+	interval := a.cfg.DesiredPollInterval.Duration()
+	if interval <= 0 || interval > 5*time.Second {
+		interval = 5 * time.Second
+	}
+	settings := a.cfg.Backoff
+	if settings.Maximum.Duration() <= 0 || settings.Maximum.Duration() > heartbeatRetryMaximum {
+		settings.Maximum = config.Duration(heartbeatRetryMaximum)
+	}
+	if settings.Initial.Duration() <= 0 || settings.Initial.Duration() > settings.Maximum.Duration() {
+		settings.Initial = settings.Maximum
+	}
+	backoff := reconciler.NewBackoff(settings)
+	return runPeriodic(ctx, interval, backoff, func(callContext context.Context) error {
+		return a.reconciler.FlushReceipts(callContext)
+	}, func(err error) { a.logger.Warn("apply receipt delivery failed", "error", err) })
+}
+
 func (a *Agent) usageLoop(ctx context.Context) error {
 	interval := a.cfg.UsageReportInterval.Duration()
 	if interval <= 0 {
@@ -553,12 +645,25 @@ func (a *Agent) enforcementLoop(ctx context.Context) error {
 }
 
 func (a *Agent) heartbeatLoop(ctx context.Context) error {
-	backoff := reconciler.NewBackoff(a.cfg.Backoff)
+	backoff := reconciler.NewBackoff(heartbeatBackoffConfig(a.cfg))
 	return runPeriodic(ctx, a.cfg.HeartbeatInterval.Duration(), backoff, func(callContext context.Context) error {
 		return a.HeartbeatOnce(callContext)
 	}, func(err error) {
 		a.logger.Warn("heartbeat failed", "error", err)
 	})
+}
+
+const heartbeatRetryMaximum = 15 * time.Second
+
+func heartbeatBackoffConfig(cfg config.Config) config.BackoffConfig {
+	settings := cfg.Backoff
+	if settings.Maximum.Duration() > heartbeatRetryMaximum {
+		settings.Maximum = config.Duration(heartbeatRetryMaximum)
+	}
+	if settings.Initial.Duration() > settings.Maximum.Duration() {
+		settings.Initial = settings.Maximum
+	}
+	return settings
 }
 
 func (a *Agent) desiredLoop(ctx context.Context) error {
@@ -568,9 +673,6 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 		watchSupported := false
 		waitForPoll := false
 		err := func(callContext context.Context) error {
-			if err := a.reconciler.FlushReceipts(callContext); err != nil {
-				return fmt.Errorf("retry apply receipts: %w", err)
-			}
 			desired, supported, err := a.client.DesiredWatch(callContext, a.nodeSecret)
 			watchSupported = supported
 			if err != nil {
@@ -578,12 +680,18 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 			}
 			if desired == nil {
 				failedKey = ""
+				// Some proxies and older control planes return 204 immediately
+				// instead of holding the watch request. Avoid a tight reconnect loop
+				// that can overload the panel and starve heartbeat traffic.
+				waitForPoll = true
 				return nil
 			}
 			key := fmt.Sprintf("%d/%s", desired.Generation, strings.ToLower(strings.TrimSpace(desired.ConfigSHA256)))
 			if key == failedKey {
-				// An unapplied failed generation returns immediately. Bound retries
-				// without spinning or replacing the last-known-good configuration.
+				// Give the failed generation one poll interval before retrying it.
+				// Clear the marker here: a transient engine or filesystem failure
+				// must not make this generation permanently unappliable.
+				failedKey = ""
 				waitForPoll = true
 				return nil
 			}

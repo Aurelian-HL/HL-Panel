@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
@@ -25,6 +27,26 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
 )
+
+func TestProtocolHealthRejectsDuplicateRuleEndpointPools(t *testing.T) {
+	store, observation := protocolPublicationFixture(t)
+	duplicate := store.endpointPools["pool"]
+	duplicate.ID = "pool-duplicate"
+	store.endpointPools[duplicate.ID] = duplicate
+
+	if err := store.PublishProtocolHealth(context.Background(), observation); !errors.Is(err, faults.ErrConflict) {
+		t.Fatalf("duplicate endpoint pool was not rejected during health publish: %v", err)
+	}
+	if len(store.protocolHealth["pool"]) != 0 || len(store.protocolHealth["pool-duplicate"]) != 0 {
+		t.Fatal("rejected health observation changed one of the duplicate pools")
+	}
+	if _, err := store.ProtocolProbeStates(context.Background()); !errors.Is(err, faults.ErrConflict) {
+		t.Fatalf("duplicate endpoint pool was not rejected during probe scheduling: %v", err)
+	}
+	if err := store.MarkActivated(context.Background(), observation.RuleID, observation.RuleRevision, audit.Event{ID: "activation"}); !errors.Is(err, faults.ErrConflict) {
+		t.Fatalf("duplicate endpoint pool was not rejected during activation: %v", err)
+	}
+}
 
 func TestGatewayBatchUsesSameEvidenceAndCancellationAsSingleLookup(t *testing.T) {
 	store, observation := protocolPublicationFixture(t)

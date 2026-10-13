@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/config"
+	usageagent "github.com/hongle/hl-panel/internal/agent/usage"
 	"github.com/hongle/hl-panel/internal/agent/usage/xraystatsproto"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 	"google.golang.org/grpc"
@@ -221,6 +222,62 @@ func TestRealEngineRecoveryWithoutNewDesiredAndDuringControlOutage(t *testing.T)
 		t.Fatalf("Run = %v", err)
 	}
 	offline.Store(false)
+	// A stalled accounting request must not prevent real process recovery.
+	// Counter values are a local fixture; traffic and process lifecycle below
+	// use the real engine, without contacting production or changing its routes.
+	func() {
+		sender := &blockedUsageSender{started: make(chan struct{}), release: make(chan struct{})}
+		reporter, err := usageagent.NewReporter(usageagent.NewJournalStore(filepath.Join(t.TempDir(), "usage.json")),
+			&finalCounter{}, sender, "loopback-node", "loopback-credential", 10, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.usageReporter = reporter
+		flushDone := make(chan error, 1)
+		go func() { flushDone <- a.flushUsage(context.Background()) }()
+		var recoveryDone chan error
+		recoveryFinished := false
+		defer func() {
+			close(sender.release)
+			<-flushDone
+			if recoveryDone != nil && !recoveryFinished {
+				<-recoveryDone
+			}
+			a.usageReporter = nil
+		}()
+		select {
+		case <-sender.started:
+		case <-time.After(time.Second):
+			t.Fatal("stalled accounting request never started")
+		}
+		process, err := os.FindProcess(a.xrayAdapter.RuntimeMetrics().PID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		_ = process.Release()
+		deadline := time.Now().Add(3 * time.Second)
+		for a.activeEngineMode() != "" {
+			if time.Now().After(deadline) {
+				t.Fatal("killed engine still reported running")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		recoveryDone = make(chan error, 1)
+		go func() { recoveryDone <- a.recoverEngine(context.Background()) }()
+		select {
+		case err := <-recoveryDone:
+			recoveryFinished = true
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("slow usage delivery blocked real engine recovery")
+		}
+		assertTraffic()
+	}()
 	command.Store(1)
 	if err := a.ControlOnce(context.Background()); err != nil {
 		t.Fatal(err)

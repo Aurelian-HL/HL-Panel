@@ -7,7 +7,7 @@ import (
 	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
 )
 
-func TestControllerKeepsProbeStateAndRouterVetoInSyncAcrossRevision(t *testing.T) {
+func TestControllerAppliesInFlightProbeAcrossContinuousLeaseRenewal(t *testing.T) {
 	router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
 	if err != nil {
 		t.Fatal(err)
@@ -46,24 +46,18 @@ func TestControllerKeepsProbeStateAndRouterVetoInSyncAcrossRevision(t *testing.T
 		t.Fatal(err)
 	}
 	controller.monitor.record(oldTargets[0], true)
-	select {
-	case result := <-results:
-		t.Fatalf("old revision emitted a result: %v", result)
-	default:
+	if err := waitControllerResult(t, results); err != nil {
+		t.Fatal(err)
 	}
-	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || !blocked {
-		t.Fatalf("veto after old success = %v, error = %v", blocked, err)
+	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || blocked {
+		t.Fatalf("veto after continuous renewal success = %v, error = %v", blocked, err)
 	}
 	currentTargets := controller.monitor.probeTargets(time.Now())
 	if len(currentTargets) != 1 || currentTargets[0].MembershipRevision != 2 {
 		t.Fatalf("current targets = %#v", currentTargets)
 	}
-	controller.monitor.record(currentTargets[0], true)
-	if err := waitControllerResult(t, results); err != nil {
-		t.Fatal(err)
-	}
 	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || blocked {
-		t.Fatalf("veto after current success = %v, error = %v", blocked, err)
+		t.Fatalf("veto after current target refresh = %v, error = %v", blocked, err)
 	}
 }
 
@@ -112,6 +106,45 @@ func TestControllerNotifiesAfterTransitionLockIsReleased(t *testing.T) {
 	controller.monitor.record(targets[0], false)
 	if err := waitControllerResult(t, observerDone); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestControllerProbeVetoSurvivesSuccessfulConcurrentDial(t *testing.T) {
+	router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controller, err := NewController(router, Config{
+		Interval: time.Second, Timeout: time.Second,
+		FailureThreshold: 1, SuccessThreshold: 2, MaxConcurrency: 1,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := endpointrouter.Endpoint{
+		ID: "node-a", Address: "127.0.0.1:10001", Weight: 1,
+		Status: endpointrouter.EndpointReady, HealthLeaseExpiresAt: time.Now().Add(time.Minute),
+	}
+	if err := controller.ReplaceVersionedMembership(1, []endpointrouter.Endpoint{endpoint}); err != nil {
+		t.Fatal(err)
+	}
+	target := controller.monitor.probeTargets(time.Now())[0]
+	controller.monitor.record(target, false)
+	// A connection selected before the failure can finish dialing later. Its
+	// success must not bypass the monitor's configured recovery threshold.
+	if err := router.SetLocalReachabilityAtRevision(endpoint.ID, endpoint.Address, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || !blocked {
+		t.Fatalf("successful concurrent dial cleared probe veto: blocked=%v err=%v", blocked, err)
+	}
+	controller.monitor.record(target, true)
+	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || !blocked {
+		t.Fatalf("single success bypassed recovery threshold: blocked=%v err=%v", blocked, err)
+	}
+	controller.monitor.record(target, true)
+	if blocked, err := router.LocallyBlocked(endpoint.ID); err != nil || blocked {
+		t.Fatalf("probe recovery did not clear veto: blocked=%v err=%v", blocked, err)
 	}
 }
 

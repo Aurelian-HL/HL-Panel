@@ -2,9 +2,11 @@ package gatewaymembership
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,20 +23,93 @@ type scanRepository struct {
 
 type schedulingRepository struct {
 	protocolRunnerRepository
-	mu        sync.Mutex
-	states    []ProbeState
-	published chan []ProtocolObservation
-	reads     int
+	mu              sync.Mutex
+	states          []ProbeState
+	published       chan []ProtocolObservation
+	reads           int
+	publishFailures int
+	publishCalls    int
+	malformedResult bool
+	blockReads      <-chan struct{}
+	readStarted     chan struct{}
 }
 
-func (s *schedulingRepository) ProtocolProbeStates(context.Context) ([]ProbeState, error) {
+type timeoutPublishRepository struct {
+	*schedulingRepository
+	started chan struct{}
+	calls   atomic.Int32
+}
+
+func (s *timeoutPublishRepository) PublishProtocolHealthBatch(ctx context.Context, items []ProtocolObservation) ([]error, error) {
+	if s.calls.Add(1) == 1 {
+		close(s.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.schedulingRepository.PublishProtocolHealthBatch(ctx, items)
+}
+
+type timeoutRefreshRepository struct {
+	*schedulingRepository
+	started chan struct{}
+	calls   atomic.Int32
+}
+
+func (s *timeoutRefreshRepository) ProtocolProbeStates(ctx context.Context) ([]ProbeState, error) {
+	if s.calls.Add(1) == 1 {
+		close(s.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.schedulingRepository.ProtocolProbeStates(ctx)
+}
+
+func (s *schedulingRepository) ProtocolProbeStates(ctx context.Context) ([]ProbeState, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.reads++
-	return append([]ProbeState(nil), s.states...), nil
+	blockReads := s.blockReads
+	readStarted := s.readStarted
+	states := append([]ProbeState(nil), s.states...)
+	s.mu.Unlock()
+	if readStarted != nil {
+		select {
+		case readStarted <- struct{}{}:
+		default:
+		}
+	}
+	if blockReads != nil {
+		select {
+		case <-blockReads:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return states, nil
 }
 func (s *schedulingRepository) PublishProtocolHealthBatch(_ context.Context, items []ProtocolObservation) ([]error, error) {
-	s.published <- append([]ProtocolObservation(nil), items...)
+	s.mu.Lock()
+	s.publishCalls++
+	fail := s.publishFailures > 0
+	if fail {
+		s.publishFailures--
+	}
+	malformed := s.malformedResult
+	if malformed {
+		s.malformedResult = false
+	}
+	s.mu.Unlock()
+	if fail {
+		return nil, errors.New("transient publish failure")
+	}
+	if malformed {
+		if len(items) == 0 {
+			return []error{}, nil
+		}
+		return make([]error, len(items)-1), nil
+	}
+	if s.published != nil {
+		s.published <- append([]ProtocolObservation(nil), items...)
+	}
 	return make([]error, len(items)), nil
 }
 func schedulingInput(id string, members int) ProbeState {
@@ -132,6 +207,35 @@ func TestBundleChangeRecoversRecentlySuccessfulAddressBeforeUnprovenNode(t *test
 	}
 }
 
+func TestSameProbeRejectsChangedChallengeTarget(t *testing.T) {
+	input := schedulingInput("same-probe", 1)
+	member := input.State.Members[0]
+	base := probeJob{key: "same-probe:" + member.NodeID, input: input, member: member, attempt: 1}
+
+	mutations := map[string]func(*probeJob){
+		"pool":                func(job *probeJob) { job.input.State.Pool.ID = "other-pool" },
+		"rule":                func(job *probeJob) { job.input.State.Rule.ID = "other-rule" },
+		"node":                func(job *probeJob) { job.member.NodeID = "other-node" },
+		"listener":            func(job *probeJob) { job.input.State.Rule.ListenPort++ },
+		"reality server name": func(job *probeJob) { job.input.State.Rule.RealityServerName = "other.example" },
+		"reality public key":  func(job *probeJob) { job.input.State.Rule.RealityPublicKey = "other-key" },
+		"reality short id":    func(job *probeJob) { job.input.State.Rule.RealityShortID = "other-short-id" },
+		"dial host":           func(job *probeJob) { job.member.DialHost = "other.example" },
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			mutate(&changed)
+			if sameProbe(base, changed) {
+				t.Fatalf("sameProbe accepted changed %s", name)
+			}
+		})
+	}
+	if !sameProbe(base, base) {
+		t.Fatal("sameProbe rejected an identical job")
+	}
+}
+
 func TestProtocolSchedulerIsFairBoundedAndBatchesWithoutPerNodeReads(t *testing.T) {
 	repo := &schedulingRepository{published: make(chan []ProtocolObservation, 100)}
 	for i := 0; i < 36; i++ {
@@ -188,6 +292,314 @@ func TestProtocolSchedulerIsFairBoundedAndBatchesWithoutPerNodeReads(t *testing.
 	repo.mu.Unlock()
 	if reads != 1 {
 		t.Fatalf("per-node snapshot reads: %d", reads)
+	}
+}
+
+func TestProtocolSchedulerContinuousRecoveryFailuresDoNotStarveOtherMembers(t *testing.T) {
+	repo := &schedulingRepository{published: make(chan []ProtocolObservation, 100)}
+	for i := 0; i < 32; i++ {
+		repo.states = append(repo.states, schedulingInput(fmt.Sprintf("pool-%02d", i), 2))
+	}
+	runner := NewProtocolRunner(repo, "unused", 39000, time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	checked := make(chan string, 2048)
+	runner.observer.check = func(ctx context.Context, spec protocolprobe.Spec) (time.Time, error) {
+		checked <- spec.DialHost
+		select {
+		case <-ctx.Done():
+			return time.Time{}, ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+			return time.Time{}, errors.New("isolated simulated failure")
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	seen := make(map[string]bool)
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
+	for len(seen) < 32 {
+		select {
+		case host := <-checked:
+			if strings.HasSuffix(host, "-1.example.test") {
+				seen[host] = true
+			}
+		case <-timeout.C:
+			t.Fatalf("continuous priority failures starved other members: checked=%d/32", len(seen))
+		}
+	}
+}
+
+func TestProtocolSchedulerContinuesProbingWhileRefreshReadIsBlocked(t *testing.T) {
+	input := schedulingInput("blocked-refresh", 2)
+	now := time.Now().UTC()
+	member := input.State.Members[1]
+	receipt := input.State.Deployments[member.NodeID].Status
+	input.State.ProtocolHealth = map[string]ProtocolObservation{member.NodeID: {
+		RuleID:               input.State.Rule.ID,
+		NodeID:               member.NodeID,
+		RuleRevision:         input.State.Rule.Revision,
+		NodeConfigGeneration: receipt.NodeConfigGeneration,
+		ConfigSHA256:         receipt.ConfigSHA256,
+		Protocol:             input.State.Rule.EffectiveIngressProtocol(),
+		DialHost:             member.DialHost,
+		VerifiedAt:           now,
+		LeaseExpiresAt:       now.Add(time.Minute),
+	}}
+	releaseFirst := make(chan struct{})
+	firstStarted := make(chan struct{})
+	blockReads := make(chan struct{})
+	readStarted := make(chan struct{}, 2)
+	repo := &schedulingRepository{states: []ProbeState{{State: input.State, Config: input.Config}}, readStarted: readStarted}
+	runner := NewProtocolRunner(repo, "unused", 39000, 10*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var checks atomic.Int32
+	runner.observer.check = func(ctx context.Context, _ protocolprobe.Spec) (time.Time, error) {
+		if checks.Add(1) == 1 {
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+				return time.Time{}, ctx.Err()
+			}
+			runner.NotifyDeployment("refresh-while-probing")
+			return time.Time{}, errors.New("simulated probe failure")
+		}
+		return time.Time{}, errors.New("simulated probe failure")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case <-readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial refresh did not start")
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial protocol probe did not start")
+	}
+	repo.mu.Lock()
+	repo.blockReads = blockReads
+	repo.mu.Unlock()
+	close(releaseFirst)
+	select {
+	case <-readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("refresh worker did not reach the blocked read")
+	}
+	deadline := time.After(time.Second)
+	for checks.Load() < 2 {
+		select {
+		case <-deadline:
+			t.Fatalf("probe dispatch stopped while refresh read was blocked: checks=%d", checks.Load())
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestProtocolSchedulerRetriesHealthBatchAfterTransientPublishFailure(t *testing.T) {
+	repo := &schedulingRepository{
+		states:          []ProbeState{schedulingInput("retry-rule", 1)},
+		published:       make(chan []ProtocolObservation, 2),
+		publishFailures: 1,
+	}
+	runner := NewProtocolRunner(repo, "unused", 39000, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	started := make(chan struct{}, 1)
+	runner.observer.check = func(context.Context, protocolprobe.Spec) (time.Time, error) {
+		started <- struct{}{}
+		return time.Now().UTC(), nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("protocol challenge did not start")
+	}
+	select {
+	case batch := <-repo.published:
+		if len(batch) != 1 || batch[0].RuleID != "retry-rule" {
+			t.Fatalf("unexpected retried health batch: %#v", batch)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("failed health batch was dropped instead of retried")
+	}
+	repo.mu.Lock()
+	calls := repo.publishCalls
+	repo.mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("health batch was not retried after transient failure: calls=%d", calls)
+	}
+}
+
+func TestProtocolSchedulerBoundsRepositoryPublishAndRetriesAfterTimeout(t *testing.T) {
+	base := &schedulingRepository{
+		states:    []ProbeState{schedulingInput("publish-timeout", 1)},
+		published: make(chan []ProtocolObservation, 2),
+	}
+	repo := &timeoutPublishRepository{schedulingRepository: base, started: make(chan struct{})}
+	runner := NewProtocolRunner(repo, "unused", 39000, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runner.repositoryTimeout = 30 * time.Millisecond
+	runner.observer.check = func(context.Context, protocolprobe.Spec) (time.Time, error) {
+		return time.Now().UTC(), nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	select {
+	case <-repo.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("health publication did not start")
+	}
+	select {
+	case batch := <-base.published:
+		if len(batch) != 1 || batch[0].RuleID != "publish-timeout" {
+			t.Fatalf("unexpected retried health batch: %#v", batch)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed-out publisher did not release its worker for retry")
+	}
+	if calls := repo.calls.Load(); calls < 2 {
+		t.Fatalf("health publisher was not retried after timeout: calls=%d", calls)
+	}
+}
+
+func TestProtocolSchedulerBoundsRepositoryRefreshAndResumesProbing(t *testing.T) {
+	base := &schedulingRepository{states: []ProbeState{schedulingInput("refresh-timeout", 1)}}
+	repo := &timeoutRefreshRepository{schedulingRepository: base, started: make(chan struct{})}
+	runner := NewProtocolRunner(repo, "unused", 39000, 20*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runner.repositoryTimeout = 30 * time.Millisecond
+	started := make(chan struct{}, 1)
+	runner.observer.check = func(context.Context, protocolprobe.Spec) (time.Time, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		return time.Now().UTC(), nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+	select {
+	case <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("state refresh did not start")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("protocol probing did not resume after refresh timeout")
+	}
+	if calls := repo.calls.Load(); calls < 2 {
+		t.Fatalf("refresh worker did not retry after timeout: calls=%d", calls)
+	}
+}
+
+func TestProtocolSchedulerRetriesMalformedHealthBatchResult(t *testing.T) {
+	repo := &schedulingRepository{
+		states:          []ProbeState{schedulingInput("malformed-result", 1)},
+		published:       make(chan []ProtocolObservation, 2),
+		malformedResult: true,
+	}
+	runner := NewProtocolRunner(repo, "unused", 39000, time.Hour, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	runner.observer.check = func(context.Context, protocolprobe.Spec) (time.Time, error) {
+		return time.Now().UTC(), nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case batch := <-repo.published:
+		if len(batch) != 1 || batch[0].RuleID != "malformed-result" {
+			t.Fatalf("unexpected retried health batch: %#v", batch)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("malformed health batch result was treated as success")
+	}
+	repo.mu.Lock()
+	calls := repo.publishCalls
+	repo.mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("malformed health batch was not retried: calls=%d", calls)
+	}
+}
+
+func TestHealthRetryStaysBeforeObservationLease(t *testing.T) {
+	now := time.Now().UTC()
+	batch := []probeResult{{observation: ProtocolObservation{
+		LeaseExpiresAt: now.Add(20 * time.Second),
+	}}}
+	next := nextHealthRetryAt(batch, now, 30*time.Second)
+	if !next.After(now) {
+		t.Fatal("retry was scheduled immediately despite remaining lease time")
+	}
+	if !next.Before(batch[0].observation.LeaseExpiresAt) {
+		t.Fatalf("retry=%s was scheduled at or after lease=%s", next, batch[0].observation.LeaseExpiresAt)
+	}
+	if delay := next.Sub(now); delay > protocolRetryDelayCap {
+		t.Fatalf("retry delay=%s exceeded cap=%s", delay, protocolRetryDelayCap)
+	}
+}
+
+func TestHealthRetryUsesDelayWhenLeaseHasEnoughTime(t *testing.T) {
+	now := time.Now().UTC()
+	batch := []probeResult{{observation: ProtocolObservation{
+		LeaseExpiresAt: now.Add(2 * time.Minute),
+	}}}
+	next := nextHealthRetryAt(batch, now, 2*time.Second)
+	if delay := next.Sub(now); delay < 2*time.Second || delay > 2100*time.Millisecond {
+		t.Fatalf("retry delay=%s did not preserve requested backoff", delay)
+	}
+}
+
+func TestHealthRetryKeepsBackoffAfterLeaseExpires(t *testing.T) {
+	now := time.Now().UTC()
+	batch := []probeResult{{observation: ProtocolObservation{
+		LeaseExpiresAt: now.Add(-time.Second),
+	}}}
+	next := nextHealthRetryAt(batch, now, 2*time.Second)
+	if !next.After(now) {
+		t.Fatal("expired lease caused an immediate retry")
+	}
+	if delay := next.Sub(now); delay < 2*time.Second || delay > 2100*time.Millisecond {
+		t.Fatalf("retry delay=%s did not preserve backoff after expiry", delay)
+	}
+}
+
+func TestDropExpiredProtocolResultsDoesNotBlockFreshResults(t *testing.T) {
+	now := time.Now().UTC()
+	old := probeResult{observation: ProtocolObservation{LeaseExpiresAt: now.Add(-time.Second)}}
+	fresh := probeResult{observation: ProtocolObservation{LeaseExpiresAt: now.Add(time.Minute)}}
+	batch := []probeResult{old, fresh}
+	kept := dropExpiredProtocolResults(batch, now)
+	if len(kept) != 1 || kept[0].observation.LeaseExpiresAt != fresh.observation.LeaseExpiresAt {
+		t.Fatalf("expired retry results were not removed: %#v", kept)
+	}
+	if got := dropExpiredProtocolResults([]probeResult{old}, now); len(got) != 0 {
+		t.Fatalf("all-expired retry batch was retained: %#v", got)
+	}
+}
+
+func TestDropExpiredProtocolResultsKeepsZeroLeaseForRepositoryValidation(t *testing.T) {
+	result := probeResult{observation: ProtocolObservation{}}
+	if got := dropExpiredProtocolResults([]probeResult{result}, time.Now().UTC()); len(got) != 1 {
+		t.Fatal("zero lease observation was dropped before repository validation")
 	}
 }
 

@@ -80,6 +80,7 @@ func run(ctx context.Context, configPath string, logger *slog.Logger) error {
 	}
 	proxy, err := tcpproxy.New(tcpproxy.Config{
 		Listener: listener, Selector: selector, Logger: logger, DialTimeout: configuration.DialTimeout,
+		MaxDialAttempts: configuration.MaxDialAttempts,
 	})
 	if err != nil {
 		_ = listener.Close()

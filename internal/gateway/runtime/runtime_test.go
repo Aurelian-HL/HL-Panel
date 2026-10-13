@@ -17,6 +17,17 @@ type sequenceSource struct {
 	index     int
 }
 
+type blockingSource struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSource) Load(ctx context.Context) (membership.Snapshot, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return membership.Snapshot{}, ctx.Err()
+}
+
 func (s *sequenceSource) Load(context.Context) (membership.Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -138,5 +149,32 @@ func TestApplyRejectsRollbackAndSameRevisionMutation(t *testing.T) {
 	defer router.mu.Unlock()
 	if len(router.applied) != 1 {
 		t.Fatalf("router apply count = %d, want one", len(router.applied))
+	}
+}
+
+func TestRuntimeBoundsInitialSourceLoad(t *testing.T) {
+	source := &blockingSource{started: make(chan struct{})}
+	runtime, err := New(Config{
+		Source:            source,
+		Router:            &recordingRouter{appliedC: make(chan struct{}, 1)},
+		Server:            &contextServer{started: make(chan struct{})},
+		RefreshInterval:   time.Hour,
+		SourceLoadTimeout: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = runtime.Run(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded source load took %v", elapsed)
+	}
+	select {
+	case <-source.started:
+	default:
+		t.Fatal("source was not called")
 	}
 }

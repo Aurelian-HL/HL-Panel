@@ -31,9 +31,19 @@ func (a *Agent) usageGeneration() (agentv1.NodeConfigGeneration, error) {
 }
 
 func (a *Agent) flushUsage(ctx context.Context) error {
+	// Delivery may wait on a remote control-plane response. Keep it outside the
+	// engine lifecycle lock so a slow or unavailable panel cannot delay config
+	// apply, local recovery, stop, or restart. Reporter serializes its journal
+	// transitions and preserves pending payloads across the delivery retry.
+	// Collection still shares that lock: the generation, process epoch and
+	// counters must describe the same engine on both sides of a config switch.
 	a.usageApplyMu.Lock()
-	defer a.usageApplyMu.Unlock()
-	return a.usageReporter.FlushOnce(ctx)
+	err := a.usageReporter.CollectIfEmpty(ctx)
+	a.usageApplyMu.Unlock()
+	if err != nil {
+		return err
+	}
+	return a.usageReporter.DeliverPending(ctx)
 }
 
 func (a *Agent) applyWithUsage(ctx context.Context, desired agentv1.DesiredNodeConfig) error {

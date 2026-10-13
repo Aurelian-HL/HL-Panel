@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -26,6 +27,34 @@ func TestHTTPSourceAuthenticatedSnapshot(t *testing.T) {
 	snapshot, err := source.Load(context.Background())
 	if err != nil || snapshot.Revision != 3 || snapshot.Endpoints == nil || snapshot.SHA256 == "" {
 		t.Fatalf("Load() = %#v, %v", snapshot, err)
+	}
+}
+
+func TestHTTPSourceRetriesTransientFailure(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer test-token" {
+			writer.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if requests.Add(1) == 1 {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"revision":4,"endpoints":[]}`))
+	}))
+	defer server.Close()
+
+	source, err := NewHTTPSource(server.URL, tokenFile(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := source.Load(context.Background())
+	if err != nil || snapshot.Revision != 4 {
+		t.Fatalf("Load() after transient failure = %#v, %v", snapshot, err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("membership requests = %d, want two attempts", got)
 	}
 }
 

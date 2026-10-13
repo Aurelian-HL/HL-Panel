@@ -25,8 +25,9 @@ var (
 )
 
 type Backend struct {
-	ID      string
-	Address string
+	ID                 string
+	Address            string
+	MembershipRevision uint64
 }
 
 // Selector reserves one backend for a new connection and releases the
@@ -43,20 +44,36 @@ type KeyedSelector interface {
 	SelectKey(string) (Backend, error)
 }
 
+// ReachabilitySelector is optional. Gateways use it to immediately veto a
+// backend whose TCP dial failed. The health monitor can later clear the veto
+// after a successful probe.
+type ReachabilitySelector interface {
+	SetLocalReachability(endpointID, observedAddress string, reachable bool) error
+}
+
+// VersionedReachabilitySelector is an optional stronger form of
+// ReachabilitySelector. The revision ties a dial result to the membership
+// snapshot from which the backend was selected, preventing stale connection
+// results from changing the state of a newer membership.
+type VersionedReachabilitySelector interface {
+	SetLocalReachabilityAtRevision(endpointID, observedAddress string, revision uint64, reachable bool) error
+}
+
 type DialContext func(context.Context, string, string) (net.Conn, error)
 
 type Server struct {
-	listener    net.Listener
-	selector    Selector
-	dial        DialContext
-	logger      *slog.Logger
-	dialTimeout time.Duration
-	mu          sync.Mutex
-	connections map[net.Conn]struct{}
-	handlers    sync.WaitGroup
-	started     atomic.Bool
-	closeOnce   sync.Once
-	closed      chan struct{}
+	listener        net.Listener
+	selector        Selector
+	dial            DialContext
+	logger          *slog.Logger
+	dialTimeout     time.Duration
+	maxDialAttempts int
+	mu              sync.Mutex
+	connections     map[net.Conn]struct{}
+	handlers        sync.WaitGroup
+	started         atomic.Bool
+	closeOnce       sync.Once
+	closed          chan struct{}
 }
 
 type Config struct {
@@ -65,6 +82,9 @@ type Config struct {
 	Dial        DialContext
 	Logger      *slog.Logger
 	DialTimeout time.Duration
+	// MaxDialAttempts bounds how many different backends a client connection
+	// may try before it is closed. Zero uses the default of three attempts.
+	MaxDialAttempts int
 }
 
 func New(config Config) (*Server, error) {
@@ -83,14 +103,18 @@ func New(config Config) (*Server, error) {
 	if config.DialTimeout <= 0 {
 		config.DialTimeout = 10 * time.Second
 	}
+	if config.MaxDialAttempts <= 0 {
+		config.MaxDialAttempts = 3
+	}
 	return &Server{
-		listener:    config.Listener,
-		selector:    config.Selector,
-		dial:        config.Dial,
-		logger:      config.Logger,
-		dialTimeout: config.DialTimeout,
-		connections: make(map[net.Conn]struct{}),
-		closed:      make(chan struct{}),
+		listener:        config.Listener,
+		selector:        config.Selector,
+		dial:            config.Dial,
+		logger:          config.Logger,
+		dialTimeout:     config.DialTimeout,
+		maxDialAttempts: config.MaxDialAttempts,
+		connections:     make(map[net.Conn]struct{}),
+		closed:          make(chan struct{}),
 	}, nil
 }
 
@@ -116,6 +140,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		case <-s.closed:
 		}
 	}()
+	acceptRetryDelay := 5 * time.Millisecond
 	for {
 		client, err := s.listener.Accept()
 		if err != nil {
@@ -125,11 +150,20 @@ func (s *Server) Serve(ctx context.Context) error {
 			default:
 			}
 			if temporary(err) {
-				time.Sleep(25 * time.Millisecond)
+				if !waitForAcceptRetry(s.closed, acceptRetryDelay) {
+					return nil
+				}
+				if acceptRetryDelay < time.Second {
+					acceptRetryDelay *= 2
+					if acceptRetryDelay > time.Second {
+						acceptRetryDelay = time.Second
+					}
+				}
 				continue
 			}
 			return fmt.Errorf("accept client connection: %w", err)
 		}
+		acceptRetryDelay = 5 * time.Millisecond
 		if !s.track(client) {
 			return nil
 		}
@@ -138,6 +172,24 @@ func (s *Server) Serve(ctx context.Context) error {
 			defer s.handlers.Done()
 			s.handle(ctx, client)
 		}()
+	}
+}
+
+// waitForAcceptRetry keeps transient listener failures from creating a busy
+// loop while allowing Close to interrupt the wait immediately. A fixed sleep
+// here used to leave Serve blocked for the whole retry interval during a
+// restart.
+func waitForAcceptRetry(closed <-chan struct{}, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-closed:
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
@@ -162,27 +214,91 @@ func (s *Server) Close() error {
 
 func (s *Server) handle(parent context.Context, client net.Conn) {
 	defer s.untrack(client)
-	backend, err := s.selectBackend(client.RemoteAddr())
-	if err != nil {
+	attempted := make(map[string]struct{}, s.maxDialAttempts)
+	// Bound the complete failover sequence, rather than granting every
+	// backend attempt a fresh timeout. A dead endpoint must not make one client
+	// wait maxDialAttempts times the configured timeout before failover ends.
+	dialDeadline := time.Now().Add(s.dialTimeout)
+	var backend Backend
+	var backendConnection net.Conn
+	var err error
+	for attempt := 0; attempt < s.maxDialAttempts; attempt++ {
+		backend, err = s.selectBackend(client.RemoteAddr())
+		if err != nil {
+			break
+		}
+		if _, exists := attempted[backend.ID]; exists {
+			_ = s.releaseBackend(backend)
+			err = errors.New("selector returned an already attempted backend")
+			break
+		}
+		attempted[backend.ID] = struct{}{}
+		if validationErr := validateBackend(backend); validationErr != nil {
+			_ = s.releaseBackend(backend)
+			err = validationErr
+			continue
+		}
+		remaining := time.Until(dialDeadline)
+		if remaining <= 0 {
+			err = context.DeadlineExceeded
+			_ = s.releaseBackend(backend)
+			break
+		}
+		attemptsLeft := time.Duration(s.maxDialAttempts - attempt)
+		attemptTimeout := remaining / attemptsLeft
+		if attemptTimeout <= 0 {
+			attemptTimeout = remaining
+		}
+		dialContext, cancel := context.WithTimeout(parent, attemptTimeout)
+		backendConnection, err = s.dial(dialContext, "tcp", backend.Address)
+		cancel()
+		if err == nil {
+			if backendConnection == nil {
+				err = errors.New("dialer returned no connection")
+				_ = s.releaseBackend(backend)
+				continue
+			}
+			break
+		}
+		// A DialContext implementation may return a partially established
+		// connection together with an error. It cannot be forwarded, but it
+		// still owns descriptors and must be closed before failover continues.
+		if backendConnection != nil {
+			_ = backendConnection.Close()
+			backendConnection = nil
+		}
+		// A gateway shutdown/restart cancels the parent context. That is not
+		// evidence that the selected backend is unreachable, so do not persist
+		// a local veto that would survive the restart until the next probe.
+		if parent.Err() == nil {
+			if markErr := s.setLocalReachability(backend, false); markErr != nil {
+				s.logger.Debug("backend local reachability update failed", "backend_id", backend.ID, "error", sanitizeError(markErr))
+			}
+		}
+		if releaseErr := s.releaseBackend(backend); releaseErr != nil {
+			s.logger.Warn("backend reservation release failed", "backend_id", backend.ID, "error", sanitizeError(releaseErr))
+		}
+		if parent.Err() != nil {
+			break
+		}
+	}
+	if err != nil || backendConnection == nil {
 		_ = client.Close()
 		return
 	}
+	// A dialer may return a connection at the same time the gateway is being
+	// stopped. That connection is immediately closed by the shutdown path and
+	// must not be recorded as a successful reachability recovery.
+	if parent.Err() == nil {
+		if clearErr := s.setLocalReachability(backend, true); clearErr != nil {
+			s.logger.Debug("backend local reachability recovery update failed", "backend_id", backend.ID, "error", sanitizeError(clearErr))
+		}
+	}
 	defer func() {
-		if releaseErr := s.selector.Release(backend.ID); releaseErr != nil {
+		if releaseErr := s.releaseBackend(backend); releaseErr != nil {
 			s.logger.Warn("backend reservation release failed", "backend_id", backend.ID, "error", sanitizeError(releaseErr))
 		}
 	}()
-	if err := validateBackend(backend); err != nil {
-		_ = client.Close()
-		return
-	}
-	dialContext, cancel := context.WithTimeout(parent, s.dialTimeout)
-	backendConnection, err := s.dial(dialContext, "tcp", backend.Address)
-	cancel()
-	if err != nil {
-		_ = client.Close()
-		return
-	}
 	if !s.track(backendConnection) {
 		_ = client.Close()
 		return
@@ -191,6 +307,23 @@ func (s *Server) handle(parent context.Context, client net.Conn) {
 	defer backendConnection.Close()
 	defer client.Close()
 	proxyBidirectionally(client, backendConnection)
+}
+
+func (s *Server) releaseBackend(backend Backend) error {
+	if strings.TrimSpace(backend.ID) == "" {
+		return nil
+	}
+	return s.selector.Release(backend.ID)
+}
+
+func (s *Server) setLocalReachability(backend Backend, reachable bool) error {
+	if versioned, ok := s.selector.(VersionedReachabilitySelector); ok && backend.MembershipRevision != 0 {
+		return versioned.SetLocalReachabilityAtRevision(backend.ID, backend.Address, backend.MembershipRevision, reachable)
+	}
+	if legacy, ok := s.selector.(ReachabilitySelector); ok {
+		return legacy.SetLocalReachability(backend.ID, backend.Address, reachable)
+	}
+	return nil
 }
 
 func proxyBidirectionally(client, backend net.Conn) {

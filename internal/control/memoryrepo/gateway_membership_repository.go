@@ -2,6 +2,7 @@ package memoryrepo
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"sort"
 	"time"
@@ -91,6 +92,17 @@ func (s *Store) SetPersistenceRevision(revision uint64) {
 	s.persistenceRevision = revision
 }
 
+// PersistenceMutationState identifies the parts of a protocol-health batch
+// that require a snapshot write. The health projection advances the gateway
+// mutation revision, while first activation appends an audit event.
+// Callers use the pair to distinguish a rejected/no-op probe batch from a
+// batch that must be persisted.
+func (s *Store) PersistenceMutationState() (gatewayRevision uint64, auditCount int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.gatewayMutationRevision, len(s.auditEvents)
+}
+
 // PublishProtocolHealth stores a rule/config-bound observation produced by
 // ProtocolObserver and refreshes the endpoint member's protocol-backed health
 // lease. This is deliberately separate from node heartbeat state: only a
@@ -101,6 +113,30 @@ func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymemb
 	return s.publishProtocolHealthLocked(observation)
 }
 
+// endpointPoolIDForRuleLocked resolves the stable endpoint owned by a rule.
+// A rule is intentionally bound to one pool. Older snapshots and migration
+// imports can violate that invariant, so never pick a pool by map iteration:
+// doing so makes protocol health and activation depend on random map order.
+func (s *Store) endpointPoolIDForRuleLocked(ruleID string) (string, error) {
+	if ruleID == "" {
+		return "", faults.ErrValidation
+	}
+	poolID := ""
+	for id, pool := range s.endpointPools {
+		if pool.RuleID != ruleID {
+			continue
+		}
+		if poolID != "" {
+			return "", fmt.Errorf("%w: forwarding rule %q has multiple endpoint pools", faults.ErrConflict, ruleID)
+		}
+		poolID = id
+	}
+	if poolID == "" {
+		return "", faults.ErrNotFound
+	}
+	return poolID, nil
+}
+
 func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.ProtocolObservation) error {
 	if observation.RuleID == "" || observation.NodeID == "" || observation.RuleRevision < 1 ||
 		observation.NodeConfigGeneration < 1 || len(observation.ConfigSHA256) != 64 ||
@@ -108,15 +144,9 @@ func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.Protoc
 		observation.LeaseExpiresAt.After(observation.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
 		return faults.ErrValidation
 	}
-	poolID := ""
-	for id, pool := range s.endpointPools {
-		if pool.RuleID == observation.RuleID {
-			poolID = id
-			break
-		}
-	}
-	if poolID == "" {
-		return faults.ErrNotFound
+	poolID, err := s.endpointPoolIDForRuleLocked(observation.RuleID)
+	if err != nil {
+		return err
 	}
 	members := s.endpointMembers[poolID]
 	member, exists := members[observation.NodeID]
@@ -224,10 +254,15 @@ func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.Pr
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	items := make([]gatewaymembership.ProbeState, 0, len(s.endpointPools))
+	seenRules := make(map[string]string)
 	for id, pool := range s.endpointPools {
 		if pool.Protocol != "vless" || pool.RuleID == "" {
 			continue
 		}
+		if previous, exists := seenRules[pool.RuleID]; exists {
+			return nil, fmt.Errorf("%w: forwarding rule %q has endpoint pools %q and %q", faults.ErrConflict, pool.RuleID, previous, id)
+		}
+		seenRules[pool.RuleID] = id
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

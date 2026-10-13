@@ -181,6 +181,24 @@ func TestSnapshotRejectsCorruptUnknownOrIncompleteState(t *testing.T) {
 	}
 }
 
+func TestSnapshotRejectsDuplicateRuleEndpointPools(t *testing.T) {
+	s := snapshotFixture(t)
+	first := s.endpointPools["pool-1"]
+	first.RuleID = "rule-1"
+	s.endpointPools["pool-1"] = first
+	second := first
+	second.ID = "pool-2"
+	s.endpointPools["pool-2"] = second
+
+	raw, err := s.EncodeSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeSnapshot(raw); err == nil || !strings.Contains(err.Error(), "duplicate persisted endpoint pool") {
+		t.Fatalf("duplicate rule endpoint pools were accepted: %v", err)
+	}
+}
+
 func TestSnapshotRejectsAdministratorSessionsWithBrokenIdentityBinding(t *testing.T) {
 	raw, err := snapshotFixture(t).EncodeSnapshot()
 	if err != nil {

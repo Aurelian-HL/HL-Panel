@@ -29,7 +29,13 @@ type Reconciler struct {
 	nodeSecret string
 	now        func() time.Time
 	mu         sync.Mutex
+	receiptMu  sync.Mutex
 }
+
+// Apply result telemetry must never hold the lifecycle lock for the duration
+// of a control-plane request. A slow database or reverse proxy used to leave
+// the engine stuck in "pending" while the desired loop waited for a receipt.
+const applyReportTimeout = 750 * time.Millisecond
 
 func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter ResultReporter, nodeSecret string) (*Reconciler, error) {
 	if store == nil {
@@ -51,7 +57,20 @@ func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter R
 // advanced only after both commit and local verification succeed.
 func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	err := r.applyLocked(ctx, desired)
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	// Deliver only after the lifecycle lock is released. A slow control plane
+	// must not hold up a subsequent desired generation or local recovery.
+	if receipts, receiptErr := r.store.PendingApplyReceipts(); receiptErr == nil {
+		r.deliverReceipts(ctx, receipts)
+	}
+	return nil
+}
+
+func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -67,7 +86,6 @@ func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfi
 		}); ok && process.RequiresLiveProcess() && process.ActiveEngineMode() == "" {
 			return r.restoreAppliedLocked(ctx, desired, true)
 		}
-		_ = r.flushReceiptsLocked(ctx)
 		return nil
 	}
 	attemptID, err := newAttemptID()
@@ -116,7 +134,6 @@ func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfi
 	if _, err := r.store.CompleteWithReceipts(desired, receipts, r.now()); err != nil {
 		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseVerify, err)
 	}
-	_ = r.flushReceiptsLocked(ctx)
 	return nil
 }
 
@@ -138,19 +155,29 @@ func (r *Reconciler) RecoverPending(ctx context.Context) error {
 // restart. A persisted applied marker alone cannot attest a running process.
 func (r *Reconciler) RestoreApplied(ctx context.Context) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	current, err := r.store.Load()
 	if err != nil {
+		r.mu.Unlock()
 		return err
 	}
 	if current.Pending != nil || current.Applied == nil {
+		r.mu.Unlock()
 		return nil
 	}
 	desired, exists, err := r.store.LastKnownGood()
 	if err != nil || !exists {
+		r.mu.Unlock()
 		return err
 	}
-	return r.restoreAppliedLocked(ctx, desired, true)
+	err = r.restoreAppliedLocked(ctx, desired, true)
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if receipts, receiptErr := r.store.PendingApplyReceipts(); receiptErr == nil {
+		r.deliverReceipts(ctx, receipts)
+	}
+	return nil
 }
 
 // EnsureApplied repairs an exited owned process without touching a live one.
@@ -208,9 +235,6 @@ func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.D
 		"previous configuration reactivated and verified", r.verifiedReceipts(desired, attemptID), r.now()); err != nil {
 		return err
 	}
-	if deliver {
-		_ = r.flushReceiptsLocked(ctx)
-	}
 	return nil
 }
 
@@ -251,11 +275,31 @@ func (r *Reconciler) flushReceiptsLocked(ctx context.Context) error {
 	return nil
 }
 
+// deliverReceiptsLocked performs a bounded best-effort delivery after a
+// successful local apply. The durable queue remains authoritative; a failed
+// request is left for FlushReceipts, and a successful request is acknowledged
+// only if it is still at the head of the queue.
+func (r *Reconciler) deliverReceipts(ctx context.Context, receipts []agentv1.ApplyResultRequest) {
+	r.receiptMu.Lock()
+	defer r.receiptMu.Unlock()
+	for _, receipt := range receipts {
+		if err := r.reportReceipt(ctx, receipt); err != nil {
+			return
+		}
+		if err := r.store.AcknowledgeApplyReceipt(receipt); err != nil {
+			return
+		}
+	}
+}
+
 // FlushReceipts retries durable terminal receipts even when the control plane
 // no longer offers a desired generation to this node.
 func (r *Reconciler) FlushReceipts(ctx context.Context) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	// Serialize receipt delivery independently from Apply/Restore. The network
+	// request is deliberately outside r.mu so desired configuration processing
+	// and engine recovery can continue while the control plane is slow.
+	r.receiptMu.Lock()
+	defer r.receiptMu.Unlock()
 	return r.flushReceiptsLocked(ctx)
 }
 
@@ -306,7 +350,16 @@ func (r *Reconciler) report(ctx context.Context, desired agentv1.DesiredNodeConf
 	}
 	// The local state machine is authoritative while disconnected. A failed
 	// telemetry call must not make a verified local configuration unsafe.
-	_ = r.reporter.ReportApplyResult(ctx, r.nodeSecret, request)
+	_ = r.reportReceipt(ctx, request)
+}
+
+func (r *Reconciler) reportReceipt(ctx context.Context, request agentv1.ApplyResultRequest) error {
+	if r.reporter == nil || r.nodeSecret == "" {
+		return nil
+	}
+	callContext, cancel := context.WithTimeout(ctx, applyReportTimeout)
+	defer cancel()
+	return r.reporter.ReportApplyResult(callContext, r.nodeSecret, request)
 }
 
 func newAttemptID() (string, error) {

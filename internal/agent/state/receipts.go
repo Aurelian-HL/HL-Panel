@@ -33,6 +33,43 @@ func validatePendingReceipts(receipts []agentv1.ApplyResultRequest) error {
 	return nil
 }
 
+func validateReceiptQueue(receipts []agentv1.ApplyResultRequest) error {
+	if len(receipts) > 32 {
+		return errors.New("too many pending apply receipts")
+	}
+	type attemptState struct {
+		attempt string
+		phases  map[agentv1.ApplyPhase]struct{}
+	}
+	groups := make(map[string]attemptState)
+	for _, receipt := range receipts {
+		if receipt.Generation == 0 || receipt.Status != agentv1.ApplyStatusSucceeded ||
+			(receipt.Phase != agentv1.ApplyPhaseCommit && receipt.Phase != agentv1.ApplyPhaseVerify) ||
+			(receipt.EngineMode != "" && receipt.EngineMode != "gost" && receipt.EngineMode != "xray" && receipt.EngineMode != "mixed") ||
+			!validReceiptAttemptID(receipt.AttemptID) || len(receipt.Message) > MaxApplyMessageBytes {
+			return errors.New("invalid pending apply receipt")
+		}
+		if _, err := normalizeSHA256(receipt.ConfigSHA256); err != nil {
+			return fmt.Errorf("invalid pending apply receipt hash: %w", err)
+		}
+		key := fmt.Sprintf("%d/%s", receipt.Generation, receipt.ConfigSHA256)
+		group := groups[key]
+		if group.attempt == "" {
+			group.attempt = receipt.AttemptID
+			group.phases = make(map[agentv1.ApplyPhase]struct{}, 2)
+		}
+		if group.attempt != receipt.AttemptID {
+			return errors.New("pending apply receipts do not describe one attempt")
+		}
+		if _, exists := group.phases[receipt.Phase]; exists {
+			return errors.New("duplicate pending apply receipt phase")
+		}
+		group.phases[receipt.Phase] = struct{}{}
+		groups[key] = group
+	}
+	return nil
+}
+
 func validReceiptAttemptID(value string) bool {
 	if len(value) != 32 {
 		return false

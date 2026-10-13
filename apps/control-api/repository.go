@@ -23,6 +23,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/usage"
+	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
@@ -51,13 +52,17 @@ type controlRepository interface {
 	usage.RuleTrafficRepository
 	announcements.Repository
 	vlessidentity.Repository
+	vlessconnection.BatchSource
 	vlessruntime.Repository
 	deploymentreceipts.Repository
 }
 
 func openRepository(ctx context.Context, config runtimeConfig, bootstrap auth.Administrator) (controlRepository, func(), error) {
 	if config.DatabaseURL != "" {
-		store, err := postgressnapshot.Open(ctx, config.DatabaseURL, bootstrap)
+		store, err := postgressnapshot.Open(ctx, config.DatabaseURL, bootstrap, postgressnapshot.PoolConfig{
+			MaxOpenConns: config.DatabaseMaxOpenConns,
+			MaxIdleConns: config.DatabaseMaxIdleConns,
+		})
 		if err != nil {
 			return nil, nil, err
 		}

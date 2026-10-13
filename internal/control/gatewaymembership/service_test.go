@@ -344,6 +344,18 @@ func TestExpiredProtocolLeaseNeverAuthorizesSelection(t *testing.T) {
 	}
 }
 
+func TestProtocolEvidenceNormalizesExpectedDialHost(t *testing.T) {
+	state := stateWithVerifiedEvidence()
+	proof := state.ProtocolHealth["node-1"]
+	proof.DialHost = "NODE.EXAMPLE.COM."
+	if !protocolHealthy(proof, state.Deployments["node-1"].Status, state.Rule, state.Members[0], "Node.Example.Com", time.Now().UTC()) {
+		t.Fatal("equivalent normalized dial hosts were treated as different")
+	}
+	if protocolHealthy(proof, state.Deployments["node-1"].Status, state.Rule, state.Members[0], "other.example.com", time.Now().UTC()) {
+		t.Fatal("different dial hosts were treated as equivalent")
+	}
+}
+
 func TestSnapshotAcceptsIndependentFreshHeartbeatAndProtocolProbe(t *testing.T) {
 	for _, offset := range []time.Duration{-5 * time.Second, 5 * time.Second} {
 		state := stateWithVerifiedEvidence()

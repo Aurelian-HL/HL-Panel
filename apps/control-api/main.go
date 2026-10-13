@@ -208,20 +208,19 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 		ctx, cancel := context.WithCancel(shutdownContext)
 		cancelBackground = cancel
-		background.Add(3)
+		background.Add(1)
 		go func() {
 			defer background.Done()
-			vlessSetupService.Run(ctx, forwardingService, logger)
-		}()
-		go func() {
-			defer background.Done()
-			_ = usageService.RunRuleTraffic(ctx, logger)
-		}()
-		go func() {
-			defer background.Done()
-			if err := protocolRunner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				logger.Warn("VLESS protocol observer stopped", "error", err)
-			}
+			runBackgroundSupervisor(ctx, logger, []backgroundTask{
+				{name: "VLESS setup reconciliation", run: func(taskContext context.Context) error {
+					vlessSetupService.Run(taskContext, forwardingService, logger)
+					return nil
+				}},
+				{name: "rule traffic reconciliation", run: func(taskContext context.Context) error {
+					return usageService.RunRuleTraffic(taskContext, logger)
+				}},
+				{name: "VLESS protocol observer", run: protocolRunner.Run},
+			})
 		}()
 	}
 	stopBackground := func() {
@@ -249,7 +248,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
 		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, panelruntime.NewSystemdController("hl-panel-control-api.service"), logger, time.Now).WithLogs(panelLogs).WithAudit(auditService).WithStatePath(controlStatePath)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
-		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService), time.Now)),
+		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService, store), time.Now)),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),
 		httpapi.WithHostGeo(hostgeo.New()),

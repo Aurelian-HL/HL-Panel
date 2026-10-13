@@ -12,6 +12,8 @@ import (
 
 var errEngineStopped = errors.New("engine is stopped by administrator")
 
+const engineRecoveryInterval = time.Second
+
 // Recovery does not depend on a desired-generation response or on report
 // delivery. It shares the lifecycle lock with apply and administrator commands.
 func (a *Agent) recoverEngine(ctx context.Context) error {
@@ -29,7 +31,7 @@ func (a *Agent) recoverEngine(ctx context.Context) error {
 }
 
 func (a *Agent) recoveryLoop(ctx context.Context) error {
-	return runPeriodic(ctx, 5*time.Second, reconciler.NewBackoff(a.cfg.Backoff), a.recoverEngine,
+	return runPeriodic(ctx, engineRecoveryInterval, reconciler.NewBackoff(a.cfg.Backoff), a.recoverEngine,
 		func(err error) { a.logger.Warn("local engine recovery failed", "error", err) })
 }
 

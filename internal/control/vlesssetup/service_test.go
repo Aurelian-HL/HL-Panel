@@ -62,6 +62,19 @@ type testRules []forwarding.Rule
 
 func (r testRules) List(ctx context.Context) ([]forwarding.Rule, error) { return r, ctx.Err() }
 
+type blockingRules struct {
+	started  chan struct{}
+	returned chan error
+}
+
+func (r blockingRules) List(ctx context.Context) ([]forwarding.Rule, error) {
+	close(r.started)
+	<-ctx.Done()
+	err := ctx.Err()
+	r.returned <- err
+	return nil, err
+}
+
 func TestReconcileResumesPartialSetupAndSkipsInactiveRules(t *testing.T) {
 	endpointSource := &testEndpoints{}
 	identities := &testIdentities{failOnce: true}
@@ -113,6 +126,36 @@ func TestReconcileContinuesAfterOneRuleFailsAndRunStops(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("cancelled setup loop did not stop")
+	}
+}
+
+func TestRunBoundsReconcileRound(t *testing.T) {
+	rules := blockingRules{started: make(chan struct{}), returned: make(chan error, 1)}
+	service := NewService(testNetworks{}, &testEndpoints{}, &testIdentities{}, WithReconcileTimeout(10*time.Millisecond))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		service.Run(ctx, rules, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		close(done)
+	}()
+	select {
+	case <-rules.started:
+	case <-time.After(time.Second):
+		t.Fatal("reconcile round did not start")
+	}
+	select {
+	case err := <-rules.returned:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("reconcile context error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconcile round was not bounded")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("bounded setup loop did not stop")
 	}
 }
 

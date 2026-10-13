@@ -18,6 +18,24 @@ import (
 
 const operationTimeout = 10 * time.Second
 
+// Heartbeat resources change on every sample and do not need a full snapshot
+// rewrite at the agent heartbeat cadence. Stable lifecycle changes still write
+// immediately; routine telemetry is persisted at least twice per online TTL.
+const heartbeatSnapshotInterval = 30 * time.Second
+
+// PoolConfig controls the bounded connection pool used by the snapshot store.
+// The variadic argument on Open keeps existing callers source-compatible while
+// allowing the control API to size the pool for concurrent probes and heartbeats.
+type PoolConfig struct {
+	MaxOpenConns int
+	MaxIdleConns int
+}
+
+const (
+	defaultMaxOpenConns = 16
+	defaultMaxIdleConns = 8
+)
+
 // Writes always load private state inside a row-locked database transaction.
 // Reads reuse a validated snapshot only while its database row identity matches.
 // Database errors are intentionally redacted to avoid leaking DSNs or payloads.
@@ -26,6 +44,14 @@ type Store struct {
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
 	readCache      snapshotReadCache
+	heartbeatMu    sync.Mutex
+	heartbeats     map[string]heartbeatPersistence
+}
+
+type heartbeatPersistence struct {
+	fingerprint [32]byte
+	persisted   time.Time
+	inFlight    bool
 }
 
 type snapshotReadCache struct {
@@ -49,10 +75,12 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 }
 
 func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshotReadCache, *memoryrepo.Store, error) {
-	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
-	// xmin also detects restores or external repairs that do not bump revision.
+	// Only protect the in-process cache. PostgreSQL validation and snapshot
+	// decoding can take milliseconds to seconds and must not serialize all
+	// authentication, subscription and panel reads behind one mutex.
 	s.readMu.Lock()
 	cached := s.readCache
+	s.readMu.Unlock()
 	var next snapshotReadCache
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text,
@@ -60,27 +88,32 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
  FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
-		s.readMu.Unlock()
 		return snapshotReadCache{}, nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
-		s.readMu.Unlock()
 		return snapshotReadCache{}, nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
 	if raw == nil && cached.payload != nil {
 		// The bytes and detached identity projection are immutable. Database
 		// identity is checked even when a request only needs authentication.
-		s.readMu.Unlock()
 		return cached, nil, nil
 	}
 	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
 	if err != nil {
-		s.readMu.Unlock()
 		return snapshotReadCache{}, nil, err
 	}
 	next.payload = raw
 	next.identities = state.IdentityReadView()
-	s.readCache = next
+	// Do not let a slower transaction publish an older snapshot over a newer
+	// committed one. Equal revisions with a different xmin are external
+	// repairs; the first reader that observes the replacement wins.
+	s.readMu.Lock()
+	current := s.readCache
+	if current.payload == nil || next.revision > current.revision ||
+		(next.revision == current.revision && next.transactionID == current.transactionID) ||
+		(next.revision == current.revision && current.transactionID == cached.transactionID) {
+		s.readCache = next
+	}
 	s.readMu.Unlock()
 	return next, state, nil
 }
@@ -123,15 +156,32 @@ func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
 	return s.desiredChanges.ForNode(nodeID)
 }
 
-func Open(ctx context.Context, databaseURL string, bootstrap auth.Administrator) (*Store, error) {
+func (s *Store) ReleaseDesiredConfigChanges(nodeID string, channel <-chan struct{}) {
+	s.desiredChanges.Release(nodeID, channel)
+}
+
+func Open(ctx context.Context, databaseURL string, bootstrap auth.Administrator, pool ...PoolConfig) (*Store, error) {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return nil, errors.New("invalid PostgreSQL connection configuration")
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	settings := PoolConfig{MaxOpenConns: defaultMaxOpenConns, MaxIdleConns: defaultMaxIdleConns}
+	if len(pool) > 0 {
+		settings = pool[0]
+	}
+	if settings.MaxOpenConns <= 0 {
+		settings.MaxOpenConns = defaultMaxOpenConns
+	}
+	if settings.MaxIdleConns < 0 {
+		settings.MaxIdleConns = 0
+	}
+	if settings.MaxIdleConns > settings.MaxOpenConns {
+		settings.MaxIdleConns = settings.MaxOpenConns
+	}
+	db.SetMaxOpenConns(settings.MaxOpenConns)
+	db.SetMaxIdleConns(settings.MaxIdleConns)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	store := &Store{db: db}
+	store := &Store{db: db, heartbeats: make(map[string]heartbeatPersistence)}
 	if err := store.initialize(ctx, bootstrap); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -292,6 +342,48 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		}
 	}
 	return result, nil
+}
+
+// transactNoopAware runs a cheap read-only attempt first. Protocol probes are
+// frequently stale while a node is restarting; those batches must not acquire
+// the snapshot write path or rewrite the full payload. When the operation
+// changes protocol health or activation audit state, it is replayed in the
+// normal row-locked transaction so concurrent writes remain serialized.
+func transactNoopAware[T any](parent context.Context, s *Store, operation func(*memoryrepo.Store) (T, error)) (T, error) {
+	var zero T
+	ctx, cancel := context.WithTimeout(parent, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return zero, errors.New("PostgreSQL transaction unavailable")
+	}
+	defer tx.Rollback()
+	state, err := s.readSnapshot(ctx, tx)
+	if err != nil {
+		return zero, err
+	}
+	attachNodeConfigHistoryReader(ctx, tx, state)
+	beforeRevision, beforeAudits := state.PersistenceMutationState()
+	result, err := operation(state)
+	if err != nil {
+		return result, err
+	}
+	afterRevision, afterAudits := state.PersistenceMutationState()
+	if beforeRevision == afterRevision && beforeAudits == afterAudits {
+		if err := tx.Commit(); err != nil {
+			return zero, errors.New("PostgreSQL transaction commit failed")
+		}
+		return result, nil
+	}
+	// A concurrent writer may have committed while the read-only attempt ran.
+	// Re-run the pure in-memory operation against the latest row-locked state.
+	// Release the read-only connection before starting the write transaction;
+	// otherwise a small pool can deadlock while the deferred rollback waits for
+	// the write attempt to finish.
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return zero, errors.New("PostgreSQL read transaction rollback failed")
+	}
+	return transact(parent, s, true, operation)
 }
 
 func mutate(ctx context.Context, s *Store, operation func(*memoryrepo.Store) error) error {

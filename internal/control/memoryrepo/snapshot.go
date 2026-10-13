@@ -44,6 +44,7 @@ const protocolHealthSnapshotVersion = 12
 const protocolProbeSnapshotVersion = 13
 const nezhaBindingSnapshotVersion = 14
 const vlessSOCKS5SnapshotVersion = 15
+
 // Full migration exports include archived configuration generations. The hot
 // PostgreSQL row remains capped separately at 16 MiB.
 const MaxSnapshotBytes = 64 << 20
@@ -342,6 +343,16 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		state.RevisionsByGroup == nil || state.RevisionByIdempotency == nil || state.NodeConfigsByNode == nil ||
 		state.NodeConfigsByRevision == nil || state.ApplyResultsByNode == nil || state.AuditEvents == nil {
 		return nil, errors.New("incomplete persistence state")
+	}
+	seenRulePools := make(map[string]string)
+	for id, pool := range state.EndpointPools {
+		if pool.RuleID == "" {
+			continue
+		}
+		if _, exists := seenRulePools[pool.RuleID]; exists {
+			return nil, errors.New("duplicate persisted endpoint pool for forwarding rule")
+		}
+		seenRulePools[pool.RuleID] = id
 	}
 	s := New(auth.Administrator{})
 	if state.Version == 1 {

@@ -32,6 +32,8 @@ func (source *MultiSource) CollectUsage(ctx context.Context, window CollectionWi
 	if source == nil || len(source.sources) == 0 {
 		return nil, ErrCounterSourceUnavailable
 	}
+	source.mu.Lock()
+	defer source.mu.Unlock()
 	var result []CounterDelta
 	for _, child := range source.sources {
 		deltas, err := child.CollectUsage(ctx, window)

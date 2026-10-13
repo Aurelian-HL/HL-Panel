@@ -15,8 +15,9 @@ nodes, groups, revisions, and audit events on restart. A configured database
 failure never falls back to an empty in-memory store.
 
 The PostgreSQL adapter reads the complete snapshot for each operation and locks
-the single row before a transactional write. Its pool allows four open and two
-idle connections, operations have a ten-second timeout, and the snapshot is
+the single row before a transactional write. Its pool defaults to sixteen open
+and eight idle connections (configurable with `CONTROL_DB_MAX_OPEN_CONNS` and
+`CONTROL_DB_MAX_IDLE_CONNS`), operations have a ten-second timeout, and the snapshot is
 limited to 16 MiB. It persists identities, sessions, routing configuration,
 idempotency records, and audit state, but is not the planned normalized
 relational repository or a high-throughput store. Startup creates the

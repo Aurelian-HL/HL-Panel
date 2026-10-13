@@ -5,6 +5,7 @@
   "membership_file": "/etc/ny-vless-platform/gateway-membership.json",
   "membership_refresh_interval": "1s",
   "dial_timeout": "10s",
+  "max_dial_attempts": 3,
   "tcp_reachability": {
     "enabled": false,
     "interval": "5s",

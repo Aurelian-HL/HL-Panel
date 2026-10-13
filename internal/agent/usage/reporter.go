@@ -69,6 +69,7 @@ type Reporter struct {
 	generation     func() (agentv1.NodeConfigGeneration, error)
 	now            func() time.Time
 	mu             sync.Mutex
+	deliveryMu     sync.Mutex
 }
 
 func NewReporter(store *JournalStore, source CounterSource, sender Sender, nodeID, nodeCredential string, maxBatch int, now func() time.Time) (*Reporter, error) {
@@ -116,20 +117,55 @@ func (reporter *Reporter) CollectOnce(ctx context.Context) error {
 }
 
 func (reporter *Reporter) FlushOnce(ctx context.Context) error {
+	if err := reporter.CollectIfEmpty(ctx); err != nil {
+		return err
+	}
+	return reporter.DeliverPending(ctx)
+}
+
+// CollectIfEmpty prepares one window without making a remote request. Existing
+// payloads are retried before collecting another regular reporting window.
+func (reporter *Reporter) CollectIfEmpty(ctx context.Context) error {
 	reporter.mu.Lock()
 	defer reporter.mu.Unlock()
 	journal, err := reporter.store.Load()
-	if err != nil {
+	if err != nil || len(journal.Pending) != 0 {
 		return err
 	}
-	if len(journal.Pending) == 0 {
-		journal, err = reporter.collect(ctx, journal)
-		if err != nil {
+	_, err = reporter.collect(ctx, journal)
+	return err
+}
+
+// DeliverPending sends a bounded snapshot of durable reports in order. Final
+// old-process collection may append while the network is slow, and those newer
+// reports remain for the next delivery cycle. Only one sender drains at a time.
+func (reporter *Reporter) DeliverPending(ctx context.Context) error {
+	reporter.deliveryMu.Lock()
+	defer reporter.deliveryMu.Unlock()
+	initial, err := reporter.store.Load()
+	if err != nil || len(initial.Pending) == 0 {
+		return err
+	}
+	lastSequence := initial.Pending[len(initial.Pending)-1].Sequence
+	for {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-	}
-	for len(journal.Pending) > 0 {
+		reporter.mu.Lock()
+		journal, err := reporter.store.Load()
+		if err != nil {
+			reporter.mu.Unlock()
+			return err
+		}
+		if len(journal.Pending) == 0 || journal.Pending[0].Sequence > lastSequence {
+			reporter.mu.Unlock()
+			return nil
+		}
 		pending := journal.Pending[0]
+		// Do not hold reporter.mu during network delivery. A concurrent final
+		// collection may append to the journal, while this payload remains the
+		// first durable item and is acknowledged with an exact-match CAS below.
+		reporter.mu.Unlock()
 		acknowledgement, err := reporter.sender.ReportUsage(ctx, reporter.nodeCredential, pending)
 		if err != nil {
 			return err
@@ -137,7 +173,8 @@ func (reporter *Reporter) FlushOnce(ctx context.Context) error {
 		if acknowledgement.NodeID != pending.NodeID || acknowledgement.BootID != pending.BootID || acknowledgement.Sequence != pending.Sequence {
 			return errors.New("usage acknowledgement does not match pending report")
 		}
-		journal, err = reporter.store.update(func(current *Journal) error {
+		reporter.mu.Lock()
+		_, err = reporter.store.update(func(current *Journal) error {
 			if len(current.Pending) == 0 || current.Pending[0].NodeID != pending.NodeID || current.Pending[0].BootID != pending.BootID || current.Pending[0].Sequence != pending.Sequence {
 				return errors.New("usage pending journal changed while acknowledging report")
 			}
@@ -145,11 +182,11 @@ func (reporter *Reporter) FlushOnce(ctx context.Context) error {
 			current.UpdatedAt = reporter.now().UTC()
 			return nil
 		})
+		reporter.mu.Unlock()
 		if err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
 func (reporter *Reporter) collect(ctx context.Context, journal Journal) (Journal, error) {

@@ -12,6 +12,21 @@ import (
 var _ vlessidentity.Repository = (*Store)(nil)
 var _ vlessruntime.Repository = (*Store)(nil)
 
+// ResolveSubscriptionLines resolves every requested binding from one validated
+// PostgreSQL snapshot. This avoids N+1 snapshot transactions during concurrent
+// subscription downloads while preserving the existing per-line error model.
+func (s *Store) ResolveSubscriptionLines(ctx context.Context, administratorID, customerID string, bindings []string) (map[string]string, map[string]error, error) {
+	type batchResult struct {
+		uris   map[string]string
+		errors map[string]error
+	}
+	result, err := transact(ctx, s, false, func(state *memoryrepo.Store) (batchResult, error) {
+		uris, errorsByBinding, err := state.ResolveSubscriptionLines(ctx, administratorID, customerID, bindings)
+		return batchResult{uris: uris, errors: errorsByBinding}, err
+	})
+	return result.uris, result.errors, err
+}
+
 func (s *Store) Provision(ctx context.Context, input vlessidentity.ProvisionInput, event audit.Event) (vlessidentity.Binding, bool, error) {
 	type result struct {
 		binding  vlessidentity.Binding

@@ -164,7 +164,9 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 	phaseResults[phaseKey] = result
 	if result.Generation >= node.LastApplyGeneration {
 		node.LastApplyGeneration = result.Generation
+		node.LastApplyPhase = string(result.Phase)
 		node.LastApplyStatus = string(result.Status)
+		node.LastApplyMessage = result.Message
 	}
 	commit, committed := phaseResults["commit"]
 	verify, verified := phaseResults["verify"]

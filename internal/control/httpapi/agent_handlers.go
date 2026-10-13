@@ -40,7 +40,9 @@ func (api *API) heartbeat(writer http.ResponseWriter, request *http.Request, nod
 		Resources:                resources,
 		Capabilities:             input.Capabilities,
 		CurrentAppliedGeneration: int64(input.AppliedGeneration),
+		LastApplyPhase:           string(input.LastApplyPhase),
 		LastApplyStatus:          string(input.LastApplyStatus),
+		LastApplyMessage:         input.LastApplyMessage,
 	})
 	if err != nil {
 		writeProblem(writer, request, err)

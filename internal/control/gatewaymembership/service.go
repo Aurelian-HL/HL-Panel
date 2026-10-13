@@ -265,6 +265,10 @@ func protocolEvidenceMatches(observation ProtocolObservation, receipt deployment
 		observation.LeaseExpiresAt.After(observation.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
 		return false
 	}
+	expectedHost, err := serviceaddress.NormalizeHost(dialHost)
+	if err != nil || expectedHost == "" {
+		return false
+	}
 	observedHost, err := serviceaddress.NormalizeHost(observation.DialHost)
-	return err == nil && observedHost == dialHost
+	return err == nil && observedHost == expectedHost
 }

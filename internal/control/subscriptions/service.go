@@ -236,6 +236,27 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 	if draft {
 		lines = r.Draft
 	}
+	batchURIs := map[string]string{}
+	batchErrors := map[string]error{}
+	batchUsed := false
+	if s.native != nil {
+		if batch, ok := s.native.(NativeBatchResolver); ok {
+			bindingIDs := make([]string, 0, len(lines))
+			for _, line := range lines {
+				if line.BindingID != "" {
+					bindingIDs = append(bindingIDs, line.BindingID)
+				}
+			}
+			if len(bindingIDs) > 0 {
+				batchUsed = true
+				var err error
+				batchURIs, batchErrors, err = batch.ResolveSubscriptionLines(ctx, r.OwnerID, r.Item.CustomerID, bindingIDs)
+				if err != nil {
+					return nil, subscriptionReadError(err)
+				}
+			}
+		}
+	}
 	out := make([]Resolved, 0, len(lines))
 	for _, line := range lines {
 		uri := line.URI
@@ -243,6 +264,11 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 		if line.BindingID != "" {
 			if s.native == nil {
 				resolveErr = faults.ErrConflict
+			} else if batchUsed {
+				uri, resolveErr = batchURIs[line.BindingID], batchErrors[line.BindingID]
+				if uri == "" && resolveErr == nil {
+					resolveErr = faults.ErrConflict
+				}
 			} else {
 				uri, resolveErr = s.native.ResolveSubscriptionLine(ctx, r.OwnerID, r.Item.CustomerID, line.BindingID)
 			}

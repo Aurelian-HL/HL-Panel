@@ -78,3 +78,56 @@ func TestChangeSignalsCoalesceAndRegisterNextGeneration(t *testing.T) {
 		t.Fatal("next generation signal lost")
 	}
 }
+
+func TestChangeSignalsReleaseDoesNotDeleteNewSubscription(t *testing.T) {
+	var signals ChangeSignals
+	old := signals.ForNode("one")
+	signals.Notify("one")
+	next := signals.ForNode("one")
+
+	// A timed-out waiter can release after Notify and after a newer waiter has
+	// registered. Its stale channel must not remove the newer subscription.
+	signals.Release("one", old)
+	signals.Notify("one")
+	select {
+	case <-next:
+	default:
+		t.Fatal("new subscription was removed by stale release")
+	}
+}
+
+func TestChangeSignalsReleaseRemovesUnusedSubscription(t *testing.T) {
+	var signals ChangeSignals
+	first := signals.ForNode("one")
+	signals.Release("one", first)
+	second := signals.ForNode("one")
+	if first == second {
+		t.Fatal("released subscription was retained")
+	}
+	signals.Notify("one")
+	select {
+	case <-second:
+	default:
+		t.Fatal("active subscription was not notified")
+	}
+}
+
+func TestChangeSignalsReleaseKeepsSharedSubscriptionUntilLastWaiter(t *testing.T) {
+	var signals ChangeSignals
+	first := signals.ForNode("one")
+	second := signals.ForNode("one")
+	if first != second {
+		t.Fatal("waiters did not share signal")
+	}
+	signals.Release("one", first)
+	remaining := signals.ForNode("one")
+	if remaining != second {
+		t.Fatal("first release removed a subscription still in use")
+	}
+	signals.Release("one", second)
+	signals.Release("one", remaining)
+	newSubscription := signals.ForNode("one")
+	if newSubscription == second {
+		t.Fatal("last release did not remove unused subscription")
+	}
+}

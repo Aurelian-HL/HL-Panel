@@ -49,7 +49,7 @@ func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.Pr
 }
 
 func (s *Store) PublishProtocolHealthBatch(ctx context.Context, observations []gatewaymembership.ProtocolObservation) ([]error, error) {
-	return transact(ctx, s, true, func(state *memoryrepo.Store) ([]error, error) {
+	return transactNoopAware(ctx, s, func(state *memoryrepo.Store) ([]error, error) {
 		return state.PublishProtocolHealthBatch(ctx, observations)
 	})
 }

@@ -18,7 +18,9 @@ type Node struct {
 	DesiredGeneration       int64             `json:"desired_generation"`
 	AppliedGeneration       int64             `json:"applied_generation"`
 	LastApplyGeneration     int64             `json:"last_apply_generation"`
+	LastApplyPhase          string            `json:"last_apply_phase"`
 	LastApplyStatus         string            `json:"last_apply_status"`
+	LastApplyMessage        string            `json:"last_apply_message"`
 	LastHeartbeatAt         *time.Time        `json:"last_heartbeat_at"`
 	DeletedAt               *time.Time        `json:"deleted_at,omitempty"`
 	CredentialHash          string            `json:"-"`
@@ -49,7 +51,9 @@ type Heartbeat struct {
 	Resources                map[string]any
 	Capabilities             []string
 	CurrentAppliedGeneration int64
+	LastApplyPhase           string
 	LastApplyStatus          string
+	LastApplyMessage         string
 	ControlCommandStatus     string
 	ControlCommandMessage    string
 	ControlCommandLogs       string

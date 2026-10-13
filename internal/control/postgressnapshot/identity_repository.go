@@ -142,9 +142,24 @@ func (s *Store) RotateCredential(ctx context.Context, input nodes.RotateCredenti
 }
 
 func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
-	return transact(ctx, s, true, func(state *memoryrepo.Store) (nodes.Node, error) {
+	// Resource samples are high-frequency telemetry. Replaying the update against
+	// a read-only snapshot keeps the agent response current while avoiding a
+	// full singleton snapshot rewrite on every heartbeat. Lifecycle/configuration
+	// changes bypass the throttle and use the normal durable write path.
+	if !s.claimHeartbeatPersistence(id, heartbeat, now) {
+		return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) {
+			return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
+		})
+	}
+	result, err := transact(ctx, s, true, func(state *memoryrepo.Store) (nodes.Node, error) {
 		return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
 	})
+	if err == nil {
+		s.markHeartbeatPersisted(id, heartbeat, now)
+	} else {
+		s.releaseHeartbeatPersistence(id)
+	}
+	return result, err
 }
 
 func (s *Store) Overview(ctx context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {

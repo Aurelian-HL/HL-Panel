@@ -45,26 +45,23 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 	if current.EffectiveIngressProtocol() != forwarding.IngressVLESSReality {
 		return faults.ErrConflict
 	}
+	poolID, err := s.endpointPoolIDForRuleLocked(ruleID)
+	if err != nil {
+		return err
+	}
 	// The challenge and this write are separate operations. Revalidate the
 	// current receipt, membership and bounded protocol lease under the lock;
 	// an in-flight probe cannot activate a retired or reconfigured candidate.
 	ready := false
-	for poolID, pool := range s.endpointPools {
-		if pool.RuleID != ruleID {
+	pool := s.endpointPools[poolID]
+	for nodeID, member := range s.endpointMembers[poolID] {
+		input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
+		if err != nil {
 			continue
 		}
-		for nodeID, member := range s.endpointMembers[poolID] {
-			input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
-			if err != nil {
-				continue
-			}
-			evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
-			if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
-				ready = true
-				break
-			}
-		}
-		if ready {
+		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+		if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
+			ready = true
 			break
 		}
 	}
