@@ -72,6 +72,13 @@ func isolatedUsageDatabase(t *testing.T) *sql.DB {
 	if _, err := db.ExecContext(ctx, string(migration)); err != nil {
 		t.Fatal("apply usage migration failed:", err)
 	}
+	totals, err := os.ReadFile(filepath.Join(filepath.Dir(migrationPath), "000006_rule_usage_totals.up.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, string(totals)); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 

@@ -1,0 +1,11 @@
+BEGIN;
+DROP TRIGGER usage_rule_totals_insert ON usage_events;
+DROP TRIGGER usage_rule_totals_delete ON usage_events;
+DROP TRIGGER usage_rule_totals_update_1_remove ON usage_events;
+DROP TRIGGER usage_rule_totals_update_2_add ON usage_events;
+DROP TRIGGER usage_rule_totals_truncate ON usage_events;
+DROP FUNCTION usage_rule_totals_added();
+DROP FUNCTION usage_rule_totals_removed();
+DROP FUNCTION usage_rule_totals_cleared();
+DROP TABLE usage_rule_totals;
+COMMIT;

@@ -94,6 +94,10 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 		_, err = source.db.ExecContext(ctx, query)
 		require(err)
 	}
+	// Export includes counters not yet folded into the business snapshot.
+	require(source.SyncRuleTraffic(ctx, rule.ID, 123, now))
+	_, err = target.db.ExecContext(ctx, `INSERT INTO hl_panel_rule_traffic VALUES($1,$2,false,'',900,now())`, rule.ID, rule.Revision)
+	require(err)
 	runtime := migrationbackup.RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{7}, 32), GatewayPoolTokens: map[string]string{"fixture-pool": strings.Repeat("g", 32)}}
 	backupPass := "isolated-backup-password"
 	// Seed a target-only node so restore coverage includes both sides of the
@@ -142,6 +146,11 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	}
 	restored, err := target.ExportMigration(ctx)
 	require(err)
+	restoredRule, err := target.ForwardingRule(ctx, rule.ID)
+	require(err)
+	if restoredRule.TrafficUsedBytes != 123 {
+		t.Fatal("restored traffic lost source projection or inherited target projection", restoredRule.TrafficUsedBytes)
+	}
 	sourceState, err := source.ExportMigration(ctx)
 	require(err)
 	if !reflect.DeepEqual(sourceState.Usage, restored.Usage) {

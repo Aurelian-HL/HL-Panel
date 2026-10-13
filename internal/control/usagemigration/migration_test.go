@@ -26,6 +26,8 @@ func TestEmbeddedMigrationsMatchCanonicalFilesAndFixedDigests(t *testing.T) {
 	}{
 		{name: "up", path: filepath.Join(root, "migrations/000003_usage_ledger.up.sql"), embedded: embeddedUp, digest: UpSHA256},
 		{name: "down", path: filepath.Join(root, "migrations/000003_usage_ledger.down.sql"), embedded: embeddedDown, digest: DownSHA256},
+		{name: "totals up", path: filepath.Join(root, "migrations/000006_rule_usage_totals.up.sql"), embedded: ruleTotalsUp, digest: ruleTotalsUpSHA},
+		{name: "totals down", path: filepath.Join(root, "migrations/000006_rule_usage_totals.down.sql"), embedded: ruleTotalsDown, digest: ruleTotalsDownSHA},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

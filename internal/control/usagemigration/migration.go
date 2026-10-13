@@ -163,6 +163,12 @@ func (runner *Runner) Status(ctx context.Context) (Status, error) {
 		}
 		return Status{}, err
 	}
+	if err := verifyRuleTotals(ctx, tx); err != nil {
+		if errors.Is(err, ErrNotApplied) {
+			return runner.commitStatus(tx, Status{State: StatePending, Version: Version, Detail: "rule usage totals upgrade pending"})
+		}
+		return runner.commitStatus(tx, Status{State: StateDrifted, Version: Version, Detail: err.Error()})
+	}
 	return runner.commitStatus(tx, Status{State: StateApplied, Version: Version})
 }
 
@@ -187,10 +193,14 @@ func (runner *Runner) Apply(ctx context.Context) (ApplyResult, error) {
 		if err := verifySchema(ctx, tx); err != nil {
 			return ApplyResult{}, err
 		}
+		upgraded, err := runner.applyRuleTotals(ctx, tx)
+		if err != nil {
+			return ApplyResult{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return ApplyResult{}, fmt.Errorf("commit existing usage migration: %w", err)
 		}
-		return ApplyResult{Version: Version}, nil
+		return ApplyResult{Applied: upgraded, Version: Version}, nil
 	}
 	present, err := migrationRelationsPresent(ctx, tx)
 	if err != nil {
@@ -215,6 +225,9 @@ func (runner *Runner) Apply(ctx context.Context) (ApplyResult, error) {
 		return ApplyResult{}, driftf("new migration state is unreadable")
 	}
 	if err := validateState(record); err != nil {
+		return ApplyResult{}, err
+	}
+	if _, err := runner.applyRuleTotals(ctx, tx); err != nil {
 		return ApplyResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -247,6 +260,9 @@ func (runner *Runner) Verify(ctx context.Context) error {
 		return err
 	}
 	if err := verifySchema(ctx, tx); err != nil {
+		return err
+	}
+	if err := verifyRuleTotals(ctx, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -286,6 +302,9 @@ func (runner *Runner) Rollback(ctx context.Context, force bool) (RollbackResult,
 		if hasData {
 			return RollbackResult{}, ErrRollbackDataExists
 		}
+	}
+	if err := rollbackRuleTotals(ctx, tx); err != nil {
+		return RollbackResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, runner.downBody); err != nil {
 		return RollbackResult{}, fmt.Errorf("execute usage down migration: %w", err)

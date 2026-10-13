@@ -68,11 +68,16 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 	if err != nil {
 		return nil, err
 	}
-	if state != nil {
-		return state, nil
+	if state == nil {
+		state, err = decodeReadSnapshot(cached.payload, cached.version, uint64(cached.revision))
+		if err != nil {
+			return nil, err
+		}
 	}
-	// Business reads still own their mutable state and history reader.
-	return decodeReadSnapshot(cached.payload, cached.version, uint64(cached.revision))
+	if err := mergeRuleTrafficOverlays(ctx, tx, state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshotReadCache, *memoryrepo.Store, error) {
@@ -124,7 +129,7 @@ func readIdentity[T any](parent context.Context, s *Store, operation func(*memor
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
@@ -230,6 +235,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 			return errors.New("PostgreSQL initial snapshot write failed")
 		}
 	}
+	if err := initializeRuleTrafficOverlays(ctx, tx); err != nil {
+		return err
+	}
 	if err := initializeAuditJournal(ctx, tx); err != nil {
 		return err
 	}
@@ -262,6 +270,7 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, e
 	state, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
 	if err == nil {
 		state.SetPersistenceRevision(uint64(revision))
+		err = mergeRuleTrafficOverlays(ctx, tx, state)
 	}
 	return state, err
 }
@@ -270,7 +279,11 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: !write})
+	options := &sql.TxOptions{ReadOnly: !write}
+	if !write {
+		options.Isolation = sql.LevelRepeatableRead
+	}
+	tx, err := s.db.BeginTx(ctx, options)
 	if err != nil {
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
@@ -356,7 +369,7 @@ func transactNoopAware[T any](parent context.Context, s *Store, operation func(*
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}

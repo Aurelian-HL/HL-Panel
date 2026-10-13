@@ -15,7 +15,7 @@ func readUsage[T any](parent context.Context, s *Store, operation func(context.C
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
@@ -35,13 +35,41 @@ func readUsage[T any](parent context.Context, s *Store, operation func(context.C
 }
 
 func (s *Store) RuleTrafficState(ctx context.Context, id string) (forwarding.RuleTrafficState, error) {
-	return readUsage(ctx, s, func(ctx context.Context, _ *sql.Tx, view *memoryrepo.UsageReadView) (forwarding.RuleTrafficState, error) {
-		return view.RuleTrafficState(ctx, id)
+	return readUsage(ctx, s, func(ctx context.Context, tx *sql.Tx, view *memoryrepo.UsageReadView) (forwarding.RuleTrafficState, error) {
+		state, err := view.RuleTrafficState(ctx, id)
+		if err != nil {
+			return state, err
+		}
+		overlays, err := readRuleTrafficOverlays(ctx, tx, id)
+		if err != nil {
+			return state, err
+		}
+		for _, overlay := range overlays {
+			state = memoryrepo.MergeRuleTrafficOverlay(state, overlay)
+		}
+		return state, nil
 	})
 }
 
 func (s *Store) ListRuleTrafficStates(ctx context.Context) ([]forwarding.RuleTrafficState, error) {
-	return readUsage(ctx, s, func(ctx context.Context, _ *sql.Tx, view *memoryrepo.UsageReadView) ([]forwarding.RuleTrafficState, error) {
-		return view.ListRuleTrafficStates(ctx)
+	return readUsage(ctx, s, func(ctx context.Context, tx *sql.Tx, view *memoryrepo.UsageReadView) ([]forwarding.RuleTrafficState, error) {
+		states, err := view.ListRuleTrafficStates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		overlays, err := readRuleTrafficOverlays(ctx, tx, "")
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[string]memoryrepo.RuleTrafficOverlay, len(overlays))
+		for _, overlay := range overlays {
+			byID[overlay.State.ID] = overlay
+		}
+		for i, state := range states {
+			if overlay, ok := byID[state.ID]; ok {
+				states[i] = memoryrepo.MergeRuleTrafficOverlay(state, overlay)
+			}
+		}
+		return states, nil
 	})
 }

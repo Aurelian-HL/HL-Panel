@@ -47,6 +47,9 @@ func captureMigration(ctx context.Context, tx *sql.Tx) (migrationbackup.State, e
 	if err != nil {
 		return state, errors.New("migration snapshot invalid")
 	}
+	if err = mergeRuleTrafficOverlays(ctx, tx, decoded); err != nil {
+		return state, err
+	}
 	if err = joinNodeConfigHistory(ctx, tx, decoded); err != nil {
 		return state, err
 	}
@@ -223,6 +226,11 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 		if _, err = tx.ExecContext(ctx, `INSERT INTO `+table+` (`+projection+`) SELECT `+projection+` FROM json_populate_recordset(NULL::`+table+`,$1::json)`, string(input.Bundle.State.Usage[table])); err != nil {
 			return result, errors.New("migration ledger data invalid; existing panel data retained")
 		}
+	}
+	// Imported snapshots carry their own counters. Never overlay counters from
+	// the replaced panel, even when rule IDs and revisions happen to match.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_rule_traffic`); err != nil {
+		return result, errors.New("migration traffic projection replacement failed")
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload=$1,format_version=$2,revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true`, restored, memoryrepo.SnapshotVersion); err != nil {
 		return result, errors.New("migration snapshot restore failed")
