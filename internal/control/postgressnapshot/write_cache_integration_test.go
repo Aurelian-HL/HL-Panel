@@ -33,7 +33,7 @@ func TestCommittedWriteSeedsValidatedDetachedReadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	cached := s.readCache
-	if cached.identities == nil || len(cached.payload) == 0 || cached.transactionID == "" || cached.revision <= 1 {
+	if cached.usage == nil || cached.identities == nil || len(cached.payload) == 0 || cached.transactionID == "" || cached.revision <= 1 {
 		t.Fatal("committed transaction did not seed read cache")
 	}
 	if _, err = s.SessionByTokenHash(ctx, hash, now); err != nil || s.readCache.identities != cached.identities || &s.readCache.payload[0] != &cached.payload[0] {
@@ -98,7 +98,7 @@ CREATE CONSTRAINT TRIGGER reject_snapshot_commit AFTER UPDATE ON nyvp_control_sn
 			t.Fatal("deferred database failure was ignored")
 		}
 	})
-	if s.readCache.identities != cached.identities || &s.readCache.payload[0] != &cached.payload[0] {
+	if s.readCache.usage != cached.usage || s.readCache.identities != cached.identities || &s.readCache.payload[0] != &cached.payload[0] {
 		t.Fatal("failed transaction published uncommitted cache")
 	}
 	actual, err := s.AdministratorByID(ctx, admin.ID)

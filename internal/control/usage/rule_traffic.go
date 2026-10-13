@@ -15,6 +15,13 @@ type RuleTrafficRepository interface {
 	ApplyRuleTraffic(context.Context, forwarding.RuleTrafficProjection) error
 }
 
+// RuleTrafficStateReader avoids deployment-status work during accounting.
+// Older repositories remain supported through the full-rule fallback.
+type RuleTrafficStateReader interface {
+	RuleTrafficState(context.Context, string) (forwarding.RuleTrafficState, error)
+	ListRuleTrafficStates(context.Context) ([]forwarding.RuleTrafficState, error)
+}
+
 func WithRuleTrafficRepository(r RuleTrafficRepository) Option {
 	return func(s *Service) { s.ruleTraffic = r }
 }
@@ -22,7 +29,15 @@ func (s *Service) syncRuleTraffic(ctx context.Context, id string) error {
 	if s.ruleTraffic == nil {
 		return nil
 	}
-	rule, err := s.ruleTraffic.ForwardingRule(ctx, id)
+	var rule forwarding.RuleTrafficState
+	var err error
+	if reader, ok := s.ruleTraffic.(RuleTrafficStateReader); ok {
+		rule, err = reader.RuleTrafficState(ctx, id)
+	} else {
+		var full forwarding.Rule
+		full, err = s.ruleTraffic.ForwardingRule(ctx, id)
+		rule = forwarding.TrafficState(full)
+	}
 	if errors.Is(err, faults.ErrNotFound) {
 		return nil
 	}
@@ -32,30 +47,38 @@ func (s *Service) syncRuleTraffic(ctx context.Context, id string) error {
 	return s.syncRuleTrafficProjection(ctx, rule)
 }
 
-func (s *Service) syncRuleTrafficProjection(ctx context.Context, rule forwarding.Rule) error {
+func (s *Service) syncRuleTrafficProjection(ctx context.Context, rule forwarding.RuleTrafficState) error {
 	now := s.now().UTC()
 	query := Query{Scope: ScopeRule, ScopeID: rule.ID, Page: 1, PageSize: 1}
 	if rule.TrafficQuotaMonthly {
 		from, to := forwarding.TrafficQuotaPeriodBounds(now)
 		query.From, query.To = &from, &to
 	}
-	totals, err := s.repository.Query(ctx, query)
+	chargedBytes, err := s.ruleChargedBytes(ctx, query)
 	if err != nil {
 		return err
 	}
 	// Avoid rewriting the complete control snapshot for every idle rule every
 	// five seconds. A new monthly period still needs to commit a zero total.
-	if totals.Totals.ChargedBytes <= rule.TrafficUsedBytes && (!rule.TrafficQuotaMonthly || rule.TrafficUsagePeriod == forwarding.TrafficQuotaPeriod(now)) {
+	if chargedBytes <= rule.TrafficUsedBytes && (!rule.TrafficQuotaMonthly || rule.TrafficUsagePeriod == forwarding.TrafficQuotaPeriod(now)) {
 		return nil
 	}
 	err = s.ruleTraffic.ApplyRuleTraffic(ctx, forwarding.RuleTrafficProjection{
 		RuleID: rule.ID, ExpectedRevision: rule.Revision, Monthly: rule.TrafficQuotaMonthly,
-		TotalBytes: totals.Totals.ChargedBytes, At: now,
+		TotalBytes: chargedBytes, At: now,
 	})
 	if errors.Is(err, faults.ErrNotFound) {
 		return nil
 	}
 	return err
+}
+
+func (s *Service) ruleChargedBytes(ctx context.Context, query Query) (int64, error) {
+	if reader, ok := s.repository.(RuleChargedBytesReader); ok {
+		return reader.RuleChargedBytes(ctx, query)
+	}
+	result, err := s.repository.Query(ctx, query)
+	return result.Totals.ChargedBytes, err
 }
 func (s *Service) afterIngest(ctx context.Context, result IngestResult, err error, id string) (IngestResult, error) {
 	if err != nil {
@@ -78,7 +101,7 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 	defer tick.Stop()
 	for {
 		bounded, cancel := context.WithTimeout(ctx, 20*time.Second)
-		rules, err := s.ruleTraffic.ListForwardingRules(bounded)
+		rules, err := s.ruleTrafficStates(bounded)
 		if err == nil {
 			for _, r := range rules {
 				if bounded.Err() != nil {
@@ -104,4 +127,19 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 		case <-tick.C:
 		}
 	}
+}
+
+func (s *Service) ruleTrafficStates(ctx context.Context) ([]forwarding.RuleTrafficState, error) {
+	if reader, ok := s.ruleTraffic.(RuleTrafficStateReader); ok {
+		return reader.ListRuleTrafficStates(ctx)
+	}
+	rules, err := s.ruleTraffic.ListForwardingRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]forwarding.RuleTrafficState, len(rules))
+	for i, rule := range rules {
+		states[i] = forwarding.TrafficState(rule)
+	}
+	return states, nil
 }

@@ -60,6 +60,7 @@ type snapshotReadCache struct {
 	transactionID string
 	payload       []byte
 	identities    *memoryrepo.IdentityReadView
+	usage         *memoryrepo.UsageReadView
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
@@ -104,6 +105,7 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
 	}
 	next.payload = raw
 	next.identities = state.IdentityReadView()
+	next.usage = state.UsageReadView()
 	// Do not let a slower transaction publish an older snapshot over a newer
 	// committed one. Equal revisions with a different xmin are external
 	// repairs; the first reader that observes the replacement wins.
@@ -324,6 +326,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		// still validates the database row, but need not decode the entire state
 		// again merely because this instance just recorded a heartbeat or probe.
 		committedCache.identities = state.IdentityReadView()
+		committedCache.usage = state.UsageReadView()
 		s.readMu.Lock()
 		if s.readCache.revision <= committedCache.revision {
 			s.readCache = committedCache
