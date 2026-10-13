@@ -118,3 +118,41 @@ func TestUngroupedNeverSampledNodeCanBeDeleted(t *testing.T) {
 		t.Fatal("ungrouped node not removed")
 	}
 }
+
+func TestUnassignedOnlineDeletionRequiresAdminAndRechecksGroupMembership(t *testing.T) {
+	f := newBusinessFixture(t)
+	enroll := func(group string) agentv1.EnrollmentResponse {
+		t.Helper()
+		var token enrollment.IssueResult
+		decodeResponse(t, requestJSON(t, f.handler, http.MethodPost, "/api/v1/enrollment-tokens", f.token,
+			map[string]any{"name": "cleanup", "group_id": group, "expires_in_seconds": 900}, http.StatusCreated), &token)
+		var node agentv1.EnrollmentResponse
+		decodeResponse(t, requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/enroll", "", agentv1.EnrollmentRequest{EnrollmentToken: token.Token, Hostname: "cleanup", Platform: "linux", Architecture: "amd64", AgentVersion: "test"}, http.StatusCreated), &node)
+		return node
+	}
+	grouped := enroll(f.entry.ID)
+	before, _ := f.store.EncodeSnapshot()
+	deletePathRequest(t, f.handler, "/api/v1/nodes/"+grouped.NodeID+"?scope=unassigned", f.token, "protected", http.StatusConflict)
+	after, _ := f.store.EncodeSnapshot()
+	if !bytes.Equal(before, after) {
+		t.Fatal("stale unassigned classification mutated grouped node")
+	}
+	orphan := enroll("")
+	_, err := f.store.UpdateHeartbeat(context.Background(), orphan.NodeID, nodes.Heartbeat{}, time.Now().UTC(), audit.Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/nodes/" + orphan.NodeID + "?scope=unassigned"
+	deletePathRequest(t, f.handler, path, "", "cleanup", http.StatusUnauthorized)
+	deletePathRequest(t, f.handler, path, orphan.NodeCredential, "cleanup", http.StatusUnauthorized)
+	deletePathRequest(t, f.handler, path, f.token, "", http.StatusBadRequest)
+	deletePathRequest(t, f.handler, "/api/v1/nodes/"+orphan.NodeID+"?scope=invalid", f.token, "cleanup", http.StatusBadRequest)
+	deletePathRequest(t, f.handler, path, f.token, "cleanup", http.StatusOK)
+	var replay struct{ Replayed bool }
+	decodeResponse(t, deletePathRequest(t, f.handler, path, f.token, "cleanup", http.StatusOK), &replay)
+	if !replay.Replayed {
+		t.Fatal("unassigned cleanup was not idempotent")
+	}
+	deletePathRequest(t, f.handler, "/api/v1/nodes/"+orphan.NodeID, f.token, "cleanup", http.StatusConflict)
+	requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/heartbeat", orphan.NodeCredential, map[string]any{}, http.StatusUnauthorized)
+}

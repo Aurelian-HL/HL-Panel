@@ -118,3 +118,19 @@ it('offers deletion only for offline HL nodes in desktop and mobile layouts', as
   expect(wrapper.emitted('deleteNode')).toHaveLength(2)
   wrapper.unmount()
 })
+
+it('offers online unassigned and linked HL deletion in both layouts without deleting unmanaged upstream hosts', async () => {
+  const wrapper = mount(ProbeMembers, { props: { unassigned: true, upstreamStatus: 'ok', now: Date.now(), items: [
+    { node_id: 'online', link_status: 'native', source: 'hl', online: true, name: '未入组在线机器' },
+    { node_id: 'linked', link_status: 'linked', online: true, name: '已关联机器' },
+    { node_id: 'nezha:1', link_status: 'unmanaged', online: false, name: '外部机器' },
+  ] } })
+  expect(wrapper.findAll('[aria-label="删除未入组在线机器"]')).toHaveLength(2)
+  expect(wrapper.findAll('[aria-label="删除已关联机器"]')).toHaveLength(2)
+  expect(wrapper.find('[aria-label="删除外部机器"]').exists()).toBe(false)
+  await wrapper.findAll('[aria-label="删除未入组在线机器"]')[1]!.trigger('click')
+  expect(wrapper.emitted('deleteNode')).toHaveLength(1)
+  await wrapper.setProps({ unassigned: false })
+  expect(wrapper.find('[aria-label="删除未入组在线机器"]').exists()).toBe(false)
+  wrapper.unmount()
+})

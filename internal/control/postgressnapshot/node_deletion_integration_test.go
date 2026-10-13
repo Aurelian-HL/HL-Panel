@@ -13,6 +13,15 @@ import (
 )
 
 func TestPostgreSQLNodeDeletionSurvivesRestartAndRejectsHeartbeat(t *testing.T) {
+	testPostgreSQLNodeDeletion(t, false)
+}
+
+func TestPostgreSQLOnlineUnassignedDeletionSurvivesRestartAndRejectsHeartbeat(t *testing.T) {
+	testPostgreSQLNodeDeletion(t, true)
+}
+
+func testPostgreSQLNodeDeletion(t *testing.T, onlyUnassigned bool) {
+	t.Helper()
 	dsn := isolatedDatabaseURL(t)
 	ctx := context.Background()
 	admin := bootstrapAdministrator(t)
@@ -36,7 +45,10 @@ func TestPostgreSQLNodeDeletionSurvivesRestartAndRejectsHeartbeat(t *testing.T) 
 	if _, _, err := s.DeleteOffline(ctx, input, event); !errors.Is(err, faults.ErrConflict) {
 		t.Fatal("online deletion accepted")
 	}
-	input.DeletedAt = now.Add(2 * time.Minute)
+	input.OnlyUnassigned = onlyUnassigned
+	if !onlyUnassigned {
+		input.DeletedAt = now.Add(2 * time.Minute)
+	}
 	if _, replayed, err := s.DeleteOffline(ctx, input, event); err != nil || replayed {
 		t.Fatalf("offline deletion failed: %v", err)
 	}

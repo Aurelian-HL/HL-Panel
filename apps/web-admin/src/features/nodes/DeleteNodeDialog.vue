@@ -6,7 +6,7 @@ import BaseModal from '@/components/BaseModal.vue'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { displayError } from '@/lib/displayFormatters'
 
-const props = defineProps<{ nodeId: string; label: string }>()
+const props = defineProps<{ nodeId: string; label: string; unassigned?: boolean }>()
 const emit = defineEmits<{ close: []; deleted: [nodeId: string] }>()
 const busy = ref(false)
 const error = ref('')
@@ -16,7 +16,9 @@ async function remove(): Promise<void> {
   busy.value = true
   error.value = ''
   try {
-    await api.deleteNode(props.nodeId, mutationKey({ node_id: props.nodeId }))
+    const key = mutationKey({ node_id: props.nodeId, unassigned: Boolean(props.unassigned) })
+    if (props.unassigned) await api.deleteNode(props.nodeId, key, 'unassigned')
+    else await api.deleteNode(props.nodeId, key)
     emit('deleted', props.nodeId)
   } catch (cause) {
     error.value = displayError(cause)
@@ -27,9 +29,9 @@ async function remove(): Promise<void> {
 </script>
 
 <template>
-  <BaseModal title="删除离线节点" :description="label" width="small" :close-disabled="busy" @close="emit('close')">
+  <BaseModal :title="unassigned ? '删除未入组机器' : '删除离线节点'" :description="label" width="small" :close-disabled="busy" @close="emit('close')">
     <div class="delete-confirmation">
-      <p>确认清理这个离线节点？</p>
+      <p>{{ unassigned ? '确认删除这台未入组或已退役的机器？在线机器也可清理；如已重新入组，删除将被拒绝。' : '确认清理这个离线节点？' }}</p>
       <ul>
         <li>从节点清单、设备探针及设备组中移除，旧凭据将停止接收心跳。</li>
         <li>历史流量和操作日志保留，不会卸载远程机器上的服务。</li>

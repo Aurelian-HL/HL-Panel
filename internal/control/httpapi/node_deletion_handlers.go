@@ -1,12 +1,25 @@
 package httpapi
 
 import (
+	"fmt"
 	"github.com/hongle/hl-panel/internal/control/auth"
+	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/nodes"
 	"net/http"
 )
 
 func (api *API) deleteNode(writer http.ResponseWriter, request *http.Request, session auth.Session) {
-	result, replayed, err := api.nodes.DeleteOffline(request.Context(), session.AdminID, request.PathValue("node_id"), request.Header.Get("Idempotency-Key"))
+	var result nodes.DeleteResult
+	var replayed bool
+	var err error
+	switch request.URL.Query().Get("scope") {
+	case "":
+		result, replayed, err = api.nodes.DeleteOffline(request.Context(), session.AdminID, request.PathValue("node_id"), request.Header.Get("Idempotency-Key"))
+	case "unassigned":
+		result, replayed, err = api.nodes.DeleteUnassigned(request.Context(), session.AdminID, request.PathValue("node_id"), request.Header.Get("Idempotency-Key"))
+	default:
+		err = fmt.Errorf("%w: invalid node deletion scope", faults.ErrValidation)
+	}
 	if err != nil {
 		writeProblem(writer, request, err)
 		return

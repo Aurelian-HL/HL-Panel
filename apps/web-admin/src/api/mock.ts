@@ -132,10 +132,12 @@ export const mockApi = {
     return pause(clone(result))
   },
   getPanelControl(): Promise<PanelControlResult | null> { return pause(clone(panelControlResult)) },
-  async deleteNode(nodeId: string, _key: string): Promise<{ node_id: string; replayed: boolean }> {
+  async deleteNode(nodeId: string, _key: string, scope?: 'unassigned'): Promise<{ node_id: string; replayed: boolean }> {
     const index = nodes.findIndex((node) => node.id === nodeId)
     if (index < 0) return pause({ node_id: nodeId, replayed: true })
-    if (nodes[index]?.status !== 'offline') throw new ApiError('节点仍在线，请等待节点离线后再删除', 409, 'conflict')
+    if (scope === 'unassigned') {
+      if ([...groupMembers.values()].some((members) => { const member = members.get(nodeId); return member && !member.retired_at })) throw new ApiError('节点已加入设备组，请刷新后先退役再删除', 409, 'conflict')
+    } else if (nodes[index]?.status !== 'offline') throw new ApiError('节点仍在线，请等待节点离线后再删除', 409, 'conflict')
     nodes.splice(index, 1)
     for (const [groupId, members] of groupMembers) {
       members.delete(nodeId)
