@@ -49,10 +49,10 @@
 
 每次修复应包含复现、回归测试和发布说明。正式安装包必须从同一不可变标签生成，并通过校验与发布流水线；main 分支更新不等于现有实例升级。
 
-已有节点使用保身份更新，无需重新注册或提供令牌：
+先完成[面板服务器更新](upgrade-guide.md#一面板服务器保数据更新)，再 SSH 登录每一台目标节点，以 root 使用保身份更新，无需重新注册或提供令牌。**以下命令仅在节点服务器执行，不是在面板服务器执行：**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update-node.sh | bash -s -- --version v0.1.73
+curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update-node.sh | bash
 ```
 
 不指定版本时，脚本读取当前面板正式版本，因此先核对面板版本。面板更新不会自动更新各节点。全新节点使用面板生成的安装命令；不要拿全新安装或换组重装代替保身份升级。
