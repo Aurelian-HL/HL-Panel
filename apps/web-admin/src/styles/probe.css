@@ -92,11 +92,6 @@
 .probe-details__facts dd { margin: 0; color: var(--gray-950); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .probe-details__meters { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 
-.probe-live-status { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--ny-text); font-size: 12px; }
-.probe-live-status > i { width: 6px; height: 6px; border-radius: 50%; background: var(--green-700); }
-.probe-live-status > span { color: var(--ny-muted); }
-.probe-live-status > button { margin-left: auto; }
-.probe-live-status--error > i { background: var(--amber-700); }
 @media (max-width: 760px) {
   .probe-workspace__header { gap: 14px; padding: 0 14px; }
   .probe-workspace__identity span { display: none; }

@@ -213,7 +213,7 @@
   .primary-nav { display: flex; width: auto; align-items: stretch; padding: 14px 10px; }
   .primary-nav > a, .nav-section-toggle, .nav-management a { width: 100%; min-height: 40px; justify-content: flex-start; flex-direction: row; padding: 9px 13px; font-size: 14px; }
   .primary-nav > a span, .nav-management a span { display: inline; }
-  .nav-management { padding-left: 12px; }
+  .nav-management { padding-left: 0; }
   .business-desktop { display: none; }
   .business-mobile { display: flex; flex-direction: column; gap: 10px; }
   .business-card { padding: 13px; border-radius: 4px; box-shadow: none; }

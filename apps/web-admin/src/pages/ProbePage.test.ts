@@ -206,22 +206,19 @@ describe('ProbePage', () => {
     wrapper.unmount()
   })
 
-  it('saves foreground and background refresh intervals', async () => {
+  it('hides refresh controls and ignores previously stored slower intervals', async () => {
+    localStorage.setItem('hl_probe_refresh_intervals_v1', JSON.stringify({ foreground: 30000, background: 12000 }))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const wrapper = mount(ProbePage)
-    await flushPromises()
-    await wrapper.get('[aria-label="刷新间隔设置"]').trigger('click')
-    expect(document.body.textContent).toContain('刷新间隔设置')
-    const fields = document.body.querySelectorAll<HTMLInputElement>('.modal input[type="number"]')
-    expect(fields).toHaveLength(2)
-    fields[0]!.value = '3000'
-    fields[0]!.dispatchEvent(new Event('input', { bubbles: true }))
-    fields[1]!.value = '12000'
-    fields[1]!.dispatchEvent(new Event('input', { bubbles: true }))
-    document.body.querySelector<HTMLFormElement>('.modal form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-    await flushPromises()
-    expect(JSON.parse(localStorage.getItem('hl_probe_refresh_intervals_v1')!)).toEqual({ foreground: 3000, background: 12000 })
-    expect(document.body.querySelector('.modal')).toBeNull()
-    wrapper.unmount()
+    try {
+      await flushPromises()
+      expect(wrapper.find('.probe-live-status').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="立即刷新探针"]').exists()).toBe(false)
+      expect(wrapper.find('[aria-label="刷新间隔设置"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('自动刷新')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(mocked.getInventory).toHaveBeenCalledTimes(2)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
   })
 
   it('polls in the foreground and stops after leaving the page', async () => {
@@ -230,7 +227,7 @@ describe('ProbePage', () => {
       const wrapper = mount(ProbePage)
       await flushPromises()
       expect(mocked.getInventory).toHaveBeenCalledTimes(1)
-      await vi.advanceTimersByTimeAsync(2_000)
+      await vi.advanceTimersByTimeAsync(1_000)
       expect(mocked.getInventory).toHaveBeenCalledTimes(2)
       wrapper.unmount()
       await vi.advanceTimersByTimeAsync(4_000)
@@ -247,7 +244,7 @@ describe('ProbePage', () => {
       await flushPromises()
       let finish!: (value: typeof completeProbeSample) => void
       mocked.getInventory.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-      await vi.advanceTimersByTimeAsync(2_000)
+      await vi.advanceTimersByTimeAsync(1_000)
       const signal = mocked.getInventory.mock.calls[1]![0] as AbortSignal
       await vi.advanceTimersByTimeAsync(6_000)
       document.dispatchEvent(new Event('visibilitychange'))
@@ -329,7 +326,7 @@ it('keeps polling after deleting a node while a metrics request is pending', asy
     await flushPromises()
     let finishOld: (value: unknown) => void = () => undefined
     mocked.getInventory.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
-    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(1000)
     const oldSignal = mocked.getInventory.mock.calls[1]![0] as AbortSignal
     expect(oldSignal.aborted).toBe(false)
     mocked.getInventory.mockResolvedValue({ ...sample, items: [] })
@@ -342,7 +339,7 @@ it('keeps polling after deleting a node while a metrics request is pending', asy
     await flushPromises()
     expect(wrapper.find('[aria-label="删除离线待清理"]').exists()).toBe(false)
     const calls = mocked.getInventory.mock.calls.length
-    await vi.advanceTimersByTimeAsync(2000)
+    await vi.advanceTimersByTimeAsync(1000)
     expect(mocked.getInventory.mock.calls.length).toBeGreaterThan(calls)
   } finally { wrapper.unmount(); vi.useRealTimers() }
 })

@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { RefreshCw, Settings2 } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
 import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
 import StatePanel from '@/components/StatePanel.vue'
 import DeleteNodeDialog from '@/features/nodes/DeleteNodeDialog.vue'
 import ProbeMembers from '@/features/probe/ProbeMembers.vue'
-import ProbeRefreshSettingsDialog from '@/features/probe/ProbeRefreshSettingsDialog.vue'
 import MemberWeightDialog from '@/features/groups/MemberWeightDialog.vue'
 import { formatRate, hasLiveProbeReading, monitorStatus } from '@/features/probe/format'
-import { readProbeRefreshIntervals, saveProbeRefreshIntervals, type ProbeRefreshIntervals } from '@/features/probe/refreshPreferences'
 import { displayError } from '@/lib/displayFormatters'
 import { serverNow } from '@/lib/serverClock'
 
@@ -22,13 +19,8 @@ const groupsLoading = ref(true)
 const monitoringLoading = ref(false)
 const groupsError = ref('')
 const monitoringError = ref('')
-const lastRefreshedAt = ref<number | null>(null)
-const refreshLabel = computed(() => lastRefreshedAt.value === null ? '正在连接' : `已刷新 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(lastRefreshedAt.value)}`)
 const statusFilter = ref<StatusFilter>('all')
 const now = ref(serverNow())
-const refreshIntervals = ref(readProbeRefreshIntervals())
-const settingsOpen = ref(false)
-const settingsError = ref('')
 const groupMembers = ref<DeviceGroupMember[]>([])
 const allGroupMembers = ref<Record<string, DeviceGroupMember[]>>({})
 const groupMembersError = ref('')
@@ -128,7 +120,6 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
     const result = groupId ? await probeApi.getGroup(groupId, controller.signal) : await probeApi.getInventory(controller.signal)
     if (active && currentRequest === requestId) {
       now.value = serverNow()
-      lastRefreshedAt.value = now.value
       response.value = result
       monitoringError.value = ''
     }
@@ -206,12 +197,12 @@ function scheduleMembershipRefresh(): void {
 function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   if (!active) return
-  refreshTimer = setTimeout(async () => {
+  refreshTimer = setTimeout(() => {
     refreshTimer = undefined
     now.value = serverNow()
-    if (!monitoringLoading.value) await loadMonitoring()
+    void loadMonitoring()
     scheduleRefresh()
-  }, document.visibilityState === 'visible' ? refreshIntervals.value.foreground : refreshIntervals.value.background)
+  }, document.visibilityState === 'visible' ? 1_000 : 10_000)
 }
 
 function onVisibilityChange(): void {
@@ -226,17 +217,6 @@ function onVisibilityChange(): void {
 
 function onOnline(): void { onVisibilityChange() }
 
-function updateIntervals(next: ProbeRefreshIntervals): void {
-  refreshIntervals.value = next
-  settingsError.value = ''
-  try {
-    saveProbeRefreshIntervals(next)
-  } catch {
-    settingsError.value = '刷新间隔已在当前页面生效，但浏览器未能保存设置。'
-  }
-  settingsOpen.value = false
-  scheduleRefresh()
-}
 onMounted(() => {
   active = true
   document.addEventListener('visibilitychange', onVisibilityChange)
@@ -263,9 +243,8 @@ onUnmounted(() => {
   <div class="page-stack probe-page">
     <header class="page-heading">
       <div><h2>设备探针</h2><p>HL主机监控</p></div>
-      <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div><button class="button button--secondary" type="button" title="刷新间隔设置" aria-label="刷新间隔设置" @click="settingsOpen = true"><Settings2 :size="16" /></button></div>
+      <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div></div>
     </header>
-    <div class="probe-live-status" :class="{ 'probe-live-status--error': monitoringError }" role="status"><i />{{ monitoringError ? '连接中断，正在重试' : refreshLabel }}<span>自动刷新 · {{ refreshIntervals.foreground / 1000 }} 秒</span><button class="button button--quiet" type="button" :disabled="monitoringLoading" aria-label="立即刷新探针" @click="loadMonitoring()"><RefreshCw :size="14" :class="{ spin: monitoringLoading }" />刷新</button></div>
 
     <StatePanel v-if="groupsLoading && !response" state="loading" title="正在读取设备探针" />
     <template v-else>
@@ -277,7 +256,6 @@ onUnmounted(() => {
       <p v-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
       <p v-if="groupsError" class="inline-warning">设备组读取失败，分组列表可能不完整：{{ groupsError }}</p>
       <p v-if="groupMembersError" class="inline-warning">设备组成员读取失败，无法设置权重：{{ groupMembersError }}</p>
-      <p v-if="settingsError" class="inline-warning">{{ settingsError }}</p>
       <p v-if="monitoringError && response" class="inline-warning">探针刷新失败，仍显示上次采样：{{ monitoringError }}</p>
 
       <StatePanel v-if="monitoringLoading && !response" state="loading" title="正在读取探针采样" />
@@ -301,7 +279,6 @@ onUnmounted(() => {
       </template>
     </template>
     <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :unassigned="deletingUnassigned" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null; deletingUnassigned = false" @deleted="nodeDeleted" />
-    <ProbeRefreshSettingsDialog v-if="settingsOpen" :intervals="refreshIntervals" @close="settingsOpen = false" @save="updateIntervals" />
     <MemberWeightDialog v-if="editingMember" :member="editingMember" :label="[members.find((item) => item.node_id === editingMember?.node_id)?.name || editingMember.node_id, members.find((item) => item.node_id === editingMember?.node_id)?.ipv4 || editingMember.dial_host].filter(Boolean).join(' · ')" @close="editingMember = null" @saved="weightSaved" />
   </div>
 </template>
