@@ -24,6 +24,12 @@ METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nR
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
 
 
+def verify_xray_version(binary):
+    # Reject an untested handshake change before stopping the current service.
+    require(run([str(binary), 'version']).startswith(b'Xray 26.7.28 '),
+            'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
+
+
 def private_credentials():
     # systemd runs the agent as hl-edge; its atomically written state belongs
     # to that account, while executable files and configuration remain root-owned.
@@ -160,7 +166,7 @@ def main():
         release.mkdir()
         extract_verified(archive,release)
         require((release/'deploy/update-node.py').is_file(),'此版本未提供节点升级器')
-        run([str(release/'bin/xray'),'version'])
+        verify_xray_version(release/'bin/xray')
         run([str(release/'bin/gost'),'-V'])
         credential=digest(STATE/'credentials.json')
         manifest={'credential_sha256':credential,'files':{}}

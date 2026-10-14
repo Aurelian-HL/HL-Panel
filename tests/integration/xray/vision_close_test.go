@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +94,12 @@ func TestVisionTLS13AbruptCloseDoesNotCorruptInnerStream(t *testing.T) {
 		{"vision_tls13", tls.VersionTLS13, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			for round := 1; round <= 3; round++ {
+			knownOldDefect := knownVisionCloseDefect() && test.viaProxy && test.version == tls.VersionTLS13
+			rounds, reproduced := 3, 0
+			if knownOldDefect {
+				rounds = 8
+			}
+			for round := 1; round <= rounds; round++ {
 				var raw net.Conn
 				if test.viaProxy {
 					raw, err = dialer.Dial("tcp", origin.Addr().String())
@@ -122,17 +126,20 @@ func TestVisionTLS13AbruptCloseDoesNotCorruptInnerStream(t *testing.T) {
 				if len(parts) != 2 || !bytes.Equal(parts[1], payload) {
 					t.Fatal("inner TLS payload changed or was truncated")
 				}
-				knownOldDefect := os.Getenv("NYVP_XRAY_EXPECTED_VERSION") == "26.3.27" && test.viaProxy && test.version == tls.VersionTLS13
-				if knownOldDefect {
-					if readErr == nil || !strings.Contains(readErr.Error(), "bad record MAC") || !tap.endsWithEncryptedAlert() {
-						t.Fatalf("old baseline did not reproduce the expected outer alert corruption: error=%v records=%v", readErr, tap.lengths)
+				if knownOldDefect && readErr != nil {
+					if !strings.Contains(readErr.Error(), "bad record MAC") || !tap.endsWithEncryptedAlert() {
+						t.Fatalf("old baseline returned unexpected outer alert corruption: error=%v records=%v", readErr, tap.lengths)
 					}
+					reproduced++
 					t.Logf("round %d: old core reproduced bad record MAC with an extra 19-byte encrypted alert", round)
 				} else if readErr != nil || (test.version == tls.VersionTLS13 && tap.endsWithEncryptedAlert()) {
 					t.Fatalf("proxy corrupted inner TLS close: error=%v records=%v", readErr, tap.lengths)
 				} else {
 					t.Logf("round %d: full payload and clean raw EOF; no outer encrypted alert", round)
 				}
+			}
+			if knownOldDefect && reproduced == 0 {
+				t.Fatalf("old baseline did not reproduce the known close defect in %d rounds", rounds)
 			}
 		})
 	}

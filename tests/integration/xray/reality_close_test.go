@@ -109,7 +109,12 @@ func TestRealityVisionTLS13AbruptCloseDoesNotCorruptInnerStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for round := 1; round <= 3; round++ {
+	knownOldDefect := knownVisionCloseDefect()
+	rounds, reproduced := 3, 0
+	if knownOldDefect {
+		rounds = 8
+	}
+	for round := 1; round <= rounds; round++ {
 		raw, err := dialer.Dial("tcp", originListener.Addr().String())
 		if err != nil {
 			t.Fatal("Reality fixture dial failed")
@@ -131,11 +136,11 @@ func TestRealityVisionTLS13AbruptCloseDoesNotCorruptInnerStream(t *testing.T) {
 		if len(parts) != 2 || !bytes.Equal(parts[1], payload) {
 			t.Fatal("Reality inner TLS payload changed or was truncated")
 		}
-		knownOldDefect := strings.HasPrefix(testExpectedVersion(), "26.3.27")
-		if knownOldDefect {
-			if readErr == nil || !strings.Contains(readErr.Error(), "bad record MAC") || !tap.endsWithEncryptedAlert() {
-				t.Fatalf("old Reality baseline did not reproduce expected corruption: error=%v records=%v", readErr, tap.lengths)
+		if knownOldDefect && readErr != nil {
+			if !strings.Contains(readErr.Error(), "bad record MAC") || !tap.endsWithEncryptedAlert() {
+				t.Fatalf("old Reality baseline returned unexpected corruption: error=%v records=%v", readErr, tap.lengths)
 			}
+			reproduced++
 			t.Logf("round %d: old Reality path reproduced bad record MAC with extra encrypted alert", round)
 		} else if readErr != nil || tap.endsWithEncryptedAlert() {
 			t.Fatalf("Reality path corrupted inner TLS close: error=%v records=%v", readErr, tap.lengths)
@@ -143,11 +148,21 @@ func TestRealityVisionTLS13AbruptCloseDoesNotCorruptInnerStream(t *testing.T) {
 			t.Logf("round %d: complete Reality payload and clean EOF", round)
 		}
 	}
+	if knownOldDefect && reproduced == 0 {
+		t.Fatalf("old Reality baseline did not reproduce the known close defect in %d rounds", rounds)
+	}
 }
 
 func testExpectedVersion() string {
 	if version := strings.TrimSpace(os.Getenv("NYVP_XRAY_EXPECTED_VERSION")); version != "" {
 		return version
 	}
-	return "26.10.10"
+	return "26.7.28"
+}
+
+// These baselines are deliberately retained for old ClientHello compatibility.
+// A passing defect assertion proves reproduction, not a clean connection close.
+func knownVisionCloseDefect() bool {
+	version := testExpectedVersion()
+	return version == "26.3.27" || version == "26.7.28"
 }

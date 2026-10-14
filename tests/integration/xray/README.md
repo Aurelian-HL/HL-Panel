@@ -9,7 +9,7 @@ go test ./tests/integration/xray -count=1
 测试只创建 loopback 监听器和临时文件，未设置该变量时跳过真实引擎测试。
 支持的固定版本以 `process_test.go` 中的版本校验为准。
 
-当前生产基线为 `26.10.10`。仅做升级差异对照时，可以设置
+当前源码构建基线为 `26.7.28`。仅做升级差异对照时，可以设置
 `NYVP_XRAY_EXPECTED_VERSION=26.3.27` 并指向旧版二进制；该变量不会修改
 生产安装脚本的版本。新旧测试分别运行，避免同一次测试混用两种二进制。
 
@@ -19,15 +19,15 @@ go test ./tests/integration/xray -count=1
 回环 Echo 端口。这覆盖新内核私网限制与生产配置的实际兼容性。
 
 `vision_close_test.go` 比较直连 TLS 1.3、Vision 内层 TLS 1.2 和 Vision
-内层 TLS 1.3，各运行三次完整响应与连接收尾。在显式指定旧版基线时，
-Vision/TLS 1.3 场景要求复现 `bad record MAC` 和额外外层 alert，因此旧版
-对照显示 PASS 表示捕捉到已知缺陷；新版必须完整传输、干净 EOF 且没有
+内层 TLS 1.3，对照场景各运行三次完整响应与连接收尾。
+`26.3.27` 和当前 `26.7.28` 的 Vision/TLS 1.3 场景运行八轮，要求至少一次复现 `bad record MAC` 和额外外层 alert；正常轮次必须干净 EOF，未知错误仍失败。因此旧版
+对照显示 PASS 表示捕捉到已知缺陷；`26.10.10` 对照必须完整传输、干净 EOF 且没有
 额外 alert。该测试不能作为旧内核正常的证明，详见
 [`docs/xray-compatibility.md`](../../../docs/xray-compatibility.md)。
 
 `reality_close_test.go` 使用临时 Reality 密钥、真实 VLESS Reality 入站和
 本机 TLS 源站重复 TLS 1.3 收尾 A/B。它只验证 Reality 外层是否保留同一
-Vision 关闭缺陷，不连接公网目标；旧版三次应复现 `bad record MAC`，新版
+Vision 关闭缺陷，不连接公网目标；26.3.27 和 26.7.28 八轮至少一次应复现 `bad record MAC`，26.10.10 对照
 三次应完整响应并正常 EOF。
 
 `live_add_test.go` 验证新增独立规则不会更换 Xray 进程或中断其它规则已有
@@ -45,3 +45,5 @@ TCP 会话；API 部分成功后也必须撤销新增监听器并恢复完整旧
 
 这些隔离测试不替代客户网络或客户端长期运行验收，不能据此声称所有
 间歇超时已经消失。
+
+Reality 握手测试覆盖默认 Chrome、Chrome100、Chrome120、Chrome131 和 Safari16。它不等于 Shadowrocket iOS 真机验收。

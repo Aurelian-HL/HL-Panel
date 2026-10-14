@@ -109,7 +109,7 @@ ACME 挑战文件放在独立 `/var/lib/hl-panel-acme/`，由 root 管理且目�
 
 入口和出口节点使用独立的 `install-node.sh`。在面板设备组的“节点对接”弹窗生成并复制完整安装命令，在目标节点的 root 终端执行即可。命令包含所选组的一次性令牌及面板 HTTPS 地址，自动安装 Agent、HL 主机探针、Xray、GOST，注册入组并启用开机自启；没有第二次输入令牌或分开安装引擎的步骤。
 
-引擎随正式安装包分发：Xray v26.10.10、GOST v3.3.1-nightly.20260922，来源与锁定摘要见包内 `licenses/node-engines.json`。混合模式只在面板下发有效配置后启动对应引擎。服务使用 hl-edge 账号，默认监听端口需不低于 1024，不调整其他服务、防火墙或系统转发规则。升级既有节点前，先升级面板并确认节点已应用兼容配置，再分批更新节点；具体顺序见[内核兼容性维护](../docs/xray-compatibility.md)。
+当前源码构建的引擎基线为（已发布资产需单独核对）：Xray v26.7.28、GOST v3.3.1-nightly.20260922，来源与锁定摘要见包内 `licenses/node-engines.json`。混合模式只在面板下发有效配置后启动对应引擎。服务使用 hl-edge 账号，默认监听端口需不低于 1024，不调整其他服务、防火墙或系统转发规则。升级既有节点前，先升级面板并确认节点已应用兼容配置，再分批更新节点；具体顺序见[内核兼容性维护](../docs/xray-compatibility.md)。
 
 程序在 `/opt/hl-panel/edge-agent`，引擎在 `/opt/hl-panel/node-engines/`，配置在 `/etc/hl-panel/edge-agent.json`，私有状态在 `/var/lib/hl-panel-edge/`。在线入口默认从面板 HTTPS 的公开版本接口选定标签，再下载同标签安装器和程序包；可用 `--version vX.Y.Z` 固定版本。入口、脚本与安装包下载均有有限重试和超时。
 

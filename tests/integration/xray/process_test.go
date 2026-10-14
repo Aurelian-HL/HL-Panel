@@ -37,10 +37,10 @@ func xrayBinary(t *testing.T) string {
 	defer cancel()
 	expected := os.Getenv("NYVP_XRAY_EXPECTED_VERSION")
 	if expected == "" {
-		expected = "26.10.10"
+		expected = "26.7.28"
 	}
 	// Keep the previous pinned build available only as an explicit A/B baseline.
-	if expected != "26.10.10" && expected != "26.3.27" {
+	if expected != "26.10.10" && expected != "26.3.27" && expected != "26.7.28" {
 		t.Fatal("NYVP_XRAY_EXPECTED_VERSION must be the current pin or the previous A/B baseline")
 	}
 	version, err := exec.CommandContext(ctx, binary, "version").Output()

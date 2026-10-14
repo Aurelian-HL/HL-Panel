@@ -200,7 +200,8 @@ def reinstall(args):
         require((args.release / source).is_file(), '安装包缺少重装文件')
         if destination.exists():
             private_file(destination)
-    run([str(args.release / 'bin/xray'), 'version'])
+    require(run([str(args.release / 'bin/xray'), 'version']).startswith(b'Xray 26.7.28 '),
+            'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
     run([str(args.release / 'bin/gost'), '-V'])
     run(['systemd-analyze', 'verify', str(args.release / 'deploy/systemd/hl-panel-edge-agent.service')])
     BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)

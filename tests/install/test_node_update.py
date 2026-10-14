@@ -14,6 +14,18 @@ updater = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(updater)
 
 
+class CoreCompatibility(unittest.TestCase):
+    def test_compatible_core_is_accepted(self):
+        with patch.object(updater, 'run', return_value=b'Xray 26.7.28 (Xray)\n'):
+            updater.verify_xray_version(Path('/candidate/xray'))
+
+    def test_new_handshake_and_unexpected_versions_are_rejected(self):
+        for version in ('26.10.10', '26.9.8', '26.3.27', '26.7.280'):
+            with self.subTest(version=version), patch.object(updater, 'run', return_value=('Xray '+version+' (Xray)\n').encode()):
+                with self.assertRaises(updater.UpdateError):
+                    updater.verify_xray_version(Path('/candidate/xray'))
+
+
 class CredentialPermissions(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

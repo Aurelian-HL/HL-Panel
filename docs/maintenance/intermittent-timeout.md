@@ -48,7 +48,7 @@
 
 ### Reality / Vision 内核与目标
 
-固定内核从 Xray `26.3.27` 升级为 `26.10.10`，包含上游 [#6834](https://github.com/XTLS/Xray-core/pull/6834) 的 Vision 直拷贝收尾修复。旧内核可能把外层 TLS `close_notify` 写入内层 TLS 流，造成 `bad record MAC`、浏览器 TLS 错误或下载中断。升级依据与 3x-ui 参数对照见 [内核兼容性维护](../xray-compatibility.md)。这是已知缺陷修复，不能概括为所有客户超时的唯一原因。
+当前固定 Xray `26.7.28` 恢复旧 Chrome/Safari Reality 握手兼容性，但仍存在上游 [#6834](https://github.com/XTLS/Xray-core/pull/6834) 描述的 Vision TLS 收尾缺陷。`26.10.10` 包含收尾修复，却无法兼容部分旧指纹；不能用全量升级替代兼容性验收。完整依据和限制见 [内核兼容性维护](../xray-compatibility.md)。客户端真机与长期运行仍需持续检查。
 
 心跳上报 Agent 初始化时读取的真实安装内核版本；读取缓存不启动新进程。需同时核对进程运行状态、配置应用结果和实际转发，版本字段本身不证明连接健康。替换二进制后应通过正式节点升级流程重启 Agent，让缓存和受管引擎一致。
 

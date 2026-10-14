@@ -666,6 +666,13 @@ func compileXrayBundleWithStats(bundle agentv1.ConfigurationBundle, address stri
 		}
 	}
 	seenTags := make(map[string]struct{})
+	for i, inbound := range arrayValues["inbounds"] {
+		compatible, err := compatibleRealityInbound(inbound)
+		if err != nil {
+			return nil, err
+		}
+		arrayValues["inbounds"][i] = compatible
+	}
 	for key, values := range arrayValues {
 		if err := validateXrayArray(key, values, seenTags); err != nil {
 			return nil, err

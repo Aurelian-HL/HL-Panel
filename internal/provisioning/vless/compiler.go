@@ -78,7 +78,10 @@ func inboundStreamSettings(profile Profile, listener Listener) (map[string]any, 
 		"network": "tcp", "security": "reality",
 		"realitySettings": map[string]any{
 			"show": false, "dest": reality.Destination, "xver": 0,
-			"serverNames": []string{reality.ServerName}, "privateKey": reality.PrivateKey,
+			// 26.7.28 inherits a minimum version when omitted. Third-party
+			// clients do not share Xray's release numbering; allow them explicitly.
+			"minClientVer": "0.0.0",
+			"serverNames":  []string{reality.ServerName}, "privateKey": reality.PrivateKey,
 			"shortIds": []string{reality.ShortID},
 		},
 	}, nil

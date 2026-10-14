@@ -23,7 +23,8 @@ import (
 // releases so routine upgrades do not recompile every node's configuration.
 // Revision 1 gives the dedicated protocol probe an exact loopback permission
 // required by Xray 26.10.10 and later.
-const NodeBundleCompilerRevision = 1
+// Revision 2 explicitly allows third-party Reality client version numbering.
+const NodeBundleCompilerRevision = 2
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
 	// A tombstone preserves history but must never receive fresh assignments.

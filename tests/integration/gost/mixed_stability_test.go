@@ -37,8 +37,8 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, xrayBinary, "version").Output()
-	if err != nil || !strings.HasPrefix(string(version), "Xray 26.10.10 ") {
-		t.Fatal("mixed engine integration requires pinned Xray 26.10.10")
+	if err != nil || !strings.HasPrefix(string(version), "Xray 26.7.28 ") {
+		t.Fatal("mixed engine integration requires pinned Xray 26.7.28")
 	}
 	for _, changed := range []string{"xray", "gost"} {
 		t.Run(changed, func(t *testing.T) {

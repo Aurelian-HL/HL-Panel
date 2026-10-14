@@ -207,6 +207,12 @@ for asset in bin/xray bin/gost; do
   [[ -f "$release/$asset" ]] || { echo '安装包缺少转发引擎；未修改节点，请使用新版本。' >&2; exit 1; }
   chmod 0755 "$release/$asset"
 done
+python3 - "$release/bin/xray" <<'PY'
+import subprocess, sys
+result = subprocess.run([sys.argv[1], 'version'], capture_output=True, timeout=15)
+if result.returncode or not result.stdout.startswith(b'Xray 26.7.28 '):
+    raise SystemExit('Xray 版本未通过旧客户端兼容验收；要求 26.7.28，未修改节点。')
+PY
 if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
   [[ -f "$release/deploy/reinstall-node.py" ]] || { echo '该版本不支持重装换组，请先更新面板后重新复制安装命令。' >&2; exit 1; }
   echo '[HL-panel 节点] 发现已有节点，按本次有效命令重新安装并切换设备组…'
