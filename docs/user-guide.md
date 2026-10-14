@@ -76,6 +76,10 @@ hl-panel-configure-reality target.example.com
 
 命令核验目标后备份配置，只重启 HL-panel API；失败恢复原配置。已有面板保数据升级后，可执行 `python3 /opt/hl-panel/current/deploy/configure-reality.py target.example.com`。所有业务节点必须能访问该目标；目标不可用时应处理目标或更换后更新规则。
 
+每条 VLESS 规则也可在 **添加 / 编辑规则 → 高级选项** 独立设置 **Reality Target**（例如 `www.example.com:443`）和 **Reality SNI**（目标证书覆盖的域名）。只填写 SNI 时，Target 自动使用该域名的 443 端口；新规则两项留空时使用面板默认目标。自定义目标同样会自动生成独立密钥，客户端指纹使用 `chrome`。Target 是握手目标，和规则的 SOCKS5 落地地址用途不同。
+
+编辑规则保留已有密钥与 Short ID；复制规则保留 Target / SNI，但生成新密钥。改变已签发规则的 SNI 后，客户需更新订阅或重新导入节点。修改面板默认目标只影响后续新建规则，不会批量替换已签发的连接参数。目标应先通过 `hl-panel-configure-reality` 的验证，并确认从每台入口节点可达。
+
 ## 节点安装与维护
 
 面板安装在管理 VPS；入口节点和出口节点在各自的 VPS 上安装。不要把面板安装命令当作节点安装命令。

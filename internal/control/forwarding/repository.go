@@ -24,6 +24,9 @@ type UpdateInput struct {
 	RealityPrivateKey     string
 	VLESSSOCKS5Password   string
 	AutoReality           bool
+	// An omitted target on an automatic-key edit retains the issued target.
+	// An explicit target changes SNI/destination without rotating credentials.
+	PreserveRealityTarget bool
 	ExpectedRevision      int64
 	ExpectedCustomerID    string
 	IdempotencyKey        string

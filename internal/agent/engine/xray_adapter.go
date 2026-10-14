@@ -465,6 +465,7 @@ func readOptionalRegularFile(path string) ([]byte, bool, error) {
 // leak runtime credentials into agent logs.
 type ExecXrayRunner struct {
 	binaryPath string
+	version    string
 }
 
 func NewExecXrayRunner(binaryPath string) (*ExecXrayRunner, error) {
@@ -482,7 +483,7 @@ func NewExecXrayRunner(binaryPath string) (*ExecXrayRunner, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("xray binary is not executable")
 	}
-	return &ExecXrayRunner{binaryPath: binaryPath}, nil
+	return &ExecXrayRunner{binaryPath: binaryPath, version: readEngineVersion(binaryPath, "Xray", "version")}, nil
 }
 
 func (r *ExecXrayRunner) Test(ctx context.Context, configPath string) error {

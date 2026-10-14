@@ -116,7 +116,7 @@ func (s *Service) create(ctx context.Context, actorType, actorID string, request
 		return Rule{}, false, err
 	}
 	digest := sha256.Sum256(data)
-	autoReality := request.EffectiveIngressProtocol() == IngressVLESSReality && request.RealityServerName == "" && request.RealityPublicKey == "" && request.RealityShortID == "" && request.RealityDestination == ""
+	autoReality := automaticRealityKeys(request)
 	privateKey, err := s.fillAutomaticReality(&request)
 	if err != nil {
 		return Rule{}, false, err
@@ -179,7 +179,8 @@ func (s *Service) update(ctx context.Context, actorType, actorID, expectedCustom
 		return Rule{}, false, err
 	}
 	digest := sha256.Sum256(data)
-	autoReality := request.EffectiveIngressProtocol() == IngressVLESSReality && request.RealityServerName == "" && request.RealityPublicKey == "" && request.RealityShortID == "" && request.RealityDestination == ""
+	autoReality := automaticRealityKeys(request)
+	preserveRealityTarget := request.RealityServerName == "" && request.RealityDestination == ""
 	privateKey, err := s.fillAutomaticReality(&request)
 	if err != nil {
 		return Rule{}, false, err
@@ -197,15 +198,32 @@ func (s *Service) update(ctx context.Context, actorType, actorID, expectedCustom
 	if err != nil {
 		return Rule{}, false, err
 	}
-	return s.repository.UpdateForwardingRule(ctx, UpdateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
+	return s.repository.UpdateForwardingRule(ctx, UpdateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, PreserveRealityTarget: preserveRealityTarget, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
+}
+
+func automaticRealityKeys(request Request) bool {
+	return request.EffectiveIngressProtocol() == IngressVLESSReality && request.RealityPublicKey == "" && request.RealityShortID == ""
 }
 
 func (s *Service) fillAutomaticReality(request *Request) (string, error) {
-	if request.EffectiveIngressProtocol() != IngressVLESSReality || request.RealityServerName != "" || request.RealityPublicKey != "" || request.RealityShortID != "" || request.RealityDestination != "" {
+	if !automaticRealityKeys(*request) {
 		return "", nil
 	}
-	if s.reality.ServerName == "" || s.reality.Destination == "" {
-		return "", nil
+	if request.RealityServerName == "" && request.RealityDestination == "" {
+		if s.reality.ServerName == "" || s.reality.Destination == "" {
+			return "", nil
+		}
+		request.RealityServerName = s.reality.ServerName
+		request.RealityDestination = s.reality.Destination
+	} else if request.RealityServerName != "" && request.RealityDestination == "" {
+		request.RealityDestination = net.JoinHostPort(request.RealityServerName, "443")
+	}
+	// Target and SNI are independent of key generation. In particular, a
+	// custom target must never leave a new rule waiting for a private key that
+	// the operator cannot supply through the normal rule workflow.
+	defaults, err := NormalizeRealityDefaults(RealityDefaults{ServerName: request.RealityServerName, Destination: request.RealityDestination})
+	if err != nil {
+		return "", err
 	}
 	publicKey, privateKey, err := provisioningvless.GenerateRealityKeyPair(rand.Reader)
 	if err != nil {
@@ -215,8 +233,8 @@ func (s *Service) fillAutomaticReality(request *Request) (string, error) {
 	if _, err := rand.Read(shortID); err != nil {
 		return "", err
 	}
-	request.RealityServerName = s.reality.ServerName
-	request.RealityDestination = s.reality.Destination
+	request.RealityServerName = defaults.ServerName
+	request.RealityDestination = defaults.Destination
 	request.RealityPublicKey = publicKey
 	request.RealityShortID = hex.EncodeToString(shortID)
 	return privateKey, nil

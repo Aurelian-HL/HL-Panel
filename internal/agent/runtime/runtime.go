@@ -425,14 +425,21 @@ func (a *Agent) HeartbeatOnce(ctx context.Context) error {
 }
 
 func (a *Agent) engineVersions() map[string]string {
+	xrayVersion, gostVersion := "unknown", "unknown"
+	if a.xrayAdapter != nil {
+		xrayVersion = a.xrayAdapter.EngineVersion()
+	}
+	if a.gostAdapter != nil {
+		gostVersion = a.gostAdapter.EngineVersion()
+	}
 	if a.engineMode == config.EngineModeMixed {
-		return map[string]string{"node-bundle": "mixed-process-adapter", "xray": "configured", "gost": "configured"}
+		return map[string]string{"node-bundle": "mixed-process-adapter", "xray": xrayVersion, "gost": gostVersion}
 	}
 	if a.engineMode == config.EngineModeXray {
-		return map[string]string{"node-bundle": "xray-process-adapter", "xray": "configured"}
+		return map[string]string{"node-bundle": "xray-process-adapter", "xray": xrayVersion}
 	}
 	if a.engineMode == config.EngineModeGOST {
-		return map[string]string{"node-bundle": "gost-process-adapter", "gost": "configured"}
+		return map[string]string{"node-bundle": "gost-process-adapter", "gost": gostVersion}
 	}
 	return map[string]string{"node-bundle": "dry-run-file-adapter"}
 }
@@ -561,6 +568,16 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.bootstrapWithRetry(ctx); err != nil {
 		return err
 	}
+	// The first heartbeat reconciles persisted bundles after compiler/core
+	// upgrades. Complete it before starting desired watches, otherwise the
+	// watch can fetch an obsolete bundle while reconciliation is still pending.
+	// Keep this best-effort and bounded: an unreachable panel must not prevent
+	// last-known-good forwarding, recovery, receipts, or the local probe loop.
+	initialContext, initialCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := a.HeartbeatOnce(initialContext); err != nil && ctx.Err() == nil {
+		a.logger.Warn("initial heartbeat failed", "error", err)
+	}
+	initialCancel()
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop, a.receiptLoop, a.probeEchoLoop}

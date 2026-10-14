@@ -155,10 +155,22 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		if err != nil || target.Port < 1 || target.Port > 65535 {
 			return nil, errors.New("VLESS Reality target is invalid")
 		}
+		permission := map[string]any{"action": "allow", "network": "tcp", "port": target.Port}
+		if address, err := netip.ParseAddr(host); err == nil {
+			address = address.Unmap()
+			permission["ip"] = []string{netip.PrefixFrom(address, address.BitLen()).String()}
+		}
 		outbounds = append(outbounds, map[string]any{
 			"tag":      outboundTag,
 			"protocol": "freedom",
-			"settings": map[string]any{"redirect": net.JoinHostPort(host, fmt.Sprint(target.Port))},
+			"settings": map[string]any{
+				"redirect": net.JoinHostPort(host, fmt.Sprint(target.Port)),
+				// Preserve explicitly configured private DIRECT targets across
+				// core upgrades. The redirect fixes the only reachable host and
+				// port before finalRules run. IP targets get an exact CIDR;
+				// domains retain DNS rotation without an overbroad IP exception.
+				"finalRules": []any{permission},
+			},
 		})
 	}
 	routes := []any{}
@@ -168,7 +180,17 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		clients = append(clients, map[string]any{"id": probe.UUID, "flow": profile.Flow, "email": probeEmail})
 		outbounds = append(outbounds, map[string]any{
 			"tag": probeTag, "protocol": "freedom",
-			"settings": map[string]any{"redirect": net.JoinHostPort("127.0.0.1", fmt.Sprint(probe.EchoPort))},
+			"settings": map[string]any{
+				"redirect": net.JoinHostPort("127.0.0.1", fmt.Sprint(probe.EchoPort)),
+				// Recent Xray cores block private destinations for VLESS by
+				// default. Only the probe identity reaches this outbound, whose
+				// redirect is fixed; keep the exemption limited to the echo
+				// TCP port instead of allowing private customer destinations.
+				"finalRules": []any{map[string]any{
+					"action": "allow", "network": "tcp", "port": probe.EchoPort,
+					"ip": []string{"127.0.0.1/32", "::1/128"},
+				}},
+			},
 		})
 		routes = append(routes, map[string]any{
 			"type": "field", "inboundTag": []string{inboundTag}, "user": []string{probeEmail}, "outboundTag": probeTag,
@@ -176,8 +198,8 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	}
 	routes = append(routes, map[string]any{"type": "field", "inboundTag": []string{inboundTag}, "outboundTag": outboundTag})
 	config := map[string]any{
-		"log": map[string]any{"loglevel": "warning", "access": "none"},
-		"api": map[string]any{"tag": "hl-stats-api", "services": []string{"StatsService"}},
+		"log":   map[string]any{"loglevel": "warning", "access": "none"},
+		"api":   map[string]any{"tag": "hl-stats-api", "services": []string{"StatsService"}},
 		"stats": map[string]any{},
 		"inbounds": []any{map[string]any{
 			"tag":      inboundTag,
@@ -210,11 +232,11 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 // control characters in customer/group IDs.
 func statsTag(prefix string, rule forwarding.Rule) string {
 	metadata := struct {
-		RuleID      string `json:"rule_id"`
-		CustomerID  string `json:"customer_id"`
-		EntryGroup  string `json:"entry_group_id"`
-		ExitGroup   string `json:"exit_group_id"`
-		Protocol    string `json:"protocol"`
+		RuleID     string `json:"rule_id"`
+		CustomerID string `json:"customer_id"`
+		EntryGroup string `json:"entry_group_id"`
+		ExitGroup  string `json:"exit_group_id"`
+		Protocol   string `json:"protocol"`
 	}{
 		RuleID: rule.ID, CustomerID: rule.CustomerID, EntryGroup: rule.EntryGroupID,
 		ExitGroup: rule.ExitGroupID, Protocol: string(rule.Protocol),

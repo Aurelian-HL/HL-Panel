@@ -16,6 +16,7 @@ type Node struct {
 	EngineVersions          map[string]string `json:"engine_versions"`
 	Resources               map[string]any    `json:"resources"`
 	DesiredGeneration       int64             `json:"desired_generation"`
+	BundleCompilerRevision  int               `json:"bundle_compiler_revision,omitempty"`
 	AppliedGeneration       int64             `json:"applied_generation"`
 	LastApplyGeneration     int64             `json:"last_apply_generation"`
 	LastApplyPhase          string            `json:"last_apply_phase"`

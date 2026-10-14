@@ -92,6 +92,17 @@ func (s *Store) RotateCredential(_ context.Context, input nodes.RotateCredential
 }
 
 func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
+	return s.updateHeartbeat(nodeID, heartbeat, now, event, true)
+}
+
+// UpdateHeartbeatTelemetry is for durable repository read-only fast paths.
+// It returns current liveness without publishing a new configuration generation
+// that has not been persisted. Reconciliation belongs in the write transaction.
+func (s *Store) UpdateHeartbeatTelemetry(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
+	return s.updateHeartbeat(nodeID, heartbeat, now, event, false)
+}
+
+func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event, reconcile bool) (nodes.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	node, exists := s.nodes[nodeID]
@@ -127,8 +138,9 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 	// Enrollment may predate available engine capabilities, and older panels
 	// could leave new members without an initial configuration. Reconcile those
 	// nodes without reissuing bundles for ordinary heartbeats on existing nodes.
-	if nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
-		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) || node.DesiredGeneration == 0 {
+	if reconcile && (nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
+		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) ||
+		node.BundleCompilerRevision < NodeBundleCompilerRevision) {
 		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
 			if previousNode.DesiredGeneration > 0 {
 				s.nodes[nodeID] = previousNode

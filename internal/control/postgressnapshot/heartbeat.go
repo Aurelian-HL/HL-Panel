@@ -57,6 +57,17 @@ func (s *Store) shouldPersistHeartbeat(nodeID string, value nodes.Heartbeat, now
 // snapshot write. A burst of concurrent heartbeats must not all serialize on
 // PostgreSQL row locks and amplify latency for subscriptions and config polls.
 func (s *Store) claimHeartbeatPersistence(nodeID string, value nodes.Heartbeat, now time.Time) bool {
+	return s.claimHeartbeatWrite(nodeID, value, now, false)
+}
+
+// Compiler reconciliation must be durable even inside the telemetry interval.
+// It shares the single-flight gate so simultaneous polls cannot enqueue a full
+// snapshot write for each request.
+func (s *Store) claimHeartbeatCompilerReconcile(nodeID string, value nodes.Heartbeat, now time.Time) bool {
+	return s.claimHeartbeatWrite(nodeID, value, now, true)
+}
+
+func (s *Store) claimHeartbeatWrite(nodeID string, value nodes.Heartbeat, now time.Time, force bool) bool {
 	fingerprint := heartbeatFingerprint(value)
 	s.heartbeatMu.Lock()
 	defer s.heartbeatMu.Unlock()
@@ -67,7 +78,7 @@ func (s *Store) claimHeartbeatPersistence(nodeID string, value nodes.Heartbeat, 
 	if previous.inFlight {
 		return false
 	}
-	if previous.fingerprint == fingerprint && !now.Before(previous.persisted) && now.Sub(previous.persisted) < heartbeatSnapshotInterval {
+	if !force && previous.fingerprint == fingerprint && !now.Before(previous.persisted) && now.Sub(previous.persisted) < heartbeatSnapshotInterval {
 		return false
 	}
 	previous.inFlight = true

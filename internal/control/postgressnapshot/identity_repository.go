@@ -147,9 +147,13 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.
 	// full singleton snapshot rewrite on every heartbeat. Lifecycle/configuration
 	// changes bypass the throttle and use the normal durable write path.
 	if !s.claimHeartbeatPersistence(id, heartbeat, now) {
-		return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) {
-			return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
+		result, err := transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) {
+			return state.UpdateHeartbeatTelemetry(ctx, id, heartbeat, now, event)
 		})
+		if err != nil || result.BundleCompilerRevision >= memoryrepo.NodeBundleCompilerRevision ||
+			!s.claimHeartbeatCompilerReconcile(id, heartbeat, now) {
+			return result, err
+		}
 	}
 	result, err := transact(ctx, s, true, func(state *memoryrepo.Store) (nodes.Node, error) {
 		return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)

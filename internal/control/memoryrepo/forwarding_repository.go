@@ -188,7 +188,9 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 	}
 	privateKey := ""
 	if input.AutoReality && previous.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && previous.IngressReadiness() == forwarding.IngressReady {
-		item.RealityServerName, item.RealityDestination = previous.RealityServerName, previous.RealityDestination
+		if input.PreserveRealityTarget {
+			item.RealityServerName, item.RealityDestination = previous.RealityServerName, previous.RealityDestination
+		}
 		item.RealityPublicKey, item.RealityShortID = previous.RealityPublicKey, previous.RealityShortID
 	} else if input.AutoReality {
 		privateKey = input.RealityPrivateKey

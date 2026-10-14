@@ -18,6 +18,13 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
+// NodeBundleCompilerRevision advances only when persisted engine fragments
+// require reconciliation after a compiler change. It is independent of panel
+// releases so routine upgrades do not recompile every node's configuration.
+// Revision 1 gives the dedicated protocol probe an exact loopback permission
+// required by Xray 26.10.10 and later.
+const NodeBundleCompilerRevision = 1
+
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
 	// A tombstone preserves history but must never receive fresh assignments.
 	if node, exists := s.nodes[nodeID]; !exists || node.DeletedAt != nil {
@@ -69,6 +76,9 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	}
 	fragments = append(fragments, forwardingFragments...)
 	if len(fragments) == 0 && s.nodes[nodeID].DesiredGeneration == 0 {
+		node := s.nodes[nodeID]
+		node.BundleCompilerRevision = NodeBundleCompilerRevision
+		s.nodes[nodeID] = node
 		return generations.NodeConfigGeneration{}, false, nil
 	}
 	sort.Slice(fragments, func(left, right int) bool { return fragments[left].GroupID < fragments[right].GroupID })
@@ -85,6 +95,8 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	if node.DesiredGeneration > 0 {
 		current := s.nodeConfigsByNode[nodeID][node.DesiredGeneration]
 		if current.ConfigSHA256 == configHash {
+			node.BundleCompilerRevision = NodeBundleCompilerRevision
+			s.nodes[nodeID] = node
 			return cloneNodeConfig(current), false, nil
 		}
 	}
@@ -93,6 +105,7 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 		return generations.NodeConfigGeneration{}, false, err
 	}
 	node.DesiredGeneration++
+	node.BundleCompilerRevision = NodeBundleCompilerRevision
 	node.UpdatedAt = now
 	s.nodes[nodeID] = node
 	configuration := generations.NodeConfigGeneration{

@@ -35,10 +35,19 @@ func xrayBinary(t *testing.T) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	version, err := exec.CommandContext(ctx, binary, "version").Output()
-	if err != nil || !strings.HasPrefix(string(version), "Xray 26.3.27 ") {
-		t.Fatal("real protocol test requires the verified pinned Xray 26.3.27 build")
+	expected := os.Getenv("NYVP_XRAY_EXPECTED_VERSION")
+	if expected == "" {
+		expected = "26.10.10"
 	}
+	// Keep the previous pinned build available only as an explicit A/B baseline.
+	if expected != "26.10.10" && expected != "26.3.27" {
+		t.Fatal("NYVP_XRAY_EXPECTED_VERSION must be the current pin or the previous A/B baseline")
+	}
+	version, err := exec.CommandContext(ctx, binary, "version").Output()
+	if err != nil || !strings.HasPrefix(string(version), "Xray "+expected+" ") {
+		t.Fatalf("real protocol test requires the verified Xray %s build", expected)
+	}
+	t.Logf("real protocol integration: Xray %s", expected)
 	return binary
 }
 
@@ -49,6 +58,27 @@ func privateConfig(t *testing.T, data []byte) string {
 		t.Fatal(err)
 	}
 	diagnosticConfig["log"].(map[string]any)["loglevel"] = "debug"
+	// These isolated fixtures serve their origins on loopback. Xray 26.10.10
+	// blocks private targets by default on VLESS -> freedom paths, so allow only
+	// the test origins instead of weakening the production DIRECT outbound.
+	if outbounds, ok := diagnosticConfig["outbounds"].([]any); ok {
+		for _, raw := range outbounds {
+			outbound, ok := raw.(map[string]any)
+			if !ok || outbound["protocol"] != "freedom" {
+				continue
+			}
+			settings, ok := outbound["settings"].(map[string]any)
+			if !ok {
+				settings = map[string]any{}
+				outbound["settings"] = settings
+			}
+			rules, _ := settings["finalRules"].([]any)
+			settings["finalRules"] = append([]any{map[string]any{
+				"action": "allow", "network": "tcp",
+				"ip": []string{"127.0.0.1/32", "::1/128"},
+			}}, rules...)
+		}
+	}
 	data, _ = json.Marshal(diagnosticConfig)
 	file := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(file, data, 0600); err != nil {
