@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+func TestDefaultHeartbeatSamplesEverySecond(t *testing.T) {
+	cfg := Config{}
+	cfg.setDefaults()
+	if cfg.HeartbeatInterval.Duration() != time.Second {
+		t.Fatal("default probe cadence must be 1s")
+	}
+}
+
 func TestHTTPClientUsesBoundedLongLivedTransport(t *testing.T) {
 	cfg := Config{RequestTimeout: Duration(17 * time.Second)}
 	client, err := cfg.HTTPClient()

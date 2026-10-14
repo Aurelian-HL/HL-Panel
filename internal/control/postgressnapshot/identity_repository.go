@@ -120,7 +120,11 @@ func (s *Store) NodeByCredentialHash(ctx context.Context, hash string) (nodes.No
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]nodes.Node, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]nodes.Node, error) { return state.ListNodes(ctx) })
+	items, err := readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) ([]nodes.Node, error) { return state.ListNodes(ctx) })
+	if err == nil {
+		s.mergeNodeTelemetry(items)
+	}
+	return items, err
 }
 
 func (s *Store) ListNezhaBindings(ctx context.Context) (map[string]uint64, error) {
@@ -147,9 +151,12 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.
 	// full singleton snapshot rewrite on every heartbeat. Lifecycle/configuration
 	// changes bypass the throttle and use the normal durable write path.
 	if !s.claimHeartbeatPersistence(id, heartbeat, now) {
-		result, err := transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) {
-			return state.UpdateHeartbeatTelemetry(ctx, id, heartbeat, now, event)
+		result, err := readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.Node, error) {
+			return state.PreviewHeartbeatTelemetry(ctx, id, heartbeat, now, event)
 		})
+		if err == nil {
+			s.publishHeartbeatTelemetry(result)
+		}
 		if err != nil || result.BundleCompilerRevision >= memoryrepo.NodeBundleCompilerRevision ||
 			!s.claimHeartbeatCompilerReconcile(id, heartbeat, now) {
 			return result, err
@@ -159,6 +166,7 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.
 		return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
 	})
 	if err == nil {
+		s.publishDurableHeartbeatTelemetry(result)
 		s.markHeartbeatPersisted(id, heartbeat, now)
 	} else {
 		s.releaseHeartbeatPersistence(id)

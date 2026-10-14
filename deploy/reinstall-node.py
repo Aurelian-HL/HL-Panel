@@ -238,6 +238,7 @@ def reinstall(args):
     (backup / 'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' + str(backup / 'reinstall-node.py') + ' --rollback ' + str(backup) + '\n')
     (backup / 'rollback.sh').chmod(0o700)
     config['control_plane_url'], config['dial_host'] = args.panel_url, args.node_address
+    config['heartbeat_interval'] = '1s'
     config['ca_file'] = str(CA_FILE) if args.ca_file else ''
     candidate = backup / 'new-config.json'
     candidate.write_text(json.dumps(config) + '\n')

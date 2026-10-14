@@ -289,6 +289,7 @@ p=pathlib.Path('/etc/hl-panel/edge-agent.json'); c=json.loads(p.read_text())
 if c.get('dial_host') and c['dial_host'] != __import__('sys').argv[1]:
     raise SystemExit('已有注册配置的节点地址不同；使用原 --node-address 重试')
 c['dial_host']=__import__('sys').argv[1]
+c['heartbeat_interval']='1s'
 fd,name=tempfile.mkstemp(dir=p.parent)
 with os.fdopen(fd,'w') as f: f.write(json.dumps(c)+'\n')
 os.chown(name,p.stat().st_uid,p.stat().st_gid); os.chmod(name,0o640); os.replace(name,p)

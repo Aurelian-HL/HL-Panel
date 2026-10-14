@@ -70,6 +70,20 @@ def active():
     raise UpdateError('节点新版本未启动')
 
 
+def install_config(source):
+    info = CONFIG.stat()
+    fd, name = tempfile.mkstemp(dir=CONFIG.parent)
+    os.close(fd)
+    try:
+        shutil.copyfile(source, name)
+        os.chown(name, info.st_uid, info.st_gid)
+        os.chmod(name, info.st_mode & 0o777)
+        os.replace(name, CONFIG)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def start_service():
     # Enrollment retries and a failed candidate can exhaust systemd's burst.
     # Clear that history only for this explicit, controlled start; automatic
@@ -120,6 +134,9 @@ def rollback(backup):
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
     restore_metrics(backup)
     run(['systemctl','stop',SERVICE])
+    if (backup/'edge-agent.json').exists():
+        private_regular(backup/'edge-agent.json')
+        install_config(backup/'edge-agent.json')
     for name in FILES:
         install(backup/name,ROOT/name)
     install(backup/'update-node.py',ROOT/'update-node.py')
@@ -169,6 +186,10 @@ def main():
         verify_xray_version(release/'bin/xray')
         run([str(release/'bin/gost'),'-V'])
         credential=digest(STATE/'credentials.json')
+        shutil.copy2(CONFIG, backup/'edge-agent.json')
+        config['heartbeat_interval'] = '1s'
+        (backup/'new-edge-agent.json').write_text(json.dumps(config)+'\n')
+        (backup/'new-edge-agent.json').chmod(0o600)
         manifest={'credential_sha256':credential,'files':{}}
         for name in FILES:
             private_regular(ROOT/name)
@@ -195,6 +216,7 @@ def main():
                 install(release/source,ROOT/name)
             for name in ('update-node.py','update.py'):
                 install(release/'deploy'/name,ROOT/name)
+            install_config(backup/'new-edge-agent.json')
             start_service()
             active()
             require(digest(STATE/'credentials.json')==credential,'节点身份发生变化')

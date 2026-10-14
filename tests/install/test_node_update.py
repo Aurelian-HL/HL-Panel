@@ -1,5 +1,6 @@
 """Private agent state uses the service account, never a shared writable file."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import sys
@@ -24,6 +25,30 @@ class CoreCompatibility(unittest.TestCase):
             with self.subTest(version=version), patch.object(updater, 'run', return_value=('Xray '+version+' (Xray)\n').encode()):
                 with self.assertRaises(updater.UpdateError):
                     updater.verify_xray_version(Path('/candidate/xray'))
+
+
+class TelemetryConfiguration(unittest.TestCase):
+    def test_atomic_config_install_and_restore_preserve_owner_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root/'edge-agent.json'
+            original = {'control_plane_url':'https://panel.example', 'heartbeat_interval':'20s', 'engine_mode':'mixed'}
+            config.write_text(json.dumps(original))
+            config.chmod(0o640)
+            before = config.stat()
+            backup = root/'saved.json'
+            backup.write_bytes(config.read_bytes())
+            candidate = root/'candidate.json'
+            updated = dict(original, heartbeat_interval='1s')
+            candidate.write_text(json.dumps(updated))
+            with patch.object(updater, 'CONFIG', config):
+                updater.install_config(candidate)
+                self.assertEqual(json.loads(config.read_text()), updated)
+                after = config.stat()
+                self.assertEqual((after.st_uid, after.st_gid, after.st_mode & 0o777),
+                                 (before.st_uid, before.st_gid, before.st_mode & 0o777))
+                updater.install_config(backup)
+                self.assertEqual(json.loads(config.read_text()), original)
 
 
 class CredentialPermissions(unittest.TestCase):

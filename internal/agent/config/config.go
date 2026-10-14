@@ -123,7 +123,7 @@ func (c *Config) setDefaults() {
 		c.EnrollmentTokenEnv = DefaultEnrollmentTokenEnvironment
 	}
 	if c.HeartbeatInterval == 0 {
-		c.HeartbeatInterval = Duration(20 * time.Second)
+		c.HeartbeatInterval = Duration(time.Second)
 	}
 	if c.DesiredPollInterval == 0 {
 		c.DesiredPollInterval = Duration(10 * time.Second)

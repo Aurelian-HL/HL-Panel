@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 )
@@ -54,4 +55,22 @@ func (v *IdentityReadView) SessionByTokenHash(ctx context.Context, hash string, 
 
 func (v *IdentityReadView) NodeByCredentialHash(ctx context.Context, hash string) (nodes.Node, error) {
 	return v.state.NodeByCredentialHash(ctx, hash)
+}
+
+func (v *IdentityReadView) ListNodes(ctx context.Context) ([]nodes.Node, error) {
+	return v.state.ListNodes(ctx)
+}
+
+// PreviewHeartbeatTelemetry updates detached one-node state. It never mutates
+// the shared identity projection or runs configuration reconciliation.
+func (v *IdentityReadView) PreviewHeartbeatTelemetry(ctx context.Context, id string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
+	v.state.mu.RLock()
+	node, exists := v.state.nodes[id]
+	node = cloneNode(node)
+	v.state.mu.RUnlock()
+	state := &Store{nodes: make(map[string]nodes.Node)}
+	if exists {
+		state.nodes[id] = node
+	}
+	return state.UpdateHeartbeatTelemetry(ctx, id, heartbeat, now, event)
 }

@@ -46,6 +46,8 @@ type Store struct {
 	readCache      snapshotReadCache
 	heartbeatMu    sync.Mutex
 	heartbeats     map[string]heartbeatPersistence
+	telemetryMu    sync.RWMutex
+	telemetry      map[string]heartbeatTelemetry
 }
 
 type heartbeatPersistence struct {
@@ -80,6 +82,7 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 	if err := mergeProtocolHealthOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
+	s.applyHeartbeatTelemetry(state)
 	return state, nil
 }
 
@@ -300,6 +303,9 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	var state *memoryrepo.Store
 	if write {
 		state, err = readState(ctx, tx, true)
+		if err == nil {
+			s.applyHeartbeatTelemetry(state)
+		}
 	} else {
 		state, err = s.readSnapshot(ctx, tx)
 	}

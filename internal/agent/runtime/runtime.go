@@ -663,7 +663,7 @@ func (a *Agent) enforcementLoop(ctx context.Context) error {
 
 func (a *Agent) heartbeatLoop(ctx context.Context) error {
 	backoff := reconciler.NewBackoff(heartbeatBackoffConfig(a.cfg))
-	return runPeriodic(ctx, a.cfg.HeartbeatInterval.Duration(), backoff, func(callContext context.Context) error {
+	return runPeriodicCadence(ctx, a.cfg.HeartbeatInterval.Duration(), backoff, func(callContext context.Context) error {
 		return a.HeartbeatOnce(callContext)
 	}, func(err error) {
 		a.logger.Warn("heartbeat failed", "error", err)
@@ -741,7 +741,18 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 }
 
 func runPeriodic(ctx context.Context, interval time.Duration, backoff *reconciler.Backoff, operation func(context.Context) error, report func(error)) error {
+	return runPeriodicMode(ctx, interval, backoff, operation, report, false)
+}
+
+// Heartbeats sample on a fixed cadence without overlapping requests or adding
+// request latency to each successful interval. Missed ticks never accumulate.
+func runPeriodicCadence(ctx context.Context, interval time.Duration, backoff *reconciler.Backoff, operation func(context.Context) error, report func(error)) error {
+	return runPeriodicMode(ctx, interval, backoff, operation, report, true)
+}
+
+func runPeriodicMode(ctx context.Context, interval time.Duration, backoff *reconciler.Backoff, operation func(context.Context) error, report func(error), cadence bool) error {
 	for {
+		started := time.Now()
 		if err := operation(ctx); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				if ctx.Err() != nil {
@@ -755,7 +766,11 @@ func runPeriodic(ctx context.Context, interval time.Duration, backoff *reconcile
 			continue
 		}
 		backoff.Reset()
-		if err := waitContext(ctx, interval); err != nil {
+		delay := interval
+		if cadence {
+			delay = max(time.Millisecond, interval-time.Since(started))
+		}
+		if err := waitContext(ctx, delay); err != nil {
 			return err
 		}
 	}
