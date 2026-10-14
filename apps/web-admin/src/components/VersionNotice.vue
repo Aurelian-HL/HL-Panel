@@ -94,4 +94,5 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); window.removeEventListe
 .version-actions { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .version-command { padding: 14px; border-radius: 8px; background: #eef2f7; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 @media (max-width: 1050px) { .version-banner { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 760px) { .version-check { min-height: 36px; } }
 </style>

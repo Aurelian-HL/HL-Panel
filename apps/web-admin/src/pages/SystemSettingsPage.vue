@@ -36,12 +36,15 @@ async function load(): Promise<void> {
 }
 
 async function saveSettings(): Promise<void> {
+  if (saving.value) return
   if (!form.site_name.trim() || !form.panel_title.trim()) { toast.error('请填写站点名称和面板标题'); return }
   saving.value = true
   try {
     const input = { ...form, site_name: form.site_name.trim(), panel_title: form.panel_title.trim(), public_description: form.public_description.trim(), support_url: form.support_url.trim(), background_image_url: form.background_image_url.trim() }
     const saved = await siteApi.saveSettings(input, mutationKey(input))
-    settings.value = saved; setForm(saved); await siteStore.refresh(); toast.success('系统设置已保存')
+    settings.value = saved; setForm(saved); toast.success('系统设置已保存')
+    try { await siteStore.refresh() }
+    catch { toast.error('设置已保存，页面信息刷新失败', '请刷新页面获取最新站点信息') }
   } catch (cause) { toast.error('系统设置保存失败', cause instanceof Error ? cause.message : undefined) }
   finally { saving.value = false }
 }
@@ -62,6 +65,7 @@ onMounted(load)
     <StatePanel v-if="loading && !settings" state="loading" title="正在读取系统设置" />
     <StatePanel v-else-if="error && !settings" state="error" title="系统设置加载失败" :message="error" @retry="load" />
     <template v-else-if="settings">
+      <div v-if="error" class="inline-warning" role="alert">刷新失败，保留上次设置：{{ error }}</div>
       <section class="settings-section">
         <header><span class="settings-section__icon"><Settings2 :size="18" /></span><div><h3>站点信息</h3><p>用于登录页、首页和用户信息页，不改变数据面协议。</p></div></header>
         <form class="settings-form" @submit.prevent="saveSettings">

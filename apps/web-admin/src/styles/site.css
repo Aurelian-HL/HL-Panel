@@ -59,6 +59,7 @@
 .profile-visibility { display: inline-flex; align-items: center; gap: 6px; width: fit-content; padding: 3px 0; background: transparent; color: var(--ny-blue); font-size: 12px; cursor: pointer; }
 @media (max-width: 1100px) { .profile-grid { grid-template-columns: 1fr; max-width: 640px; } }
 @media (max-width: 760px) {
+  .profile-visibility { min-height: 40px; }
   .settings-section > header { align-items: flex-start; flex-wrap: wrap; padding: 13px; }
   .settings-section > header .button { width: 100%; }
   .settings-form { padding: 13px; }

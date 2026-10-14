@@ -36,6 +36,7 @@ async function load(): Promise<void> {
 }
 
 async function savePassword(): Promise<void> {
+  if (saving.value) return
   formError.value = ''
   if (!currentPassword.value || !newPassword.value) { formError.value = '请填写当前密码和新密码'; return }
   if (newPassword.value !== confirmPassword.value) { formError.value = '两次输入的新密码不一致'; return }

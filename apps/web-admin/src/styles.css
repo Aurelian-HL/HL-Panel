@@ -1403,6 +1403,7 @@ body { background: var(--ny-bg); color: var(--ny-text); }
   .modal-backdrop { align-items: flex-end; padding: 0; }
   .modal, .modal--small, .modal--large { width: 100%; max-height: calc(100dvh - 12px); border-bottom: 0; border-radius: 6px 6px 0 0; }
   .modal__body { padding: 16px; }
+  .modal__header .icon-button { width: 36px; height: 36px; flex: 0 0 36px; }
   .modal__footer { padding: 11px 16px calc(11px + env(safe-area-inset-bottom)); }
   .modal__footer .button { flex: 1; }
 }
