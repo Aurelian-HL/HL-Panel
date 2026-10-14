@@ -111,10 +111,10 @@ const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, 
 const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_access_token'))
 
 export const probeApi = {
-  async getInventory(): Promise<ProbeGroupResponse> {
-    return parseProbeGroupResponse(await http.request('/monitoring/nezha/servers'))
+  async getInventory(signal?: AbortSignal): Promise<ProbeGroupResponse> {
+    return parseProbeGroupResponse(await http.request('/monitoring/nezha/servers', { signal, cache: 'no-store', timeoutMs: 10_000 }))
   },
-  async getGroup(groupId: string): Promise<ProbeGroupResponse> {
-    return parseProbeGroupResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/monitoring/nezha`))
+  async getGroup(groupId: string, signal?: AbortSignal): Promise<ProbeGroupResponse> {
+    return parseProbeGroupResponse(await http.request(`/device-groups/${encodeURIComponent(groupId)}/monitoring/nezha`, { signal, cache: 'no-store', timeoutMs: 10_000 }))
   },
 }

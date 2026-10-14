@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Settings2 } from '@lucide/vue'
+import { RefreshCw, Settings2 } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
 import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
@@ -22,6 +22,8 @@ const groupsLoading = ref(true)
 const monitoringLoading = ref(false)
 const groupsError = ref('')
 const monitoringError = ref('')
+const lastRefreshedAt = ref<number | null>(null)
+const refreshLabel = computed(() => lastRefreshedAt.value === null ? '正在连接' : `已刷新 ${new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(lastRefreshedAt.value)}`)
 const statusFilter = ref<StatusFilter>('all')
 const now = ref(serverNow())
 const refreshIntervals = ref(readProbeRefreshIntervals())
@@ -80,10 +82,11 @@ const sectionSpeed = (items: typeof members.value, field: 'net_in_speed_bytes_pe
 let requestId = 0
 let memberRequestId = 0
 let groupRequestId = 0
+let groupsInFlight = false
+let monitoringController: AbortController | undefined
 async function loadGroupMembers(): Promise<void> {
   const groupId = selectedGroupId.value
   const currentRequest = ++memberRequestId
-  groupMembers.value = []
   groupMembersError.value = ''
   try {
     const targetGroups = groupId ? availableGroups.value.filter((group) => group.id === groupId) : availableGroups.value
@@ -105,12 +108,15 @@ async function loadGroupMembers(): Promise<void> {
     }
   } catch (error) {
     if (currentRequest === memberRequestId) {
-      allGroupMembers.value = {}
       groupMembersError.value = displayError(error)
     }
   }
 }
 async function loadMonitoring(clearSnapshot = false): Promise<void> {
+  if (!active || (monitoringLoading.value && !clearSnapshot)) return
+  monitoringController?.abort()
+  const controller = new AbortController()
+  monitoringController = controller
   const groupId = selectedGroupId.value
   const currentRequest = ++requestId
   if (clearSnapshot) {
@@ -119,9 +125,10 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
   }
   monitoringLoading.value = true
   try {
-    const result = groupId ? await probeApi.getGroup(groupId) : await probeApi.getInventory()
-    if (currentRequest === requestId) {
+    const result = groupId ? await probeApi.getGroup(groupId, controller.signal) : await probeApi.getInventory(controller.signal)
+    if (active && currentRequest === requestId) {
       now.value = serverNow()
+      lastRefreshedAt.value = now.value
       response.value = result
       monitoringError.value = ''
     }
@@ -135,6 +142,7 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
 function selectGroup(): void {
   statusFilter.value = 'all'
   editingMember.value = null
+  groupMembers.value = []
   void loadGroupMembers()
   void loadMonitoring(true)
 }
@@ -144,9 +152,11 @@ async function nodeDeleted(nodeId: string): Promise<void> {
   deletingUnassigned.value = false
   requestId++
   memberRequestId++
+  monitoringController?.abort()
+  monitoringLoading.value = false
   if (response.value) response.value = { ...response.value, items: response.value.items.filter((item) => item.node_id !== nodeId) }
   if (editingMember.value?.node_id === nodeId) editingMember.value = null
-  await loadGroups()
+  await Promise.all([loadMonitoring(), loadGroups(true)])
 }
 
 function weightSaved(member: DeviceGroupMember): void {
@@ -155,29 +165,44 @@ function weightSaved(member: DeviceGroupMember): void {
   editingMember.value = null
 }
 
-async function loadGroups(): Promise<void> {
+async function loadGroups(quiet = false): Promise<void> {
+  if (!active || groupsInFlight) return
+  groupsInFlight = true
   const currentRequest = ++groupRequestId
-  groupsLoading.value = true
+  if (!quiet) groupsLoading.value = true
   groupsError.value = ''
   try {
     const result = await api.getDeviceGroups()
-    if (!active || currentRequest !== groupRequestId) return
-    groups.value = result.items
-    if (selectedGroupId.value && !availableGroups.value.some((group) => group.id === selectedGroupId.value)) {
+    if (active && currentRequest === groupRequestId) groups.value = result.items
+    if (active && selectedGroupId.value && !availableGroups.value.some((group) => group.id === selectedGroupId.value)) {
       selectedGroupId.value = ''
       response.value = null
+      monitoringController?.abort()
+      requestId++
+      monitoringLoading.value = false
     }
   } catch (error) {
     if (active && currentRequest === groupRequestId) groupsError.value = displayError(error)
   } finally {
     if (active && currentRequest === groupRequestId) groupsLoading.value = false
   }
-  if (!active || currentRequest !== groupRequestId) return
-  await Promise.all([loadGroupMembers(), loadMonitoring()])
+  try {
+    if (!active || currentRequest !== groupRequestId) return
+    await Promise.all([loadGroupMembers(), ...(!quiet || !response.value ? [loadMonitoring()] : [])])
+  } finally { groupsInFlight = false }
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let membershipTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
+function scheduleMembershipRefresh(): void {
+  if (membershipTimer) clearTimeout(membershipTimer)
+  if (!active || document.visibilityState !== 'visible') return
+  membershipTimer = setTimeout(async () => {
+    await loadGroups(true)
+    scheduleMembershipRefresh()
+  }, 15_000)
+}
 function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   if (!active) return
@@ -191,9 +216,15 @@ function scheduleRefresh(): void {
 
 function onVisibilityChange(): void {
   now.value = serverNow()
-  if (document.visibilityState === 'visible' && !monitoringLoading.value) void loadMonitoring()
+  if (document.visibilityState === 'visible') {
+    void loadMonitoring()
+    void loadGroups(true)
+  }
   scheduleRefresh()
+  scheduleMembershipRefresh()
 }
+
+function onOnline(): void { onVisibilityChange() }
 
 function updateIntervals(next: ProbeRefreshIntervals): void {
   refreshIntervals.value = next
@@ -209,7 +240,11 @@ function updateIntervals(next: ProbeRefreshIntervals): void {
 onMounted(() => {
   active = true
   document.addEventListener('visibilitychange', onVisibilityChange)
-  void loadGroups().finally(scheduleRefresh)
+  window.addEventListener('online', onOnline)
+  void loadMonitoring()
+  void loadGroups(true)
+  scheduleRefresh()
+  scheduleMembershipRefresh()
 })
 onUnmounted(() => {
   active = false
@@ -217,7 +252,10 @@ onUnmounted(() => {
   memberRequestId++
   groupRequestId++
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('online', onOnline)
+  monitoringController?.abort()
   if (refreshTimer) clearTimeout(refreshTimer)
+  if (membershipTimer) clearTimeout(membershipTimer)
 })
 </script>
 
@@ -227,6 +265,7 @@ onUnmounted(() => {
       <div><h2>设备探针</h2><p>HL主机监控</p></div>
       <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div><button class="button button--secondary" type="button" title="刷新间隔设置" aria-label="刷新间隔设置" @click="settingsOpen = true"><Settings2 :size="16" /></button></div>
     </header>
+    <div class="probe-live-status" :class="{ 'probe-live-status--error': monitoringError }" role="status"><i />{{ monitoringError ? '连接中断，正在重试' : refreshLabel }}<span>自动刷新 · {{ refreshIntervals.foreground / 1000 }} 秒</span><button class="button button--quiet" type="button" :disabled="monitoringLoading" aria-label="立即刷新探针" @click="loadMonitoring()"><RefreshCw :size="14" :class="{ spin: monitoringLoading }" />刷新</button></div>
 
     <StatePanel v-if="groupsLoading && !response" state="loading" title="正在读取设备探针" />
     <template v-else>
@@ -235,8 +274,7 @@ onUnmounted(() => {
         <div class="probe-overview__metrics"><div><span>成员</span><strong>{{ response ? counts.all : '未采集' }}</strong></div><div><span>在线</span><strong>{{ hasProbeSource ? counts.online : '未采集' }}</strong></div><div><span>下行速率</span><strong>{{ inboundSpeed }}</strong></div><div><span>上行速率</span><strong>{{ outboundSpeed }}</strong></div></div>
       </section>
       <p v-if="selectedGroup" class="probe-group-context">{{ selectedGroup.name }} · {{ selectedGroup.kind === 'EXIT' ? '出口组' : '入口组' }} · {{ selectedGroup.member_count }} 位设备组成员</p>
-      <p v-if="response?.upstream_status === 'disabled'" class="inline-warning">哪吒连接未配置。HL 主机探针独立工作，注册后的节点会通过心跳上报指标。</p>
-      <p v-else-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
+      <p v-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
       <p v-if="groupsError" class="inline-warning">设备组读取失败，分组列表可能不完整：{{ groupsError }}</p>
       <p v-if="groupMembersError" class="inline-warning">设备组成员读取失败，无法设置权重：{{ groupMembersError }}</p>
       <p v-if="settingsError" class="inline-warning">{{ settingsError }}</p>

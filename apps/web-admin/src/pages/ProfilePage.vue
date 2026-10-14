@@ -59,15 +59,17 @@ onMounted(load)
 <template>
   <div class="page-stack profile-page">
     <header class="page-heading"><div><h2>个人中心</h2></div></header>
-    <section v-if="account?.must_change_password" class="profile-section" role="alert" aria-label="首次登录修改密码">
+    <section v-if="account?.must_change_password" class="profile-section profile-notice" role="alert" aria-label="首次登录修改密码">
       <header><KeyRound :size="18" /><h3>首次登录，请修改初始密码</h3></header>
       <p>请先在下方修改密码，再使用面板其他功能。新密码需为 8 到 256 个字符；修改后请重新登录。</p>
     </section>
     <StatePanel v-if="loading && !account" state="loading" title="正在读取账号资料" />
     <StatePanel v-if="loadError" state="error" title="账号资料加载失败" :message="loadError" @retry="load" />
 
-    <section v-if="account" class="profile-section" aria-label="账号资料">
+    <div class="profile-grid">
+    <section v-if="account" class="profile-section profile-account" aria-label="账号资料">
       <header><UserRound :size="18" /><h3>账号资料</h3></header>
+      <div class="profile-identity"><span class="profile-avatar"><UserRound :size="24" /></span><div><strong>{{ account.username }}</strong><span>管理员</span></div></div>
       <dl class="profile-details">
         <div><dt>登录账号</dt><dd>{{ account.username }}</dd></div>
         <div><dt>账号类型</dt><dd>管理员</dd></div>
@@ -76,16 +78,16 @@ onMounted(load)
       </dl>
     </section>
 
-    <section class="profile-section" aria-label="修改密码">
+    <section class="profile-section profile-security" aria-label="修改密码">
       <header><KeyRound :size="18" /><h3>修改密码</h3></header>
       <form class="profile-password-form" @submit.prevent="savePassword">
-        <label class="field"><span>当前密码</span><input v-model="currentPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="current-password" required /></label>
-        <label class="field"><span>新密码（8 到 256 个字符）</span><input v-model="newPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" minlength="8" maxlength="256" required /></label>
-        <label class="field"><span>确认新密码</span><input v-model="confirmPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" required /></label>
-        <button class="profile-visibility" type="button" :aria-label="showPasswords ? '隐藏密码' : '显示密码'" @click="showPasswords = !showPasswords"><EyeOff v-if="showPasswords" :size="16" /><Eye v-else :size="16" />{{ showPasswords ? '隐藏密码' : '显示密码' }}</button>
+        <label class="field"><span>当前密码</span><input v-model="currentPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="current-password" placeholder="输入当前登录密码" required /></label>
+        <label class="field"><span>新密码（8 到 256 个字符）</span><input v-model="newPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="设置新的登录密码" minlength="8" maxlength="256" required /></label>
+        <label class="field"><span>确认新密码</span><input v-model="confirmPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="再次输入新密码" required /></label>
         <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
-        <footer><button class="button button--primary" type="submit" :disabled="saving">{{ saving ? '保存中' : '修改密码' }}</button></footer>
+        <footer><button class="profile-visibility" type="button" :aria-label="showPasswords ? '隐藏密码' : '显示密码'" @click="showPasswords = !showPasswords"><EyeOff v-if="showPasswords" :size="16" /><Eye v-else :size="16" />{{ showPasswords ? '隐藏密码' : '显示密码' }}</button><button class="button button--primary" type="submit" :disabled="saving">{{ saving ? '保存中' : '修改密码' }}</button></footer>
       </form>
     </section>
+    </div>
   </div>
 </template>

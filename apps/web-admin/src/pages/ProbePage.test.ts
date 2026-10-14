@@ -36,7 +36,7 @@ describe('ProbePage', () => {
     expect(mocked.getDeviceGroupMembers).toHaveBeenCalledTimes(5)
   })
 
-  it('does not start probe requests when the group list arrives after unmount', async () => {
+  it('loads metrics independently of groups and cancels them on unmount', async () => {
     let finish!: (value: { items: typeof probeGroups }) => void
     mocked.getDeviceGroups.mockImplementation(() => new Promise(resolve => { finish = resolve }))
     const wrapper = mount(ProbePage)
@@ -44,7 +44,8 @@ describe('ProbePage', () => {
     finish({ items: probeGroups })
     await flushPromises()
     expect(mocked.getDeviceGroupMembers).not.toHaveBeenCalled()
-    expect(mocked.getInventory).not.toHaveBeenCalled()
+    expect(mocked.getInventory).toHaveBeenCalledTimes(1)
+    expect((mocked.getInventory.mock.calls[0]![0] as AbortSignal).aborted).toBe(true)
   })
 
   it('counts native HL probes when Nezha is disabled', async () => {
@@ -69,7 +70,7 @@ describe('ProbePage', () => {
     expect(mocked.getInventory).toHaveBeenCalledOnce()
     await wrapper.get('.probe-group-select select').setValue('group-gz')
     await flushPromises()
-    expect(mocked.getGroup).toHaveBeenCalledWith('group-gz')
+    expect(mocked.getGroup).toHaveBeenCalledWith('group-gz', expect.any(AbortSignal))
     expect(wrapper.get('.probe-overview__metrics').text()).toContain('8.4 Mbps')
     expect(wrapper.get('.probe-overview__metrics').text()).toContain('4.2 Mbps')
     expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(2)
@@ -238,6 +239,49 @@ describe('ProbePage', () => {
       vi.useRealTimers()
     }
   })
+
+  it('renders new heartbeat readings without overlapping slow requests and cancels on exit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = mount(ProbePage)
+    try {
+      await flushPromises()
+      let finish!: (value: typeof completeProbeSample) => void
+      mocked.getInventory.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      await vi.advanceTimersByTimeAsync(2_000)
+      const signal = mocked.getInventory.mock.calls[1]![0] as AbortSignal
+      await vi.advanceTimersByTimeAsync(6_000)
+      document.dispatchEvent(new Event('visibilitychange'))
+      await flushPromises()
+      expect(mocked.getInventory).toHaveBeenCalledTimes(2)
+      finish({ ...completeProbeSample, items: [{ ...completeProbeSample.items[0]!, net_in_speed_bytes_per_second: 2_000_000, sampled_at: new Date().toISOString() }] })
+      await flushPromises()
+      expect(wrapper.get('.probe-overview__metrics').text()).toContain('16.0 Mbps')
+      expect(wrapper.text()).not.toContain('哪吒连接未配置')
+      wrapper.unmount()
+      expect(signal.aborted).toBe(true)
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(mocked.getInventory).toHaveBeenCalledTimes(2)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
+
+  it('automatically reconciles group changes while retaining membership after a temporary error', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = mount(ProbePage)
+    try {
+      await flushPromises()
+      expect(wrapper.get('[aria-label="广州入口探针"]').text()).toContain('121.14.61.68')
+      mocked.getDeviceGroupMembers.mockImplementation(async (groupId: string) => ({ items: groupId === 'group-hk' ? [{ group_id: 'group-hk', node_id: 'node-gz-1', weight: 10, priority: 0 }] : [] }))
+      await vi.advanceTimersByTimeAsync(15_000)
+      await flushPromises()
+      expect(wrapper.find('[aria-label="广州入口探针"]').exists()).toBe(false)
+      expect(wrapper.get('[aria-label="香港出口探针"]').text()).toContain('121.14.61.68')
+      mocked.getDeviceGroupMembers.mockRejectedValue(new Error('暂时无法读取成员'))
+      await vi.advanceTimersByTimeAsync(15_000)
+      await flushPromises()
+      expect(wrapper.get('.probe-table tbody').text()).toContain('121.14.61.68')
+      expect(wrapper.text()).toContain('暂时无法读取成员')
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
 })
 
 it.each(['grouped', 'ungrouped'])('deletes an offline HL probe in the %s section and refreshes inventory', async (placement) => {
@@ -273,4 +317,32 @@ it('deletes an online retired probe from the unassigned section using the guarde
   expect(mocked.deleteNode).toHaveBeenCalledWith('retired-native', expect.any(String), 'unassigned')
   expect(wrapper.find('[aria-label="删除退役待清理"]').exists()).toBe(false)
   wrapper.unmount()
+})
+
+it('keeps polling after deleting a node while a metrics request is pending', async () => {
+  vi.useFakeTimers()
+  const sample = { upstream_status: 'disabled', items: [{ node_id: 'offline-native', link_status: 'native', source: 'hl', online: false, name: '离线待清理' }] }
+  mocked.getDeviceGroupMembers.mockResolvedValue({ items: [] })
+  mocked.getInventory.mockResolvedValueOnce(sample)
+  const wrapper = mount(ProbePage)
+  try {
+    await flushPromises()
+    let finishOld: (value: unknown) => void = () => undefined
+    mocked.getInventory.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+    await vi.advanceTimersByTimeAsync(2000)
+    const oldSignal = mocked.getInventory.mock.calls[1]![0] as AbortSignal
+    expect(oldSignal.aborted).toBe(false)
+    mocked.getInventory.mockResolvedValue({ ...sample, items: [] })
+    await wrapper.get('[aria-label="删除离线待清理"]').trigger('click')
+    document.body.querySelector<HTMLButtonElement>('.modal .button--danger')!.click()
+    await flushPromises()
+    expect(oldSignal.aborted).toBe(true)
+    expect(wrapper.text()).toContain('尚未注册节点')
+    finishOld(sample)
+    await flushPromises()
+    expect(wrapper.find('[aria-label="删除离线待清理"]').exists()).toBe(false)
+    const calls = mocked.getInventory.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(mocked.getInventory.mock.calls.length).toBeGreaterThan(calls)
+  } finally { wrapper.unmount(); vi.useRealTimers() }
 })
