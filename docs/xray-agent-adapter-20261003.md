@@ -39,7 +39,9 @@ be presented as mixed-engine activation.
 Unit tests cover staging tamper detection, fixed-runner validation, conflicts,
 atomic replacement, process start failure, and rollback. The optional
 `tests/integration/xray/adapter_test.go` starts only a loopback listener and is
-skipped unless `NYVP_XRAY_BINARY` points at the pinned Xray 26.3.27 binary:
+skipped unless `NYVP_XRAY_BINARY` points at the pinned Xray 26.10.10 binary
+(26.3.27 is available only as an explicit A/B baseline using
+`NYVP_XRAY_EXPECTED_VERSION=26.3.27`):
 
 ```text
 NYVP_XRAY_BINARY=<absolute path to pinned xray> go test ./tests/integration/xray -run TestXrayProcessAdapterLoopback

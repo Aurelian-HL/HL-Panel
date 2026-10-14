@@ -37,8 +37,8 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	version, err := exec.CommandContext(ctx, xrayBinary, "version").Output()
-	if err != nil || !strings.HasPrefix(string(version), "Xray 26.3.27 ") {
-		t.Fatal("mixed engine integration requires pinned Xray 26.3.27")
+	if err != nil || !strings.HasPrefix(string(version), "Xray 26.10.10 ") {
+		t.Fatal("mixed engine integration requires pinned Xray 26.10.10")
 	}
 	for _, changed := range []string{"xray", "gost"} {
 		t.Run(changed, func(t *testing.T) {
@@ -118,7 +118,7 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 				t.Helper()
 				fragments := []agentv1.ConfigurationFragment{
 					{GroupID: "xray", GroupRevision: 1, Engine: agentv1.EngineXray,
-						Config: json.RawMessage(fmt.Sprintf(`{"log":{"loglevel":"none"},"inbounds":[{"tag":%q,"listen":"127.0.0.1","port":%d,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":%d,"network":"tcp"}}],"outbounds":[{"protocol":"freedom"}]}`, xrayName, xrayPort, targetPort))},
+						Config: json.RawMessage(fmt.Sprintf(`{"log":{"loglevel":"none"},"inbounds":[{"tag":%q,"listen":"127.0.0.1","port":%d,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":%d,"network":"tcp"}}],"outbounds":[{"protocol":"freedom","settings":{"finalRules":[{"network":"tcp","ip":["127.0.0.1/32"],"port":"%d","action":"allow"}]}}]}`, xrayName, xrayPort, targetPort, targetPort))},
 					{GroupID: "gost", GroupRevision: 1, Engine: agentv1.EngineGOST,
 						Config: json.RawMessage(fmt.Sprintf(`{"services":[{"name":%q,"addr":"127.0.0.1:%d","handler":{"type":"tcp"},"listener":{"type":"tcp"},"metadata":{"enableStats":true},"forwarder":{"nodes":[{"name":"echo","addr":"127.0.0.1:%d"}],"selector":{"strategy":"round","maxFails":1,"failTimeout":30000000000}}}]}`, gostName, gostPort, targetPort))},
 				}
