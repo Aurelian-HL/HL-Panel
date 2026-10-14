@@ -69,6 +69,8 @@ func (r *ExecGOSTRunner) Test(ctx context.Context, configPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, engineValidationTimeout)
+	defer cancel()
 	command := exec.CommandContext(ctx, r.binaryPath, "-C", configPath, "-O", "json")
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard

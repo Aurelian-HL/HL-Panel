@@ -472,6 +472,10 @@ func (r *ExecXrayRunner) Test(ctx context.Context, configPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Agent reconciliation uses a long-lived context. A stuck validator must
+	// not retain the lifecycle lock and block recovery or traffic collection.
+	ctx, cancel := context.WithTimeout(ctx, engineValidationTimeout)
+	defer cancel()
 	command := exec.CommandContext(ctx, r.binaryPath, "run", "-test", "-config", configPath)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
