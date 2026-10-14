@@ -203,10 +203,27 @@ class NodeRecoveryTests(IsolatedFiles):
                 return
             original_require(condition, message)
         self.replace(node, 'require', require)
-        self.replace(node, 'run', lambda *_: b'')
+        def command(args):
+            if args == [str(self.release / 'bin/xray'), 'version']:
+                return b'Xray 26.7.28 (isolated candidate)\n'
+            return b''
+        self.replace(node, 'run', command)
         self.replace(node, 'request_reenrollment', lambda *_: None)
         self.context = self.replace(node.ssl, 'create_default_context', Mock())
         self.stack.enter_context(patch.dict(os.environ, {'HL_INSTALL_ENROLLMENT_TOKEN': 'isolated-token'}))
+
+    def test_incompatible_core_keeps_service_registration_and_files_untouched(self):
+        self.replace(node, 'run', lambda *_: b'Xray 26.10.10 (isolated incompatible candidate)\n')
+        registration = self.replace(node, 'request_reenrollment', Mock())
+        start = self.replace(node, 'start_service', Mock())
+        args = argparse.Namespace(release=self.release, version='v1.0.1',
+            panel_url='https://new.example.com', node_address='192.0.2.2', ca_file='')
+        before = {str(p): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with self.assertRaisesRegex(node.ReinstallError, '26.7.28'):
+            node.reinstall(args)
+        registration.assert_not_called()
+        start.assert_not_called()
+        self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, before)
 
     def test_failed_candidate_keeps_confirmed_address_ca_and_identity(self):
         new_ca = self.root / 'new-ca.pem'
