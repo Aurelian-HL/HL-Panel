@@ -63,13 +63,22 @@ func TestXrayLiveAdditionPreservesActualTCPStream(t *testing.T) {
 			}
 			defer a.Close(context.Background())
 			ports := []int{freeLoopbackPort(t), freeLoopbackPort(t), freeLoopbackPort(t)}
+			// Linux Xray listeners use SO_REUSEPORT, so another Xray handler
+			// can bind the same address successfully. An independent Go listener
+			// does not opt into reuse and makes this failure portable.
+			blocked, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocked.Close()
+			blockedPort := blocked.Addr().(*net.TCPAddr).Port
 			prepare := func(generation agentv1.NodeConfigGeneration, count int, conflict bool) engine.PreparedConfiguration {
 				t.Helper()
 				in, out, routes := []any{}, []any{}, []any{}
 				for i := 0; i < count; i++ {
 					port := ports[i]
 					if conflict && i == count-1 {
-						port = ports[0]
+						port = blockedPort
 					}
 					inTag, outTag := fmt.Sprintf("in-%d", i), fmt.Sprintf("out-%d", i)
 					in = append(in, map[string]any{"tag": inTag, "listen": "127.0.0.1", "port": port, "protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1", "port": target, "network": "tcp"}})
