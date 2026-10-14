@@ -46,12 +46,26 @@
 
 ## 发布回归
 
+### 独立新增 Xray 规则
+
+旧实现即使只新增一条规则，也会停止共享 Xray 进程，导致其他规则上的已有连接中断。参考面板使用本机 HandlerService 添加监听；这项实现差异可在隔离环境复现，不能直接当作客户每次间歇超时的唯一原因。
+
+独立新增规则支持本机 API 应用：先添加出口和完整路由，再开放新增监听，保留原进程与流量计数代数。新增内容失败时撤销本次监听和出口、恢复原路由；请求超时造成执行结果不确定、补偿失败或进程退出时，重建最后有效配置。API 仅限受管的 loopback 地址，配置通过标准输入传递，诊断不输出配置或认证。
+
+适用条件包括原有入口、出口及全局设置不变，默认出口不变，原路由顺序不变，新增路由只匹配新增入口。编辑、删除、默认出口变化或旧版进程未开启所需 API 时，仍采用完整配置应用并中断该进程的连接。规则排序可能改变默认出口，因此不能宣称所有新增规则均不重启。
+
+节点升级后才具备此行为；升级本身需要一次进程启动。更新应逐台进行并保留配置、身份和账本备份。正常补偿不能证明不确定的迟到 RPC 已结束，必须恢复最后有效进程，不能为保留连接放弃一致性。
+
+验收需保留同一条真实 TCP 连接，连续新增、回滚、制造隔离监听冲突再重试，同时核对进程 PID、计数代数、监听清理与磁盘配置。只有重新拨号成功不足以证明旧连接被保留。
+
 以下用例必须保留在仓库，修改相关模块后重跑：
 
 - `internal/routing/endpointrouter/probe_veto_test.go`：主动探测否决不被拨号成功、冷却到期或续租绕过；地址变化和旧 revision 分别处理。
 - `internal/gateway/healthprobe/controller_test.go`：只有达到恢复成功阈值才解除主动否决。
 - `internal/agent/runtime/usage_delivery_test.go`：流量采集不能跨配置提交；慢网络投递不阻塞配置和本地恢复。
 - `internal/agent/engine/unchanged_process_test.go`：未变引擎不重启，退出进程可恢复，篡改或无效回滚不会误保留或终止健康进程。
+- `internal/agent/engine/xray_live_add_test.go`：严格拒绝影响已有流量的变更；验证增量添加、部分失败补偿、事务回滚和不确定 RPC 的最后有效配置恢复。
+- `tests/integration/xray/live_add_test.go`：真实 Xray 对照旧实现的断流，验证同一 TCP 连接在连续新增、回滚和部分监听冲突补偿后仍可用。全部故障注入限定 loopback，不代替客户原网络上的 VLESS/Reality 验收。
 - `internal/agent/reconciler/recovery_failure_test.go`：启动恢复、后台恢复和同代数恢复的准备/校验失败不停止健康组件；提交/验证失败仍清理未验证进程，保留最后有效配置并支持重试。
 - `internal/agent/engine/validation_process_test.go`：用隔离子进程复现校验挂住，确认内部截止期限、父期限、提前取消以及诊断脱敏，不连接生产服务。
 - `tests/integration/gost/mixed_stability_test.go`：固定版本真实 Xray/GOST，保留同一 TCP 会话连续更新并回滚另一引擎。用例是 loopback TCP 转发，不代替完整 VLESS/Reality 路径。

@@ -199,6 +199,11 @@ func (a *XrayProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 		(!a.autoStart || oldRunning && a.processConfigSHA256 == sha256.Sum256(candidate)) {
 		return nil
 	}
+	if previousExists {
+		if handled, err := a.tryAddLiveLocked(ctx, previous, candidate); handled {
+			return err
+		}
+	}
 	if a.autoStart && oldRunning {
 		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop previous xray process: %w", err)
@@ -309,6 +314,18 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 		if exists && bytes.Equal(active, previousBytes) && (!a.autoStart ||
 			a.process != nil && a.process.Running() && a.processConfigSHA256 == sha256.Sum256(previousBytes)) {
 			return nil
+		}
+		if api, ok := a.runner.(xrayAPIRunner); ok && exists && a.autoStart && a.process != nil &&
+			a.process.Running() && a.processConfigSHA256 == sha256.Sum256(active) {
+			if delta, eligible := planXrayAdditions(previousBytes, active); eligible {
+				if err := a.undoXrayAdditions(ctx, api, delta); err == nil {
+					if err := writeFileAtomic(a.activePath, previousBytes, 0o600); err == nil {
+						a.processConfigSHA256 = sha256.Sum256(previousBytes)
+						return nil
+					}
+				}
+				return a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previousBytes)
+			}
 		}
 	}
 	if a.autoStart && a.process != nil && a.process.Running() {
@@ -677,7 +694,7 @@ func compileXrayBundleWithStats(bundle agentv1.ConfigurationBundle, address stri
 	if err := ensureXrayStatsPolicy(merged); err != nil {
 		return nil, err
 	}
-	merged["api"] = json.RawMessage(`{"tag":"hl-stats-api","services":["StatsService"]}`)
+	merged["api"] = json.RawMessage(`{"tag":"hl-stats-api","services":["StatsService","HandlerService","RoutingService"]}`)
 	merged["stats"] = json.RawMessage(`{}`)
 	// Xray's API service is exposed through one loopback-only dokodemo-door
 	// listener. The bundle compiler owns the singleton listener to avoid port
