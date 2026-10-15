@@ -31,6 +31,13 @@ import (
 )
 
 const SnapshotVersion = 19
+
+// readableSnapshotVersion includes compatible snapshots written by the live
+// panel before their format marker was synchronized to this repository. The
+// v20/v21 envelopes contain the same top-level fields as v19; they are read
+// using the current DTO and new writes continue using SnapshotVersion until a
+// deliberate format migration is introduced.
+const readableSnapshotVersion = 21
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -45,13 +52,14 @@ const protocolHealthSnapshotVersion = 12
 const protocolProbeSnapshotVersion = 13
 const nezhaBindingSnapshotVersion = 14
 const vlessSOCKS5SnapshotVersion = 15
+const licenseCodesSnapshotVersion = 19
 
 // Full migration exports include archived configuration generations. The hot
 // PostgreSQL row remains capped separately at 16 MiB.
 const MaxSnapshotBytes = 64 << 20
 
 func SupportsSnapshotVersion(version int) bool {
-	return version >= 1 && version <= SnapshotVersion
+	return version >= 1 && version <= readableSnapshotVersion
 }
 
 // validPersistedTokenHash accepts only the canonical representation produced
@@ -405,7 +413,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version >= protocolProbeSnapshotVersion && state.ProtocolProbes == nil {
 			return nil, errors.New("incomplete protocol probe persistence state")
 		}
-		if state.Version >= SnapshotVersion && state.LicenseCodes == nil {
+		if state.Version >= licenseCodesSnapshotVersion && state.LicenseCodes == nil {
 			return nil, errors.New("incomplete license persistence state")
 		}
 		if state.Version >= applyAttemptsSnapshotVersion && state.ApplyAttemptsByNode == nil {

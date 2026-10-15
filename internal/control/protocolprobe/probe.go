@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,7 +33,23 @@ var ErrUnhealthy = errors.New("VLESS protocol probe failed")
 const maxConcurrentChecks = 4
 const maxPortStartAttempts = 3
 
+// A successful Reality check remains useful for one scheduler turn. The
+// runner normally schedules a target every 30 seconds, so this avoids a
+// second Xray fork for the same unchanged target while leaving enough margin
+// before the 90-second health lease expires. Failed checks are never cached.
+const successfulProbeCacheTTL = 35 * time.Second
+
 var checkSlots = make(chan struct{}, maxConcurrentChecks)
+
+type cachedSuccess struct {
+	verifiedAt time.Time
+	expiresAt  time.Time
+}
+
+var successCache = struct {
+	sync.Mutex
+	entries map[[sha256.Size]byte]cachedSuccess
+}{entries: make(map[[sha256.Size]byte]cachedSuccess)}
 
 type probeProcess struct {
 	done <-chan struct{}
@@ -49,12 +67,6 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 	if err := spec.validate(); err != nil {
 		return time.Time{}, err
 	}
-	select {
-	case checkSlots <- struct{}{}:
-		defer func() { <-checkSlots }()
-	case <-ctx.Done():
-		return time.Time{}, ctx.Err()
-	}
 	binary := filepath.Clean(strings.TrimSpace(spec.XrayBinary))
 	if !filepath.IsAbs(binary) {
 		return time.Time{}, ErrInvalidSpec
@@ -63,6 +75,16 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 ||
 		(runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
 		return time.Time{}, ErrInvalidSpec
+	}
+	cacheKey := probeCacheKey(spec, binary, info)
+	if verifiedAt, ok := cachedProbeSuccess(cacheKey, time.Now().UTC()); ok {
+		return verifiedAt, nil
+	}
+	select {
+	case checkSlots <- struct{}{}:
+		defer func() { <-checkSlots }()
+	case <-ctx.Done():
+		return time.Time{}, ctx.Err()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -100,7 +122,9 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 		verified, exitedBeforeReady := waitForSOCKS(ctx, process.done, socksPort, spec)
 		stopProbeProcess(process)
 		if verified {
-			return time.Now().UTC(), nil
+			verifiedAt := time.Now().UTC()
+			rememberProbeSuccess(cacheKey, verifiedAt)
+			return verifiedAt, nil
 		}
 		if !exitedBeforeReady || ctx.Err() != nil {
 			return time.Time{}, ErrUnhealthy
@@ -111,6 +135,58 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 		// that transient collision into a node health failure.
 	}
 	return time.Time{}, ErrUnhealthy
+}
+
+func probeCacheKey(spec Spec, binary string, info os.FileInfo) [sha256.Size]byte {
+	// Delimit fields so values cannot collide when concatenated. The binary
+	// metadata invalidates the cache after an engine upgrade or replacement.
+	value := strings.Join([]string{
+		binary,
+		strconv.FormatInt(info.Size(), 10),
+		strconv.FormatInt(info.ModTime().UnixNano(), 10),
+		strconv.FormatUint(uint64(info.Mode()), 10),
+		spec.DialHost, strconv.Itoa(spec.DialPort), spec.UUID, spec.ServerName,
+		spec.PublicKey, spec.ShortID, spec.EchoHost, strconv.Itoa(spec.EchoPort),
+	}, "\x00")
+	return sha256.Sum256([]byte(value))
+}
+
+func cachedProbeSuccess(key [sha256.Size]byte, now time.Time) (time.Time, bool) {
+	successCache.Lock()
+	defer successCache.Unlock()
+	entry, ok := successCache.entries[key]
+	if !ok || !now.Before(entry.expiresAt) {
+		if ok {
+			delete(successCache.entries, key)
+		}
+		return time.Time{}, false
+	}
+	// Treat the cached validation as fresh for the current health lease. The
+	// cache is bounded to a short window and keyed by all connection material.
+	return now, true
+}
+
+func rememberProbeSuccess(key [sha256.Size]byte, verifiedAt time.Time) {
+	successCache.Lock()
+	defer successCache.Unlock()
+	if len(successCache.entries) >= 4096 {
+		for oldKey, entry := range successCache.entries {
+			if !verifiedAt.Before(entry.expiresAt) {
+				delete(successCache.entries, oldKey)
+			}
+		}
+		if len(successCache.entries) >= 4096 {
+			return
+		}
+	}
+	successCache.entries[key] = cachedSuccess{verifiedAt: verifiedAt, expiresAt: verifiedAt.Add(successfulProbeCacheTTL)}
+}
+
+// resetProbeCacheForTests prevents package-level state from coupling tests.
+func resetProbeCacheForTests() {
+	successCache.Lock()
+	defer successCache.Unlock()
+	successCache.entries = make(map[[sha256.Size]byte]cachedSuccess)
 }
 
 func reserveLoopbackPort() (int, error) {

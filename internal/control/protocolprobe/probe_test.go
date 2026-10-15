@@ -145,8 +145,12 @@ func TestEchoThroughSOCKSRequiresMatchingChallenge(t *testing.T) {
 }
 
 func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
+	resetProbeCacheForTests()
 	originalValidate, originalStart := validateXray, startXray
-	t.Cleanup(func() { validateXray, startXray = originalValidate, originalStart })
+	t.Cleanup(func() {
+		validateXray, startXray = originalValidate, originalStart
+		resetProbeCacheForTests()
+	})
 	validateXray = func(context.Context, string, string) error { return nil }
 	var attempts int
 	startXray = func(_ context.Context, _ string, configPath string) (probeProcess, error) {
@@ -200,5 +204,24 @@ func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
 	verified, err := Check(ctx, spec)
 	if err != nil || verified.IsZero() || attempts != 2 {
 		t.Fatalf("Check() = (%v, %v), attempts=%d; want successful second attempt", verified, err, attempts)
+	}
+	second, err := Check(ctx, spec)
+	if err != nil || second.IsZero() || attempts != 2 {
+		t.Fatalf("cached Check() = (%v, %v), attempts=%d; want no new Xray process", second, err, attempts)
+	}
+}
+
+func TestProbeCacheKeyChangesWhenEndpointChanges(t *testing.T) {
+	resetProbeCacheForTests()
+	info, err := os.Stat(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := probeCacheKey(validSpec(), os.Args[0], info)
+	changed := validSpec()
+	changed.DialPort++
+	second := probeCacheKey(changed, os.Args[0], info)
+	if first == second {
+		t.Fatal("probe cache key did not change with endpoint material")
 	}
 }
