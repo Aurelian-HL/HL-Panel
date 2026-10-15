@@ -30,6 +30,13 @@ node = load('node_recovery', 'reinstall-node.py')
 move = load('node_address', 'node-control-url.py')
 
 
+class VersionParsingTests(unittest.TestCase):
+    def test_build_suffix_compares_by_numeric_version(self):
+        self.assertEqual(update.version_tuple('v0.1.95-vless-business-20261016'), (0, 1, 95))
+        self.assertGreater(update.version_tuple('v0.1.96'),
+                           update.version_tuple('v0.1.95-vless-business-20261016'))
+
+
 class IsolatedFiles(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()

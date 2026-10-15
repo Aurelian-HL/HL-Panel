@@ -28,7 +28,10 @@ SYSTEMD_UNITS = Path('/etc/systemd/system')
 SERVICE = 'hl-panel-control-api.service'
 API = 'https://api.github.com/repos/Aurelian-HL/HL-Panel'
 REPO = 'https://github.com/Aurelian-HL/HL-Panel'
-TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$')
+# Installed binaries may carry a build channel suffix (for example
+# ``v0.1.95-vless-business-20261016``). Release targets remain plain semver,
+# while comparisons use the numeric prefix so those builds can be upgraded.
+TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$')
 WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
 APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
 API_PROXY = Path('/etc/nginx/snippets/hl-panel-api-proxy.conf')
