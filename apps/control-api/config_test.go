@@ -70,8 +70,65 @@ func clearRuntimeEnvironment(t *testing.T) {
 		"CONTROL_NEZHA_PAT_FILE",
 		"CONTROL_NEZHA_NODE_MAP_FILE",
 		"CONTROL_NEZHA_TIMEOUT",
+		"CONTROL_LICENSE_ENFORCE",
+		"CONTROL_LICENSE_ISSUER_URL",
+		"CONTROL_LICENSE_CODE",
+		"CONTROL_LICENSE_CODE_FILE",
+		"CONTROL_LICENSE_DOMAIN",
+		"CONTROL_LICENSE_INSTANCE_ID",
+		"CONTROL_LICENSE_RENEW_INTERVAL",
+		"CONTROL_LICENSE_HTTP_TIMEOUT",
 	} {
 		t.Setenv(name, "")
+	}
+}
+
+func TestRuntimeConfigLoadsProtectedRemoteLicenseConfiguration(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_PASSWORD", "explicit-local-secret")
+	t.Setenv("CONTROL_ALLOW_VOLATILE_STORE", "true")
+	setCustomerFingerprintKey(t)
+	codeFile := filepath.Join(t.TempDir(), "license-code")
+	if err := os.WriteFile(codeFile, []byte("hlp-test-license-code-123456\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONTROL_LICENSE_ISSUER_URL", "https://issuer.example.com")
+	t.Setenv("CONTROL_LICENSE_CODE_FILE", codeFile)
+	t.Setenv("CONTROL_LICENSE_DOMAIN", "panel.example.com")
+	t.Setenv("CONTROL_LICENSE_INSTANCE_ID", "hlp-instance-123456")
+	t.Setenv("CONTROL_LICENSE_RENEW_INTERVAL", "1h")
+	config, err := loadRuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.LicenseEnforce || config.LicenseCode == "" || config.LicenseDomain != "panel.example.com" {
+		t.Fatalf("remote license configuration was not loaded: %+v", config)
+	}
+}
+
+func TestRuntimeConfigRejectsMixedLicenseCodeSources(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_PASSWORD", "explicit-local-secret")
+	t.Setenv("CONTROL_ALLOW_VOLATILE_STORE", "true")
+	setCustomerFingerprintKey(t)
+	t.Setenv("CONTROL_LICENSE_CODE", "hlp-test-license-code-123456")
+	t.Setenv("CONTROL_LICENSE_CODE_FILE", filepath.Join(t.TempDir(), "license-code"))
+	if _, err := loadRuntimeConfig(); err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Fatalf("mixed license code sources were accepted: %v", err)
+	}
+}
+
+func TestRuntimeConfigRejectsUnconfiguredLicenseEnforcement(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_PASSWORD", "explicit-local-secret")
+	t.Setenv("CONTROL_ALLOW_VOLATILE_STORE", "true")
+	setCustomerFingerprintKey(t)
+	t.Setenv("CONTROL_LICENSE_ENFORCE", "true")
+	if _, err := loadRuntimeConfig(); err == nil || !strings.Contains(err.Error(), "requires CONTROL_LICENSE_ISSUER_URL") {
+		t.Fatalf("unconfigured license enforcement was accepted: %v", err)
 	}
 }
 

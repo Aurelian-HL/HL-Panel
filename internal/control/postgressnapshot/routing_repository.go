@@ -13,11 +13,24 @@ import (
 )
 
 var _ groups.Repository = (*Store)(nil)
+var _ groups.IdempotentRepository = (*Store)(nil)
 var _ endpoints.Repository = (*Store)(nil)
 var _ generations.Repository = (*Store)(nil)
 
 func (s *Store) CreateDeviceGroup(ctx context.Context, group groups.DeviceGroup, event audit.Event) error {
 	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.CreateDeviceGroup(ctx, group, event) })
+}
+
+func (s *Store) CreateDeviceGroupIdempotent(ctx context.Context, input groups.CreateDeviceGroupInput, event audit.Event) (groups.DeviceGroup, bool, error) {
+	type result struct {
+		group    groups.DeviceGroup
+		replayed bool
+	}
+	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+		group, replayed, err := state.CreateDeviceGroupIdempotent(ctx, input, event)
+		return result{group: group, replayed: replayed}, err
+	})
+	return value.group, value.replayed, err
 }
 
 func (s *Store) UpdateDeviceGroup(ctx context.Context, input groups.UpdateInput, event audit.Event) (groups.DeviceGroup, bool, error) {
@@ -58,6 +71,19 @@ func (s *Store) UpsertGroupMember(ctx context.Context, member groups.Member, eve
 	return value.member, value.configs, err
 }
 
+func (s *Store) UpsertGroupMemberIdempotent(ctx context.Context, input groups.UpsertGroupMemberInput, event audit.Event) (groups.Member, []generations.NodeConfigGeneration, bool, error) {
+	type result struct {
+		member   groups.Member
+		configs  []generations.NodeConfigGeneration
+		replayed bool
+	}
+	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+		member, configs, replayed, err := state.UpsertGroupMemberIdempotent(ctx, input, event)
+		return result{member: member, configs: configs, replayed: replayed}, err
+	})
+	return value.member, value.configs, value.replayed, err
+}
+
 func (s *Store) UpdateGroupMemberWeight(ctx context.Context, input groups.UpdateMemberWeightInput, event audit.Event) (groups.UpdateMemberWeightResult, error) {
 	return transact(ctx, s, true, func(state *memoryrepo.Store) (groups.UpdateMemberWeightResult, error) {
 		return state.UpdateGroupMemberWeight(ctx, input, event)
@@ -67,6 +93,12 @@ func (s *Store) UpdateGroupMemberWeight(ctx context.Context, input groups.Update
 func (s *Store) RetireGroupMember(ctx context.Context, groupID, nodeID string, retiredAt time.Time, event audit.Event) (groups.RetireMemberResult, error) {
 	return transact(ctx, s, true, func(state *memoryrepo.Store) (groups.RetireMemberResult, error) {
 		return state.RetireGroupMember(ctx, groupID, nodeID, retiredAt, event)
+	})
+}
+
+func (s *Store) RetireGroupMemberIdempotent(ctx context.Context, input groups.RetireGroupMemberInput, event audit.Event) (groups.RetireMemberResult, error) {
+	return transact(ctx, s, true, func(state *memoryrepo.Store) (groups.RetireMemberResult, error) {
+		return state.RetireGroupMemberIdempotent(ctx, input, event)
 	})
 }
 

@@ -85,14 +85,12 @@ func (api *API) createDeviceGroup(writer http.ResponseWriter, request *http.Requ
 		writeProblem(writer, request, err)
 		return
 	}
-	group, err := api.groups.CreateWithMetadata(request.Context(), session.AdminID, input.Name, input.Kind, endpoints.SelectionPolicy(input.SelectionPolicy), input.Description, groups.CreateMetadata{UserGroupID: input.UserGroupID, HideInProbe: input.HideInProbe})
+	group, replayed, err := api.groups.CreateWithMetadataIdempotent(request.Context(), session.AdminID, input.Name, input.Kind, endpoints.SelectionPolicy(input.SelectionPolicy), input.Description, groups.CreateMetadata{UserGroupID: input.UserGroupID, HideInProbe: input.HideInProbe}, request.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeProblem(writer, request, err)
 		return
 	}
-	writeJSON(writer, http.StatusCreated, struct {
-		Group groups.DeviceGroup `json:"group"`
-	}{Group: group})
+	writeBusinessResult(writer, request, "group", group, replayed)
 }
 
 func (api *API) addDeviceGroupMember(writer http.ResponseWriter, request *http.Request, session auth.Session) {
@@ -101,7 +99,7 @@ func (api *API) addDeviceGroupMember(writer http.ResponseWriter, request *http.R
 		writeProblem(writer, request, err)
 		return
 	}
-	member, assignments, err := api.groups.AddMemberWithDialHost(request.Context(), session.AdminID, request.PathValue("group_id"), input.NodeID, input.DialHost, input.Weight, input.Priority)
+	member, assignments, replayed, err := api.groups.AddMemberWithDialHostIdempotent(request.Context(), session.AdminID, request.PathValue("group_id"), input.NodeID, input.DialHost, input.Weight, input.Priority, request.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeProblem(writer, request, err)
 		return
@@ -109,7 +107,8 @@ func (api *API) addDeviceGroupMember(writer http.ResponseWriter, request *http.R
 	writeJSON(writer, http.StatusOK, struct {
 		Member      groups.Member                      `json:"member"`
 		Assignments []generations.NodeConfigGeneration `json:"assignments"`
-	}{Member: member, Assignments: assignments})
+		Replayed    bool                               `json:"replayed"`
+	}{Member: member, Assignments: assignments, Replayed: replayed})
 }
 
 func (api *API) listDeviceGroupMembers(writer http.ResponseWriter, request *http.Request, _ auth.Session) {
@@ -124,7 +123,7 @@ func (api *API) listDeviceGroupMembers(writer http.ResponseWriter, request *http
 }
 
 func (api *API) retireDeviceGroupMember(writer http.ResponseWriter, request *http.Request, session auth.Session) {
-	result, err := api.groups.RetireMember(request.Context(), session.AdminID, request.PathValue("group_id"), request.PathValue("node_id"))
+	result, err := api.groups.RetireMemberIdempotent(request.Context(), session.AdminID, request.PathValue("group_id"), request.PathValue("node_id"), request.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeProblem(writer, request, err)
 		return

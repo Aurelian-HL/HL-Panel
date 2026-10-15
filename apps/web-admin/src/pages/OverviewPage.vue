@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Archive, Cpu, Database, FileText, HardDrive, MemoryStick, Network, Power, RefreshCw, RotateCw, Terminal, Wifi, XCircle, CheckCircle2 } from '@lucide/vue'
+import { Archive, Cpu, FileText, HardDrive, MemoryStick, Network, Power, RefreshCw, RotateCw, Terminal, Wifi, XCircle, CheckCircle2 } from '@lucide/vue'
 
 import { api, type EdgeNode, type PanelControlResult, type OverviewResponse } from '@/api'
 import StatePanel from '@/components/StatePanel.vue'
@@ -154,7 +154,6 @@ async function runControl(command: PanelControlResult['command']): Promise<void>
 const panelRuntime = computed(() => overview.value?.panel ?? null)
 const systemCpu = computed(() => panelNumber('cpu_percent'))
 const systemMemory = computed(() => percent(panelNumber('memory_used_bytes'), panelNumber('memory_total_bytes')))
-const systemSwap = computed(() => panelNumber('swap_total_bytes') === 0 ? 0 : percent(panelNumber('swap_used_bytes'), panelNumber('swap_total_bytes')))
 const systemDisk = computed(() => percent(panelNumber('disk_used_bytes'), panelNumber('disk_total_bytes')))
 const connectionCount = computed(() => `${sum('tcp_conn_count', true) === null ? '未采集' : Math.round(sum('tcp_conn_count', true) as number).toLocaleString('zh-CN')} / ${sum('udp_conn_count', true) === null ? '未采集' : Math.round(sum('udp_conn_count', true) as number).toLocaleString('zh-CN')}`)
 
@@ -193,7 +192,6 @@ onBeforeUnmount(() => {
             <div class="xpanel-gauges">
               <article class="xpanel-gauge"><div class="gauge-ring" :style="gaugeStyle(systemCpu)"><b>{{ formatPercent(systemCpu) }}</b></div><div><strong><Cpu :size="13" /> CPU</strong><small>面板机资源</small></div></article>
               <article class="xpanel-gauge"><div class="gauge-ring" :style="gaugeStyle(systemMemory)"><b>{{ formatPercent(systemMemory) }}</b></div><div><strong><MemoryStick :size="13" /> 内存</strong><small>{{ formatBytes(panelNumber('memory_used_bytes')) }} / {{ formatBytes(panelNumber('memory_total_bytes')) }}</small></div></article>
-              <article class="xpanel-gauge"><div class="gauge-ring" :style="gaugeStyle(systemSwap)"><b>{{ panelNumber('swap_total_bytes') === 0 ? '未启用' : formatPercent(systemSwap) }}</b></div><div><strong><Database :size="13" /> 交换分区</strong><small>{{ formatBytes(panelNumber('swap_used_bytes')) }} / {{ formatBytes(panelNumber('swap_total_bytes')) }}</small></div></article>
               <article class="xpanel-gauge"><div class="gauge-ring" :style="gaugeStyle(systemDisk)"><b>{{ formatPercent(systemDisk) }}</b></div><div><strong><HardDrive :size="13" /> 存储</strong><small>{{ formatBytes(panelNumber('disk_used_bytes')) }} / {{ formatBytes(panelNumber('disk_total_bytes')) }}</small></div></article>
             </div>
           </section>

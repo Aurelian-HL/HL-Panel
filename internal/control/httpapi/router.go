@@ -17,6 +17,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
@@ -68,6 +69,7 @@ type API struct {
 	migration          *migrationbackup.Service
 	panelUpdate        *panelupdate.Service
 	automaticMigration *panelmigration.Service
+	licensing          *licensing.Service
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {
@@ -76,6 +78,10 @@ func WithMigrationBackup(service *migrationbackup.Service) Option {
 
 func WithAutomaticMigration(service *panelmigration.Service) Option {
 	return func(api *API) { api.automaticMigration = service }
+}
+
+func WithLicensing(service *licensing.Service) Option {
+	return func(api *API) { api.licensing = service }
 }
 
 func WithTargetProbe(service *targetprobe.Service) Option {
@@ -167,6 +173,14 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
+	if api.licensing != nil {
+		mux.HandleFunc("GET /api/v1/license", api.requireAdministrator(api.licenseStatus))
+		mux.HandleFunc("POST /api/v1/license/codes", api.requireAdministrator(api.issueLicenseCode))
+		mux.HandleFunc("GET /api/v1/license/codes", api.requireAdministrator(api.listLicenseCodes))
+		mux.HandleFunc("POST /api/v1/license/codes/{id}/revoke", api.requireAdministrator(api.revokeLicenseCode))
+		mux.HandleFunc("POST /api/v1/public/license/activate", api.activateLicense)
+		mux.HandleFunc("POST /api/v1/public/license/renew", api.renewLicense)
+	}
 	mux.HandleFunc("GET /api/v1/auth/me", api.requireAdministratorSession(api.currentAdministrator))
 	if api.releases != nil {
 		mux.HandleFunc("GET /api/v1/system/version", api.requireAdministratorSession(api.checkVersion))

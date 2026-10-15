@@ -15,6 +15,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
@@ -51,6 +52,7 @@ type controlRepository interface {
 	vlessidentity.Repository
 	vlessruntime.Repository
 	deploymentreceipts.Repository
+	licensing.Repository
 }
 
 func openRepository(ctx context.Context, config runtimeConfig, bootstrap auth.Administrator) (controlRepository, func(), error) {

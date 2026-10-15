@@ -17,6 +17,7 @@ const selectionPolicy = ref<LoadBalancingStrategy>('weighted_least_connections')
 const description = ref('')
 const submitting = ref(false)
 const errorMessage = ref('')
+const operationKey = crypto.randomUUID()
 
 const kinds: Array<{ value: DeviceGroupKind; label: string; caption: string }> = [
   { value: 'ENTRY', label: '入口', caption: '承载入口直出，或作为经出口组路径的前置入口' },
@@ -40,7 +41,7 @@ async function submit(): Promise<void> {
   }
   submitting.value = true
   try {
-    const group = await api.createDeviceGroup({ name: name.value.trim(), kind: kind.value as DeviceGroupKind, user_group_id: userGroupId.value, hide_in_probe: hideInProbe.value, selection_policy: selectionPolicy.value, description: description.value.trim() })
+    const group = await api.createDeviceGroup({ name: name.value.trim(), kind: kind.value as DeviceGroupKind, user_group_id: userGroupId.value, hide_in_probe: hideInProbe.value, selection_policy: selectionPolicy.value, description: description.value.trim() }, operationKey)
     emit('created', group)
   } catch (error) {
     errorMessage.value = displayError(error)

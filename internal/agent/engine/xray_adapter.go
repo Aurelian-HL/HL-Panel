@@ -564,7 +564,10 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 				return nil, fmt.Errorf("%w: invalid %s", ErrInvalidConfiguration, key)
 			}
 			if previous, exists := merged[key]; exists {
-				previousCanonical, _ := canonicalJSON(previous)
+				previousCanonical, err := canonicalJSON(previous)
+				if err != nil {
+					return nil, fmt.Errorf("%w: invalid %s", ErrInvalidConfiguration, key)
+				}
 				if !bytes.Equal(previousCanonical, canonical) {
 					return nil, fmt.Errorf("%w: top-level key %q differs between fragments", ErrXrayConfigConflict, key)
 				}
@@ -608,11 +611,17 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	// Xray's API service is exposed through one loopback-only dokodemo-door
 	// listener. The bundle compiler owns the singleton listener to avoid port
 	// and tag collisions when several rules are active on the same node.
-	apiInbound, _ := json.Marshal(map[string]any{
+	apiInbound, err := json.Marshal(map[string]any{
 		"tag": "hl-stats-api-in", "listen": "127.0.0.1", "port": 10085,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 	})
-	apiOutbound, _ := json.Marshal(map[string]any{"tag": "hl-stats-api", "protocol": "freedom"})
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode stats api inbound", ErrInvalidConfiguration)
+	}
+	apiOutbound, err := json.Marshal(map[string]any{"tag": "hl-stats-api", "protocol": "freedom"})
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode stats api outbound", ErrInvalidConfiguration)
+	}
 	// Validate only the newly owned API entries. The existing arrays have
 	// already been validated above; validating the full append with the same
 	// seenTags map would report every existing tag as a duplicate.
@@ -637,7 +646,11 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 		routingSettings = make(map[string]json.RawMessage)
 	}
 	routingRules = append(routingRules, json.RawMessage(`{"type":"field","inboundTag":["hl-stats-api-in"],"outboundTag":"hl-stats-api"}`))
-	routingSettings["rules"], _ = json.Marshal(routingRules)
+	encodedRules, err := json.Marshal(routingRules)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode routing rules", ErrInvalidConfiguration)
+	}
+	routingSettings["rules"] = encodedRules
 	mergedRouting, err := json.Marshal(routingSettings)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode routing", ErrInvalidConfiguration)

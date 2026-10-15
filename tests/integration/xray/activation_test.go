@@ -35,6 +35,10 @@ import (
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
+	"github.com/hongle/hl-panel/internal/control/vlesssetup"
+	"github.com/hongle/hl-panel/internal/gateway/endpointselector"
+	"github.com/hongle/hl-panel/internal/gateway/tcpproxy"
+	"github.com/hongle/hl-panel/internal/routing/endpointrouter"
 )
 
 // Uses the actual authenticated API, agent loops, engine receipts, and Reality
@@ -136,22 +140,40 @@ func TestRuleActivationNotificationsWithRealAgentAndRealityTwice(t *testing.T) {
 	for round := 1; round <= 2; round++ {
 		started := time.Now()
 		request := forwarding.Request{Name: fmt.Sprintf("activation-%d", round), EntryGroupID: group.ID, EgressMode: forwarding.EgressDirect, Protocol: forwarding.ProtocolTCP, IngressProtocol: forwarding.IngressVLESSReality, ListenPort: freeLoopbackPort(t), SelectionPolicy: forwarding.SelectionRoundRobin, VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5, VLESSSOCKS5Host: socks.SOCKS5.Hostname, VLESSSOCKS5Port: socks.SOCKS5.Port, VLESSSOCKS5Username: socks.SOCKS5.Username, VLESSSOCKS5Password: socks.SOCKS5.Password}
-		encoded, _ := json.Marshal(request)
-		httpRequest, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/api/v1/forwarding-rules", bytes.NewReader(encoded))
-		httpRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
-		httpRequest.Header.Set("Content-Type", "application/json")
-		httpRequest.Header.Set("Idempotency-Key", fmt.Sprintf("activation-%d", round))
-		response, err := server.Client().Do(httpRequest)
-		if err != nil {
-			t.Fatal(err)
-		}
 		var created struct {
 			Rule forwarding.Rule `json:"rule"`
 		}
-		err = json.NewDecoder(response.Body).Decode(&created)
-		response.Body.Close()
-		if response.StatusCode != 201 || err != nil {
-			t.Fatalf("save rule returned %d: %v", response.StatusCode, err)
+		if round == 2 {
+			// Simulate the original failure: the HTTP request ended immediately
+			// after committing the rule, before endpoint/identity setup.
+			created.Rule, _, err = forward.CreateForAdministrator(ctx, "activation-admin", request, "interrupted-save")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pools, err := store.ListEndpointPools(ctx); err != nil || len(pools) != 1 {
+				t.Fatal("interrupted rule already has setup resources")
+			}
+			setup := vlesssetup.NewService(networks, endpoints.NewService(store, time.Now), identities)
+			for replay := 0; replay < 2; replay++ {
+				if err := setup.Reconcile(ctx, forward); err != nil {
+					t.Fatal(err)
+				}
+			}
+		} else {
+			encoded, _ := json.Marshal(request)
+			httpRequest, _ := http.NewRequestWithContext(ctx, "POST", server.URL+"/api/v1/forwarding-rules", bytes.NewReader(encoded))
+			httpRequest.Header.Set("Authorization", "Bearer "+login.AccessToken)
+			httpRequest.Header.Set("Content-Type", "application/json")
+			httpRequest.Header.Set("Idempotency-Key", fmt.Sprintf("activation-%d", round))
+			response, err := server.Client().Do(httpRequest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = json.NewDecoder(response.Body).Decode(&created)
+			response.Body.Close()
+			if response.StatusCode != 201 || err != nil {
+				t.Fatalf("save rule returned %d: %v", response.StatusCode, err)
+			}
 		}
 		deadline := started.Add(12 * time.Second)
 		for {
@@ -171,7 +193,8 @@ func TestRuleActivationNotificationsWithRealAgentAndRealityTwice(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = protocolprobe.Check(ctx, protocolprobe.Spec{XrayBinary: binary, DialHost: "127.0.0.1", DialPort: created.Rule.ListenPort, UUID: credential.CredentialUUID, ServerName: created.Rule.RealityServerName, PublicKey: created.Rule.RealityPublicKey, ShortID: created.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: echoPort})
+		gatewayPort := startActivatedMembershipGateway(t, ctx, store, created.Rule.ID)
+		_, err = protocolprobe.Check(ctx, protocolprobe.Spec{XrayBinary: binary, DialHost: "127.0.0.1", DialPort: gatewayPort, UUID: credential.CredentialUUID, ServerName: created.Rule.RealityServerName, PublicKey: created.Rule.RealityPublicKey, ShortID: created.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: echoPort})
 		if err != nil {
 			t.Fatalf("round %d actual customer forwarding failed: %v", round, err)
 		}
@@ -179,6 +202,69 @@ func TestRuleActivationNotificationsWithRealAgentAndRealityTwice(t *testing.T) {
 		if err != nil || probe.UUID == credential.CredentialUUID {
 			t.Fatal("probe and customer identities were not independent")
 		}
-		t.Logf("round %d saved, notified, engine verified, protocol activated, and customer transferred in %s", round, time.Since(started))
+		t.Logf("round %d saved, notified, engine verified, protocol activated, membership routed, and customer transferred in %s", round, time.Since(started))
 	}
+}
+
+func startActivatedMembershipGateway(t *testing.T, ctx context.Context, store *memoryrepo.Store, ruleID string) int {
+	t.Helper()
+	pools, err := store.ListEndpointPools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolID := ""
+	for _, pool := range pools {
+		if pool.RuleID == ruleID {
+			poolID = pool.ID
+			break
+		}
+	}
+	if poolID == "" {
+		t.Fatal("activated rule has no endpoint pool")
+	}
+	service := gatewaymembership.NewService(store)
+	if count, err := service.ReadyCandidateCount(ctx, poolID); err != nil || count != 1 {
+		t.Fatalf("activated rule ready candidate count=%d err=%v", count, err)
+	}
+	snapshot, err := service.Snapshot(ctx, poolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := endpointrouter.New(endpointrouter.SelectionPolicyWeightedRoundRobin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.ReplaceVersionedMembership(snapshot.Revision, snapshot.Endpoints); err != nil {
+		t.Fatal(err)
+	}
+	selector, err := endpointselector.NewRouterSelector(router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	front, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := front.Addr().(*net.TCPAddr).Port
+	server, err := tcpproxy.New(tcpproxy.Config{Listener: front, Selector: selector})
+	if err != nil {
+		front.Close()
+		t.Fatal(err)
+	}
+	gateContext, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(gateContext) }()
+	t.Cleanup(func() {
+		cancel()
+		server.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("membership gateway shutdown: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("membership gateway shutdown timed out")
+		}
+	})
+	return port
 }

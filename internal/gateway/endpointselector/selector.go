@@ -29,7 +29,15 @@ func (s *RouterSelector) Select() (tcpproxy.Backend, error) {
 }
 
 func (s *RouterSelector) SelectKey(key string) (tcpproxy.Backend, error) {
-	endpoint, err := s.router.SelectKey(key)
+	return s.SelectKeyExcluding(key, nil)
+}
+
+func (s *RouterSelector) SelectExcluding(excluded map[string]struct{}) (tcpproxy.Backend, error) {
+	return s.SelectKeyExcluding("", excluded)
+}
+
+func (s *RouterSelector) SelectKeyExcluding(key string, excluded map[string]struct{}) (tcpproxy.Backend, error) {
+	endpoint, err := s.router.SelectKeyExcluding(key, excluded)
 	if err != nil {
 		return tcpproxy.Backend{}, err
 	}
@@ -42,3 +50,5 @@ func (s *RouterSelector) Release(endpointID string) error {
 
 var _ tcpproxy.Selector = (*RouterSelector)(nil)
 var _ tcpproxy.KeyedSelector = (*RouterSelector)(nil)
+var _ tcpproxy.ExcludingSelector = (*RouterSelector)(nil)
+var _ tcpproxy.KeyedExcludingSelector = (*RouterSelector)(nil)

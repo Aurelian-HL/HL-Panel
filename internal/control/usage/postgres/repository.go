@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/usage"
@@ -15,9 +16,31 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-type Repository struct{ db *sql.DB }
+type Repository struct {
+	db *sql.DB
 
-func New(db *sql.DB) *Repository { return &Repository{db: db} }
+	// aggregateCache avoids repeating COUNT/SUM scans for the rule inventory and
+	// the periodic traffic reconciler. The generation counter keeps cached
+	// values from crossing a RepeatableRead snapshot boundary while an ingest
+	// commits concurrently.
+	aggregateMu         sync.RWMutex
+	aggregateGeneration uint64
+	aggregates          map[aggregateKey]aggregateTotals
+}
+
+func New(db *sql.DB) *Repository {
+	return &Repository{db: db, aggregates: make(map[aggregateKey]aggregateTotals)}
+}
+
+type aggregateKey struct {
+	scope usage.Scope
+	id    string
+}
+
+type aggregateTotals struct {
+	count  int64
+	totals usage.Totals
+}
 
 func (repository *Repository) Ingest(ctx context.Context, event usage.Event, project usage.DecisionProjector) (usage.IngestResult, error) {
 	if repository == nil || repository.db == nil {
@@ -132,9 +155,17 @@ func (repository *Repository) Ingest(ctx context.Context, event usage.Event, pro
 		WHERE node_id=$1 AND boot_id=$2`, event.NodeID, event.BootID, event.Sequence, event.ReceivedAt); err != nil {
 		return usage.IngestResult{}, errors.New("usage cursor update failed")
 	}
+	// Serialize the short commit with aggregate reads. This prevents a query
+	// that started before this event from loading a post-commit aggregate and
+	// then mixing it with its older RepeatableRead detail page.
+	repository.aggregateMu.Lock()
 	if err := tx.Commit(); err != nil {
+		repository.aggregateMu.Unlock()
 		return usage.IngestResult{}, errors.New("usage ingest transaction commit failed")
 	}
+	repository.aggregateGeneration++
+	repository.addAggregateEventLocked(event)
+	repository.aggregateMu.Unlock()
 	return usage.IngestResult{Event: event, CustomerTotals: current, Decision: decision}, nil
 }
 
@@ -142,12 +173,30 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	if repository == nil || repository.db == nil {
 		return usage.QueryResult{}, errors.New("usage PostgreSQL repository is unavailable")
 	}
+	// Aggregates and pagination must observe the same committed ledger, even
+	// when an agent reports usage between the two SELECTs. MVCC adds no write
+	// locks and lets ingest continue while this bounded request reads.
+	tx, err := repository.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return usage.QueryResult{}, errors.New("usage query transaction unavailable")
+	}
+	defer tx.Rollback()
+	repository.aggregateMu.RLock()
+	snapshotGeneration := repository.aggregateGeneration
+	repository.aggregateMu.RUnlock()
 	where, args := queryFilter(query)
 	var result usage.QueryResult
-	totalsSQL := `SELECT count(*), COALESCE(sum(rule_actual_bytes),0)::bigint,
-		COALESCE(sum(customer_actual_bytes),0)::bigint, COALESCE(sum(charged_bytes),0)::bigint
-		FROM usage_events e` + where
-	if err := repository.db.QueryRowContext(ctx, totalsSQL, args...).Scan(
+	if query.From == nil && query.To == nil {
+		if cached, ok, err := repository.aggregateSnapshot(ctx, tx, query, snapshotGeneration); err != nil {
+			return usage.QueryResult{}, errors.New("usage aggregate query failed")
+		} else if ok {
+			result.Total, result.Totals = cached.count, cached.totals
+		} else if err := tx.QueryRowContext(ctx, aggregateSQL(where), args...).Scan(
+			&result.Total, &result.Totals.RuleActualBytes, &result.Totals.CustomerActualBytes, &result.Totals.ChargedBytes,
+		); err != nil {
+			return usage.QueryResult{}, errors.New("usage aggregate query failed")
+		}
+	} else if err := tx.QueryRowContext(ctx, aggregateSQL(where), args...).Scan(
 		&result.Total, &result.Totals.RuleActualBytes, &result.Totals.CustomerActualBytes, &result.Totals.ChargedBytes,
 	); err != nil {
 		return usage.QueryResult{}, errors.New("usage aggregate query failed")
@@ -158,7 +207,7 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	pageArgs = append(pageArgs, query.PageSize)
 	offsetParameter := fmt.Sprintf("$%d", len(pageArgs)+1)
 	pageArgs = append(pageArgs, (query.Page-1)*query.PageSize)
-	rows, err := repository.db.QueryContext(ctx, `SELECT
+	rows, err := tx.QueryContext(ctx, `SELECT
 		e.node_id,e.boot_id,e.sequence,e.customer_id,e.rule_id,e.entry_group_id,e.exit_group_id,e.protocol,
 		e.occurred_at,e.period_started_at,e.period_ended_at,e.rule_actual_bytes,e.customer_actual_bytes,
 		e.entry_multiplier_micros,e.exit_multiplier_micros,e.charged_bytes,e.payload_sha256,e.received_at,
@@ -183,8 +232,81 @@ func (repository *Repository) Query(ctx context.Context, query usage.Query) (usa
 	if err := rows.Err(); err != nil {
 		return usage.QueryResult{}, errors.New("usage detail iteration failed")
 	}
+	if err := rows.Close(); err != nil {
+		return usage.QueryResult{}, errors.New("usage detail close failed")
+	}
+	if err := tx.Commit(); err != nil {
+		return usage.QueryResult{}, errors.New("usage query transaction commit failed")
+	}
 	result.Page, result.PageSize = query.Page, query.PageSize
 	return result, nil
+}
+
+func aggregateSQL(where string) string {
+	return `SELECT count(*), COALESCE(sum(rule_actual_bytes),0)::bigint,
+		COALESCE(sum(customer_actual_bytes),0)::bigint, COALESCE(sum(charged_bytes),0)::bigint
+		FROM usage_events e` + where
+}
+
+func (repository *Repository) aggregateSnapshot(ctx context.Context, tx *sql.Tx, query usage.Query, snapshotGeneration uint64) (aggregateTotals, bool, error) {
+	key := aggregateKey{scope: query.Scope, id: query.ScopeID}
+	repository.aggregateMu.RLock()
+	cached, found := repository.aggregates[key]
+	currentGeneration := repository.aggregateGeneration
+	repository.aggregateMu.RUnlock()
+	if found && currentGeneration == snapshotGeneration {
+		return cached, true, nil
+	}
+	// If another ingest committed after this transaction began, any in-memory
+	// aggregate is newer than this transaction's snapshot. Let PostgreSQL answer
+	// this one request rather than returning a mixed view.
+	if currentGeneration != snapshotGeneration {
+		return aggregateTotals{}, false, nil
+	}
+	repository.aggregateMu.Lock()
+	defer repository.aggregateMu.Unlock()
+	if repository.aggregateGeneration != snapshotGeneration {
+		return aggregateTotals{}, false, nil
+	}
+	if cached, found := repository.aggregates[key]; found {
+		return cached, true, nil
+	}
+	where, args := queryFilter(query)
+	var totals aggregateTotals
+	if err := tx.QueryRowContext(ctx, aggregateSQL(where), args...).Scan(
+		&totals.count, &totals.totals.RuleActualBytes, &totals.totals.CustomerActualBytes, &totals.totals.ChargedBytes,
+	); err != nil {
+		return aggregateTotals{}, false, err
+	}
+	repository.aggregates[key] = totals
+	return totals, true, nil
+}
+
+func (repository *Repository) addAggregateEventLocked(event usage.Event) {
+	keys := []aggregateKey{{scope: usage.ScopeSite}}
+	if event.CustomerID != "" {
+		keys = append(keys, aggregateKey{scope: usage.ScopeCustomer, id: event.CustomerID})
+	}
+	if event.RuleID != "" {
+		keys = append(keys, aggregateKey{scope: usage.ScopeRule, id: event.RuleID})
+	}
+	if event.EntryGroupID != "" {
+		keys = append(keys, aggregateKey{scope: usage.ScopeDeviceGroup, id: event.EntryGroupID})
+	}
+	if event.ExitGroupID != "" && event.ExitGroupID != event.EntryGroupID {
+		keys = append(keys, aggregateKey{scope: usage.ScopeDeviceGroup, id: event.ExitGroupID})
+	}
+	for _, key := range keys {
+		cached, ok := repository.aggregates[key]
+		if !ok {
+			continue
+		}
+		cached.count++
+		cached.totals.RuleActualBytes += event.RuleActualBytes
+		cached.totals.CustomerActualBytes += event.CustomerActualBytes
+		cached.totals.ChargedBytes += event.ChargedBytes
+		repository.aggregates[key] = cached
+	}
 }
 
 func (repository *Repository) DesiredEnforcement(ctx context.Context, nodeID string) (*usage.EnforcementDecision, error) {

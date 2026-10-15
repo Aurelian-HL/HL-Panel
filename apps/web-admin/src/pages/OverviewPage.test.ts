@@ -110,14 +110,6 @@ describe('OverviewPage', () => {
     expect(mocked.controlPanel).not.toHaveBeenCalled()
     wrapper.unmount()
   })
-  it('distinguishes disabled swap from missing metrics', async () => {
-    mocked.getOverview.mockResolvedValue({ ...overview, panel: { ...overview.panel, resources: { ...overview.panel.resources, swap_used_bytes: 0, swap_total_bytes: 0 } } })
-    const wrapper = mount(OverviewPage)
-    await flushPromises()
-    expect(wrapper.findAll('.xpanel-gauge')[2]!.text()).toContain('未启用')
-    expect(wrapper.findAll('.xpanel-gauge')[2]!.text()).not.toContain('未采集')
-    wrapper.unmount()
-  })
   it('matches the X-Panel overview blocks and exposes every live metric', async () => {
     const wrapper = mount(OverviewPage)
     await flushPromises()
@@ -126,7 +118,7 @@ describe('OverviewPage', () => {
     expect(wrapper.get('.xpanel-system').text()).toContain('系统状态')
     expect(wrapper.get('.xpanel-gauges').text()).toContain('7%')
     expect(wrapper.get('.xpanel-gauges').text()).not.toContain('24%')
-    expect(wrapper.get('.xpanel-gauges').text()).toContain('交换分区')
+    expect(wrapper.get('.xpanel-gauges').text()).not.toContain('交换分区')
     expect(wrapper.get('.xpanel-runtime').text()).toContain('HL-Panel 运行状态')
     expect(wrapper.get('.xpanel-runtime').text()).toContain('v0.1.31')
     expect(wrapper.get('.xpanel-runtime').text()).toContain('停止')

@@ -2,7 +2,11 @@ package vlesssetup
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -21,11 +25,8 @@ type testEndpoints struct {
 	creates int
 }
 
-func (e *testEndpoints) ListPoolsForAdministrator(context.Context, string) ([]endpoints.EndpointPool, error) {
-	if e.pool.ID == "" {
-		return nil, nil
-	}
-	return []endpoints.EndpointPool{e.pool}, nil
+func (e *testEndpoints) FindPoolForRuleForAdministrator(context.Context, string, string) (endpoints.EndpointPool, error) {
+	return e.pool, nil
 }
 
 func (e *testEndpoints) CreateBound(_ context.Context, _, name, groupID, ruleID string, mode endpoints.Mode, protocol, hostname string, port int, policy endpoints.SelectionPolicy, _ string) (endpoints.EndpointPool, bool, error) {
@@ -37,6 +38,7 @@ func (e *testEndpoints) CreateBound(_ context.Context, _, name, groupID, ruleID 
 type testIdentities struct {
 	binding    vlessidentity.Binding
 	provisions int
+	failOnce   bool
 }
 
 func (i *testIdentities) List(context.Context, string) ([]vlessidentity.Binding, error) {
@@ -48,8 +50,70 @@ func (i *testIdentities) List(context.Context, string) ([]vlessidentity.Binding,
 
 func (i *testIdentities) Provision(_ context.Context, _ string, request vlessidentity.ProvisionRequest, _ string) (vlessidentity.Binding, bool, error) {
 	i.provisions++
+	if i.failOnce {
+		i.failOnce = false
+		return vlessidentity.Binding{}, false, errors.New("transient identity write failure")
+	}
 	i.binding = vlessidentity.Binding{ID: "binding-1", CustomerID: request.CustomerID, ForwardingRuleID: request.ForwardingRuleID, EndpointPoolID: request.EndpointPoolID, State: vlessidentity.StateActive}
 	return i.binding, false, nil
+}
+
+type testRules []forwarding.Rule
+
+func (r testRules) List(ctx context.Context) ([]forwarding.Rule, error) { return r, ctx.Err() }
+
+func TestReconcileResumesPartialSetupAndSkipsInactiveRules(t *testing.T) {
+	endpointSource := &testEndpoints{}
+	identities := &testIdentities{failOnce: true}
+	service := NewService(testNetworks{groupconfig.GroupNetwork{ConnectHost: "edge.example.com"}}, endpointSource, identities)
+	rule := readyRule()
+	rule.Status = forwarding.StatusPendingActivation
+	rule.ActivationReason = forwarding.ActivationReasonVLESSRuntimeMaterialPending
+	if err := service.Ensure(context.Background(), "admin-1", rule); err == nil || endpointSource.creates != 1 {
+		t.Fatal("fixture did not interrupt after committing endpoint")
+	}
+	for round := 0; round < 2; round++ {
+		if err := service.Reconcile(context.Background(), testRules{rule}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if endpointSource.creates != 1 || identities.provisions != 2 || identities.binding.ID == "" {
+		t.Fatal("partial setup was not recovered idempotently")
+	}
+	for _, mutate := range []func(*forwarding.Rule){
+		func(r *forwarding.Rule) { r.Paused = true },
+		func(r *forwarding.Rule) { r.OwnerKind = forwarding.OwnerCustomer },
+		func(r *forwarding.Rule) { r.Status = forwarding.StatusActive },
+		func(r *forwarding.Rule) { r.ActivationReason = "" },
+		func(r *forwarding.Rule) { r.Status = forwarding.StatusQuotaExhausted },
+	} {
+		inactive := rule
+		mutate(&inactive)
+		otherIdentities := &testIdentities{}
+		if err := NewService(testNetworks{}, &testEndpoints{}, otherIdentities).Reconcile(context.Background(), testRules{inactive}); err != nil || otherIdentities.provisions != 0 {
+			t.Fatalf("inactive/initialized rule was reprovisioned: %v", err)
+		}
+	}
+}
+
+func TestReconcileContinuesAfterOneRuleFailsAndRunStops(t *testing.T) {
+	endpointSource := &testEndpoints{}
+	identities := &testIdentities{failOnce: true}
+	service := NewService(testNetworks{groupconfig.GroupNetwork{ConnectHost: "edge.example.com"}}, endpointSource, identities)
+	rule := readyRule()
+	rule.Status, rule.ActivationReason = forwarding.StatusPendingActivation, forwarding.ActivationReasonVLESSRuntimeMaterialPending
+	if err := service.Reconcile(context.Background(), testRules{rule, rule}); err == nil || identities.binding.ID == "" {
+		t.Fatal("failure prevented later setup work or was silently swallowed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() { service.Run(ctx, testRules{rule}, slog.New(slog.NewTextHandler(io.Discard, nil))); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancelled setup loop did not stop")
+	}
 }
 
 func readyRule() forwarding.Rule {
@@ -60,7 +124,7 @@ func readyRule() forwarding.Rule {
 		Protocol: forwarding.ProtocolTCP, VLESSFlow: "xtls-rprx-vision", RealityServerName: "example.com",
 		VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5, VLESSSOCKS5Host: "landing.example.test", VLESSSOCKS5Port: 1080,
 		VLESSSOCKS5Username: "landing-user",
-		RealityPublicKey: "public", RealityShortID: "0123456789abcdef", RealityDestination: "example.com:443",
+		RealityPublicKey:    "public", RealityShortID: "0123456789abcdef", RealityDestination: "example.com:443",
 	}
 }
 

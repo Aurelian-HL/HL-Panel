@@ -13,7 +13,6 @@ import socket
 import ssl
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
@@ -23,6 +22,7 @@ ROOT = Path('/opt/hl-panel')
 CONFIG = Path('/etc/hl-panel/edge-agent.json')
 STATE = Path('/var/lib/hl-panel-edge')
 UNIT = Path('/etc/systemd/system/hl-panel-edge-agent.service')
+CA_FILE = Path('/etc/hl-panel/edge-agent-ca.pem')
 SERVICE = 'hl-panel-edge-agent.service'
 BACKUPS = Path('/var/backups/hl-panel-node')
 
@@ -60,6 +60,7 @@ def private_file(path, owner=0, mask=0o022):
 
 def atomic_install(source, destination, mode, uid=0, gid=0):
     require(not destination.is_symlink(), '安装目标是链接')
+    require(destination.parent.is_dir() and not destination.parent.is_symlink(), '安装目标目录无效')
     fd, name = tempfile.mkstemp(dir=destination.parent)
     os.close(fd)
     try:
@@ -118,18 +119,50 @@ def request_reenrollment(origin, context, credential, payload):
 def restore_programs(backup):
     backup = backup.resolve()
     require(backup.parent == BACKUPS and backup.name.startswith('reinstall-'), '不是受管重装备份目录')
+    require(not BACKUPS.is_symlink() and BACKUPS.is_dir(), '节点备份目录无效')
+    for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent, BACKUPS):
+        require(not directory.is_symlink(), '受管目录不能是链接')
+    account = pwd.getpwnam('hl-edge')
     require(not backup.stat().st_mode & 0o077 and backup.stat().st_uid == 0, '备份目录权限不安全')
     private_file(backup / 'manifest.json', mask=0o077)
-    manifest = json.loads((backup / 'manifest.json').read_text())
-    require(digest(STATE / 'credentials.json') == manifest['credential_sha256'], '节点身份不同，拒绝恢复')
+    try:
+        manifest = json.loads((backup / 'manifest.json').read_text())
+    except (OSError, ValueError, TypeError):
+        raise ReinstallError('节点回滚清单无效') from None
+    require(isinstance(manifest, dict), '节点回滚清单无效')
+    credential_sha256 = manifest.get('credential_sha256')
+    require(isinstance(credential_sha256, str) and re.fullmatch(r'[0-9a-f]{64}', credential_sha256), '节点身份摘要无效')
+    require(digest(STATE / 'credentials.json') == credential_sha256, '节点身份不同，拒绝恢复')
     allowed = {str(ROOT / p) for p in ('edge-agent', 'node-engines/xray', 'node-engines/gost', 'enroll-node.sh', 'reinstall-node.py')}
-    allowed.add(str(UNIT))
-    for item in manifest['files']:
-        require(item['destination'] in allowed and re.fullmatch(r'file-[0-9]+', item['source']), '备份文件路径无效')
-        require(digest(backup / item['source']) == item['sha256'], '备份文件摘要不符')
+    allowed.update({str(UNIT), str(CONFIG), str(CA_FILE)})
+    items = manifest.get('files')
+    require(isinstance(items, list) and items, '节点回滚文件清单为空')
+    seen = set()
+    for item in items:
+        require(isinstance(item, dict), '节点回滚文件清单格式无效')
+        destination = item.get('destination')
+        source = item.get('source')
+        checksum = item.get('sha256')
+        mode = item.get('mode')
+        uid = item.get('uid', 0)
+        gid = item.get('gid', 0)
+        require(isinstance(destination, str) and destination in allowed and destination not in seen, '备份文件路径无效')
+        require(isinstance(source, str) and re.fullmatch(r'file-[0-9]+', source), '备份文件名无效')
+        require(isinstance(checksum, str) and re.fullmatch(r'[0-9a-f]{64}', checksum), '备份文件摘要无效')
+        require(isinstance(mode, int) and 0 <= mode <= 0o777, '备份文件权限无效')
+        require(isinstance(uid, int) and uid == 0 and isinstance(gid, int) and gid >= 0, '备份文件所有者无效')
+        if destination in (str(CONFIG), str(CA_FILE)):
+            require(gid == account.pw_gid and mode == 0o640, '节点配置所有者或权限无效')
+        else:
+            require(gid == 0, '节点程序所有者无效')
+        source_path = backup / source
+        private_file(source_path, owner=0, mask=0o022)
+        require(digest(source_path) == checksum, '备份文件摘要不符')
+        seen.add(destination)
+    require(str(CONFIG) in seen, '回滚清单缺少节点配置')
     run(['systemctl', 'stop', SERVICE])
-    for item in manifest['files']:
-        atomic_install(backup / item['source'], Path(item['destination']), item['mode'])
+    for item in items:
+        atomic_install(backup / item['source'], Path(item['destination']), item['mode'], item.get('uid', 0), item.get('gid', 0))
     # Membership is the latest confirmed registration; never restore old usage
     # counters or credentials while rolling the executables back.
     start_service()
@@ -175,10 +208,23 @@ def reinstall(args):
             name = 'file-' + str(len(files))
             shutil.copy2(destination, backup / name)
             files.append({'source': name, 'destination': str(destination), 'sha256': digest(backup / name), 'mode': destination.stat().st_mode & 0o777})
+    # Keep the executable rollback and the control-plane configuration in one
+    # integrity-checked manifest. Credentials/state remain intentionally out of
+    # scope: the confirmed node identity and usage history must survive.
+    for destination in (CONFIG, CA_FILE):
+        if destination.exists():
+            private_file(destination, owner=0, mask=0o077)
+            name = 'file-' + str(len(files))
+            shutil.copy2(destination, backup / name)
+            info = destination.stat()
+            files.append({'source': name, 'destination': str(destination), 'sha256': digest(backup / name),
+                          'mode': info.st_mode & 0o777, 'uid': info.st_uid, 'gid': info.st_gid})
     manifest = {'credential_sha256': digest(STATE / 'credentials.json'), 'files': files}
+    for item in files:
+        item.setdefault('uid', 0)
+        item.setdefault('gid', 0)
     (backup / 'manifest.json').write_text(json.dumps(manifest) + '\n')
     (backup / 'manifest.json').chmod(0o600)
-    shutil.copy2(CONFIG, backup / 'edge-agent.json')
     shutil.copy2(args.release / 'deploy/reinstall-node.py', backup / 'reinstall-node.py')
     (backup / 'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' + str(backup / 'reinstall-node.py') + ' --rollback ' + str(backup) + '\n')
     (backup / 'rollback.sh').chmod(0o700)
@@ -196,9 +242,6 @@ def reinstall(args):
         candidate.write_text(json.dumps(config) + '\n')
         candidate.chmod(0o600)
         run(['systemctl', 'stop', SERVICE])
-        with tarfile.open(backup / 'config-state.tar.gz', 'w:gz') as archive:
-            archive.add(CONFIG, arcname='edge-agent.json')
-            archive.add(STATE, arcname='state')
         for destination, source, mode in sources:
             atomic_install(args.release / source, destination, mode)
         atomic_install(candidate, CONFIG, 0o640, gid=account.pw_gid)

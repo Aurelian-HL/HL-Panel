@@ -89,6 +89,51 @@ func (s readyCandidateSource) ReadyCandidateCount(_ context.Context, poolID stri
 	return s.counts[poolID], s.err
 }
 
+type batchReadySource struct {
+	readyCandidateSource
+	requested []string
+	calls     int
+}
+
+func (s *batchReadySource) ReadyCandidateCounts(_ context.Context, ids []string) (map[string]int, error) {
+	s.calls++
+	s.requested = append([]string(nil), ids...)
+	return s.counts, s.err
+}
+
+func TestAdministratorPoolListBatchesOnlyVisibleReadiness(t *testing.T) {
+	repository := &listRepository{pools: []EndpointPool{{ID: "owned", OwnerID: "admin"}, {ID: "other", OwnerID: "another-admin"}, {ID: "deleted", OwnerID: "admin"}}}
+	source := &batchReadySource{readyCandidateSource: readyCandidateSource{counts: map[string]int{"owned": 2, "other": 99}}}
+	service := NewServiceWithReadyCandidateSource(repository, time.Now, source)
+	items, err := service.ListPoolsForAdministrator(context.Background(), "admin")
+	if err != nil || len(items) != 2 || items[0].HealthyCandidateCount != 2 || items[1].HealthyCandidateCount != 0 {
+		t.Fatalf("incorrect visible readiness: items=%+v err=%v", items, err)
+	}
+	if source.calls != 1 || len(source.requested) != 2 || source.requested[0] != "owned" || source.requested[1] != "deleted" {
+		t.Fatalf("readiness was not batched within owner boundary: %+v", source)
+	}
+	source.err = errors.New("database unavailable")
+	if _, err := service.ListPools(context.Background()); !errors.Is(err, source.err) {
+		t.Fatalf("readiness storage failure was hidden: %v", err)
+	}
+}
+
+func TestRuleSetupLookupDoesNotEvaluateUnrelatedHealth(t *testing.T) {
+	repository := &listRepository{pools: []EndpointPool{{ID: "foreign", RuleID: "rule", OwnerID: "other"}, {ID: "owned", RuleID: "rule", OwnerID: "admin", HealthyCandidateCount: 99}}}
+	service := NewServiceWithReadyCandidateSource(repository, time.Now, readyCandidateSource{err: errors.New("readiness is unavailable")})
+	pool, err := service.FindPoolForRuleForAdministrator(context.Background(), "admin", "rule")
+	if err != nil || pool.ID != "owned" || pool.HealthyCandidateCount != 0 {
+		t.Fatalf("setup depended on readiness or exposed foreign pool: %+v %v", pool, err)
+	}
+	pool, err = service.FindPoolForRuleForAdministrator(context.Background(), "admin", "new-rule")
+	if err != nil || pool.ID != "" {
+		t.Fatalf("new rule cannot provision: %+v %v", pool, err)
+	}
+	if _, err := service.FindPoolForRuleForAdministrator(context.Background(), " ", "rule"); !errors.Is(err, faults.ErrValidation) {
+		t.Fatal("invalid owner accepted")
+	}
+}
+
 func TestListPoolsDoesNotInferProtocolHealthFromMemberTimestamps(t *testing.T) {
 	now := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
 	recent := now.Add(-30 * time.Second)

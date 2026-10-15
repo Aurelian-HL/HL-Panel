@@ -5,6 +5,8 @@ package vlesssetup
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
@@ -18,7 +20,7 @@ type NetworkSource interface {
 }
 
 type EndpointSource interface {
-	ListPoolsForAdministrator(context.Context, string) ([]endpoints.EndpointPool, error)
+	FindPoolForRuleForAdministrator(context.Context, string, string) (endpoints.EndpointPool, error)
 	CreateBound(context.Context, string, string, string, string, endpoints.Mode, string, string, int, endpoints.SelectionPolicy, string) (endpoints.EndpointPool, bool, error)
 }
 
@@ -55,16 +57,9 @@ func (s *Service) Ensure(ctx context.Context, administratorID string, rule forwa
 	if network.ConnectHost == "" {
 		return fmt.Errorf("%w: entry group has no stable address", faults.ErrValidation)
 	}
-	pools, err := s.endpoints.ListPoolsForAdministrator(ctx, administratorID)
+	pool, err := s.endpoints.FindPoolForRuleForAdministrator(ctx, administratorID, rule.ID)
 	if err != nil {
 		return err
-	}
-	var pool endpoints.EndpointPool
-	for _, candidate := range pools {
-		if candidate.RuleID == rule.ID {
-			pool = candidate
-			break
-		}
 	}
 	if pool.ID == "" {
 		name := rule.Name
@@ -97,4 +92,46 @@ func (s *Service) Ensure(ctx context.Context, administratorID string, rule forwa
 		CustomerID: rule.CustomerID, ForwardingRuleID: rule.ID, EndpointPoolID: pool.ID,
 	}, "automatic-identity:"+rule.ID)
 	return err
+}
+
+type RuleSource interface {
+	List(context.Context) ([]forwarding.Rule, error)
+}
+
+// Reconcile resumes committed rules after a cancelled request or a transient
+// setup failure. Ensure uses the original idempotency keys and keeps identities.
+func (s *Service) Reconcile(ctx context.Context, source RuleSource) error {
+	rules, err := source.List(ctx)
+	if err != nil {
+		return err
+	}
+	var first error
+	for _, rule := range rules {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if rule.OwnerKind != forwarding.OwnerAdministrator || rule.Paused ||
+			rule.Status != forwarding.StatusPendingActivation || rule.ActivationReason != forwarding.ActivationReasonVLESSRuntimeMaterialPending {
+			continue
+		}
+		if err := s.Ensure(ctx, rule.OwnerID, rule); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+func (s *Service) Run(ctx context.Context, source RuleSource, logger *slog.Logger) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		if err := s.Reconcile(ctx, source); err != nil && ctx.Err() == nil {
+			logger.Warn("pending VLESS setup reconciliation failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

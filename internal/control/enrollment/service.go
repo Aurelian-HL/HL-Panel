@@ -23,12 +23,17 @@ type Service struct {
 	now                 func() time.Time
 	maxTTL              time.Duration
 	validateNezhaServer func(context.Context, uint64) error
+	idempotencySecret   []byte
 }
 
 type Option func(*Service)
 
 func WithNezhaServerValidator(validate func(context.Context, uint64) error) Option {
 	return func(service *Service) { service.validateNezhaServer = validate }
+}
+
+func WithIdempotencySecret(secret []byte) Option {
+	return func(service *Service) { service.idempotencySecret = append([]byte(nil), secret...) }
 }
 
 func NewService(repository Repository, now func() time.Time, maxTTL time.Duration, options ...Option) *Service {
@@ -59,6 +64,10 @@ func (s *Service) IssueForGroupWithNezha(ctx context.Context, adminID, name, gro
 	return s.issue(ctx, adminID, name, groupID, serverID, ttl)
 }
 
+func (s *Service) IssueForGroupWithNezhaIdempotent(ctx context.Context, adminID, name, groupID string, serverID uint64, ttl time.Duration, key string) (IssueResult, bool, error) {
+	return s.issueIdempotent(ctx, adminID, name, groupID, serverID, ttl, key)
+}
+
 func (s *Service) ListPendingForGroup(ctx context.Context, groupID string) ([]PendingToken, error) {
 	groupID = strings.TrimSpace(groupID)
 	if groupID == "" || len(groupID) > 128 {
@@ -68,43 +77,51 @@ func (s *Service) ListPendingForGroup(ctx context.Context, groupID string) ([]Pe
 }
 
 func (s *Service) issue(ctx context.Context, adminID, name, groupID string, serverID uint64, ttl time.Duration) (IssueResult, error) {
+	result, _, err := s.issueIdempotent(ctx, adminID, name, groupID, serverID, ttl, "")
+	return result, err
+}
+
+func (s *Service) issueIdempotent(ctx context.Context, adminID, name, groupID string, serverID uint64, ttl time.Duration, idempotencyKey string) (IssueResult, bool, error) {
+	adminID = strings.TrimSpace(adminID)
 	name = strings.TrimSpace(name)
 	groupID = strings.TrimSpace(groupID)
 	if name == "" || len(name) > 128 {
-		return IssueResult{}, fmt.Errorf("%w: name must contain 1 to 128 characters", faults.ErrValidation)
+		return IssueResult{}, false, fmt.Errorf("%w: name must contain 1 to 128 characters", faults.ErrValidation)
 	}
 	if len(groupID) > 128 {
-		return IssueResult{}, fmt.Errorf("%w: group_id is too long", faults.ErrValidation)
+		return IssueResult{}, false, fmt.Errorf("%w: group_id is too long", faults.ErrValidation)
+	}
+	if idempotencyKey != "" && !validIdempotencyKey(idempotencyKey) {
+		return IssueResult{}, false, fmt.Errorf("%w: invalid Idempotency-Key", faults.ErrValidation)
 	}
 	if serverID != 0 {
 		if groupID == "" || s.validateNezhaServer == nil {
-			return IssueResult{}, fmt.Errorf("%w: Nezha binding requires a group and monitoring service", faults.ErrValidation)
+			return IssueResult{}, false, fmt.Errorf("%w: Nezha binding requires a group and monitoring service", faults.ErrValidation)
 		}
 		if err := s.validateNezhaServer(ctx, serverID); err != nil {
-			return IssueResult{}, err
+			return IssueResult{}, false, err
 		}
 	}
 	if ttl <= 0 || ttl > s.maxTTL {
-		return IssueResult{}, fmt.Errorf("%w: expires_in_seconds is outside the allowed range", faults.ErrValidation)
+		return IssueResult{}, false, fmt.Errorf("%w: expires_in_seconds is outside the allowed range", faults.ErrValidation)
 	}
 	now := s.now().UTC()
-	id, err := idgen.New("ent")
+	id, rawToken, err := s.tokenMaterial(adminID, name, groupID, serverID, ttl, idempotencyKey)
 	if err != nil {
-		return IssueResult{}, err
+		return IssueResult{}, false, err
 	}
-	rawToken, err := securetoken.Generate("enr")
-	if err != nil {
-		return IssueResult{}, err
-	}
+	digest := issueRequestDigest(adminID, name, groupID, serverID, ttl)
 	token := Token{
-		ID:            id,
-		Name:          name,
-		GroupID:       groupID,
-		NezhaServerID: serverID,
-		TokenHash:     securetoken.Hash(rawToken),
-		ExpiresAt:     now.Add(ttl),
-		CreatedBy:     adminID,
-		CreatedAt:     now,
+		ID:             id,
+		Name:           name,
+		GroupID:        groupID,
+		NezhaServerID:  serverID,
+		TokenHash:      securetoken.Hash(rawToken),
+		ExpiresAt:      now.Add(ttl),
+		CreatedBy:      adminID,
+		CreatedAt:      now,
+		IdempotencyKey: idempotencyKey,
+		RequestSHA256:  digest,
 	}
 	event, err := audit.NewEvent(now, "administrator", adminID, "enrollment_token.create", "enrollment_token", id, "succeeded", map[string]any{
 		"name":            name,
@@ -113,12 +130,58 @@ func (s *Service) issue(ctx context.Context, adminID, name, groupID string, serv
 		"expires_at":      token.ExpiresAt,
 	})
 	if err != nil {
-		return IssueResult{}, err
+		return IssueResult{}, false, err
+	}
+	if idempotencyKey != "" {
+		repository, ok := s.repository.(interface {
+			CreateEnrollmentTokenIdempotent(context.Context, Token, audit.Event) (Token, bool, error)
+		})
+		if !ok {
+			return IssueResult{}, false, fmt.Errorf("%w: enrollment repository lacks durable idempotency", faults.ErrValidation)
+		}
+		existing, replayed, err := repository.CreateEnrollmentTokenIdempotent(ctx, token, event)
+		if err != nil {
+			return IssueResult{}, false, err
+		}
+		if replayed {
+			token = existing
+			if token.RequestSHA256 != digest {
+				return IssueResult{}, false, faults.ErrIdempotencyConflict
+			}
+		}
+		return IssueResult{ID: token.ID, Name: token.Name, Token: rawToken, ExpiresAt: token.ExpiresAt, NezhaServerID: token.NezhaServerID, Replayed: replayed}, replayed, nil
 	}
 	if err := s.repository.CreateEnrollmentToken(ctx, token, event); err != nil {
-		return IssueResult{}, err
+		return IssueResult{}, false, err
 	}
-	return IssueResult{ID: id, Name: name, Token: rawToken, ExpiresAt: token.ExpiresAt, NezhaServerID: serverID}, nil
+	return IssueResult{ID: id, Name: name, Token: rawToken, ExpiresAt: token.ExpiresAt, NezhaServerID: serverID}, false, nil
+}
+
+func (s *Service) tokenMaterial(adminID, name, groupID string, serverID uint64, ttl time.Duration, key string) (string, string, error) {
+	if key == "" {
+		id, err := idgen.New("ent")
+		if err != nil {
+			return "", "", err
+		}
+		raw, err := securetoken.Generate("enr")
+		return id, raw, err
+	}
+	if len(s.idempotencySecret) == 0 {
+		return "", "", fmt.Errorf("%w: enrollment idempotency secret is not configured", faults.ErrValidation)
+	}
+	derive := func(label string) []byte {
+		mac := hmac.New(sha256.New, s.idempotencySecret)
+		mac.Write([]byte("hl-panel/enrollment-token/" + label + "/v1\x00" + adminID + "\x00" + key + "\x00" + name + "\x00" + groupID + fmt.Sprintf("\x00%d\x00%d", serverID, ttl)))
+		return mac.Sum(nil)
+	}
+	return "ent_" + hex.EncodeToString(derive("id")[:16]), "enr_" + base64.RawURLEncoding.EncodeToString(derive("raw")), nil
+}
+func issueRequestDigest(adminID, name, groupID string, serverID uint64, ttl time.Duration) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("enrollment-token\x00%s\x00%s\x00%s\x00%d\x00%d", adminID, name, groupID, serverID, ttl)))
+	return hex.EncodeToString(sum[:])
+}
+func validIdempotencyKey(value string) bool {
+	return value != "" && len(value) <= 128 && !strings.ContainsAny(value, " \t\r\n")
 }
 
 func (s *Service) Enroll(ctx context.Context, input EnrollInput) (EnrollResult, error) {

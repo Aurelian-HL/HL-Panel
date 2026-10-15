@@ -31,6 +31,11 @@ func (s *Store) ImportForwardingRules(_ context.Context, input forwarding.Import
 		return replay, ok, err
 	}
 	autoNetworks := make([]string, 0)
+	rollbackAutoNetworks := func() {
+		for _, groupID := range autoNetworks {
+			delete(s.groupNetworks, groupID)
+		}
+	}
 	seenAutoNetworks := make(map[string]bool)
 	for _, candidate := range input.Candidates {
 		if candidate.Rule.EntryGroupID == "" || seenAutoNetworks[candidate.Rule.EntryGroupID] {
@@ -38,16 +43,12 @@ func (s *Store) ImportForwardingRules(_ context.Context, input forwarding.Import
 		}
 		_, created, err := s.ensureEntryGroupNetworkLocked(candidate.Rule.EntryGroupID)
 		if err != nil {
+			rollbackAutoNetworks()
 			return forwarding.ImportResult{}, false, err
 		}
 		if created {
 			autoNetworks = append(autoNetworks, candidate.Rule.EntryGroupID)
 			seenAutoNetworks[candidate.Rule.EntryGroupID] = true
-		}
-	}
-	rollbackAutoNetworks := func() {
-		for _, groupID := range autoNetworks {
-			delete(s.groupNetworks, groupID)
 		}
 	}
 	evaluations, working := s.evaluateForwardingImportLocked(input.Candidates)
@@ -168,6 +169,7 @@ func (s *Store) evaluateForwardingImportLocked(candidates []forwarding.ImportCan
 			}
 			item.Revision = previous.Revision + 1
 			item.CreatedAt = previous.CreatedAt
+			preserveRuleTraffic(&item, previous)
 			if item.ListenPort == 0 && item.EntryGroupID == previous.EntryGroupID && item.Protocol == previous.Protocol {
 				item.ListenPort = previous.ListenPort
 			}

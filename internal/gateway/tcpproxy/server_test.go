@@ -12,39 +12,108 @@ import (
 )
 
 type testSelector struct {
-	mu       sync.Mutex
-	backend  Backend
-	selects  int
-	releases int
-	err      error
-	lastKey  string
+	mu             sync.Mutex
+	backend        Backend
+	backends       []Backend
+	selects        int
+	releases       int
+	releasedIDs    []string
+	err            error
+	lastKey        string
+	keyCalls       []string
+	excludedCalls  []map[string]struct{}
+	selectedIDs    []string
+	ignoreExcludes bool
 }
 
 func (s *testSelector) Select() (Backend, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.selects++
-	if s.err != nil {
-		return Backend{}, s.err
-	}
-	return s.backend, nil
+	return s.selectKeyExcludingLocked("", nil)
 }
 
 func (s *testSelector) SelectKey(key string) (Backend, error) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.lastKey = key
-	s.mu.Unlock()
-	return s.Select()
+	s.keyCalls = append(s.keyCalls, key)
+	return s.selectKeyExcludingLocked(key, nil)
 }
 
 func (s *testSelector) Release(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if id != s.backend.ID {
+	valid := id == s.backend.ID
+	for _, backend := range s.backends {
+		if id == backend.ID {
+			valid = true
+			break
+		}
+	}
+	if !valid {
 		return errors.New("unexpected backend release")
 	}
 	s.releases++
+	s.releasedIDs = append(s.releasedIDs, id)
 	return nil
+}
+
+func (s *testSelector) SelectExcluding(excluded map[string]struct{}) (Backend, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.selectKeyExcludingLocked("", excluded)
+}
+
+func (s *testSelector) SelectKeyExcluding(key string, excluded map[string]struct{}) (Backend, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastKey = key
+	s.keyCalls = append(s.keyCalls, key)
+	return s.selectKeyExcludingLocked(key, excluded)
+}
+
+func (s *testSelector) selectKeyExcludingLocked(_ string, excluded map[string]struct{}) (Backend, error) {
+	s.selects++
+	copyExcluded := make(map[string]struct{}, len(excluded))
+	for id := range excluded {
+		copyExcluded[id] = struct{}{}
+	}
+	s.excludedCalls = append(s.excludedCalls, copyExcluded)
+	if s.err != nil {
+		return Backend{}, s.err
+	}
+	backends := s.backends
+	if len(backends) == 0 {
+		backends = []Backend{s.backend}
+	}
+	for _, backend := range backends {
+		if !s.ignoreExcludes {
+			if _, skip := excluded[backend.ID]; skip {
+				continue
+			}
+		}
+		s.selectedIDs = append(s.selectedIDs, backend.ID)
+		return backend, nil
+	}
+	return Backend{}, errors.New("no backend after exclusions")
+}
+
+func (s *testSelector) snapshot() (selects, releases int, releasedIDs, selectedIDs []string, excludedCalls []map[string]struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.selects, s.releases, append([]string(nil), s.releasedIDs...), append([]string(nil), s.selectedIDs...), append([]map[string]struct{}(nil), s.excludedCalls...)
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestServerForwardsOneConnectionToSelectedBackend(t *testing.T) {

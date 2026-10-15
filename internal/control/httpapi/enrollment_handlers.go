@@ -22,7 +22,7 @@ func (api *API) issueEnrollmentToken(writer http.ResponseWriter, request *http.R
 		writeProblem(writer, request, err)
 		return
 	}
-	result, err := api.enrollment.IssueForGroupWithNezha(request.Context(), session.AdminID, input.Name, input.GroupID, input.NezhaServerID, time.Duration(input.ExpiresInSeconds)*time.Second)
+	result, _, err := api.enrollment.IssueForGroupWithNezhaIdempotent(request.Context(), session.AdminID, input.Name, input.GroupID, input.NezhaServerID, time.Duration(input.ExpiresInSeconds)*time.Second, request.Header.Get("Idempotency-Key"))
 	if err != nil {
 		writeProblem(writer, request, err)
 		return

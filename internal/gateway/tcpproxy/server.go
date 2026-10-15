@@ -43,6 +43,18 @@ type KeyedSelector interface {
 	SelectKey(string) (Backend, error)
 }
 
+// ExcludingSelector is implemented by selectors that can skip backends which
+// already failed for the current client connection.
+type ExcludingSelector interface {
+	SelectExcluding(map[string]struct{}) (Backend, error)
+}
+
+// KeyedExcludingSelector combines client affinity with per-connection
+// exclusions. It is optional so existing selectors remain source compatible.
+type KeyedExcludingSelector interface {
+	SelectKeyExcluding(string, map[string]struct{}) (Backend, error)
+}
+
 type DialContext func(context.Context, string, string) (net.Conn, error)
 
 type Server struct {
@@ -162,35 +174,69 @@ func (s *Server) Close() error {
 
 func (s *Server) handle(parent context.Context, client net.Conn) {
 	defer s.untrack(client)
-	backend, err := s.selectBackend(client.RemoteAddr())
-	if err != nil {
-		_ = client.Close()
-		return
-	}
-	defer func() {
-		if releaseErr := s.selector.Release(backend.ID); releaseErr != nil {
-			s.logger.Warn("backend reservation release failed", "backend_id", backend.ID, "error", sanitizeError(releaseErr))
+	excluded := make(map[string]struct{})
+	for attempt := 0; ; attempt++ {
+		backend, err := s.selectBackend(client.RemoteAddr(), excluded)
+		if err != nil {
+			_ = client.Close()
+			return
 		}
-	}()
-	if err := validateBackend(backend); err != nil {
-		_ = client.Close()
+		if _, alreadyExcluded := excluded[backend.ID]; alreadyExcluded {
+			// A selector must honor the exclusion set. Release the newly
+			// reserved backend before closing if an implementation violates it.
+			s.releaseBackend(backend.ID)
+			_ = client.Close()
+			return
+		}
+		excluded[backend.ID] = struct{}{}
+
+		if err := validateBackend(backend); err != nil {
+			s.releaseBackend(backend.ID)
+			if !s.canRetryBackend(attempt) {
+				_ = client.Close()
+				return
+			}
+			continue
+		}
+		dialContext, cancel := context.WithTimeout(parent, s.dialTimeout)
+		backendConnection, err := s.dial(dialContext, "tcp", backend.Address)
+		cancel()
+		if err != nil {
+			s.logger.Debug("backend dial failed", "backend_id", backend.ID, "error", sanitizeError(err))
+			s.releaseBackend(backend.ID)
+			if !s.canRetryBackend(attempt) {
+				_ = client.Close()
+				return
+			}
+			continue
+		}
+		if !s.track(backendConnection) {
+			_ = backendConnection.Close()
+			s.releaseBackend(backend.ID)
+			_ = client.Close()
+			return
+		}
+		defer s.untrack(backendConnection)
+		defer backendConnection.Close()
+		defer client.Close()
+		defer s.releaseBackend(backend.ID)
+		proxyBidirectionally(client, backendConnection)
 		return
 	}
-	dialContext, cancel := context.WithTimeout(parent, s.dialTimeout)
-	backendConnection, err := s.dial(dialContext, "tcp", backend.Address)
-	cancel()
-	if err != nil {
-		_ = client.Close()
-		return
+}
+
+const maxBackendAttempts = 3
+
+func (s *Server) canRetryBackend(attempt int) bool {
+	_, excluding := s.selector.(ExcludingSelector)
+	_, keyedExcluding := s.selector.(KeyedExcludingSelector)
+	return (excluding || keyedExcluding) && attempt+1 < maxBackendAttempts
+}
+
+func (s *Server) releaseBackend(backendID string) {
+	if releaseErr := s.selector.Release(backendID); releaseErr != nil {
+		s.logger.Warn("backend reservation release failed", "backend_id", backendID, "error", sanitizeError(releaseErr))
 	}
-	if !s.track(backendConnection) {
-		_ = client.Close()
-		return
-	}
-	defer s.untrack(backendConnection)
-	defer backendConnection.Close()
-	defer client.Close()
-	proxyBidirectionally(client, backendConnection)
 }
 
 func proxyBidirectionally(client, backend net.Conn) {
@@ -261,12 +307,18 @@ func validateBackend(backend Backend) error {
 	return nil
 }
 
-func (s *Server) selectBackend(remoteAddress net.Addr) (Backend, error) {
-	keyed, ok := s.selector.(KeyedSelector)
-	if !ok {
-		return s.selector.Select()
+func (s *Server) selectBackend(remoteAddress net.Addr, excluded map[string]struct{}) (Backend, error) {
+	key := clientAffinityKey(remoteAddress)
+	if keyed, ok := s.selector.(KeyedExcludingSelector); ok {
+		return keyed.SelectKeyExcluding(key, excluded)
 	}
-	return keyed.SelectKey(clientAffinityKey(remoteAddress))
+	if selecting, ok := s.selector.(ExcludingSelector); ok {
+		return selecting.SelectExcluding(excluded)
+	}
+	if keyed, ok := s.selector.(KeyedSelector); ok {
+		return keyed.SelectKey(key)
+	}
+	return s.selector.Select()
 }
 
 func clientAffinityKey(address net.Addr) string {

@@ -11,15 +11,17 @@ type Token struct {
 	Name string
 	// GroupID scopes NY-style group-first enrollment tokens. Empty retains
 	// the legacy global registration flow.
-	GroupID       string
-	NezhaServerID uint64
-	TokenHash     string
-	ExpiresAt     time.Time
-	UsedAt        *time.Time
-	UsedNodeID    string `json:",omitempty"`
-	RevokedAt     *time.Time
-	CreatedBy     string
-	CreatedAt     time.Time
+	GroupID        string
+	NezhaServerID  uint64
+	TokenHash      string
+	ExpiresAt      time.Time
+	UsedAt         *time.Time
+	UsedNodeID     string `json:",omitempty"`
+	RevokedAt      *time.Time
+	CreatedBy      string
+	CreatedAt      time.Time
+	IdempotencyKey string `json:"-"`
+	RequestSHA256  string `json:"-"`
 }
 
 type IssueResult struct {
@@ -28,6 +30,7 @@ type IssueResult struct {
 	Token         string    `json:"token"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	NezhaServerID uint64    `json:"nezha_server_id,omitempty"`
+	Replayed      bool      `json:"replayed,omitempty"`
 }
 
 // PendingToken is safe to return to administrators; it contains no bearer

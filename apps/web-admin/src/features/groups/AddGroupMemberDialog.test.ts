@@ -29,7 +29,7 @@ describe('AddGroupMemberDialog', () => {
     await nodeSelect.setValue('node-1')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    expect(mocked.addDeviceGroupMember).toHaveBeenCalledWith('group-1', expect.objectContaining({ node_id: 'node-1', dial_host: 'edge-1.example.test' }))
+    expect(mocked.addDeviceGroupMember).toHaveBeenCalledWith('group-1', expect.objectContaining({ node_id: 'node-1', dial_host: 'edge-1.example.test' }), expect.any(String))
     wrapper.unmount()
   })
 

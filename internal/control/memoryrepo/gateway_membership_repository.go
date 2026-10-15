@@ -17,12 +17,16 @@ import (
 func (s *Store) GatewayMembershipState(_ context.Context, poolID string) (gatewaymembership.State, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.gatewayMembershipStateLocked(poolID)
+}
+
+func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.State, error) {
 	pool, found := s.endpointPools[poolID]
 	if !found {
 		return gatewaymembership.State{}, faults.ErrNotFound
 	}
 	state := gatewaymembership.State{
-		Revision: uint64(len(s.auditEvents)) + 1, Pool: cloneEndpointPool(pool),
+		Revision: uint64(len(s.auditEvents)) + s.gatewayMutationRevision + 1, Pool: cloneEndpointPool(pool),
 		Deployments:    make(map[string]gatewaymembership.DeploymentEvidence),
 		ProtocolHealth: make(map[string]gatewaymembership.ProtocolObservation),
 	}
@@ -93,6 +97,17 @@ func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymemb
 	if member.DialHost == "" {
 		return faults.ErrValidation
 	}
+	input, err := s.ruleNodeDeploymentInputLocked(observation.RuleID, observation.NodeID)
+	if err != nil {
+		return err
+	}
+	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+	if !observation.MatchesCurrentDeployment(s.endpointPools[poolID], input.Rule, member, evidence, time.Now().UTC()) {
+		return faults.ErrValidation
+	}
+	if previous, exists := s.protocolHealth[poolID][observation.NodeID]; exists && !observation.CanReplace(previous) {
+		return faults.ErrConflict
+	}
 	if s.protocolHealth[poolID] == nil {
 		s.protocolHealth[poolID] = make(map[string]gatewaymembership.ProtocolObservation)
 	}
@@ -102,6 +117,7 @@ func (s *Store) PublishProtocolHealth(_ context.Context, observation gatewaymemb
 	member.LastHealthReason = "protocol_probe"
 	member.UpdatedAt = verifiedAt
 	members[observation.NodeID] = member
+	s.gatewayMutationRevision++
 	return nil
 }
 
@@ -159,6 +175,7 @@ func (s *Store) ConfigureProtocolProbe(_ context.Context, ruleID string, config 
 		}
 		return err
 	}
+	s.gatewayMutationRevision++
 	return nil
 }
 
@@ -170,4 +187,26 @@ func (s *Store) ProtocolProbeConfig(_ context.Context, ruleID string) (gatewayme
 		return gatewaymembership.ProtocolProbeConfig{}, faults.ErrNotFound
 	}
 	return config, nil
+}
+
+func (s *Store) GatewayMembershipStates(ctx context.Context, poolIDs []string) ([]gatewaymembership.State, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	states := make([]gatewaymembership.State, 0, len(poolIDs))
+	for _, poolID := range poolIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		state, err := s.gatewayMembershipStateLocked(poolID)
+		if err == faults.ErrNotFound {
+			// A pool may be deleted between metadata and readiness reads.
+			// Its missing evidence must never make it selectable.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
 }

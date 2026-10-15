@@ -93,6 +93,12 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	}
 	runtime := migrationbackup.RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{7}, 32), GatewayPoolTokens: map[string]string{"fixture-pool": strings.Repeat("g", 32)}}
 	backupPass := "isolated-backup-password"
+	// Seed a target-only node so restore coverage includes both sides of the
+	// notification union: a node added by the restore and a node removed by it.
+	targetTokenHash := securetoken.Hash("isolated-target-enrollment")
+	require(target.CreateEnrollmentToken(ctx, enrollment.Token{ID: "target-enroll", Name: "target-only", TokenHash: targetTokenHash, ExpiresAt: now.Add(time.Hour)}, event))
+	_, err = target.ConsumeEnrollmentToken(ctx, enrollment.ConsumeInput{TokenHash: targetTokenHash, CredentialHash: securetoken.Hash("isolated-target-credential"), Node: nodes.Node{ID: "target-only-node", Hostname: "target-only", CreatedAt: now, UpdatedAt: now}}, now, event)
+	require(err)
 	service := func(s *Store) *migrationbackup.Service {
 		directory := t.TempDir()
 		require(os.Chmod(directory, 0700))
@@ -114,10 +120,22 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	if !reflect.DeepEqual(before, afterPreview) {
 		t.Fatal("preview mutated target")
 	}
+	addedNodeWake := target.DesiredConfigChanges("node-one")
+	removedNodeWake := target.DesiredConfigChanges("target-only-node")
 	result, err := importer.Restore(ctx, "target-admin", "isolated-test-password", backupPass, "restore-fixture", preview.Digest, "https://target.example.com", raw)
 	require(err)
 	if result.Replayed || result.RecoveryID == "" {
 		t.Fatal("missing restore receipt")
+	}
+	select {
+	case <-addedNodeWake:
+	default:
+		t.Fatal("restored node did not receive a post-commit notification")
+	}
+	select {
+	case <-removedNodeWake:
+	default:
+		t.Fatal("removed node did not receive a post-commit notification")
 	}
 	restored, err := target.ExportMigration(ctx)
 	require(err)

@@ -56,6 +56,26 @@ func TestJSONV1PreservesAdvancedFieldsAndRejectsUnknownSchema(t *testing.T) {
 	}
 }
 
+func TestJSONV1PreservesMonthlyQuotaMode(t *testing.T) {
+	request := validRequest()
+	request.Revision = 2
+	request.TrafficLimitBytes = 60 * 1024 * 1024 * 1024
+	request.TrafficQuotaMonthly = true
+	document := ExportDocument{SchemaVersion: ExportSchemaV1, ExportedAt: time.Now().UTC(), Rules: []ExportRule{{Operation: ImportUpsert, ID: "monthly-rule", Rule: request}}}
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := NewService(&captureRepository{}, nil).PreviewImport(context.Background(), TransferRequest{Format: ImportFormatJSONV1, Content: string(raw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := preview.Rows[0]
+	if preview.Invalid != 0 || !row.Request.TrafficQuotaMonthly || row.Request.TrafficLimitBytes != request.TrafficLimitBytes {
+		t.Fatalf("monthly quota fields were lost: %+v", row)
+	}
+}
+
 func TestJSONV1PreservesRealityFields(t *testing.T) {
 	request := validRequest()
 	request.Revision = 7

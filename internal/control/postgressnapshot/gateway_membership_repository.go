@@ -18,6 +18,12 @@ func (s *Store) GatewayMembershipState(ctx context.Context, poolID string) (gate
 	})
 }
 
+func (s *Store) GatewayMembershipStates(ctx context.Context, poolIDs []string) ([]gatewaymembership.State, error) {
+	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]gatewaymembership.State, error) {
+		return state.GatewayMembershipStates(ctx, poolIDs)
+	})
+}
+
 func (s *Store) PublishProtocolHealth(ctx context.Context, observation gatewaymembership.ProtocolObservation) error {
 	return mutate(ctx, s, func(state *memoryrepo.Store) error {
 		return state.PublishProtocolHealth(ctx, observation)

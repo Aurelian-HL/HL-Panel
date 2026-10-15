@@ -266,6 +266,7 @@ export interface NodeGenerationAssignment {
 export interface AddDeviceGroupMemberResponse {
   member: DeviceGroupMember
   assignments: NodeGenerationAssignment[]
+  replayed: boolean
 }
 
 export interface RetireDeviceGroupMemberResponse extends AddDeviceGroupMemberResponse {

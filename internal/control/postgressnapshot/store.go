@@ -6,6 +6,7 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
+	"github.com/hongle/hl-panel/internal/control/nodes"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -32,14 +34,13 @@ type snapshotReadCache struct {
 	version       int
 	revision      int64
 	transactionID string
-	state         *memoryrepo.Store
+	payload       []byte
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
 	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
 	// xmin also detects restores or external repairs that do not bump revision.
 	s.readMu.Lock()
-	defer s.readMu.Unlock()
 	cached := s.readCache
 	var next snapshotReadCache
 	var raw []byte
@@ -48,21 +49,72 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
  FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
+		s.readMu.Unlock()
 		return nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
+		s.readMu.Unlock()
 		return nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
-	if raw == nil && cached.state != nil {
-		return cached.state, nil
+	if raw == nil && cached.payload != nil {
+		// The cached bytes are immutable. Decode into request-private state
+		// outside the lock so independent reads do not serialize their CPU work.
+		s.readMu.Unlock()
+		state, err := decodeReadSnapshot(cached.payload, next.version, uint64(next.revision))
+		if err != nil {
+			return nil, err
+		}
+		return state, hydrateHeartbeats(ctx, tx, state)
 	}
-	next.state, err = memoryrepo.DecodeSnapshotAtVersion(raw, next.version)
+	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
 	if err != nil {
+		s.readMu.Unlock()
 		return nil, err
 	}
-	next.state.SetPersistenceRevision(uint64(next.revision))
+	next.payload = raw
 	s.readCache = next
-	return next.state, nil
+	s.readMu.Unlock()
+	return state, hydrateHeartbeats(ctx, tx, state)
+}
+
+func hydrateHeartbeats(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
+	rows, err := tx.QueryContext(ctx, `SELECT node_id, heartbeat_at, payload FROM hl_panel_node_heartbeats`)
+	if err != nil {
+		return errors.New("PostgreSQL heartbeat read failed")
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID string
+		var at time.Time
+		var raw []byte
+		if err := rows.Scan(&nodeID, &at, &raw); err != nil {
+			return errors.New("PostgreSQL heartbeat decode failed")
+		}
+		var heartbeat nodes.Heartbeat
+		if err := json.Unmarshal(raw, &heartbeat); err != nil {
+			return errors.New("PostgreSQL heartbeat payload invalid")
+		}
+		if err := state.MergeHeartbeat(ctx, nodeID, heartbeat, at); err != nil {
+			// A deleted node may leave a stale telemetry row until a later
+			// maintenance pass; it must never be revived by a heartbeat.
+			continue
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return errors.New("PostgreSQL heartbeat iteration failed")
+	}
+	return nil
+}
+
+// Each request owns its decoded maps, slices and runtime material. Retaining
+// the database payload avoids encoding the entire cache again on every read.
+func decodeReadSnapshot(raw []byte, version int, revision uint64) (*memoryrepo.Store, error) {
+	clone, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
+	if err != nil {
+		return nil, errors.New("PostgreSQL snapshot clone failed")
+	}
+	clone.SetPersistenceRevision(revision)
+	return clone, nil
 }
 
 func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
@@ -108,6 +160,14 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	)`); err != nil {
 		return errors.New("PostgreSQL snapshot table initialization failed")
 	}
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hl_panel_node_heartbeats (
+		node_id text PRIMARY KEY,
+		heartbeat_at timestamptz NOT NULL,
+		payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
+		updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+	)`); err != nil {
+		return errors.New("PostgreSQL heartbeat table initialization failed")
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM nyvp_control_snapshots`).Scan(&count); err != nil {
 		return errors.New("PostgreSQL snapshot lookup failed")
@@ -137,10 +197,16 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 }
 
 func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, error) {
+	return readStateWithClause(ctx, tx, map[bool]string{true: " FOR UPDATE", false: ""}[lock])
+}
+
+func readStateShared(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
+	return readStateWithClause(ctx, tx, " FOR SHARE")
+}
+
+func readStateWithClause(ctx context.Context, tx *sql.Tx, suffix string) (*memoryrepo.Store, error) {
 	query := `SELECT format_version, revision, payload FROM nyvp_control_snapshots WHERE singleton = true`
-	if lock {
-		query += ` FOR UPDATE`
-	}
+	query += suffix
 	var version int
 	var revision int64
 	var raw []byte
@@ -154,7 +220,13 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, e
 	if err == nil {
 		state.SetPersistenceRevision(uint64(revision))
 	}
-	return state, err
+	if err != nil {
+		return state, err
+	}
+	if err := hydrateHeartbeats(ctx, tx, state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func transact[T any](parent context.Context, s *Store, write bool, operation func(*memoryrepo.Store) (T, error)) (T, error) {
@@ -176,15 +248,21 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return zero, err
 	}
 	var before map[string]int64
+	var auditCount int
 	if write {
 		before = state.DesiredGenerationIndex()
+		auditCount = len(state.AuditEvents())
 	}
 	result, err := operation(state)
 	if err != nil {
 		return result, err
 	}
 	if write {
-		if err := appendAuditJournal(ctx, tx, state.AuditEvents()); err != nil {
+		events := state.AuditEvents()
+		if auditCount > len(events) {
+			return zero, errors.New("audit state changed unexpectedly")
+		}
+		if err := appendAuditJournal(ctx, tx, events[auditCount:]); err != nil {
 			return zero, err
 		}
 		raw, err := state.EncodeSnapshotWithAudit(nil)

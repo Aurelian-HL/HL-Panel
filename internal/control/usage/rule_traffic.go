@@ -11,7 +11,8 @@ import (
 
 type RuleTrafficRepository interface {
 	ListForwardingRules(context.Context) ([]forwarding.Rule, error)
-	SyncRuleTraffic(context.Context, string, int64, time.Time) error
+	ForwardingRule(context.Context, string) (forwarding.Rule, error)
+	ApplyRuleTraffic(context.Context, forwarding.RuleTrafficProjection) error
 }
 
 func WithRuleTrafficRepository(r RuleTrafficRepository) Option {
@@ -21,11 +22,36 @@ func (s *Service) syncRuleTraffic(ctx context.Context, id string) error {
 	if s.ruleTraffic == nil {
 		return nil
 	}
-	totals, err := s.repository.Query(ctx, Query{Scope: ScopeRule, ScopeID: id, Page: 1, PageSize: 1})
+	rule, err := s.ruleTraffic.ForwardingRule(ctx, id)
+	if errors.Is(err, faults.ErrNotFound) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	err = s.ruleTraffic.SyncRuleTraffic(ctx, id, totals.Totals.ChargedBytes, s.now().UTC())
+	return s.syncRuleTrafficProjection(ctx, rule)
+}
+
+func (s *Service) syncRuleTrafficProjection(ctx context.Context, rule forwarding.Rule) error {
+	now := s.now().UTC()
+	query := Query{Scope: ScopeRule, ScopeID: rule.ID, Page: 1, PageSize: 1}
+	if rule.TrafficQuotaMonthly {
+		from, to := forwarding.TrafficQuotaPeriodBounds(now)
+		query.From, query.To = &from, &to
+	}
+	totals, err := s.repository.Query(ctx, query)
+	if err != nil {
+		return err
+	}
+	// Avoid rewriting the complete control snapshot for every idle rule every
+	// five seconds. A new monthly period still needs to commit a zero total.
+	if totals.Totals.ChargedBytes <= rule.TrafficUsedBytes && (!rule.TrafficQuotaMonthly || rule.TrafficUsagePeriod == forwarding.TrafficQuotaPeriod(now)) {
+		return nil
+	}
+	err = s.ruleTraffic.ApplyRuleTraffic(ctx, forwarding.RuleTrafficProjection{
+		RuleID: rule.ID, ExpectedRevision: rule.Revision, Monthly: rule.TrafficQuotaMonthly,
+		TotalBytes: totals.Totals.ChargedBytes, At: now,
+	})
 	if errors.Is(err, faults.ErrNotFound) {
 		return nil
 	}
@@ -45,6 +71,9 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 	if s.ruleTraffic == nil {
 		return nil
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -55,10 +84,12 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 				if bounded.Err() != nil {
 					break
 				}
-				if r.TrafficLimitBytes == 0 {
+				// Monthly unlimited rules still need reconciliation so a new UTC
+				// month resets their usage period and audit state.
+				if r.TrafficLimitBytes == 0 && !r.TrafficQuotaMonthly {
 					continue
 				}
-				if syncErr := s.syncRuleTraffic(bounded, r.ID); syncErr != nil && ctx.Err() == nil {
+				if syncErr := s.syncRuleTrafficProjection(bounded, r); syncErr != nil && ctx.Err() == nil {
 					logger.Warn("rule traffic reconciliation failed", "rule_id", r.ID, "error", syncErr)
 				}
 			}

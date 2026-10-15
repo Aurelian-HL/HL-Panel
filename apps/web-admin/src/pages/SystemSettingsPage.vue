@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { Megaphone, Pencil, Plus, RefreshCw, Save, Settings2 } from '@lucide/vue'
+import { Ban, Copy, KeyRound, Megaphone, Pencil, Plus, RefreshCw, Save, Settings2 } from '@lucide/vue'
 import StatePanel from '@/components/StatePanel.vue'
 import VersionNotice from '@/components/VersionNotice.vue'
 import AnnouncementEditor from '@/features/announcements/AnnouncementEditor.vue'
 import { siteApi } from '@/api/site'
 import type { Announcement, SiteSettings, SiteSettingsInput } from '@/api/siteTypes'
+import { licenseApi } from '@/api/license'
+import type { LicenseLease, LicenseView } from '@/api/license'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { toast } from '@/composables/toast'
 import { siteStore } from '@/stores/site'
@@ -18,6 +20,12 @@ const error = ref('')
 const editor = ref<Announcement | null | undefined>(undefined)
 const mutationKey = useMutationKey()
 const form = reactive<SiteSettingsInput>({ site_name: '', panel_title: '', public_description: '', support_url: '', theme: 'classic', background_image_url: '', revision: 0 })
+const licenses = ref<LicenseView[]>([])
+const currentLease = ref<LicenseLease | null>(null)
+const licenseForm = reactive({ domain: '', months: 1 })
+const issuingLicense = ref(false)
+const revokingLicense = ref('')
+const issuedCode = ref('')
 
 function setForm(value: SiteSettings): void {
   Object.assign(form, {
@@ -31,8 +39,60 @@ async function load(): Promise<void> {
   try {
     const [siteSettings, items] = await Promise.all([siteApi.settings(), siteApi.announcements()])
     settings.value = siteSettings; announcements.value = items; setForm(siteSettings)
+    licenses.value = []; currentLease.value = null
+    void licenseApi.status().then((licenseStatus) => {
+      licenses.value = licenseStatus.items
+      currentLease.value = licenseStatus.current ?? null
+    }).catch(() => {
+      // License management is optional for older control-api deployments.
+    })
   } catch (cause) { error.value = cause instanceof Error ? cause.message : '系统设置加载失败' }
   finally { loading.value = false }
+}
+
+async function issueLicense(): Promise<void> {
+  const domain = licenseForm.domain.trim().toLowerCase()
+  if (!domain || !Number.isInteger(licenseForm.months) || licenseForm.months < 1 || licenseForm.months > 120) {
+    toast.error('请填写有效域名或 IP，并选择 1 到 120 个月')
+    return
+  }
+  issuingLicense.value = true
+  try {
+    const key = mutationKey({ domain, months: licenseForm.months })
+    const result = await licenseApi.issue(domain, licenseForm.months, key)
+    licenses.value = [result.license, ...licenses.value]
+    if (result.replayed) {
+      issuedCode.value = ''
+      toast.info('该请求已生成过授权码，原明文只在首次响应中显示；如未保存，请撤销后重新生成')
+      return
+    }
+    issuedCode.value = result.code
+    toast.success('授权码已生成，请立即复制保存')
+  } catch (cause) { toast.error('授权码生成失败', cause instanceof Error ? cause.message : undefined) }
+  finally { issuingLicense.value = false }
+}
+
+async function copyIssuedCode(): Promise<void> {
+  if (!issuedCode.value) return
+  try { await navigator.clipboard.writeText(issuedCode.value); toast.success('授权码已复制') }
+  catch { toast.error('复制失败，请手动复制') }
+}
+
+async function revokeLicense(item: LicenseView): Promise<void> {
+  if (!window.confirm(`确认撤销绑定 ${item.domain} 的授权码？`)) return
+  revokingLicense.value = item.id
+  try {
+    await licenseApi.revoke(item.id, mutationKey({ operation: 'license.revoke', id: item.id }))
+    licenses.value = licenses.value.map((value) => value.id === item.id ? { ...value, status: 'revoked' } : value)
+    toast.success('授权码已撤销')
+  } catch (cause) { toast.error('授权码撤销失败', cause instanceof Error ? cause.message : undefined) }
+  finally { revokingLicense.value = '' }
+}
+
+function remainingDays(expiresAt?: string): string {
+  if (!expiresAt) return '未激活'
+  const days = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / 86400000)
+  return days > 0 ? `剩余 ${days} 天` : '已到期'
 }
 
 async function saveSettings(): Promise<void> {
@@ -71,6 +131,18 @@ onMounted(load)
           <label class="field"><span>背景图片地址</span><input v-model="form.background_image_url" type="url" maxlength="2048" placeholder="https://" /><small class="field-help">透明主题使用；只接受 HTTPS 图片地址。</small></label>
           <footer><button class="button button--primary" type="submit" :disabled="saving"><Save :size="15" />{{ saving ? '保存中…' : '保存设置' }}</button></footer>
         </form>
+      </section>
+
+      <section class="settings-section license-management">
+        <header><span class="settings-section__icon"><KeyRound :size="18" /></span><div><h3>授权码管理</h3><p>按域名或 IP 下发按月授权；授权码只在生成时显示一次。</p></div></header>
+        <div class="settings-form">
+          <div class="field-grid"><label class="field"><span>绑定域名或 IP</span><input v-model="licenseForm.domain" maxlength="253" placeholder="panel.example.com" /></label><label class="field"><span>有效期（月）</span><input v-model.number="licenseForm.months" type="number" min="1" max="120" /></label></div>
+          <footer><button class="button button--primary" :disabled="issuingLicense" @click="issueLicense"><KeyRound :size="15" />{{ issuingLicense ? '生成中…' : '生成授权码' }}</button></footer>
+          <div v-if="issuedCode" class="notice notice--success"><strong>新授权码（仅本次显示）</strong><div class="license-code-row"><code>{{ issuedCode }}</code><button class="button button--quiet" @click="copyIssuedCode"><Copy :size="14" />复制</button></div></div>
+        </div>
+        <div v-if="currentLease" class="notice"><strong>本机当前授权</strong><span>{{ currentLease.domain }} · {{ remainingDays(currentLease.expires_at) }} · 到期 {{ new Date(currentLease.expires_at).toLocaleString() }}</span></div>
+        <StatePanel v-if="!licenses.length" state="empty" title="暂无授权码" message="生成授权码后，可在新面板安装命令中传入签发地址和授权码。" />
+        <div v-else class="table-wrap"><table class="data-table"><thead><tr><th>绑定域名/IP</th><th>有效期</th><th>状态</th><th>到期时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in licenses" :key="item.id"><td><strong class="table-primary">{{ item.domain }}</strong><span class="table-secondary">{{ item.prefix }} · {{ item.bound ? '已绑定实例' : '待激活' }}</span></td><td>{{ item.months }} 个月</td><td><span class="business-status" :class="{ 'business-status--muted': item.status !== 'active' }">{{ item.status === 'active' ? '有效' : item.status === 'revoked' ? '已撤销' : '已到期' }}</span></td><td>{{ item.expires_at ? new Date(item.expires_at).toLocaleString() : '激活后计算' }}</td><td><button v-if="item.status === 'active'" class="button button--quiet" :disabled="revokingLicense === item.id" @click="revokeLicense(item)"><Ban :size="14" />撤销</button></td></tr></tbody></table></div>
       </section>
 
       <section class="settings-section announcement-management">

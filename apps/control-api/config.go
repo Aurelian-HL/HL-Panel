@@ -15,6 +15,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/securefile"
@@ -36,6 +37,13 @@ type runtimeConfig struct {
 	ProtocolProbeEchoPort          int
 	ProtocolProbeInterval          time.Duration
 	Nezha                          *nezhamonitor.Service
+	LicenseEnforce                 bool
+	LicenseIssuerURL               string
+	LicenseCode                    string
+	LicenseDomain                  string
+	LicenseInstanceID              string
+	LicenseRenewInterval           time.Duration
+	LicenseHTTPTimeout             time.Duration
 }
 
 func loadRuntimeConfig() (runtimeConfig, error) {
@@ -44,6 +52,14 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 		TLSCertificateFile:    strings.TrimSpace(os.Getenv("CONTROL_TLS_CERT_FILE")),
 		TLSPrivateKeyFile:     strings.TrimSpace(os.Getenv("CONTROL_TLS_KEY_FILE")),
 		AdministratorUsername: strings.TrimSpace(os.Getenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME")),
+	}
+	enforceLicense, err := strconv.ParseBool(envOrDefault("CONTROL_LICENSE_ENFORCE", "false"))
+	if err != nil {
+		return runtimeConfig{}, fmt.Errorf("parse CONTROL_LICENSE_ENFORCE: %w", err)
+	}
+	configuration.LicenseEnforce = enforceLicense
+	if err := loadLicenseConfig(&configuration); err != nil {
+		return runtimeConfig{}, err
 	}
 	allowInsecure, err := strconv.ParseBool(envOrDefault("CONTROL_ALLOW_INSECURE_HTTP", "false"))
 	if err != nil {
@@ -121,6 +137,66 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 		return runtimeConfig{}, fmt.Errorf("configure CONTROL_DATABASE_URL_FILE or CONTROL_DATABASE_URL for durable trial storage; local evaluation requires CONTROL_ALLOW_VOLATILE_STORE=true")
 	}
 	return configuration, nil
+}
+
+func loadLicenseConfig(configuration *runtimeConfig) error {
+	issuer := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_ISSUER_URL"))
+	code := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_CODE"))
+	codeFile := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_CODE_FILE"))
+	domain := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_DOMAIN"))
+	instanceID := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_INSTANCE_ID"))
+	if code != "" && codeFile != "" {
+		return fmt.Errorf("set only one of CONTROL_LICENSE_CODE and CONTROL_LICENSE_CODE_FILE")
+	}
+	if codeFile != "" {
+		if !filepath.IsAbs(codeFile) {
+			return fmt.Errorf("CONTROL_LICENSE_CODE_FILE must be absolute")
+		}
+		raw, err := securefile.ReadBoundedRegular(codeFile, 512)
+		if err != nil {
+			return fmt.Errorf("read CONTROL_LICENSE_CODE_FILE failed")
+		}
+		code = strings.TrimSpace(string(raw))
+	}
+	configured := issuer != "" || code != "" || domain != "" || instanceID != ""
+	if !configured {
+		if configuration.LicenseEnforce {
+			return fmt.Errorf("CONTROL_LICENSE_ENFORCE=true requires CONTROL_LICENSE_ISSUER_URL, CONTROL_LICENSE_CODE or CONTROL_LICENSE_CODE_FILE, CONTROL_LICENSE_DOMAIN and CONTROL_LICENSE_INSTANCE_ID")
+		}
+		return nil
+	}
+	if issuer == "" || code == "" || domain == "" || instanceID == "" {
+		return fmt.Errorf("CONTROL_LICENSE_ISSUER_URL, CONTROL_LICENSE_CODE or CONTROL_LICENSE_CODE_FILE, CONTROL_LICENSE_DOMAIN and CONTROL_LICENSE_INSTANCE_ID must be set together")
+	}
+	if _, err := licensing.NewRemoteIssuer(issuer, 0); err != nil {
+		return fmt.Errorf("invalid CONTROL_LICENSE_ISSUER_URL: %w", err)
+	}
+	if strings.ContainsAny(code, " \t\r\n") || len(code) < 16 || len(code) > 512 {
+		return fmt.Errorf("license code is invalid")
+	}
+	normalizedDomain, err := licensing.NormalizeDomain(domain)
+	if err != nil {
+		return fmt.Errorf("CONTROL_LICENSE_DOMAIN is invalid")
+	}
+	if len(instanceID) < 8 || len(instanceID) > 128 || strings.ContainsAny(instanceID, " \t\r\n") {
+		return fmt.Errorf("CONTROL_LICENSE_INSTANCE_ID is invalid")
+	}
+	renewInterval, err := time.ParseDuration(envOrDefault("CONTROL_LICENSE_RENEW_INTERVAL", "12h"))
+	if err != nil || renewInterval < time.Minute {
+		return fmt.Errorf("CONTROL_LICENSE_RENEW_INTERVAL must be at least 1m")
+	}
+	httpTimeout, err := time.ParseDuration(envOrDefault("CONTROL_LICENSE_HTTP_TIMEOUT", "10s"))
+	if err != nil || httpTimeout < time.Second {
+		return fmt.Errorf("CONTROL_LICENSE_HTTP_TIMEOUT must be at least 1s")
+	}
+	configuration.LicenseIssuerURL = issuer
+	configuration.LicenseCode = code
+	configuration.LicenseDomain = normalizedDomain
+	configuration.LicenseInstanceID = instanceID
+	configuration.LicenseRenewInterval = renewInterval
+	configuration.LicenseHTTPTimeout = httpTimeout
+	configuration.LicenseEnforce = true
+	return nil
 }
 
 func loadNezhaMonitor() (*nezhamonitor.Service, error) {

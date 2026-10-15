@@ -100,6 +100,7 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
     send_proxy_protocol: rule.send_proxy_protocol ?? 0, speed_limit_mbps: rule.speed_limit_mbps ?? 0,
     ip_limit: rule.ip_limit ?? 0, connection_limit: rule.connection_limit ?? 0,
     traffic_limit_bytes: rule.traffic_limit_bytes ?? 0,
+    traffic_quota_monthly: rule.traffic_quota_monthly ?? false,
     paused: rule.paused, description: rule.description, revision: rule.revision,
   }
 }

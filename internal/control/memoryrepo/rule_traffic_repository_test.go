@@ -112,3 +112,150 @@ func TestRuleLimitEditsPreserveUsedBytesAndSnapshot(t *testing.T) {
 		t.Fatal("cannot recover", err)
 	}
 }
+
+func TestMonthlyRuleQuotaResetsAtUtcMonthBoundary(t *testing.T) {
+	f := newVLESSBundleFixture(t, true)
+	ctx := context.Background()
+	jan31 := time.Date(2026, time.January, 31, 23, 59, 0, 0, time.UTC)
+	rule := f.store.forwardRules[f.rule.ID]
+	rule.TrafficLimitBytes = 100
+	rule.TrafficQuotaMonthly = true
+	f.store.forwardRules[rule.ID] = rule
+	if err := f.store.recompileForwardingGroupsLocked([]string{rule.EntryGroupID}, jan31); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 100, jan31); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.store.forwardRules[rule.ID].TrafficUsedBytes; got != 100 {
+		t.Fatalf("January usage = %d, want 100", got)
+	}
+	if _, err := f.store.ForwardingRule(ctx, rule.ID); err != nil {
+		t.Fatal(err)
+	}
+	feb1 := time.Date(2026, time.February, 1, 0, 1, 0, 0, time.UTC)
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 0, feb1); err != nil {
+		t.Fatal(err)
+	}
+	current := f.store.forwardRules[rule.ID]
+	if current.TrafficUsedBytes != 0 || current.TrafficUsagePeriod != "2026-02" {
+		t.Fatalf("monthly period did not reset: used=%d period=%q", current.TrafficUsedBytes, current.TrafficUsagePeriod)
+	}
+	view, err := f.store.ForwardingRule(ctx, rule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Status == forwarding.StatusQuotaExhausted {
+		t.Fatal("new month remained quota exhausted")
+	}
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 10, feb1); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 5, feb1); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.store.forwardRules[rule.ID].TrafficUsedBytes; got != 10 {
+		t.Fatalf("same-month lower total overwrote usage: %d", got)
+	}
+}
+
+func TestMonthlyRuleQuotaKeepsCurrentMonthUsageWhenLimitChanges(t *testing.T) {
+	store, request := forwardingRepositoryFixture(t)
+	service := forwarding.NewService(store, nil)
+	ctx := context.Background()
+	request.TrafficLimitBytes = 30
+	request.TrafficQuotaMonthly = true
+	rule, _, err := service.Create(ctx, "admin-test", request, "monthly-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	month := time.Date(2026, time.March, 10, 12, 0, 0, 0, time.UTC)
+	if err := store.SyncRuleTraffic(ctx, rule.ID, 30, month); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.ForwardingRule(ctx, rule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Revision = current.Revision
+	request.TrafficLimitBytes = 60
+	updated, _, err := service.Update(ctx, "admin-test", rule.ID, request, "monthly-raise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.TrafficUsedBytes != 30 || updated.Status == forwarding.StatusQuotaExhausted {
+		t.Fatalf("raising monthly limit lost current-month usage or remained exhausted: %+v", updated)
+	}
+	if err := store.SyncRuleTraffic(ctx, rule.ID, 30, month); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.forwardRules[rule.ID].TrafficUsedBytes; got != 30 {
+		t.Fatalf("same-month reconciliation changed usage: %d", got)
+	}
+}
+
+func TestMonthlyRuleQuotaIgnoresDelayedPreviousMonthProjection(t *testing.T) {
+	f := newVLESSBundleFixture(t, true)
+	ctx := context.Background()
+	rule := f.store.forwardRules[f.rule.ID]
+	rule.TrafficLimitBytes, rule.TrafficQuotaMonthly = 100, true
+	f.store.forwardRules[rule.ID] = rule
+	february := time.Date(2026, time.February, 1, 0, 1, 0, 0, time.UTC)
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 10, february); err != nil {
+		t.Fatal(err)
+	}
+	before := f.store.forwardRules[rule.ID]
+	generation, audits := f.store.nodes[f.nodeID].DesiredGeneration, len(f.store.auditEvents)
+	if err := f.store.SyncRuleTraffic(ctx, rule.ID, 100, february.Add(-2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	after := f.store.forwardRules[rule.ID]
+	if after.TrafficUsagePeriod != before.TrafficUsagePeriod || after.TrafficUsedBytes != before.TrafficUsedBytes || after.Revision != before.Revision || !after.UpdatedAt.Equal(before.UpdatedAt) || f.store.nodes[f.nodeID].DesiredGeneration != generation || len(f.store.auditEvents) != audits {
+		t.Fatalf("delayed January projection changed February quota: period=%s used=%d revision=%d", after.TrafficUsagePeriod, after.TrafficUsedBytes, after.Revision)
+	}
+}
+
+func TestRuleTrafficProjectionIgnoresAccountingModeEdits(t *testing.T) {
+	for _, monthly := range []bool{false, true} {
+		store, request := forwardingRepositoryFixture(t)
+		ctx := context.Background()
+		service := forwarding.NewService(store, nil)
+		request.TrafficLimitBytes, request.TrafficQuotaMonthly = 100, monthly
+		rule, _, err := service.Create(ctx, "admin-test", request, "scope-create")
+		if err != nil {
+			t.Fatal(err)
+		}
+		projection := forwarding.RuleTrafficProjection{RuleID: rule.ID, ExpectedRevision: rule.Revision, Monthly: monthly, TotalBytes: 150, At: time.Now().UTC()}
+		request.Revision, request.TrafficQuotaMonthly = rule.Revision, !monthly
+		updated, _, err := service.Update(ctx, "admin-test", rule.ID, request, "scope-toggle")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkIgnored := func() {
+			t.Helper()
+			audits := len(store.auditEvents)
+			if err := store.ApplyRuleTraffic(ctx, projection); err != nil {
+				t.Fatal(err)
+			}
+			current := store.forwardRules[rule.ID]
+			if current.TrafficUsedBytes != 0 || current.TrafficUsagePeriod != "" || current.Revision != updated.Revision || len(store.auditEvents) != audits {
+				t.Fatalf("stale accounting scope charged the edited rule: monthly=%t used=%d", current.TrafficQuotaMonthly, current.TrafficUsedBytes)
+			}
+		}
+		checkIgnored()
+		// Switching back to the original mode must not make its old query valid.
+		request.Revision, request.TrafficQuotaMonthly = updated.Revision, monthly
+		updated, _, err = service.Update(ctx, "admin-test", rule.ID, request, "scope-toggle-back")
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkIgnored()
+		projection.ExpectedRevision = updated.Revision
+		if err := store.ApplyRuleTraffic(ctx, projection); err != nil {
+			t.Fatal(err)
+		}
+		if got := store.forwardRules[rule.ID].TrafficUsedBytes; got != 150 {
+			t.Fatalf("current projection was ignored: %d", got)
+		}
+	}
+}

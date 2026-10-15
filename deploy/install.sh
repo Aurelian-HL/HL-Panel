@@ -14,6 +14,10 @@ EMAIL=""
 PUBLIC_IP=""
 API_PORT="8080"
 IP_HTTPS_PORT="8443"
+LICENSE_ISSUER_URL=""
+LICENSE_CODE=""
+LICENSE_DOMAIN=""
+LICENSE_INSTANCE_ID=""
 INSTALL_ROOT="/opt/hl-panel"
 CONFIG_DIR="/etc/hl-panel"
 STATE_DIR="/var/lib/hl-panel"
@@ -146,6 +150,8 @@ usage() {
                  [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
                  [--ip-https-port PORT]
                  [--admin-username NAME] [--email EMAIL] [--password-stdin]
+                 [--license-issuer URL --license-code CODE]
+                 [--license-domain DOMAIN_OR_IP] [--license-instance-id ID]
 
 选项：
   --repo              GitHub 仓库；默认 Aurelian-HL/HL-Panel
@@ -157,6 +163,10 @@ usage() {
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   --password-stdin    从标准输入读取一行管理员密码；须明确指定域名和账号
+  --license-issuer    授权签发面板地址，例如 https://panel.example.com
+  --license-code      一次性授权码；只写入本机受限文件，不写入日志
+  --license-domain    授权绑定域名或 IP；省略时使用 --domain 或本机公网 IP
+  --license-instance-id  可选的稳定实例 ID；省略时由安装器生成
   --migration-receiver TASK_ID  自动迁移专用：首次启动前隔离新机业务写入
   -h, --help          显示帮助
 
@@ -177,6 +187,10 @@ while (($#)); do
     --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; ADMIN_USERNAME_EXPLICIT=true; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     --password-stdin) PASSWORD_STDIN=true; shift ;;
+    --license-issuer) (($# >= 2)) || fail "--license-issuer 缺少参数"; LICENSE_ISSUER_URL="$2"; shift 2 ;;
+    --license-code) (($# >= 2)) || fail "--license-code 缺少参数"; LICENSE_CODE="$2"; shift 2 ;;
+    --license-domain) (($# >= 2)) || fail "--license-domain 缺少参数"; LICENSE_DOMAIN="$2"; shift 2 ;;
+    --license-instance-id) (($# >= 2)) || fail "--license-instance-id 缺少参数"; LICENSE_INSTANCE_ID="$2"; shift 2 ;;
     --migration-receiver) (($# >= 2)) || fail "--migration-receiver 缺少参数"; MIGRATION_RECEIVER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "未知参数：$1" ;;
@@ -243,6 +257,10 @@ valid_public_ipv4() {
 }
 if [[ -n "$PUBLIC_IP" ]]; then
   valid_public_ipv4 "$PUBLIC_IP" || fail "--public-ip 必须是公网 IPv4 地址"
+fi
+if [[ -n "$LICENSE_ISSUER_URL" || -n "$LICENSE_CODE" || -n "$LICENSE_DOMAIN" || -n "$LICENSE_INSTANCE_ID" ]]; then
+  [[ "$LICENSE_ISSUER_URL" =~ ^https?://[^[:space:]/]+([:/].*)?$ ]] || fail "--license-issuer 必须是 http(s) URL"
+  [[ -n "$LICENSE_CODE" && "$LICENSE_CODE" != *[$' \t\r\n']* && ${#LICENSE_CODE} -ge 16 && ${#LICENSE_CODE} -le 512 ]] || fail "--license-code 格式无效"
 fi
 if ! command -v apt-get >/dev/null 2>&1; then fail "当前仅支持 Debian/Ubuntu 的 apt 安装流程"; fi
 if [[ ! -r /etc/os-release ]] || ! grep -Eq '^(ID=debian|ID=ubuntu|ID_LIKE=.*debian)' /etc/os-release; then
@@ -337,8 +355,10 @@ declare -A OWNED_FILES=()
 declare -A OWNED_SYMLINKS=()
 install_new_file() {
   local source_file="$1" destination="$2" owner="$3" group="$4" mode="$5"
-  local temp_file digest
-  temp_file="$(mktemp "$(dirname "$destination")/.hl-panel-install.XXXXXX")"
+  local destination_dir temp_file digest
+  destination_dir="$(dirname -- "$destination")"
+  [[ -d "$destination_dir" && ! -L "$destination_dir" ]] || fail "安装目标目录不存在或是链接：$destination_dir"
+  temp_file="$(mktemp "$destination_dir/.hl-panel-install.XXXXXX")"
   if ! install -o "$owner" -g "$group" -m "$mode" "$source_file" "$temp_file"; then
     rm -f -- "$temp_file"
     return 1
@@ -492,6 +512,7 @@ ACME_WEBROOT_CREATED=false
 USER_CREATED=false
 DB_ROLE_CREATED=false
 DB_CREATE_STARTED=false
+DB_CREATED=false
 SYSTEMD_UNIT_CREATED=false
 UPDATE_UNITS_CREATED=false
 NGINX_RELOAD_ATTEMPTED=false
@@ -518,11 +539,14 @@ cleanup() {
       nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
     fi
     if [[ "$DB_CREATE_STARTED" == true ]]; then
-      database_marker="$(runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'hl_panel_control'" 2>/dev/null || true)"
       role_marker="$(runuser -u postgres -- psql -XAtqc "SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = 'hl_panel_app'" 2>/dev/null || true)"
       database_owner="$(runuser -u postgres -- psql -XAtqc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'hl_panel_control'" 2>/dev/null || true)"
-      database_empty="$(runuser -u postgres -- psql -XAtqc "SELECT NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast', 'public')) AND NOT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public')" --dbname=hl_panel_control 2>/dev/null || true)"
-      if [[ -n "$DB_OWNERSHIP_TOKEN" && "$database_owner" == hl_panel_app && "$role_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]] && { [[ "$database_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]] || [[ "$database_empty" == t ]]; }; then
+      # createdb succeeds only after the preflight confirmed the database did
+      # not exist. The role marker and owner then identify this install even if
+      # a later COMMENT or migration step failed before the database marker was
+      # written. Never use an "empty database" heuristic: migrations can have
+      # created tables before the installer reports an error.
+      if [[ "$DB_CREATED" == true && -n "$DB_OWNERSHIP_TOKEN" && "$database_owner" == hl_panel_app && "$role_marker" == "HL-panel installer $DB_OWNERSHIP_TOKEN" ]]; then
         runuser -u postgres -- dropdb --if-exists hl_panel_control >/dev/null 2>&1 || log "警告：本次新建数据库 hl_panel_control 未能自动删除"
       fi
     fi
@@ -568,6 +592,20 @@ check_database_names
 if [[ -z "$PUBLIC_IP" ]]; then
   PUBLIC_IP="$(curl --ipv4 --fail --silent --show-error --max-time 8 https://api.ipify.org 2>/dev/null || true)"
   valid_public_ipv4 "$PUBLIC_IP" || fail "无法确认本机公网 IPv4；请重新运行并传入 --public-ip 公网IPv4"
+fi
+
+if [[ -n "$LICENSE_ISSUER_URL" || -n "$LICENSE_CODE" || -n "$LICENSE_DOMAIN" || -n "$LICENSE_INSTANCE_ID" ]]; then
+  [[ -n "$LICENSE_ISSUER_URL" && -n "$LICENSE_CODE" ]] || fail "授权安装必须同时提供 --license-issuer 和 --license-code"
+  if [[ -z "$LICENSE_DOMAIN" ]]; then
+    if [[ "$DOMAIN" != "hl-panel.invalid" ]]; then LICENSE_DOMAIN="$DOMAIN"; else LICENSE_DOMAIN="$PUBLIC_IP"; fi
+  fi
+  if [[ "$LICENSE_DOMAIN" != "$PUBLIC_IP" && ! "$LICENSE_DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
+    valid_public_ipv4 "$LICENSE_DOMAIN" || fail "--license-domain 必须是域名或公网 IPv4"
+  fi
+  if [[ -z "$LICENSE_INSTANCE_ID" ]]; then
+    LICENSE_INSTANCE_ID="hlp-$(openssl rand -hex 16)"
+  fi
+  [[ "$LICENSE_INSTANCE_ID" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || fail "--license-instance-id 格式无效"
 fi
 
 if [[ -x /usr/sbin/nginx ]]; then
@@ -645,6 +683,7 @@ check_database_names
 printf "BEGIN; CREATE ROLE hl_panel_app LOGIN PASSWORD '%s'; COMMENT ON ROLE hl_panel_app IS 'HL-panel installer %s'; COMMIT;\n" "$DB_PASSWORD" "$DB_OWNERSHIP_TOKEN" | runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 >/dev/null
 DB_CREATE_STARTED=true
 if runuser -u postgres -- createdb --owner=hl_panel_app hl_panel_control; then
+  DB_CREATED=true
   runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -c "COMMENT ON DATABASE hl_panel_control IS 'HL-panel installer $DB_OWNERSHIP_TOKEN'" >/dev/null
 else
   DB_CREATE_STARTED=false
@@ -671,6 +710,20 @@ CONTROL_BOOTSTRAP_ADMIN_USERNAME=$ADMIN_USERNAME
 CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH="$ADMIN_HASH"
 CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_FILE=$CONFIG_DIR/customer-password-fingerprint-key
 EOF
+if [[ -n "$LICENSE_ISSUER_URL" ]]; then
+  install -o root -g hlpanel -m 0640 /dev/null "$CONFIG_DIR/license-code"
+  printf '%s\n' "$LICENSE_CODE" > "$CONFIG_DIR/license-code"
+  printf '%s\n' "$LICENSE_INSTANCE_ID" > "$CONFIG_DIR/license-instance-id"
+  chown root:hlpanel "$CONFIG_DIR/license-code" "$CONFIG_DIR/license-instance-id"
+  chmod 0640 "$CONFIG_DIR/license-code" "$CONFIG_DIR/license-instance-id"
+  cat >> "$WORK_DIR/control-api.env" <<EOF
+CONTROL_LICENSE_ISSUER_URL=$LICENSE_ISSUER_URL
+CONTROL_LICENSE_CODE_FILE=$CONFIG_DIR/license-code
+CONTROL_LICENSE_DOMAIN=$LICENSE_DOMAIN
+CONTROL_LICENSE_INSTANCE_ID=$LICENSE_INSTANCE_ID
+CONTROL_LICENSE_ENFORCE=true
+EOF
+fi
 unset ADMIN_HASH
 install -o root -g hlpanel -m 0640 "$WORK_DIR/control-api.env" "$CONFIG_DIR/control-api.env"
 
@@ -749,10 +802,13 @@ systemctl enable --now hl-panel-control-api.service
 systemctl enable --now hl-panel-update.socket
 
 log "等待 API 本机健康检查（127.0.0.1:$API_PORT）"
+HEALTH_RESPONSE=""
 for attempt in {1..20}; do
   if systemctl is-active --quiet hl-panel-control-api.service \
-    && curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "http://127.0.0.1:$API_PORT/healthz" >/dev/null \
-    && systemctl is-active --quiet hl-panel-control-api.service; then break; fi
+    && HEALTH_RESPONSE="$(curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "http://127.0.0.1:$API_PORT/healthz")" \
+    && systemctl is-active --quiet hl-panel-control-api.service; then
+    if [[ -z "$LICENSE_ISSUER_URL" || "$HEALTH_RESPONSE" =~ \"license_active\"[[:space:]]*:[[:space:]]*true ]]; then break; fi
+  fi
   if ((attempt == 20)); then
     systemctl --no-pager --full status hl-panel-control-api.service || true
     fail "API 未通过本机健康检查"
@@ -802,6 +858,9 @@ HL-panel 安装完成
   服务：hl-panel-control-api.service
 
 EOF
+if [[ -n "$LICENSE_ISSUER_URL" ]]; then
+  printf '  授权：已激活（绑定 %s，安装器不会输出授权码）。\n' "$LICENSE_DOMAIN"
+fi
 if [[ "$ADMIN_DEFAULT_PASSWORD" == true ]]; then
   printf '  初始密码：123456\n  首次登录后必须到个人中心修改密码（新密码至少 8 个字符）。\n'
 else

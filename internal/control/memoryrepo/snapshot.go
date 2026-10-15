@@ -21,6 +21,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -29,7 +30,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 18
+const SnapshotVersion = 19
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -128,43 +129,46 @@ type storedVLESSSOCKS5Upstream struct {
 }
 
 type snapshot struct {
-	Version               int
-	Administrators        map[string]storedAdministrator
-	Sessions              map[string]auth.Session
-	CustomerSessions      map[string]customeridentity.Session
-	Tokens                map[string]enrollment.Token
-	Nodes                 map[string]storedNode
-	NodesByCredential     map[string]string
-	DeviceGroups          map[string]groups.DeviceGroup
-	MembersByGroup        map[string]map[string]groups.Member
-	EndpointPools         map[string]endpoints.EndpointPool
-	EndpointMembers       map[string]map[string]endpoints.EndpointPoolMember
-	EndpointCreateKeys    map[string]string
-	EndpointMemberKeys    map[string]string
-	EndpointCreateHashes  map[string]string
-	EndpointMemberHashes  map[string]string
-	RevisionsByGroup      map[string][]storedRevision
-	RevisionByIdempotency map[string]map[string]string
-	NodeConfigsByNode     map[string]map[int64]generations.NodeConfigGeneration
-	NodeConfigsByRevision map[string][]generations.NodeConfigGeneration
-	ApplyResultsByNode    map[string]map[int64]map[string]generations.ApplyResult
-	ApplyAttemptsByNode   map[string]map[int64]generations.ApplyAttemptState
-	AuditEvents           []audit.Event
-	Customers             map[string]storedCustomer
-	UserGroups            map[string]customers.UserGroup
-	GroupNetworks         map[string]groupconfig.GroupNetwork
-	ForwardRules          map[string]forwarding.Rule
-	AutoRealityKeys       map[string]string
-	VLESSSOCKS5Upstreams  map[string]storedVLESSSOCKS5Upstream
-	RuleGroups            map[string]rulegroups.RuleGroup
-	SiteSettings          siteconfig.Settings
-	Subscriptions         map[string]storedSubscription
-	Announcements         map[string]announcements.Announcement
-	VLESSBindings         map[string]storedVLESSBinding
-	VLESSRuntimeMaterials map[string]storedVLESSRuntimeMaterial
-	ProtocolHealth        map[string]map[string]gatewaymembership.ProtocolObservation
-	ProtocolProbes        map[string]gatewaymembership.ProtocolProbeConfig
-	BusinessIdempotency   map[string]businessMutation
+	Version                 int
+	GatewayMutationRevision uint64
+	Administrators          map[string]storedAdministrator
+	Sessions                map[string]auth.Session
+	CustomerSessions        map[string]customeridentity.Session
+	Tokens                  map[string]enrollment.Token
+	Nodes                   map[string]storedNode
+	NodesByCredential       map[string]string
+	DeviceGroups            map[string]groups.DeviceGroup
+	MembersByGroup          map[string]map[string]groups.Member
+	EndpointPools           map[string]endpoints.EndpointPool
+	EndpointMembers         map[string]map[string]endpoints.EndpointPoolMember
+	EndpointCreateKeys      map[string]string
+	EndpointMemberKeys      map[string]string
+	EndpointCreateHashes    map[string]string
+	EndpointMemberHashes    map[string]string
+	RevisionsByGroup        map[string][]storedRevision
+	RevisionByIdempotency   map[string]map[string]string
+	NodeConfigsByNode       map[string]map[int64]generations.NodeConfigGeneration
+	NodeConfigsByRevision   map[string][]generations.NodeConfigGeneration
+	ApplyResultsByNode      map[string]map[int64]map[string]generations.ApplyResult
+	ApplyAttemptsByNode     map[string]map[int64]generations.ApplyAttemptState
+	AuditEvents             []audit.Event
+	Customers               map[string]storedCustomer
+	UserGroups              map[string]customers.UserGroup
+	GroupNetworks           map[string]groupconfig.GroupNetwork
+	ForwardRules            map[string]forwarding.Rule
+	AutoRealityKeys         map[string]string
+	VLESSSOCKS5Upstreams    map[string]storedVLESSSOCKS5Upstream
+	RuleGroups              map[string]rulegroups.RuleGroup
+	SiteSettings            siteconfig.Settings
+	Subscriptions           map[string]storedSubscription
+	Announcements           map[string]announcements.Announcement
+	VLESSBindings           map[string]storedVLESSBinding
+	VLESSRuntimeMaterials   map[string]storedVLESSRuntimeMaterial
+	ProtocolHealth          map[string]map[string]gatewaymembership.ProtocolObservation
+	ProtocolProbes          map[string]gatewaymembership.ProtocolProbeConfig
+	BusinessIdempotency     map[string]businessMutation
+	LicenseCodes            map[string]licensing.Code
+	LicenseLease            *licensing.Lease
 }
 
 // EncodeSnapshot is only for the confidential persistence adapter.
@@ -206,6 +210,19 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		}
 		groupNetworks[id] = normalized
 	}
+	for id, item := range s.licenseCodes {
+		if id == "" || item.ID != id {
+			return nil, errors.New("encode invalid license code")
+		}
+		if _, err := licensing.ValidateStoredCode(item); err != nil {
+			return nil, errors.New("encode invalid license code")
+		}
+	}
+	if s.licenseLease != nil {
+		if _, err := licensing.ValidateLease(*s.licenseLease); err != nil {
+			return nil, errors.New("encode invalid license lease")
+		}
+	}
 	state := snapshot{
 		Version:        SnapshotVersion,
 		Administrators: make(map[string]storedAdministrator, len(s.adminsByUsername)),
@@ -225,11 +242,14 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		VLESSSOCKS5Upstreams: make(map[string]storedVLESSSOCKS5Upstream, len(s.vlessSOCKS5Upstreams)),
 		Subscriptions:        make(map[string]storedSubscription, len(s.subscriptions)),
 		SiteSettings:         s.siteSettings, Announcements: s.announcements,
-		VLESSBindings:         make(map[string]storedVLESSBinding, len(s.vlessBindings)),
-		VLESSRuntimeMaterials: make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
-		BusinessIdempotency:   s.businessIdempotency,
-		ProtocolHealth:        s.protocolHealth,
-		ProtocolProbes:        s.protocolProbes,
+		VLESSBindings:           make(map[string]storedVLESSBinding, len(s.vlessBindings)),
+		VLESSRuntimeMaterials:   make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
+		BusinessIdempotency:     s.businessIdempotency,
+		LicenseCodes:            s.licenseCodes,
+		LicenseLease:            s.licenseLease,
+		ProtocolHealth:          s.protocolHealth,
+		GatewayMutationRevision: s.gatewayMutationRevision,
+		ProtocolProbes:          s.protocolProbes,
 	}
 	if events != nil {
 		state.AuditEvents = *events
@@ -354,6 +374,9 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version >= siteSnapshotVersion && (state.Announcements == nil || siteconfig.ValidateStored(state.SiteSettings) != nil) {
 			return nil, errors.New("incomplete site persistence state")
 		}
+		if state.Version >= SnapshotVersion && state.LicenseCodes == nil {
+			return nil, errors.New("incomplete license persistence state")
+		}
 		if state.Version >= customerSessionsSnapshotVersion && state.CustomerSessions == nil {
 			return nil, errors.New("incomplete customer session persistence state")
 		}
@@ -435,6 +458,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.ProtocolHealth != nil {
 			s.protocolHealth = state.ProtocolHealth
 		}
+		s.gatewayMutationRevision = state.GatewayMutationRevision
 		if state.ProtocolProbes != nil {
 			for ruleID, probe := range state.ProtocolProbes {
 				if ruleID == "" || !vlessruntime.ValidCredentialUUID(probe.UUID) || probe.EchoPort < 1 || probe.EchoPort > 65535 {
@@ -451,6 +475,25 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		}
 		if state.CustomerSessions != nil {
 			s.customerSessions = state.CustomerSessions
+		}
+		if state.LicenseCodes != nil {
+			for id, item := range state.LicenseCodes {
+				if id == "" || item.ID != id {
+					return nil, errors.New("invalid persisted license code")
+				}
+				validated, err := licensing.ValidateStoredCode(item)
+				if err != nil {
+					return nil, errors.New("invalid persisted license code")
+				}
+				s.licenseCodes[id] = validated
+			}
+		}
+		if state.LicenseLease != nil {
+			lease, err := licensing.ValidateLease(*state.LicenseLease)
+			if err != nil {
+				return nil, errors.New("invalid persisted license lease")
+			}
+			s.licenseLease = &lease
 		}
 		if state.VLESSBindings != nil {
 			for id, stored := range state.VLESSBindings {

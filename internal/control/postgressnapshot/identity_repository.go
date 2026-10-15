@@ -3,6 +3,7 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -75,6 +76,18 @@ func (s *Store) CreateEnrollmentToken(ctx context.Context, token enrollment.Toke
 	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.CreateEnrollmentToken(ctx, token, event) })
 }
 
+func (s *Store) CreateEnrollmentTokenIdempotent(ctx context.Context, token enrollment.Token, event audit.Event) (enrollment.Token, bool, error) {
+	type result struct {
+		token    enrollment.Token
+		replayed bool
+	}
+	v, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+		value, replayed, err := state.CreateEnrollmentTokenIdempotent(ctx, token, event)
+		return result{token: value, replayed: replayed}, err
+	})
+	return v.token, v.replayed, err
+}
+
 func (s *Store) ListPendingEnrollmentTokens(ctx context.Context, groupID string, now time.Time) ([]enrollment.PendingToken, error) {
 	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]enrollment.PendingToken, error) {
 		return state.ListPendingEnrollmentTokens(ctx, groupID, now)
@@ -126,9 +139,43 @@ func (s *Store) RotateCredential(ctx context.Context, input nodes.RotateCredenti
 }
 
 func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
-	return transact(ctx, s, true, func(state *memoryrepo.Store) (nodes.Node, error) {
-		return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
-	})
+	operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(operationCtx, nil)
+	if err != nil {
+		return nodes.Node{}, errors.New("PostgreSQL heartbeat transaction unavailable")
+	}
+	defer tx.Rollback()
+	state, err := readStateShared(operationCtx, tx)
+	if err != nil {
+		return nodes.Node{}, err
+	}
+	node, requiresCompile, err := state.PrepareHeartbeat(operationCtx, id, heartbeat, now)
+	if err != nil {
+		return nodes.Node{}, err
+	}
+	if requiresCompile {
+		// Release the shared snapshot lock before opening the full write
+		// transaction. Keeping this transaction open would block FOR UPDATE
+		// and can deadlock when a capability change needs recompilation.
+		_ = tx.Rollback()
+		return transact(ctx, s, true, func(full *memoryrepo.Store) (nodes.Node, error) {
+			return full.UpdateHeartbeat(ctx, id, heartbeat, now, event)
+		})
+	}
+	payload, err := json.Marshal(heartbeat)
+	if err != nil {
+		return nodes.Node{}, errors.New("PostgreSQL heartbeat encoding failed")
+	}
+	if _, err := tx.ExecContext(operationCtx, `INSERT INTO hl_panel_node_heartbeats(node_id,heartbeat_at,payload,updated_at)
+		VALUES($1,$2,$3,clock_timestamp())
+		ON CONFLICT(node_id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,payload=excluded.payload,updated_at=clock_timestamp()`, id, now, payload); err != nil {
+		return nodes.Node{}, errors.New("PostgreSQL heartbeat write failed")
+	}
+	if err := tx.Commit(); err != nil {
+		return nodes.Node{}, errors.New("PostgreSQL heartbeat commit failed")
+	}
+	return node, nil
 }
 
 func (s *Store) Overview(ctx context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {

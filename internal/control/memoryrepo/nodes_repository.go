@@ -94,15 +94,55 @@ func (s *Store) RotateCredential(_ context.Context, input nodes.RotateCredential
 func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	node, requiresCompile, previousNode, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
+	if err != nil {
+		return nodes.Node{}, err
+	}
+	if requiresCompile {
+		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
+			s.nodes[nodeID] = previousNode
+			return nodes.Node{}, err
+		}
+		node = s.nodes[nodeID]
+	}
+	s.appendAuditLocked(event)
+	return cloneNode(node), nil
+}
+
+// PrepareHeartbeat applies telemetry to request-private state without adding
+// an audit event or compiling a configuration. PostgreSQL uses this to decide
+// whether a heartbeat can use the lightweight heartbeat table.
+func (s *Store) PrepareHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time) (nodes.Node, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, requiresCompile, _, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
+	return cloneNode(node), requiresCompile, err
+}
+
+// MergeHeartbeat overlays durable telemetry onto a decoded snapshot. It is
+// deliberately side-effect free with respect to audit and configuration
+// generations.
+func (s *Store) MergeHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, _, _, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
+	if err != nil {
+		return err
+	}
+	s.nodes[nodeID] = node
+	return nil
+}
+
+func (s *Store) applyHeartbeatLocked(nodeID string, heartbeat nodes.Heartbeat, now time.Time) (nodes.Node, bool, nodes.Node, error) {
 	node, exists := s.nodes[nodeID]
 	if !exists {
-		return nodes.Node{}, faults.ErrNotFound
+		return nodes.Node{}, false, nodes.Node{}, faults.ErrNotFound
 	}
 	if node.DeletedAt != nil {
-		return nodes.Node{}, faults.ErrUnauthorized
+		return nodes.Node{}, false, nodes.Node{}, faults.ErrUnauthorized
 	}
 	if heartbeat.CurrentAppliedGeneration > node.DesiredGeneration {
-		return nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
+		return nodes.Node{}, false, nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
 	}
 	previousNode := node
 	node.BootID = heartbeat.BootID
@@ -119,15 +159,7 @@ func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat node
 		node.LastApplyStatus = heartbeat.LastApplyStatus
 	}
 	s.nodes[nodeID] = node
-	if nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) {
-		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
-			s.nodes[nodeID] = previousNode
-			return nodes.Node{}, err
-		}
-		node = s.nodes[nodeID]
-	}
-	s.appendAuditLocked(event)
-	return cloneNode(node), nil
+	return node, nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node), previousNode, nil
 }
 
 func (s *Store) Overview(_ context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {
@@ -160,6 +192,9 @@ func (s *Store) RequestControl(_ context.Context, input nodes.ControlCommandInpu
 		return nodes.ControlCommandResult{}, false, faults.ErrNotFound
 	}
 	if node.ControlCommandID != "" && node.ControlIdempotencyKey == input.IdempotencyKey {
+		if node.ControlRequestSHA256 != input.RequestSHA256 {
+			return nodes.ControlCommandResult{}, false, faults.ErrIdempotencyConflict
+		}
 		return controlResult(node), true, nil
 	}
 	node.ControlCommandID = input.CommandID

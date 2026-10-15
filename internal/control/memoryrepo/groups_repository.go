@@ -15,6 +15,33 @@ import (
 func (s *Store) CreateDeviceGroup(_ context.Context, group groups.DeviceGroup, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createDeviceGroupLocked(group, event)
+}
+
+func (s *Store) CreateDeviceGroupIdempotent(_ context.Context, input groups.CreateDeviceGroupInput, event audit.Event) (groups.DeviceGroup, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if input.CreatedBy == "" || input.IdempotencyKey == "" || input.RequestSHA256 == "" {
+		return groups.DeviceGroup{}, false, fmt.Errorf("%w: mutation actor, idempotency key and request hash are required", faults.ErrValidation)
+	}
+	key := input.CreatedBy + "\x00device_group.create\x00" + input.IdempotencyKey
+	var replay groups.DeviceGroup
+	if replayed, err := s.replayBusinessLocked(key, input.RequestSHA256, &replay); replayed || err != nil {
+		return replay, replayed, err
+	}
+	if err := s.createDeviceGroupLocked(input.Group, event); err != nil {
+		return groups.DeviceGroup{}, false, err
+	}
+	if err := s.recordBusinessLocked(key, input.RequestSHA256, input.Group.ID, input.Group); err != nil {
+		delete(s.deviceGroups, input.Group.ID)
+		delete(s.membersByGroup, input.Group.ID)
+		delete(s.revisionByIdempotency, input.Group.ID)
+		return groups.DeviceGroup{}, false, err
+	}
+	return input.Group, false, nil
+}
+
+func (s *Store) createDeviceGroupLocked(group groups.DeviceGroup, event audit.Event) error {
 	if group.UserGroupID != "" {
 		if _, exists := s.userGroups[group.UserGroupID]; !exists {
 			return fmt.Errorf("%w: user_group_id does not reference an existing user group", faults.ErrValidation)
@@ -68,6 +95,7 @@ func (s *Store) UpdateDeviceGroup(_ context.Context, input groups.UpdateInput, e
 	updated.MetadataRevision, updated.UpdatedAt = input.ExpectedRevision+1, input.Group.UpdatedAt
 	s.deviceGroups[updated.ID] = updated
 	if err := s.recordBusinessLocked(key, input.RequestSHA256, updated.ID, updated); err != nil {
+		s.deviceGroups[updated.ID] = previous
 		return groups.DeviceGroup{}, false, err
 	}
 	s.appendAuditLocked(event)
@@ -191,6 +219,40 @@ func cloneGroupMember(member groups.Member) groups.Member {
 func (s *Store) UpsertGroupMember(_ context.Context, member groups.Member, event audit.Event) (groups.Member, []generations.NodeConfigGeneration, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.upsertGroupMemberWithAuditLocked(member, event)
+}
+
+func (s *Store) UpsertGroupMemberIdempotent(_ context.Context, input groups.UpsertGroupMemberInput, event audit.Event) (groups.Member, []generations.NodeConfigGeneration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if input.CreatedBy == "" || input.IdempotencyKey == "" || input.RequestSHA256 == "" {
+		return groups.Member{}, nil, false, fmt.Errorf("%w: mutation actor, idempotency key and request hash are required", faults.ErrValidation)
+	}
+	key := input.CreatedBy + "\x00device_group.member_upsert\x00" + input.Member.GroupID + "\x00" + input.Member.NodeID + "\x00" + input.IdempotencyKey
+	var replay struct {
+		Member      groups.Member                      `json:"member"`
+		Assignments []generations.NodeConfigGeneration `json:"assignments"`
+	}
+	if replayed, err := s.replayBusinessLocked(key, input.RequestSHA256, &replay); replayed || err != nil {
+		return replay.Member, replay.Assignments, replayed, err
+	}
+	mutation := s.captureGroupMemberMutationLocked(input.Member.GroupID, input.Member.NodeID)
+	stored, assignments, err := s.upsertGroupMemberWithAuditLocked(input.Member, event)
+	if err != nil {
+		return groups.Member{}, nil, false, err
+	}
+	result := struct {
+		Member      groups.Member                      `json:"member"`
+		Assignments []generations.NodeConfigGeneration `json:"assignments"`
+	}{Member: stored, Assignments: assignments}
+	if err := s.recordBusinessLocked(key, input.RequestSHA256, input.Member.GroupID+":"+input.Member.NodeID, result); err != nil {
+		s.restoreGroupMemberMutationLocked(mutation)
+		return groups.Member{}, nil, false, err
+	}
+	return stored, assignments, false, nil
+}
+
+func (s *Store) upsertGroupMemberWithAuditLocked(member groups.Member, event audit.Event) (groups.Member, []generations.NodeConfigGeneration, error) {
 	stored, assignments, err := s.upsertGroupMemberLocked(member)
 	if err != nil {
 		return groups.Member{}, nil, err
@@ -219,6 +281,7 @@ func (s *Store) UpdateGroupMemberWeight(_ context.Context, input groups.UpdateMe
 	if !previous.UpdatedAt.Equal(input.ExpectedUpdatedAt) {
 		return groups.UpdateMemberWeightResult{}, fmt.Errorf("%w: device group member changed; reload before saving", faults.ErrConflict)
 	}
+	mutation := s.captureGroupMemberMutationLocked(input.GroupID, input.NodeID)
 	result := groups.UpdateMemberWeightResult{Member: cloneGroupMember(previous), Assignments: []generations.NodeConfigGeneration{}}
 	if previous.Weight != input.Weight {
 		updated := previous
@@ -243,6 +306,7 @@ func (s *Store) UpdateGroupMemberWeight(_ context.Context, input groups.UpdateMe
 		result.Member = cloneGroupMember(updated)
 	}
 	if err := s.recordBusinessLocked(key, input.RequestSHA256, input.GroupID+":"+input.NodeID, result); err != nil {
+		s.restoreGroupMemberMutationLocked(mutation)
 		return groups.UpdateMemberWeightResult{}, err
 	}
 	s.appendAuditLocked(event)
@@ -313,6 +377,33 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 func (s *Store) RetireGroupMember(_ context.Context, groupID, nodeID string, retiredAt time.Time, event audit.Event) (groups.RetireMemberResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.retireGroupMemberLocked(groupID, nodeID, retiredAt, event)
+}
+
+func (s *Store) RetireGroupMemberIdempotent(_ context.Context, input groups.RetireGroupMemberInput, event audit.Event) (groups.RetireMemberResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if input.RetiredBy == "" || input.GroupID == "" || input.NodeID == "" || input.IdempotencyKey == "" || input.RequestSHA256 == "" {
+		return groups.RetireMemberResult{}, fmt.Errorf("%w: mutation actor, group id, node id, idempotency key and request hash are required", faults.ErrValidation)
+	}
+	key := input.RetiredBy + "\x00device_group.member_retire\x00" + input.GroupID + "\x00" + input.NodeID + "\x00" + input.IdempotencyKey
+	var replay groups.RetireMemberResult
+	if replayed, err := s.replayBusinessLocked(key, input.RequestSHA256, &replay); replayed || err != nil {
+		return replay, err
+	}
+	mutation := s.captureGroupMemberMutationLocked(input.GroupID, input.NodeID)
+	result, err := s.retireGroupMemberLocked(input.GroupID, input.NodeID, input.RetiredAt, event)
+	if err != nil {
+		return groups.RetireMemberResult{}, err
+	}
+	if err := s.recordBusinessLocked(key, input.RequestSHA256, input.GroupID+":"+input.NodeID, result); err != nil {
+		s.restoreGroupMemberMutationLocked(mutation)
+		return groups.RetireMemberResult{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) retireGroupMemberLocked(groupID, nodeID string, retiredAt time.Time, event audit.Event) (groups.RetireMemberResult, error) {
 	members, groupExists := s.membersByGroup[groupID]
 	if !groupExists {
 		return groups.RetireMemberResult{}, faults.ErrNotFound

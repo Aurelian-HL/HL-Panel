@@ -171,15 +171,40 @@ func (r *Router) ReplaceCompiledMembership(members []agentv1.EndpointMembership)
 // Select reserves one endpoint for a new connection. It is equivalent to
 // SelectKey with an empty affinity key.
 func (r *Router) Select() (Endpoint, error) {
-	return r.SelectKey("")
+	return r.SelectKeyExcluding("", nil)
 }
 
 // SelectKey reserves one endpoint for a new connection. Rendezvous routing
 // uses the key for stable affinity; the other policies ignore it.
 func (r *Router) SelectKey(key string) (Endpoint, error) {
+	return r.SelectKeyExcluding(key, nil)
+}
+
+// SelectExcluding reserves one healthy endpoint while skipping the supplied
+// endpoint IDs. It is used when a single client connection retries after a
+// backend dial failure, so the retry can make progress without changing the
+// normal routing policy.
+func (r *Router) SelectExcluding(excluded map[string]struct{}) (Endpoint, error) {
+	return r.SelectKeyExcluding("", excluded)
+}
+
+// SelectKeyExcluding is SelectKey with per-call endpoint exclusions. The
+// exclusion only applies to this selection and does not alter membership or
+// local reachability state.
+func (r *Router) SelectKeyExcluding(key string, excluded map[string]struct{}) (Endpoint, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	eligible := r.eligibleLocked()
+	if len(excluded) > 0 {
+		filtered := eligible[:0]
+		for _, endpoint := range eligible {
+			if _, skip := excluded[endpoint.ID]; skip {
+				continue
+			}
+			filtered = append(filtered, endpoint)
+		}
+		eligible = filtered
+	}
 	if len(eligible) == 0 {
 		return Endpoint{}, ErrNoHealthyEndpoint
 	}
