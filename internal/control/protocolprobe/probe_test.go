@@ -86,6 +86,43 @@ func TestClientConfigRejectsIncompleteMaterial(t *testing.T) {
 	}
 }
 
+func TestProbeFlightDeduplicatesIdenticalChecks(t *testing.T) {
+	resetProbeCacheForTests()
+	key := probeCacheKey(validSpec(), "xray", fakeFileInfo{})
+	first, owner := beginProbeFlight(key)
+	if !owner {
+		t.Fatal("first caller did not own probe flight")
+	}
+	second, owner := beginProbeFlight(key)
+	if owner || second != first {
+		t.Fatal("identical probe did not join existing flight")
+	}
+	want := time.Now().UTC()
+	finishProbeFlight(key, first, want, nil)
+	select {
+	case <-second.done:
+		if !second.verifiedAt.Equal(want) || second.err != nil {
+			t.Fatalf("joined flight result = (%v, %v)", second.verifiedAt, second.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("joined probe did not complete")
+	}
+	third, owner := beginProbeFlight(key)
+	if !owner || third == first {
+		t.Fatal("completed flight was not removed")
+	}
+	finishProbeFlight(key, third, time.Time{}, ErrUnhealthy)
+}
+
+type fakeFileInfo struct{}
+
+func (fakeFileInfo) Name() string       { return "xray" }
+func (fakeFileInfo) Size() int64        { return 1 }
+func (fakeFileInfo) Mode() os.FileMode  { return 0o755 }
+func (fakeFileInfo) ModTime() time.Time { return time.Unix(1, 0) }
+func (fakeFileInfo) IsDir() bool        { return false }
+func (fakeFileInfo) Sys() any           { return nil }
+
 func TestEchoThroughSOCKSRequiresMatchingChallenge(t *testing.T) {
 	for _, echo := range []bool{true, false} {
 		t.Run(map[bool]string{true: "echo", false: "wrong response"}[echo], func(t *testing.T) {

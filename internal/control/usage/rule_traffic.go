@@ -97,7 +97,12 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 	if logger == nil {
 		logger = slog.Default()
 	}
-	tick := time.NewTicker(5 * time.Second)
+	// Usage reports reconcile immediately in afterIngest. This loop is the
+	// crash-recovery and month-boundary safety net; scanning every five seconds
+	// repeatedly decodes the full control snapshot for every limited rule.
+	// Thirty seconds keeps recovery and monthly reset bounded without turning
+	// the database into a permanent polling workload.
+	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
 	for {
 		bounded, cancel := context.WithTimeout(ctx, 20*time.Second)

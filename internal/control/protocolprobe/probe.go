@@ -27,10 +27,10 @@ var ErrUnhealthy = errors.New("VLESS protocol probe failed")
 // It must match the protocol scheduler's worker budget: a smaller fixed value
 // leaves workers queued inside Check and can make a large pool miss its health
 // lease renewal window even when every node is healthy.
-// Keep protocol validation bounded independently from the scheduler. Four
+// Keep protocol validation bounded independently from the scheduler. Three
 // short-lived Xray processes are enough to renew the 90-second health lease
-// while avoiding the CPU spikes caused by probing eight nodes at once.
-const maxConcurrentChecks = 4
+// while avoiding the CPU spikes caused by probing many nodes at once.
+const maxConcurrentChecks = 3
 const maxPortStartAttempts = 3
 
 // A successful Reality check remains useful for one scheduler turn. The
@@ -51,6 +51,20 @@ var successCache = struct {
 	entries map[[sha256.Size]byte]cachedSuccess
 }{entries: make(map[[sha256.Size]byte]cachedSuccess)}
 
+// A refresh notification and a periodic refresh can describe the same target
+// at the same time. Share one in-flight check for an identical target so those
+// paths cannot fork duplicate Xray processes before the success cache is set.
+type probeFlight struct {
+	done       chan struct{}
+	verifiedAt time.Time
+	err        error
+}
+
+var probeFlights = struct {
+	sync.Mutex
+	entries map[[sha256.Size]byte]*probeFlight
+}{entries: make(map[[sha256.Size]byte]*probeFlight)}
+
 type probeProcess struct {
 	done <-chan struct{}
 	stop func()
@@ -63,7 +77,7 @@ var startXray = startXrayProcess
 // Vision connection and the configured target echoed a fresh challenge. A
 // caller must separately authenticate and bind any resulting observation to a
 // rule revision and applied node configuration before publishing health.
-func Check(ctx context.Context, spec Spec) (time.Time, error) {
+func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 	if err := spec.validate(); err != nil {
 		return time.Time{}, err
 	}
@@ -77,6 +91,24 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 		return time.Time{}, ErrInvalidSpec
 	}
 	cacheKey := probeCacheKey(spec, binary, info)
+	if cachedAt, ok := cachedProbeSuccess(cacheKey, time.Now().UTC()); ok {
+		verifiedAt = cachedAt
+		return verifiedAt, nil
+	}
+	flight, owner := beginProbeFlight(cacheKey)
+	if !owner {
+		select {
+		case <-flight.done:
+			return flight.verifiedAt, flight.err
+		case <-ctx.Done():
+			return time.Time{}, ctx.Err()
+		}
+	}
+	defer func() {
+		finishProbeFlight(cacheKey, flight, verifiedAt, err)
+	}()
+	// The owner may have waited while another caller populated the cache just
+	// before it acquired the flight. Avoid starting a second Xray process.
 	if verifiedAt, ok := cachedProbeSuccess(cacheKey, time.Now().UTC()); ok {
 		return verifiedAt, nil
 	}
@@ -122,7 +154,7 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 		verified, exitedBeforeReady := waitForSOCKS(ctx, process.done, socksPort, spec)
 		stopProbeProcess(process)
 		if verified {
-			verifiedAt := time.Now().UTC()
+			verifiedAt = time.Now().UTC()
 			rememberProbeSuccess(cacheKey, verifiedAt)
 			return verifiedAt, nil
 		}
@@ -135,6 +167,26 @@ func Check(ctx context.Context, spec Spec) (time.Time, error) {
 		// that transient collision into a node health failure.
 	}
 	return time.Time{}, ErrUnhealthy
+}
+
+func beginProbeFlight(key [sha256.Size]byte) (*probeFlight, bool) {
+	probeFlights.Lock()
+	defer probeFlights.Unlock()
+	if existing := probeFlights.entries[key]; existing != nil {
+		return existing, false
+	}
+	flight := &probeFlight{done: make(chan struct{})}
+	probeFlights.entries[key] = flight
+	return flight, true
+}
+
+func finishProbeFlight(key [sha256.Size]byte, flight *probeFlight, verifiedAt time.Time, err error) {
+	probeFlights.Lock()
+	flight.verifiedAt = verifiedAt
+	flight.err = err
+	delete(probeFlights.entries, key)
+	close(flight.done)
+	probeFlights.Unlock()
 }
 
 func probeCacheKey(spec Spec, binary string, info os.FileInfo) [sha256.Size]byte {
@@ -187,6 +239,9 @@ func resetProbeCacheForTests() {
 	successCache.Lock()
 	defer successCache.Unlock()
 	successCache.entries = make(map[[sha256.Size]byte]cachedSuccess)
+	probeFlights.Lock()
+	defer probeFlights.Unlock()
+	probeFlights.entries = make(map[[sha256.Size]byte]*probeFlight)
 }
 
 func reserveLoopbackPort() (int, error) {

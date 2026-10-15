@@ -295,6 +295,16 @@ func TestProtocolSchedulerIsFairBoundedAndBatchesWithoutPerNodeReads(t *testing.
 	}
 }
 
+func TestProtocolFailureBackoffIsBounded(t *testing.T) {
+	interval := 30 * time.Second
+	wants := []time.Duration{interval, 2 * interval, 4 * interval, 8 * interval, 5 * time.Minute}
+	for failures, want := range wants {
+		if got := protocolFailureBackoff(interval, uint(failures+1)); got != want {
+			t.Fatalf("failures=%d backoff=%s, want %s", failures+1, got, want)
+		}
+	}
+}
+
 func TestProtocolSchedulerContinuousRecoveryFailuresDoNotStarveOtherMembers(t *testing.T) {
 	repo := &schedulingRepository{published: make(chan []ProtocolObservation, 100)}
 	for i := 0; i < 32; i++ {

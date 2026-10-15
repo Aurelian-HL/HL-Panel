@@ -73,6 +73,7 @@ type scheduledProbe struct {
 	due      time.Time
 	inFlight uint64
 	priority int
+	failures uint
 }
 
 type probeResult struct {
@@ -313,10 +314,14 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			}
 			if result.err != nil {
 				if target != nil {
-					target.due = time.Now().Add(r.interval)
+					target.failures++
+					target.due = time.Now().Add(protocolFailureBackoff(r.interval, target.failures))
 				}
 				r.logger.Debug("VLESS protocol observation failed", "pool_id", result.job.input.State.Pool.ID, "node_id", result.job.member.NodeID, "error", result.err)
 			} else {
+				if target != nil {
+					target.failures = 0
+				}
 				if len(pending) < protocolPendingLimit {
 					pending = append(pending, result)
 				} else if target != nil {
@@ -371,6 +376,25 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			flush()
 		}
 	}
+}
+
+const protocolFailureBackoffCap = 5 * time.Minute
+
+func protocolFailureBackoff(interval time.Duration, failures uint) time.Duration {
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if failures == 0 {
+		return interval
+	}
+	delay := interval
+	for i := uint(1); i < failures && delay < protocolFailureBackoffCap; i++ {
+		delay *= 2
+		if delay >= protocolFailureBackoffCap {
+			return protocolFailureBackoffCap
+		}
+	}
+	return delay
 }
 
 func dropExpiredProtocolResults(batch []probeResult, now time.Time) []probeResult {
