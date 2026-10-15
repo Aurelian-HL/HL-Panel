@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 set +x
 
-# Resolve once, then use the installer and archive from the same immutable tag.
+# Resolve the latest official release once. Panel build metadata is not a
+# downloadable release tag; use the installer and archive from the same tag.
 repository="Aurelian-HL/HL-Panel"
 version="latest"
 origin=""
@@ -21,21 +22,23 @@ done
 command -v curl >/dev/null || { echo '请先安装 curl：apt-get update && apt-get install -y curl' >&2; exit 1; }
 if [[ "$version" == "latest" ]]; then
   [[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }
-  trust_arguments=()
-  if [[ -n "$ca_file" ]]; then trust_arguments=(--cacert "$ca_file"); fi
-  metadata="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 15 --max-time 60 "${trust_arguments[@]}" "$origin/api/v1/public/site-info")"
-  if [[ "$metadata" =~ \"platform_version\"[[:space:]]*:[[:space:]]*\"([^\"]+)\" ]]; then
-    version="${BASH_REMATCH[1]}"
-  else
-    echo '无法核实面板版本，请检查面板 HTTPS 或先升级面板。' >&2
+  # GitHub's latest URL selects a published, non-draft, non-prerelease release.
+  # Resolve its redirect without sending the panel URL or enrollment token.
+  release_url="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 15 --max-time 60 --output /dev/null --write-out '%{url_effective}' "https://github.com/$repository/releases/latest")" || {
+    echo '无法获取最新正式版本，请检查 GitHub 网络连接后重试；未安装或注册节点。' >&2
     exit 1
-  fi
+  }
+  case "$release_url" in
+    "https://github.com/$repository/releases/tag/"*) version="${release_url##*/}" ;;
+    *) echo '最新正式版本地址无效；未安装或注册节点。' >&2; exit 2 ;;
+  esac
 fi
 [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag' >&2; exit 2; }
 temporary="$(mktemp -d)"
 trap 'rm -rf -- "$temporary"' EXIT
 curl --fail --silent --show-error --location --retry 2 --connect-timeout 15 --max-time 60 \
+  --proto '=https' --proto-redir '=https' \
   "https://raw.githubusercontent.com/$repository/$version/deploy/install-node.sh" --output "$temporary/install-node.sh"
 bash -n "$temporary/install-node.sh"
-printf '[HL-panel 节点] 安装正式版本 %s（默认与面板同步，脚本与安装包使用同一标签）\n' "$version"
+printf '[HL-panel 节点] 安装正式版本 %s（自动获取最新正式版，脚本与安装包使用同一标签）\n' "$version"
 bash "$temporary/install-node.sh" "${arguments[@]}" --repo "$repository" --version "$version"
