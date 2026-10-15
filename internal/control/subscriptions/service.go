@@ -225,13 +225,37 @@ type Resolved struct {
 func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved, error) {
 	if !(r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)) {
 		customer, err := s.repository.Customer(ctx, r.Item.CustomerID)
-		if err != nil || customer.EffectiveStatus(s.now()) != customers.StatusActive {
+		if err != nil {
+			return nil, subscriptionReadError(err)
+		}
+		if customer.EffectiveStatus(s.now()) != customers.StatusActive {
 			return nil, faults.ErrNotFound
 		}
 	}
 	lines := r.Published
 	if draft {
 		lines = r.Draft
+	}
+	batchURIs := map[string]string{}
+	batchErrors := map[string]error{}
+	batchUsed := false
+	if s.native != nil {
+		if batch, ok := s.native.(NativeBatchResolver); ok {
+			bindingIDs := make([]string, 0, len(lines))
+			for _, line := range lines {
+				if line.BindingID != "" {
+					bindingIDs = append(bindingIDs, line.BindingID)
+				}
+			}
+			if len(bindingIDs) > 0 {
+				batchUsed = true
+				var err error
+				batchURIs, batchErrors, err = batch.ResolveSubscriptionLines(ctx, r.OwnerID, r.Item.CustomerID, bindingIDs)
+				if err != nil {
+					return nil, subscriptionReadError(err)
+				}
+			}
+		}
 	}
 	out := make([]Resolved, 0, len(lines))
 	for _, line := range lines {
@@ -240,6 +264,11 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 		if line.BindingID != "" {
 			if s.native == nil {
 				resolveErr = faults.ErrConflict
+			} else if batchUsed {
+				uri, resolveErr = batchURIs[line.BindingID], batchErrors[line.BindingID]
+				if uri == "" && resolveErr == nil {
+					resolveErr = faults.ErrConflict
+				}
 			} else {
 				uri, resolveErr = s.native.ResolveSubscriptionLine(ctx, r.OwnerID, r.Item.CustomerID, line.BindingID)
 			}
@@ -249,6 +278,8 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 			var reason interface{ SubscriptionReason() string }
 			if errors.As(resolveErr, &reason) {
 				message = reason.SubscriptionReason()
+			} else if !errors.Is(resolveErr, faults.ErrNotFound) && !errors.Is(resolveErr, faults.ErrConflict) && !errors.Is(resolveErr, faults.ErrUnauthorized) {
+				return nil, subscriptionReadError(resolveErr)
 			}
 			out = append(out, Resolved{Name: line.Name, Error: message})
 			continue
@@ -267,9 +298,20 @@ func (s *Service) Public(ctx context.Context, token string) (Record, []Resolved,
 		return Record{}, nil, faults.ErrNotFound
 	}
 	r, err := s.repository.SubscriptionByToken(ctx, securetoken.Hash(token))
-	if err != nil || r.Item.State != "active" || len(r.Published) == 0 {
+	if err != nil {
+		return Record{}, nil, subscriptionReadError(err)
+	}
+	if r.Item.State != "active" || len(r.Published) == 0 {
 		return Record{}, nil, faults.ErrNotFound
 	}
 	lines, err := s.Resolve(ctx, r, false)
 	return r, lines, err
+}
+
+// Transient repository failures must never look like revoked subscriptions.
+func subscriptionReadError(err error) error {
+	if errors.Is(err, faults.ErrNotFound) {
+		return faults.ErrNotFound
+	}
+	return errors.Join(faults.ErrUnavailable, err)
 }

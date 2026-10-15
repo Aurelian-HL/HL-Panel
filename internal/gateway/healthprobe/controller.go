@@ -62,7 +62,7 @@ func (c *Controller) Run(ctx context.Context) {
 // applyVerdictLocked is invoked by Monitor while c.mu is held through the
 // monitor's transition lock. Do not call it directly.
 func (c *Controller) applyVerdictLocked(verdict Verdict) error {
-	return c.router.SetLocalReachabilityAtRevision(
+	return c.router.SetProbeReachabilityAtRevision(
 		verdict.ID, verdict.Address, verdict.MembershipRevision, verdict.Reachable,
 	)
 }

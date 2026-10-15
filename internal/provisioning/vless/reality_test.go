@@ -71,6 +71,9 @@ func TestRealityVisionURIAndServerConfig(t *testing.T) {
 		t.Fatalf("unexpected Reality stream settings: %#v", stream)
 	}
 	reality := stream["realitySettings"].(map[string]any)
+	if reality["minClientVer"] != "0.0.0" {
+		t.Fatal("Reality must not inherit an Xray-only minimum client version")
+	}
 	if reality["privateKey"] != profile.Reality.PrivateKey || reality["dest"] != profile.Reality.Destination {
 		t.Fatal("Reality server settings were not compiled")
 	}

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/base64"
+	"errors"
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -53,6 +54,12 @@ func (api *API) subscriptionDetail(w http.ResponseWriter, r *http.Request, s aut
 	published, publishedErr := api.subscriptions.Resolve(r.Context(), record, false)
 	warning := ""
 	if draftErr != nil || publishedErr != nil {
+		for _, resolveErr := range []error{draftErr, publishedErr} {
+			if resolveErr != nil && !errors.Is(resolveErr, faults.ErrNotFound) {
+				writeProblem(w, r, resolveErr)
+				return
+			}
+		}
 		warning = "客户已停用、到期或额度不足，订阅暂不可用"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"subscription": record.Item, "lines": record.Draft, "preview": draft, "published_preview": published, "links": subscriptions.Paths(record.Token), "warning": warning})
@@ -100,6 +107,20 @@ func (api *API) publicSubscription(w http.ResponseWriter, r *http.Request) {
 	_, lines, err := api.subscriptions.Public(r.Context(), token)
 	if err != nil {
 		writeProblem(w, r, err)
+		return
+	}
+	available := false
+	for _, line := range lines {
+		if line.URI != "" && line.Error == "" {
+			available = true
+			break
+		}
+	}
+	if !available {
+		// Do not replace a client's last working configuration with a successful
+		// but empty feed when runtime health is temporarily unavailable.
+		w.Header().Set("Retry-After", "15")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "订阅线路暂不可用，请稍后重试或联系管理员"})
 		return
 	}
 	w.Header().Set("profile-update-interval", "1")

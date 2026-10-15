@@ -10,9 +10,9 @@ import urllib.request
 import zipfile
 
 ENGINES = [
-    {'name': 'xray', 'version': 'v26.3.27', 'format': 'zip',
-     'url': 'https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip',
-     'sha256': '23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae'},
+    {'name': 'xray', 'version': 'v26.7.28', 'format': 'zip',
+     'url': 'https://github.com/XTLS/Xray-core/releases/download/v26.7.28/Xray-linux-64.zip',
+     'sha256': '8195d909f1109b8f3d99eefe401a3c451d7bf4af71f24d3815420f77e5dd2a40'},
     {'name': 'gost', 'version': 'v3.3.1-nightly.20260922', 'format': 'tar.gz',
      'url': 'https://github.com/go-gost/gost/releases/download/v3.3.1-nightly.20260922/gost_3.3.1-nightly.20260922_linux_amd64.tar.gz',
      'sha256': '7ce4abf8856fc45926b86d92c770f00c8d7cfbc353d410b9e2886f8ce0a2fe0f'},

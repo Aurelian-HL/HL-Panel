@@ -92,57 +92,28 @@ func (s *Store) RotateCredential(_ context.Context, input nodes.RotateCredential
 }
 
 func (s *Store) UpdateHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	node, requiresCompile, previousNode, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
-	if err != nil {
-		return nodes.Node{}, err
-	}
-	if requiresCompile {
-		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
-			s.nodes[nodeID] = previousNode
-			return nodes.Node{}, err
-		}
-		node = s.nodes[nodeID]
-	}
-	s.appendAuditLocked(event)
-	return cloneNode(node), nil
+	return s.updateHeartbeat(nodeID, heartbeat, now, event, true)
 }
 
-// PrepareHeartbeat applies telemetry to request-private state without adding
-// an audit event or compiling a configuration. PostgreSQL uses this to decide
-// whether a heartbeat can use the lightweight heartbeat table.
-func (s *Store) PrepareHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time) (nodes.Node, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	node, requiresCompile, _, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
-	return cloneNode(node), requiresCompile, err
+// UpdateHeartbeatTelemetry is for durable repository read-only fast paths.
+// It returns current liveness without publishing a new configuration generation
+// that has not been persisted. Reconciliation belongs in the write transaction.
+func (s *Store) UpdateHeartbeatTelemetry(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
+	return s.updateHeartbeat(nodeID, heartbeat, now, event, false)
 }
 
-// MergeHeartbeat overlays durable telemetry onto a decoded snapshot. It is
-// deliberately side-effect free with respect to audit and configuration
-// generations.
-func (s *Store) MergeHeartbeat(_ context.Context, nodeID string, heartbeat nodes.Heartbeat, now time.Time) error {
+func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event, reconcile bool) (nodes.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	node, _, _, err := s.applyHeartbeatLocked(nodeID, heartbeat, now)
-	if err != nil {
-		return err
-	}
-	s.nodes[nodeID] = node
-	return nil
-}
-
-func (s *Store) applyHeartbeatLocked(nodeID string, heartbeat nodes.Heartbeat, now time.Time) (nodes.Node, bool, nodes.Node, error) {
 	node, exists := s.nodes[nodeID]
 	if !exists {
-		return nodes.Node{}, false, nodes.Node{}, faults.ErrNotFound
+		return nodes.Node{}, faults.ErrNotFound
 	}
 	if node.DeletedAt != nil {
-		return nodes.Node{}, false, nodes.Node{}, faults.ErrUnauthorized
+		return nodes.Node{}, faults.ErrUnauthorized
 	}
 	if heartbeat.CurrentAppliedGeneration > node.DesiredGeneration {
-		return nodes.Node{}, false, nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
+		return nodes.Node{}, fmt.Errorf("%w: applied generation exceeds desired generation", faults.ErrConflict)
 	}
 	previousNode := node
 	node.BootID = heartbeat.BootID
@@ -156,10 +127,42 @@ func (s *Store) applyHeartbeatLocked(nodeID string, heartbeat nodes.Heartbeat, n
 	node.LastHeartbeatAt = timePointer(now)
 	node.UpdatedAt = now
 	if heartbeat.LastApplyStatus != "" {
+		node.LastApplyPhase = heartbeat.LastApplyPhase
 		node.LastApplyStatus = heartbeat.LastApplyStatus
+		node.LastApplyMessage = heartbeat.LastApplyMessage
+	} else if heartbeat.LastApplyPhase != "" || heartbeat.LastApplyMessage != "" {
+		node.LastApplyPhase = heartbeat.LastApplyPhase
+		node.LastApplyMessage = heartbeat.LastApplyMessage
 	}
 	s.nodes[nodeID] = node
-	return node, nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node), previousNode, nil
+	// Enrollment may predate available engine capabilities, and older panels
+	// could leave new members without an initial configuration. Reconcile those
+	// nodes without reissuing bundles for ordinary heartbeats on existing nodes.
+	if reconcile && (nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
+		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) ||
+		node.BundleCompilerRevision < NodeBundleCompilerRevision) {
+		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
+			if previousNode.DesiredGeneration > 0 {
+				s.nodes[nodeID] = previousNode
+				return nodes.Node{}, err
+			}
+			// Match initial enrollment: a broken historical rule must not
+			// discard liveness while the node waits for its first valid bundle.
+			if event.Metadata == nil {
+				event.Metadata = make(map[string]any)
+			}
+			event.Metadata["initial_config_pending"] = true
+		}
+		node = s.nodes[nodeID]
+	}
+	// Routine liveness telemetry is persisted separately by the PostgreSQL
+	// adapter and must not grow the audit journal. Keep this conditional so
+	// direct repository callers can still record an explicit event (for
+	// migrations and focused tests).
+	if event.ID != "" {
+		s.appendAuditLocked(event)
+	}
+	return cloneNode(node), nil
 }
 
 func (s *Store) Overview(_ context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {

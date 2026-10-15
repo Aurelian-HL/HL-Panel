@@ -24,6 +24,10 @@ var _ forwarding.Repository = (*Store)(nil)
 func (s *Store) MarkActivated(_ context.Context, ruleID string, expectedRevision int64, event audit.Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.markActivatedLocked(ruleID, expectedRevision, event)
+}
+
+func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event audit.Event) error {
 	rule, ok := s.forwardRules[ruleID]
 	if !ok {
 		return faults.ErrNotFound
@@ -41,26 +45,23 @@ func (s *Store) MarkActivated(_ context.Context, ruleID string, expectedRevision
 	if current.EffectiveIngressProtocol() != forwarding.IngressVLESSReality {
 		return faults.ErrConflict
 	}
+	poolID, err := s.endpointPoolIDForRuleLocked(ruleID)
+	if err != nil {
+		return err
+	}
 	// The challenge and this write are separate operations. Revalidate the
 	// current receipt, membership and bounded protocol lease under the lock;
 	// an in-flight probe cannot activate a retired or reconfigured candidate.
 	ready := false
-	for poolID, pool := range s.endpointPools {
-		if pool.RuleID != ruleID {
+	pool := s.endpointPools[poolID]
+	for nodeID, member := range s.endpointMembers[poolID] {
+		input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
+		if err != nil {
 			continue
 		}
-		for nodeID, member := range s.endpointMembers[poolID] {
-			input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
-			if err != nil {
-				continue
-			}
-			evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
-			if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
-				ready = true
-				break
-			}
-		}
-		if ready {
+		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+		if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
+			ready = true
 			break
 		}
 	}
@@ -187,7 +188,9 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 	}
 	privateKey := ""
 	if input.AutoReality && previous.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && previous.IngressReadiness() == forwarding.IngressReady {
-		item.RealityServerName, item.RealityDestination = previous.RealityServerName, previous.RealityDestination
+		if input.PreserveRealityTarget {
+			item.RealityServerName, item.RealityDestination = previous.RealityServerName, previous.RealityDestination
+		}
 		item.RealityPublicKey, item.RealityShortID = previous.RealityPublicKey, previous.RealityShortID
 	} else if input.AutoReality {
 		privateKey = input.RealityPrivateKey
@@ -381,11 +384,14 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	// Keep the confidential username in the stored rule, while all public
 	// projections (including idempotency replay data) are redacted below.
 	storedItem := cloneForwardingRule(item)
+	baseReason := s.forwardingBaseViewLocked(item).ActivationReason
 	item = s.forwardingViewLocked(item)
 	storedItem.Status = item.Status
 	storedItem.IngressStatus = item.IngressStatus
 	storedItem.Deployed = item.Deployed
-	storedItem.ActivationReason = item.ActivationReason
+	// Transient readiness explanations belong only to the public projection.
+	// Persist the canonical configuration reason accepted by snapshot validation.
+	storedItem.ActivationReason = baseReason
 	previous, hadPrevious := s.forwardRules[item.ID]
 	previousUpstream, hadPreviousUpstream := s.vlessSOCKS5UpstreamLocked(item.ID)
 	// Record the allocated port in the same audit transaction as the rule.
@@ -497,6 +503,38 @@ func (s *Store) updatedVLESSSOCKS5Upstream(rule, previous forwarding.Rule, passw
 
 func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
 	item = s.forwardingBaseViewLocked(item)
+	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !item.Paused &&
+		(item.Status == forwarding.StatusPendingActivation || item.Status == forwarding.StatusActive) {
+		ready := false
+		reason := forwarding.ActivationReasonNoAvailableNodes
+		now := time.Now().UTC()
+		for id, pool := range s.endpointPools {
+			if pool.RuleID != item.ID {
+				continue
+			}
+			state, err := s.gatewayMembershipStateLocked(id)
+			if err == nil && gatewaymembership.ReadyCandidateCount(state, now) > 0 {
+				ready = true
+				break
+			}
+			if err == nil {
+				if current := gatewaymembership.UnreadyReason(state, now); current != "" {
+					reason = current
+				}
+			}
+		}
+		item.Deployed = item.Deployed && ready
+		if !item.Deployed {
+			item.Status = forwarding.StatusPendingActivation
+			if item.ActivationReason == "" {
+				if ready {
+					reason = forwarding.ActivationReasonProtocolVerificationPending
+				}
+				item.ActivationReason = reason
+			}
+		}
+		return item
+	}
 	if item.EffectiveIngressProtocol() != forwarding.IngressTCP || item.Protocol != forwarding.ProtocolTCP || item.Paused ||
 		(item.Status != forwarding.StatusPendingActivation && item.Status != forwarding.StatusActive) {
 		return item

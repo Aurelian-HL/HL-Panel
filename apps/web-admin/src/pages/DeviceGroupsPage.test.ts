@@ -72,7 +72,7 @@ describe('DeviceGroupsPage', () => {
     expect(wrapper.text()).toContain('全部')
     expect(wrapper.text()).not.toContain('全部 2')
     expect(wrapper.text()).toContain('未分组 (1)')
-    expect(wrapper.get('button[title="清空流量暂未开放"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('清空流量')
     expect(wrapper.get('a[href="/user-groups"]').text()).toContain('管理分组')
     expect(wrapper.get('[data-test="inventory"]').text()).toBe('2')
 

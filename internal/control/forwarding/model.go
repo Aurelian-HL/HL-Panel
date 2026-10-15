@@ -82,6 +82,12 @@ const (
 	ActivationReasonUDPUnsupported               ActivationReason = "udp_engine_unsupported"
 	ActivationReasonAdvancedOptionsUnsupported   ActivationReason = "advanced_options_engine_unsupported"
 	ActivationReasonSelectionUnsupported         ActivationReason = "selection_engine_unsupported"
+	// Read-only readiness explanations. They do not authorize traffic or alter
+	// the persisted deployment flag and must not enter executable rule state.
+	ActivationReasonNodeConfigurationPending    ActivationReason = "node_configuration_pending"
+	ActivationReasonProtocolVerificationPending ActivationReason = "protocol_verification_pending"
+	ActivationReasonProtocolHealthExpired       ActivationReason = "protocol_health_expired"
+	ActivationReasonNoAvailableNodes            ActivationReason = "no_available_nodes"
 )
 
 type Target struct {
@@ -119,7 +125,7 @@ type Rule struct {
 	IPLimit             int               `json:"ip_limit,omitempty"`
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
 	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
-	TrafficUsedBytes    int64             `json:"traffic_used_bytes,omitempty"`
+	TrafficUsedBytes    int64             `json:"traffic_used_bytes"`
 	TrafficQuotaMonthly bool              `json:"traffic_quota_monthly,omitempty"`
 	TrafficUsagePeriod  string            `json:"traffic_usage_period,omitempty"`
 	Paused              bool              `json:"paused"`

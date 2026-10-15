@@ -18,7 +18,19 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
+// NodeBundleCompilerRevision advances only when persisted engine fragments
+// require reconciliation after a compiler change. It is independent of panel
+// releases so routine upgrades do not recompile every node's configuration.
+// Revision 1 gives the dedicated protocol probe an exact loopback permission
+// required by Xray 26.10.10 and later.
+// Revision 2 explicitly allows third-party Reality client version numbering.
+const NodeBundleCompilerRevision = 2
+
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
+	// A tombstone preserves history but must never receive fresh assignments.
+	if node, exists := s.nodes[nodeID]; !exists || node.DeletedAt != nil {
+		return generations.NodeConfigGeneration{}, false, nil
+	}
 	fragments := make([]agentv1.ConfigurationFragment, 0)
 	for groupID, members := range s.membersByGroup {
 		member, exists := members[nodeID]
@@ -65,6 +77,9 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	}
 	fragments = append(fragments, forwardingFragments...)
 	if len(fragments) == 0 && s.nodes[nodeID].DesiredGeneration == 0 {
+		node := s.nodes[nodeID]
+		node.BundleCompilerRevision = NodeBundleCompilerRevision
+		s.nodes[nodeID] = node
 		return generations.NodeConfigGeneration{}, false, nil
 	}
 	sort.Slice(fragments, func(left, right int) bool { return fragments[left].GroupID < fragments[right].GroupID })
@@ -81,6 +96,8 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	if node.DesiredGeneration > 0 {
 		current := s.nodeConfigsByNode[nodeID][node.DesiredGeneration]
 		if current.ConfigSHA256 == configHash {
+			node.BundleCompilerRevision = NodeBundleCompilerRevision
+			s.nodes[nodeID] = node
 			return cloneNodeConfig(current), false, nil
 		}
 	}
@@ -89,6 +106,7 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 		return generations.NodeConfigGeneration{}, false, err
 	}
 	node.DesiredGeneration++
+	node.BundleCompilerRevision = NodeBundleCompilerRevision
 	node.UpdatedAt = now
 	s.nodes[nodeID] = node
 	configuration := generations.NodeConfigGeneration{
@@ -134,7 +152,10 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 			if stored.EntryGroupID != groupID {
 				continue
 			}
-			rule := s.forwardingViewLocked(stored)
+			// Runtime health controls customer readiness, never desired config.
+			// Recompilation must keep a temporarily unhealthy rule installed so
+			// the protocol observer can verify its recovery.
+			rule := s.forwardingBaseViewLocked(stored)
 			if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
 				// forwardingViewLocked intentionally redacts SOCKS5 credentials;
 				// restore only the non-public username for this internal compiler

@@ -123,7 +123,7 @@ func (c *Config) setDefaults() {
 		c.EnrollmentTokenEnv = DefaultEnrollmentTokenEnvironment
 	}
 	if c.HeartbeatInterval == 0 {
-		c.HeartbeatInterval = Duration(20 * time.Second)
+		c.HeartbeatInterval = Duration(time.Second)
 	}
 	if c.DesiredPollInterval == 0 {
 		c.DesiredPollInterval = Duration(10 * time.Second)
@@ -349,7 +349,25 @@ func (c Config) HTTPClient() (*http.Client, error) {
 		}
 		tlsConfig.RootCAs = pool
 	}
+	// Agents keep a long-lived control connection for desired-watch and send
+	// heartbeats on the same origin. Explicit limits avoid inheriting a
+	// process-wide transport whose idle sockets can outlive NAT/LB state and
+	// turn the next request into an avoidable intermittent timeout.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 100
+	transport.MaxIdleConnsPerHost = 16
+	transport.MaxConnsPerHost = 32
+	// Keep pooled sockets shorter-lived than the 30s reverse-proxy idle
+	// timeout. Reusing a socket that the proxy already discarded turns the
+	// next heartbeat or desired-watch request into an intermittent timeout.
+	transport.IdleConnTimeout = 25 * time.Second
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ExpectContinueTimeout = 1 * time.Second
+	transport.ResponseHeaderTimeout = c.RequestTimeout.Duration()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
 	transport.TLSClientConfig = tlsConfig
 	return &http.Client{Transport: transport, Timeout: c.RequestTimeout.Duration()}, nil
 }

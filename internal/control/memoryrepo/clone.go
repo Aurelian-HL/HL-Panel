@@ -25,6 +25,9 @@ func cloneNode(node nodes.Node) nodes.Node {
 	if node.LastHeartbeatAt != nil {
 		node.LastHeartbeatAt = timePointer(*node.LastHeartbeatAt)
 	}
+	if node.ControlCommandUpdatedAt != nil {
+		node.ControlCommandUpdatedAt = timePointer(*node.ControlCommandUpdatedAt)
+	}
 	return node
 }
 

@@ -8,6 +8,7 @@ import { siteStore } from '@/stores/site'
 const route = useRoute()
 const router = useRouter()
 const mobileNavigationOpen = ref(false)
+const navigationToggle = ref<HTMLButtonElement | null>(null)
 const managementOpen = ref(true)
 watch(() => route.fullPath, () => { mobileNavigationOpen.value = false })
 onMounted(() => { void siteStore.load().catch(() => undefined) })
@@ -31,13 +32,18 @@ async function logout(): Promise<void> { authStore.logout(); await router.replac
 function onNavigationClick(path: string): void {
   if (path === '/probe') mobileNavigationOpen.value = false
 }
+function closeNavigation(): void {
+  if (!mobileNavigationOpen.value) return
+  mobileNavigationOpen.value = false
+  navigationToggle.value?.focus()
+}
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" @keydown.esc="closeNavigation">
     <header class="topbar">
       <div class="topbar__brand">
-        <button class="icon-button mobile-nav-toggle" type="button" :aria-expanded="mobileNavigationOpen" aria-controls="panel-navigation" aria-label="展开菜单" @click="mobileNavigationOpen = !mobileNavigationOpen"><X v-if="mobileNavigationOpen" :size="18" /><Menu v-else :size="18" /></button>
+        <button ref="navigationToggle" class="icon-button mobile-nav-toggle" type="button" :aria-expanded="mobileNavigationOpen" aria-controls="panel-navigation" :aria-label="mobileNavigationOpen ? '收起菜单' : '展开菜单'" @click="mobileNavigationOpen = !mobileNavigationOpen"><X v-if="mobileNavigationOpen" :size="18" /><Menu v-else :size="18" /></button>
         <RouterLink to="/overview" class="brand" aria-label="HL-panel 主页">{{ siteStore.siteName.value }}</RouterLink>
       </div>
       <div class="topbar__actions">
@@ -48,9 +54,9 @@ function onNavigationClick(path: string): void {
     <div v-if="mobileNavigationOpen" class="mobile-navigation-backdrop" @click="mobileNavigationOpen = false" />
     <aside id="panel-navigation" class="sidebar" :class="{ 'sidebar--open': mobileNavigationOpen }">
       <nav class="primary-nav" aria-label="主导航">
-        <RouterLink v-for="item in general" :key="item.path" :to="item.path" :target="item.path === '/probe' ? '_blank' : undefined" :rel="item.path === '/probe' ? 'opener' : undefined" @click="onNavigationClick(item.path)"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span></RouterLink>
-        <button class="nav-section-toggle" :aria-expanded="managementOpen" @click="managementOpen = !managementOpen">管理<ChevronDown :size="14" :class="{ 'nav-collapsed': !managementOpen }" /></button>
-        <div v-show="managementOpen" class="nav-management"><RouterLink v-for="item in management" :key="item.path" :to="item.path"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span></RouterLink></div>
+        <RouterLink v-for="item in general" :key="item.path" :to="item.path" :title="item.label" :aria-label="item.label" :target="item.path === '/probe' ? '_blank' : undefined" :rel="item.path === '/probe' ? 'opener' : undefined" @click="onNavigationClick(item.path)"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span></RouterLink>
+        <button class="nav-section-toggle" aria-label="管理" title="管理" :aria-expanded="managementOpen" @click="managementOpen = !managementOpen">管理<ChevronDown :size="14" :class="{ 'nav-collapsed': !managementOpen }" /></button>
+        <div v-show="managementOpen" class="nav-management"><RouterLink v-for="item in management" :key="item.path" :to="item.path" :title="item.label" :aria-label="item.label"><component :is="item.icon" :size="16" /><span>{{ item.label }}</span></RouterLink></div>
       </nav>
     </aside>
     <section class="workspace"><main class="page-content"><RouterView /></main></section>

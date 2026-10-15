@@ -11,6 +11,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/vlessconnection"
@@ -33,11 +34,12 @@ func TestSubscriptionNativeAccountFollowsRotationHealthAndRevocation(t *testing.
 	member := f.store.endpointMembers[f.endpointID][f.nodeID]
 	member.LastHealthAt = &now
 	f.store.endpointMembers[f.endpointID][f.nodeID] = member
+	grantFixtureProtocolHealth(t, f.store, rule.ID, f.endpointID, f.nodeID)
 	identity, err := vlessidentity.NewService(f.store, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewService(f.store, nil))
+	resolver := vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewServiceWithReadyCandidateSource(f.store, nil, gatewaymembership.NewService(f.store)))
 	service := subscriptions.NewService(f.store, resolver, nil)
 	request := subscriptions.Request{Name: "native", CustomerID: customer.ID, Lines: []subscriptions.Line{{Name: "stable line", BindingID: f.bindingID}}}
 	item, _, err := service.Mutate(ctx, "admin", "", "create", request, "native-create")
@@ -53,7 +55,7 @@ func TestSubscriptionNativeAccountFollowsRotationHealthAndRevocation(t *testing.
 		t.Fatal(err)
 	}
 	_, lines, err := service.Public(ctx, record.Token)
-	if err != nil || len(lines) != 1 || !strings.Contains(lines[0].URI, f.credential) || !strings.Contains(lines[0].URI, "vless.example.test:443") {
+	if err != nil || len(lines) != 1 || !strings.Contains(lines[0].URI, f.credential) || !strings.Contains(lines[0].URI, "vless.example.test:12000") {
 		t.Fatal("native stable endpoint not resolved", err, lines)
 	}
 	if _, err := resolver.ResolveSubscriptionLine(ctx, "other-admin", customer.ID, f.bindingID); err == nil {
@@ -104,12 +106,13 @@ func TestNativeSubscriptionFollowsDeviceGroupDomainChange(t *testing.T) {
 	member := f.store.endpointMembers[f.endpointID][f.nodeID]
 	member.LastHealthAt = &now
 	f.store.endpointMembers[f.endpointID][f.nodeID] = member
+	grantFixtureProtocolHealth(t, f.store, rule.ID, f.endpointID, f.nodeID)
 
 	identity, err := vlessidentity.NewService(f.store, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := subscriptions.NewService(f.store, vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewService(f.store, nil)), nil)
+	service := subscriptions.NewService(f.store, vlessconnection.NewService(identity, forwarding.NewService(f.store, nil), endpoints.NewServiceWithReadyCandidateSource(f.store, nil, gatewaymembership.NewService(f.store))), nil)
 	request := subscriptions.Request{Name: rule.Name, CustomerID: rule.CustomerID, Lines: []subscriptions.Line{{Name: rule.Name, BindingID: f.bindingID}}}
 	item, _, err := service.Generate(ctx, "admin", rule.ID, request, "group-domain-subscription")
 	if err != nil {
@@ -189,7 +192,7 @@ func TestNativeSubscriptionFollowsDeviceGroupDomainChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restoredService := subscriptions.NewService(restored, vlessconnection.NewService(restoredIdentity, forwarding.NewService(restored, nil), endpoints.NewService(restored, nil)), nil)
+	restoredService := subscriptions.NewService(restored, vlessconnection.NewService(restoredIdentity, forwarding.NewService(restored, nil), endpoints.NewServiceWithReadyCandidateSource(restored, nil, gatewaymembership.NewService(restored))), nil)
 	_, restoredLines, err := restoredService.Public(ctx, record.Token)
 	if err != nil || len(restoredLines) != 1 || restoredLines[0].URI != newLines[0].URI {
 		t.Fatalf("subscription domain change did not survive snapshot restore: err=%v", err)

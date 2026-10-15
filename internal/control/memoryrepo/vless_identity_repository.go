@@ -12,12 +12,26 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
+	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
 var _ vlessidentity.Repository = (*Store)(nil)
+
+// ResolveSubscriptionLines evaluates all bindings against this detached store
+// snapshot. It intentionally creates services over the same store, so callers
+// do not reopen a repository transaction for each line.
+func (s *Store) ResolveSubscriptionLines(ctx context.Context, administratorID, customerID string, bindings []string) (map[string]string, map[string]error, error) {
+	identity, err := vlessidentity.NewService(s, nil, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolver := vlessconnection.NewService(identity, forwarding.NewService(s, nil), endpoints.NewServiceWithReadyCandidateSource(s, nil, gatewaymembership.NewService(s)))
+	return resolver.ResolveSubscriptionLines(ctx, administratorID, customerID, bindings)
+}
 
 func (s *Store) Provision(_ context.Context, input vlessidentity.ProvisionInput, event audit.Event) (vlessidentity.Binding, bool, error) {
 	s.mu.Lock()

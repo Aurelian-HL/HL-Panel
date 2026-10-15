@@ -3,14 +3,17 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,11 +53,12 @@ type XrayRunner interface {
 // fixed absolute BinaryPath runner. AutoStart must be explicitly enabled by a
 // caller that intends to manage a real process.
 type XrayAdapterOptions struct {
-	StagingDir string
-	ActivePath string
-	BinaryPath string
-	Runner     XrayRunner
-	AutoStart  bool
+	StagingDir      string
+	ActivePath      string
+	BinaryPath      string
+	Runner          XrayRunner
+	AutoStart       bool
+	StatsAPIAddress string
 }
 
 // XrayProcessAdapter validates an Xray-only node bundle, compiles its
@@ -63,22 +67,28 @@ type XrayAdapterOptions struct {
 // DryRunFileAdapter so the existing runtime remains dry-run until an explicit
 // integration configuration selects this adapter.
 type XrayProcessAdapter struct {
-	stagingDir string
-	activePath string
-	binaryPath string
-	runner     XrayRunner
-	autoStart  bool
+	stagingDir      string
+	activePath      string
+	binaryPath      string
+	runner          XrayRunner
+	autoStart       bool
+	statsAPIAddress string
 
-	counterEpoch     uint64
-	mu               sync.Mutex
-	process          XrayProcess
-	processStartedAt time.Time
+	counterEpoch        uint64
+	mu                  sync.Mutex
+	process             XrayProcess
+	processStartedAt    time.Time
+	processConfigSHA256 [sha256.Size]byte
 }
 
 // NewXrayProcessAdapter constructs an adapter rooted at private absolute
 // paths. A caller supplying a fake/test Runner may omit BinaryPath; production
 // callers must provide an absolute, regular binary path.
 func NewXrayProcessAdapter(options XrayAdapterOptions) (*XrayProcessAdapter, error) {
+	host, port, err := xrayStatsListener(options.StatsAPIAddress)
+	if err != nil {
+		return nil, err
+	}
 	stagingDir := filepath.Clean(strings.TrimSpace(options.StagingDir))
 	activePath := filepath.Clean(strings.TrimSpace(options.ActivePath))
 	if stagingDir == "." || !filepath.IsAbs(stagingDir) {
@@ -110,11 +120,12 @@ func NewXrayProcessAdapter(options XrayAdapterOptions) (*XrayProcessAdapter, err
 		runner = fixed
 	}
 	return &XrayProcessAdapter{
-		stagingDir: stagingDir,
-		activePath: activePath,
-		binaryPath: binaryPath,
-		runner:     runner,
-		autoStart:  options.AutoStart,
+		stagingDir:      stagingDir,
+		activePath:      activePath,
+		binaryPath:      binaryPath,
+		runner:          runner,
+		autoStart:       options.AutoStart,
+		statsAPIAddress: net.JoinHostPort(host, strconv.Itoa(port)),
 	}, nil
 }
 
@@ -126,7 +137,7 @@ func (a *XrayProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desire
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
-	native, err := compileXrayBundle(prepared.Bundle)
+	native, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
@@ -180,6 +191,19 @@ func (a *XrayProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 	}
 	oldProcess := a.process
 	oldRunning := oldProcess != nil && oldProcess.Running()
+	// A complete node generation may only change another engine or metadata.
+	// Preserve existing sessions and the counter epoch when this owned process
+	// already runs the validated native document. File equality alone cannot
+	// attest a process: an external edit may have replaced the active file.
+	if previousExists && bytes.Equal(previous, candidate) &&
+		(!a.autoStart || oldRunning && a.processConfigSHA256 == sha256.Sum256(candidate)) {
+		return nil
+	}
+	if previousExists {
+		if handled, err := a.tryAddLiveLocked(ctx, previous, candidate); handled {
+			return err
+		}
+	}
 	if a.autoStart && oldRunning {
 		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop previous xray process: %w", err)
@@ -269,6 +293,41 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var previousBytes []byte
+	if previous != nil {
+		// Validate the rollback before touching a healthy running process.
+		if err := a.checkOwner(*previous); err != nil {
+			return err
+		}
+		if err := a.verifyStaged(*previous); err != nil {
+			return fmt.Errorf("validate rollback xray configuration: %w", err)
+		}
+		var err error
+		previousBytes, err = readRegularFile(previous.adapterPath, MaxConfigurationBytes)
+		if err != nil {
+			return fmt.Errorf("read rollback xray configuration: %w", err)
+		}
+		active, exists, err := readOptionalRegularFile(a.activePath)
+		if err != nil {
+			return fmt.Errorf("read active xray configuration for rollback: %w", err)
+		}
+		if exists && bytes.Equal(active, previousBytes) && (!a.autoStart ||
+			a.process != nil && a.process.Running() && a.processConfigSHA256 == sha256.Sum256(previousBytes)) {
+			return nil
+		}
+		if api, ok := a.runner.(xrayAPIRunner); ok && exists && a.autoStart && a.process != nil &&
+			a.process.Running() && a.processConfigSHA256 == sha256.Sum256(active) {
+			if delta, eligible := planXrayAdditions(previousBytes, active); eligible {
+				if err := a.undoXrayAdditions(ctx, api, delta); err == nil {
+					if err := writeFileAtomic(a.activePath, previousBytes, 0o600); err == nil {
+						a.processConfigSHA256 = sha256.Sum256(previousBytes)
+						return nil
+					}
+				}
+				return a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previousBytes)
+			}
+		}
+	}
 	if a.autoStart && a.process != nil && a.process.Running() {
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop xray process for rollback: %w", err)
@@ -280,16 +339,6 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 			return fmt.Errorf("remove xray configuration during rollback: %w", err)
 		}
 		return nil
-	}
-	if err := a.checkOwner(*previous); err != nil {
-		return err
-	}
-	if err := a.verifyStaged(*previous); err != nil {
-		return fmt.Errorf("validate rollback xray configuration: %w", err)
-	}
-	previousBytes, err := readRegularFile(previous.adapterPath, MaxConfigurationBytes)
-	if err != nil {
-		return fmt.Errorf("read rollback xray configuration: %w", err)
 	}
 	if err := writeFileAtomic(a.activePath, previousBytes, 0o600); err != nil {
 		return fmt.Errorf("restore xray configuration: %w", err)
@@ -334,7 +383,7 @@ func (a *XrayProcessAdapter) verifyStaged(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
-	expected, err := compileXrayBundle(prepared.Bundle)
+	expected, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return err
 	}
@@ -349,7 +398,7 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
-	expected, err := compileXrayBundle(prepared.Bundle)
+	expected, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return err
 	}
@@ -360,6 +409,10 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 }
 
 func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (XrayProcess, error) {
+	data, err := readRegularFile(path, MaxConfigurationBytes)
+	if err != nil {
+		return nil, ErrXrayStart
+	}
 	process, err := a.runner.Start(ctx, path)
 	if err != nil {
 		return nil, fmt.Errorf("%w", ErrXrayStart)
@@ -369,6 +422,7 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 	}
 	a.counterEpoch++
 	a.processStartedAt = time.Now().UTC()
+	a.processConfigSHA256 = sha256.Sum256(data)
 	return process, nil
 }
 
@@ -411,6 +465,7 @@ func readOptionalRegularFile(path string) ([]byte, bool, error) {
 // leak runtime credentials into agent logs.
 type ExecXrayRunner struct {
 	binaryPath string
+	version    string
 }
 
 func NewExecXrayRunner(binaryPath string) (*ExecXrayRunner, error) {
@@ -428,13 +483,17 @@ func NewExecXrayRunner(binaryPath string) (*ExecXrayRunner, error) {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("xray binary is not executable")
 	}
-	return &ExecXrayRunner{binaryPath: binaryPath}, nil
+	return &ExecXrayRunner{binaryPath: binaryPath, version: readEngineVersion(binaryPath, "Xray", "version")}, nil
 }
 
 func (r *ExecXrayRunner) Test(ctx context.Context, configPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Agent reconciliation uses a long-lived context. A stuck validator must
+	// not retain the lifecycle lock and block recovery or traffic collection.
+	ctx, cancel := context.WithTimeout(ctx, engineValidationTimeout)
+	defer cancel()
 	command := exec.CommandContext(ctx, r.binaryPath, "run", "-test", "-config", configPath)
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard
@@ -454,8 +513,13 @@ func (r *ExecXrayRunner) Start(ctx context.Context, configPath string) (XrayProc
 	if err := command.Start(); err != nil {
 		return nil, ErrXrayStart
 	}
-	process := &execXrayProcess{command: command, done: make(chan error, 1)}
-	go func() { process.done <- command.Wait() }()
+	process := &execXrayProcess{command: command, done: make(chan struct{})}
+	go func() {
+		_ = command.Wait()
+		// Completion must remain visible to every heartbeat, metrics and
+		// reconciliation observer; receiving a single buffered error consumes it.
+		close(process.done)
+	}()
 	// Detect immediate startup failure without imposing an arbitrary readiness
 	// delay. Verify observes a process that exits shortly afterwards.
 	select {
@@ -468,7 +532,7 @@ func (r *ExecXrayRunner) Start(ctx context.Context, configPath string) (XrayProc
 
 type execXrayProcess struct {
 	command *exec.Cmd
-	done    chan error
+	done    chan struct{}
 }
 
 func (p *execXrayProcess) PID() int {
@@ -505,6 +569,31 @@ func (p *execXrayProcess) Stop(ctx context.Context) error {
 // CompileXrayBundle combines only Xray-native fragments. Inbounds, outbounds,
 // and routing rules are concatenated; other settings must agree across fragments.
 func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
+	return compileXrayBundleWithStats(bundle, "")
+}
+
+func xrayStatsListener(address string) (string, int, error) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		address = "127.0.0.1:10085"
+	}
+	host, rawPort, err := net.SplitHostPort(address)
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	port, portErr := strconv.Atoi(rawPort)
+	if err != nil || ip == nil || !ip.IsLoopback() || portErr != nil || port < 1 || port > 65535 {
+		return "", 0, errors.New("xray stats API must use a loopback IP and port between 1 and 65535")
+	}
+	return ip.String(), port, nil
+}
+
+func compileXrayBundleWithStats(bundle agentv1.ConfigurationBundle, address string) ([]byte, error) {
+	apiHost, apiPort, err := xrayStatsListener(address)
+	if err != nil {
+		return nil, err
+	}
 	if bundle.SchemaVersion != BundleSchemaVersion {
 		return nil, fmt.Errorf("%w: unsupported bundle schema_version %d", ErrInvalidConfiguration, bundle.SchemaVersion)
 	}
@@ -577,6 +666,13 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 		}
 	}
 	seenTags := make(map[string]struct{})
+	for i, inbound := range arrayValues["inbounds"] {
+		compatible, err := compatibleRealityInbound(inbound)
+		if err != nil {
+			return nil, err
+		}
+		arrayValues["inbounds"][i] = compatible
+	}
 	for key, values := range arrayValues {
 		if err := validateXrayArray(key, values, seenTags); err != nil {
 			return nil, err
@@ -606,13 +702,13 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	if err := ensureXrayStatsPolicy(merged); err != nil {
 		return nil, err
 	}
-	merged["api"] = json.RawMessage(`{"tag":"hl-stats-api","services":["StatsService"]}`)
+	merged["api"] = json.RawMessage(`{"tag":"hl-stats-api","services":["StatsService","HandlerService","RoutingService"]}`)
 	merged["stats"] = json.RawMessage(`{}`)
 	// Xray's API service is exposed through one loopback-only dokodemo-door
 	// listener. The bundle compiler owns the singleton listener to avoid port
 	// and tag collisions when several rules are active on the same node.
 	apiInbound, err := json.Marshal(map[string]any{
-		"tag": "hl-stats-api-in", "listen": "127.0.0.1", "port": 10085,
+		"tag": "hl-stats-api-in", "listen": apiHost, "port": apiPort,
 		"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 	})
 	if err != nil {
@@ -645,7 +741,9 @@ func CompileXrayBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	if !hasRouting {
 		routingSettings = make(map[string]json.RawMessage)
 	}
-	routingRules = append(routingRules, json.RawMessage(`{"type":"field","inboundTag":["hl-stats-api-in"],"outboundTag":"hl-stats-api"}`))
+	// The managed API must match before any catch-all business routing rule.
+	statsRule := json.RawMessage(`{"type":"field","inboundTag":["hl-stats-api-in"],"outboundTag":"hl-stats-api"}`)
+	routingRules = append([]json.RawMessage{statsRule}, routingRules...)
 	encodedRules, err := json.Marshal(routingRules)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode routing rules", ErrInvalidConfiguration)

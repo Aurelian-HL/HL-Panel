@@ -10,53 +10,102 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
+	"github.com/hongle/hl-panel/internal/serviceaddress"
 )
+
+// ProbeState is confidential scheduling input, never a public API response.
+type ProbeState struct {
+	State  State
+	Config ProtocolProbeConfig
+}
 
 type protocolRunnerRepository interface {
 	Repository
-	endpoints.Repository
-	ProtocolProbeConfigSource
 	ProtocolProbeConfigurator
+	ProtocolProbeStates(context.Context) ([]ProbeState, error)
+	PublishProtocolHealthBatch(context.Context, []ProtocolObservation) ([]error, error)
 }
 
-// ProtocolRunner keeps VLESS Reality candidate health tied to the currently
-// deployed node bundle. It is deliberately best-effort: a failed probe marks
-// no health and never terminates the control API.
+const protocolProbeWorkers = 8
+
+// Protocol observations are published outside the scheduler loop. A blocked
+// database write must not stop probes, lease renewal, or failure detection.
+const (
+	protocolPublishQueueSize = 1
+	protocolPendingLimit     = 256
+	// A repository call must not occupy the publisher or refresh worker until
+	// the 90-second protocol lease has expired. PostgreSQL currently applies a
+	// similar transaction timeout, but keeping the bound here protects the
+	// scheduler when another repository implementation or a saturated pool
+	// fails to enforce its own context promptly.
+	protocolRepositoryTimeout = 8 * time.Second
+	// A failed publication must be retried frequently enough to renew a
+	// 90-second health lease. A long exponential backoff can otherwise place
+	// the next attempt after every observation in the batch has expired.
+	protocolRetryDelayCap = endpoints.DefaultHealthTTL / 12
+)
+
 type ProtocolRunner struct {
-	repository protocolRunnerRepository
-	observer   *ProtocolObserver
-	xrayBinary string
-	echoPort   int
-	interval   time.Duration
-	logger     *slog.Logger
-	wake       chan struct{}
+	repository        protocolRunnerRepository
+	observer          *ProtocolObserver
+	xrayBinary        string
+	echoPort          int
+	interval          time.Duration
+	repositoryTimeout time.Duration
+	logger            *slog.Logger
+	wake              chan struct{}
+}
+
+type probeJob struct {
+	key     string
+	input   ProbeState
+	member  endpoints.EndpointPoolMember
+	attempt uint64
+}
+type scheduledProbe struct {
+	job      probeJob
+	due      time.Time
+	inFlight uint64
+	priority int
+}
+
+type probeResult struct {
+	job         probeJob
+	observation ProtocolObservation
+	err         error
+}
+
+type protocolPublishResult struct {
+	rejected []error
+	err      error
+}
+
+type protocolRefreshResult struct {
+	inputs []ProbeState
+	err    error
 }
 
 func NewProtocolRunner(repository protocolRunnerRepository, xrayBinary string, echoPort int, interval time.Duration, logger *slog.Logger) *ProtocolRunner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if interval <= 0 {
+	if interval <= 0 || interval > endpoints.DefaultHealthTTL/3 {
 		interval = 15 * time.Second
 	}
-	return &ProtocolRunner{
-		repository: repository,
-		observer:   NewProtocolObserver(repository, time.Now),
-		xrayBinary: xrayBinary,
-		echoPort:   echoPort,
-		interval:   interval,
-		logger:     logger,
-		wake:       make(chan struct{}, 1),
-	}
+	return &ProtocolRunner{repository: repository, observer: NewProtocolObserver(repository, time.Now), xrayBinary: xrayBinary, echoPort: echoPort, interval: interval, repositoryTimeout: protocolRepositoryTimeout, logger: logger, wake: make(chan struct{}, 1)}
 }
 
-// NotifyDeployment coalesces engine verification receipts into prompt scans.
-// The scan still requires the matching durable receipt and a real challenge.
+func (r *ProtocolRunner) repositoryCallTimeout() time.Duration {
+	if r.repositoryTimeout <= 0 {
+		return protocolRepositoryTimeout
+	}
+	return r.repositoryTimeout
+}
+
 func (r *ProtocolRunner) NotifyDeployment(_ string) {
 	select {
 	case r.wake <- struct{}{}:
@@ -64,161 +113,484 @@ func (r *ProtocolRunner) NotifyDeployment(_ string) {
 	}
 }
 
-func (r *ProtocolRunner) Run(ctx context.Context) error {
-	if err := r.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		r.logger.Warn("VLESS protocol observation cycle failed", "error", err)
-	}
-	timer := time.NewTimer(r.interval)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-		case <-r.wake:
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := r.scan(ctx); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Warn("VLESS protocol observation cycle failed", "error", err)
-		}
-		if !timer.Stop() {
+// Run schedules each rule/node independently. A slow or failing pool cannot
+// block all other pools for an entire scan or delay lease renewal by minutes.
+// Network concurrency and database publication are bounded separately.
+func (r *ProtocolRunner) Run(parent context.Context) error {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
+	jobs := make(chan probeJob)
+	results := make(chan probeResult, protocolProbeWorkers)
+	publishRequests := make(chan []probeResult, protocolPublishQueueSize)
+	publishResults := make(chan protocolPublishResult, protocolPublishQueueSize)
+	var publisher sync.WaitGroup
+	publisher.Add(1)
+	go func() {
+		defer publisher.Done()
+		for {
 			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(r.interval)
-	}
-}
-
-func (r *ProtocolRunner) scan(ctx context.Context) error {
-	started := time.Now()
-	r.logger.Info("VLESS protocol observation scan started")
-	pools, err := r.repository.ListEndpointPools(ctx)
-	if err != nil {
-		r.logger.Warn("VLESS protocol observation pool lookup failed", "elapsed", time.Since(started), "error", err)
-		return err
-	}
-	r.logger.Info("VLESS protocol observation pools discovered", "count", len(pools), "elapsed", time.Since(started))
-	for _, pool := range pools {
-		if pool.Protocol != "vless" || pool.RuleID == "" {
-			continue
-		}
-		if err := r.scanPool(ctx, pool); err != nil && !errors.Is(err, context.Canceled) {
-			r.logger.Warn("VLESS protocol observation pool failed", "pool_id", pool.ID, "error", err)
-		}
-	}
-	return nil
-}
-
-func (r *ProtocolRunner) scanPool(ctx context.Context, pool endpoints.EndpointPool) error {
-	started := time.Now()
-	state, err := r.repository.GatewayMembershipState(ctx, pool.ID)
-	if err != nil {
-		return err
-	}
-	if state.Rule.Paused || state.Rule.IngressReadiness() != forwarding.IngressReady ||
-		(state.Rule.Status != forwarding.StatusPendingActivation && state.Rule.Status != forwarding.StatusActive) {
-		return nil
-	}
-	r.logger.Info("VLESS protocol observation pool started", "pool_id", pool.ID, "rule_id", pool.RuleID)
-	probe, err := r.repository.ProtocolProbeConfig(ctx, pool.RuleID)
-	if errors.Is(err, faults.ErrNotFound) {
-		probe, err = NewProtocolProbeConfig(r.echoPort)
-		if err != nil {
-			return err
-		}
-		if err := r.repository.ConfigureProtocolProbe(ctx, pool.RuleID, probe); err != nil {
-			if errors.Is(err, faults.ErrConflict) {
-				return nil
-			}
-			return err
-		}
-		// The configuration mutation advances each node's desired generation.
-		// Wait for the next cycle so probes cannot race an old bundle.
-		r.logger.Info("VLESS protocol probe configured", "pool_id", pool.ID, "rule_id", pool.RuleID, "echo_port", probe.EchoPort, "elapsed", time.Since(started))
-		return nil
-	}
-	if err != nil {
-		r.logger.Warn("VLESS protocol probe configuration lookup failed", "pool_id", pool.ID, "rule_id", pool.RuleID, "elapsed", time.Since(started), "error", err)
-		return err
-	}
-	state, err = r.repository.GatewayMembershipState(ctx, pool.ID)
-	if err != nil {
-		r.logger.Warn("VLESS protocol membership state lookup failed", "pool_id", pool.ID, "elapsed", time.Since(started), "error", err)
-		return err
-	}
-	r.logger.Info("VLESS protocol observation members discovered", "pool_id", pool.ID, "rule_id", state.Rule.ID, "member_count", len(state.Members), "rule_status", state.Rule.Status, "ingress_status", state.Rule.IngressReadiness(), "deployed", state.Rule.Deployed, "elapsed", time.Since(started))
-	var workers sync.WaitGroup
-	slots := make(chan struct{}, 4)
-	for _, member := range state.Members {
-		if member.State != endpoints.CandidateEligible || member.Weight < 1 || !deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
-			continue
-		}
-		select {
-		case slots <- struct{}{}:
-		case <-ctx.Done():
-			workers.Wait()
-			return ctx.Err()
-		}
-		workers.Add(1)
-		go func(member endpoints.EndpointPoolMember) {
-			defer workers.Done()
-			defer func() { <-slots }()
-			nodeStarted := time.Now()
-			r.logger.Info("VLESS protocol observation node started", "pool_id", pool.ID, "node_id", member.NodeID, "dial_host", member.DialHost)
-			spec := protocolprobe.Spec{
-				XrayBinary: r.xrayBinary,
-				DialHost:   member.DialHost,
-				DialPort:   state.Rule.ListenPort,
-				UUID:       probe.UUID,
-				ServerName: state.Rule.RealityServerName,
-				PublicKey:  state.Rule.RealityPublicKey,
-				ShortID:    state.Rule.RealityShortID,
-				EchoHost:   "127.0.0.1",
-				EchoPort:   probe.EchoPort,
-			}
-			if _, err := r.observer.ObserveNode(ctx, pool.ID, member.NodeID, spec); err != nil {
-				r.logger.Warn("VLESS protocol observation failed", "pool_id", pool.ID, "node_id", member.NodeID, "dial_host", member.DialHost, "dial_port", state.Rule.ListenPort, "elapsed", time.Since(nodeStarted), "error", err)
-			} else {
-				r.logger.Info("VLESS protocol observation succeeded", "pool_id", pool.ID, "node_id", member.NodeID, "dial_host", member.DialHost, "elapsed", time.Since(nodeStarted))
-				r.activateReadyRule(ctx, pool)
-			}
-		}(member)
-	}
-	workers.Wait()
-	r.logger.Info("VLESS protocol observation pool finished", "pool_id", pool.ID, "rule_id", pool.RuleID, "elapsed", time.Since(started))
-	return nil
-}
-
-// Activate as soon as any authorized candidate passes, without waiting for an
-// unrelated slow candidate. The repository makes activation idempotent.
-func (r *ProtocolRunner) activateReadyRule(ctx context.Context, pool endpoints.EndpointPool) {
-	if writer, ok := r.repository.(interface {
-		MarkActivated(context.Context, string, int64, audit.Event) error
-	}); ok {
-		fresh, err := r.repository.GatewayMembershipState(ctx, pool.ID)
-		if err == nil {
-			ready := 0
-			for _, member := range fresh.Members {
-				if protocolHealthy(fresh.ProtocolHealth[member.NodeID], fresh.Deployments[member.NodeID].Status, fresh.Rule, member, member.DialHost, time.Now().UTC()) {
-					ready++
+			case <-ctx.Done():
+				return
+			case batch := <-publishRequests:
+				observations := make([]ProtocolObservation, len(batch))
+				for i, result := range batch {
+					observations[i] = result.observation
+				}
+				publishContext, cancel := context.WithTimeout(ctx, r.repositoryCallTimeout())
+				rejected, err := r.repository.PublishProtocolHealthBatch(publishContext, observations)
+				cancel()
+				select {
+				case publishResults <- protocolPublishResult{rejected: rejected, err: err}:
+				case <-ctx.Done():
+					return
 				}
 			}
-			if ready > 0 && fresh.Rule.ID != "" {
-				event, eventErr := audit.NewEvent(time.Now().UTC(), "system", "protocol-runner", "forwarding_rule.activate", "forwarding_rule", fresh.Rule.ID, "succeeded", map[string]any{"healthy_candidates": ready})
-				if eventErr == nil {
-					if activateErr := writer.MarkActivated(ctx, fresh.Rule.ID, fresh.Rule.Revision, event); activateErr != nil {
-						r.logger.Warn("VLESS protocol rule activation failed", "pool_id", pool.ID, "rule_id", fresh.Rule.ID, "healthy_candidates", ready, "error", activateErr)
-					} else {
-						r.logger.Info("VLESS protocol rule activation succeeded", "pool_id", pool.ID, "rule_id", fresh.Rule.ID, "healthy_candidates", ready)
+		}
+	}()
+	var workers sync.WaitGroup
+	for i := 0; i < protocolProbeWorkers; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case job := <-jobs:
+					state := job.input.State
+					spec := protocolprobe.Spec{XrayBinary: r.xrayBinary, DialHost: job.member.DialHost, DialPort: state.Rule.ListenPort, UUID: job.input.Config.UUID, ServerName: state.Rule.RealityServerName, PublicKey: state.Rule.RealityPublicKey, ShortID: state.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: job.input.Config.EchoPort}
+					observation, err := r.observer.observeState(ctx, state, job.input.Config, job.member.NodeID, spec)
+					select {
+					case results <- probeResult{job, observation, err}:
+					case <-ctx.Done():
+						return
 					}
 				}
 			}
+		}()
+	}
+	refreshRequests := make(chan struct{}, 1)
+	refreshResults := make(chan protocolRefreshResult, 1)
+	var refreshWorker sync.WaitGroup
+	refreshWorker.Add(1)
+	go func() {
+		defer refreshWorker.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-refreshRequests:
+				refreshContext, cancel := context.WithTimeout(ctx, r.repositoryCallTimeout())
+				inputs, err := r.loadRefresh(refreshContext)
+				cancel()
+				select {
+				case refreshResults <- protocolRefreshResult{inputs: inputs, err: err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	defer func() { cancel(); workers.Wait(); publisher.Wait(); refreshWorker.Wait() }()
+	targets := make(map[string]*scheduledProbe)
+	requestRefresh := func() {
+		select {
+		case refreshRequests <- struct{}{}:
+		default:
 		}
 	}
+	requestRefresh()
+	refreshTicker := time.NewTicker(r.interval)
+	defer refreshTicker.Stop()
+	flushTicker := time.NewTicker(time.Second)
+	defer flushTicker.Stop()
+	pending := make([]probeResult, 0, 32)
+	var retryBatch []probeResult
+	var retryAt time.Time
+	retryDelay := time.Second
+	var publishInFlight []probeResult
+	publishBusy := false
+	var dispatchSequence uint64
+	var priorityDispatches int
+	flush := func() {
+		if publishBusy {
+			return
+		}
+		now := time.Now()
+		// A failed publication must not keep an expired observation ahead of
+		// newer probe results forever. The repository rejects expired leases,
+		// so retaining them only delays the next usable health update.
+		if len(retryBatch) > 0 {
+			retryBatch = dropExpiredProtocolResults(retryBatch, now)
+			if len(retryBatch) == 0 {
+				retryAt = time.Time{}
+				retryDelay = time.Second
+			}
+		}
+		if !retryAt.IsZero() && now.Before(retryAt) {
+			return
+		}
+		// A transaction-level failure means PostgreSQL did not commit any item.
+		// Keep that exact batch for retry instead of dropping successful probes
+		// and waiting for the next lease cycle to make them eligible again.
+		batch := retryBatch
+		if len(batch) == 0 {
+			batch = pending
+			pending = nil
+		}
+		if len(batch) == 0 {
+			return
+		}
+		select {
+		case publishRequests <- batch:
+			publishInFlight = batch
+			publishBusy = true
+			if len(retryBatch) > 0 {
+				retryBatch = nil
+			} else {
+				pending = nil
+			}
+		default:
+			// The bounded publisher is busy; leave the batch in its source
+			// buffer so a slow database cannot cause an observation drop.
+		}
+	}
+	for {
+		// Select the earliest due probe; prioritize one candidate from each pool
+		// before probing its remaining members, including newly deployed rules.
+		next := nextFairProbe(targets, time.Now(), priorityDispatches)
+		var send chan probeJob
+		var job probeJob
+		if next != nil {
+			send = jobs
+			job = next.job
+			job.attempt = dispatchSequence + 1
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.wake:
+			requestRefresh()
+		case <-refreshTicker.C:
+			requestRefresh()
+		case refreshed := <-refreshResults:
+			if refreshed.err != nil {
+				if !errors.Is(refreshed.err, context.Canceled) {
+					r.logger.Warn("VLESS protocol scheduling refresh failed", "error", refreshed.err)
+				}
+				continue
+			}
+			r.applyRefresh(refreshed.inputs, targets)
+		case <-flushTicker.C:
+			flush()
+		case send <- job:
+			dispatchSequence = job.attempt
+			next.inFlight = job.attempt
+			if next.priority == 0 {
+				if priorityDispatches < protocolProbeWorkers {
+					priorityDispatches++
+				}
+			} else {
+				priorityDispatches = 0
+			}
+		case result := <-results:
+			target := targets[result.job.key]
+			// A retired target may have been re-added while its old worker ran.
+			// Only the matching dispatch owns this target's in-flight slot.
+			if target == nil || target.inFlight != result.job.attempt {
+				continue
+			}
+			target.inFlight = 0
+			// A refresh may replace this job while its challenge is in flight.
+			// Never let an old completion delay probing the new configuration.
+			if target != nil && !sameProbe(target.job, result.job) {
+				continue
+			}
+			if target != nil {
+				target.due = time.Now().Add(endpoints.DefaultHealthTTL / 3)
+			}
+			if result.err != nil {
+				if target != nil {
+					target.due = time.Now().Add(r.interval)
+				}
+				r.logger.Debug("VLESS protocol observation failed", "pool_id", result.job.input.State.Pool.ID, "node_id", result.job.member.NodeID, "error", result.err)
+			} else {
+				if len(pending) < protocolPendingLimit {
+					pending = append(pending, result)
+				} else if target != nil {
+					// A database outage must not grow memory without bound. The
+					// target remains due for a fresh probe, which will produce a
+					// newer observation after publishing recovers.
+					target.due = time.Now().Add(r.interval)
+				}
+				if len(pending) >= 32 {
+					flush()
+				}
+			}
+		case published := <-publishResults:
+			batch := publishInFlight
+			publishInFlight = nil
+			publishBusy = false
+			// The repository contract is positional: one rejection slot must be
+			// returned for every observation, including successful observations.
+			// Treat a malformed response as a transaction-level failure. Assuming
+			// missing slots succeeded can silently drop a lease renewal and leave
+			// a client routed to an expired backend.
+			if published.err == nil && len(published.rejected) != len(batch) {
+				published.err = fmt.Errorf("protocol health publisher returned %d rejection results for %d observations", len(published.rejected), len(batch))
+			}
+			if published.err != nil {
+				r.logger.Warn("VLESS protocol health batch failed", "count", len(batch), "error", published.err)
+				retryBatch = batch
+				retryAt = nextHealthRetryAt(batch, time.Now(), retryDelay)
+				if retryDelay < protocolRetryDelayCap {
+					retryDelay *= 2
+					if retryDelay > protocolRetryDelayCap {
+						retryDelay = protocolRetryDelayCap
+					}
+				}
+			} else {
+				retryBatch = nil
+				retryAt = time.Time{}
+				retryDelay = time.Second
+				for i, result := range batch {
+					var failure error
+					if i < len(published.rejected) {
+						failure = published.rejected[i]
+					}
+					if failure != nil {
+						if target := targets[result.job.key]; target != nil && sameProbe(target.job, result.job) {
+							target.due = time.Now().Add(r.interval)
+						}
+					}
+				}
+				r.logger.Debug("VLESS protocol health batch published", "count", len(batch))
+			}
+			flush()
+		}
+	}
+}
+
+func dropExpiredProtocolResults(batch []probeResult, now time.Time) []probeResult {
+	if len(batch) == 0 {
+		return nil
+	}
+	kept := batch[:0]
+	for _, result := range batch {
+		lease := result.observation.LeaseExpiresAt
+		if !lease.IsZero() && !lease.After(now) {
+			continue
+		}
+		kept = append(kept, result)
+	}
+	return kept
+}
+
+// nextHealthRetryAt keeps a failed batch inside the current lease window. The
+// publisher may still be unavailable for longer than the lease, but it should
+// not be the scheduler's backoff policy that causes the expiry.
+func nextHealthRetryAt(batch []probeResult, now time.Time, delay time.Duration) time.Time {
+	if delay <= 0 {
+		delay = time.Second
+	}
+	if delay > protocolRetryDelayCap {
+		delay = protocolRetryDelayCap
+	}
+	next := now.Add(delay)
+	for _, result := range batch {
+		lease := result.observation.LeaseExpiresAt
+		if lease.IsZero() {
+			continue
+		}
+		// Leave one retry interval of safety for the database transaction and
+		// network scheduling while the lease is still valid. Once the lease has
+		// expired, retain the normal backoff instead of returning now and
+		// creating a busy retry loop.
+		deadline := lease.Add(-protocolRetryDelayCap)
+		if deadline.After(now) && deadline.Before(next) {
+			next = deadline
+		}
+	}
+	return next
+}
+
+func nextProbe(targets map[string]*scheduledProbe, now time.Time) *scheduledProbe {
+	var next *scheduledProbe
+	for _, target := range targets {
+		if target.inFlight != 0 || target.due.After(now) {
+			continue
+		}
+		if next == nil || target.priority < next.priority || (target.priority == next.priority &&
+			(target.due.Before(next.due) || (target.due.Equal(next.due) && target.job.key < next.job.key))) {
+			next = target
+		}
+	}
+	return next
+}
+
+// Keep recovery and lease renewal preferred, while reserving a dispatch after
+// each worker-sized priority burst for the oldest due remaining candidate.
+// Continuous failures must not starve the rest of a group's nodes forever.
+func nextFairProbe(targets map[string]*scheduledProbe, now time.Time, priorityDispatches int) *scheduledProbe {
+	if priorityDispatches >= protocolProbeWorkers {
+		var oldest *scheduledProbe
+		for _, target := range targets {
+			if target.priority == 0 || target.inFlight != 0 || target.due.After(now) {
+				continue
+			}
+			if oldest == nil || target.due.Before(oldest.due) || target.due.Equal(oldest.due) && target.job.key < oldest.job.key {
+				oldest = target
+			}
+		}
+		if oldest != nil {
+			return oldest
+		}
+	}
+	return nextProbe(targets, now)
+}
+
+func sameProbe(a, b probeJob) bool {
+	x, y := a.input.State, b.input.State
+	ex, ey := x.Deployments[a.member.NodeID].Status, y.Deployments[b.member.NodeID].Status
+	// The scheduler key normally contains pool/node IDs, but a refresh can
+	// replace a target while an old job is still in flight. Compare every
+	// challenge input explicitly so an old completion cannot be associated with
+	// a different pool, node, listener, or Reality target if IDs are reused.
+	return x.Pool.ID == y.Pool.ID && x.Rule.ID == y.Rule.ID &&
+		a.member.PoolID == b.member.PoolID && a.member.GroupID == b.member.GroupID &&
+		a.member.NodeID == b.member.NodeID && a.member.DialHost == b.member.DialHost &&
+		x.Rule.Revision == y.Rule.Revision && x.Rule.ListenPort == y.Rule.ListenPort &&
+		x.Rule.RealityServerName == y.Rule.RealityServerName &&
+		x.Rule.RealityPublicKey == y.Rule.RealityPublicKey &&
+		x.Rule.RealityShortID == y.Rule.RealityShortID &&
+		ex.RuleID == ey.RuleID && ex.NodeID == ey.NodeID &&
+		ex.NodeConfigGeneration == ey.NodeConfigGeneration && ex.ConfigSHA256 == ey.ConfigSHA256 &&
+		a.input.Config == b.input.Config
+}
+
+// Prefer a recently successful address when a bundle change makes the pool
+// unready. This is a scheduling hint only: old proof cannot authorize the new
+// bundle, and the selected address must pass a fresh protocol challenge.
+func recoveryProbeCandidate(state State, now time.Time) string {
+	var fallback, preferred string
+	var verifiedAt time.Time
+	for _, member := range state.Members {
+		if member.State != endpoints.CandidateEligible || member.Weight < 1 ||
+			!deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
+			continue
+		}
+		if fallback == "" {
+			fallback = member.NodeID
+		}
+		proof := state.ProtocolHealth[member.NodeID]
+		host, err := serviceaddress.NormalizeHost(member.DialHost)
+		observedHost, proofErr := serviceaddress.NormalizeHost(proof.DialHost)
+		if err != nil || proofErr != nil || host == "" || host != observedHost ||
+			proof.RuleID != state.Rule.ID || proof.NodeID != member.NodeID || proof.RuleRevision != state.Rule.Revision ||
+			proof.Protocol != forwarding.IngressVLESSReality || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(now) ||
+			!proof.LeaseExpiresAt.After(proof.VerifiedAt) || proof.LeaseExpiresAt.After(proof.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
+			continue
+		}
+		if !proof.LeaseExpiresAt.After(now) && !protocolEvidenceMatches(proof, state.Deployments[member.NodeID].Status, state.Rule, member, host, now) {
+			continue
+		}
+		if preferred == "" || proof.VerifiedAt.After(verifiedAt) {
+			preferred, verifiedAt = member.NodeID, proof.VerifiedAt
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return fallback
+}
+
+func (r *ProtocolRunner) loadRefresh(ctx context.Context) ([]ProbeState, error) {
+	inputs, err := r.repository.ProtocolProbeStates(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ready := make([]ProbeState, 0, len(inputs))
+	for _, input := range inputs {
+		state := input.State
+		if state.Rule.Paused || state.Rule.IngressReadiness() != forwarding.IngressReady || (state.Rule.Status != forwarding.StatusPendingActivation && state.Rule.Status != forwarding.StatusActive) {
+			continue
+		}
+		if input.Config.UUID == "" {
+			config, err := NewProtocolProbeConfig(r.echoPort)
+			if err != nil {
+				return nil, err
+			}
+			if err := r.repository.ConfigureProtocolProbe(ctx, state.Rule.ID, config); err != nil && !errors.Is(err, faults.ErrConflict) {
+				return nil, err
+			}
+			// The write creates a new desired generation and wakes the agent. Do
+			// not schedule a challenge from this pre-acknowledgement snapshot:
+			// the first valid probe is scheduled after the agent's verified apply
+			// receipt wakes this runner.
+			continue
+		}
+		ready = append(ready, input)
+	}
+	return ready, nil
+}
+
+func (r *ProtocolRunner) refresh(ctx context.Context, targets map[string]*scheduledProbe) error {
+	inputs, err := r.loadRefresh(ctx)
+	if err != nil {
+		return err
+	}
+	r.applyRefresh(inputs, targets)
+	return nil
+}
+
+func (r *ProtocolRunner) applyRefresh(inputs []ProbeState, targets map[string]*scheduledProbe) {
+	seen := make(map[string]bool)
+	now := time.Now()
+	for _, input := range inputs {
+		state := input.State
+		if state.Rule.Paused || state.Rule.IngressReadiness() != forwarding.IngressReady || (state.Rule.Status != forwarding.StatusPendingActivation && state.Rule.Status != forwarding.StatusActive) {
+			continue
+		}
+		recoveryCandidate := recoveryProbeCandidate(state, now.UTC())
+		poolReady := ReadyCandidateCount(state, now.UTC()) > 0
+		for _, member := range state.Members {
+			if member.State != endpoints.CandidateEligible || member.Weight < 1 || !deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
+				continue
+			}
+			key := state.Pool.ID + ":" + member.NodeID
+			job := probeJob{key: key, input: input, member: member}
+			priority := 1
+			// Restore one candidate per unready pool before filling the remaining
+			// nodes. Once ready, prioritize renewal of current proven candidates.
+			if member.NodeID == recoveryCandidate || (poolReady && protocolEvidenceMatches(state.ProtocolHealth[member.NodeID], state.Deployments[member.NodeID].Status, state.Rule, member, member.DialHost, now.UTC())) {
+				priority = 0
+			}
+			seen[key] = true
+			if previous := targets[key]; previous != nil {
+				if !sameProbe(previous.job, job) {
+					previous.due = now
+				}
+				previous.job = job
+				previous.priority = priority
+				continue
+			}
+			// Pool priorities provide fairness without delaying idle workers.
+			due := now
+			if health := state.ProtocolHealth[member.NodeID]; protocolHealthy(health, state.Deployments[member.NodeID].Status, state.Rule, member, member.DialHost, now.UTC()) {
+				renew := health.VerifiedAt.Add(endpoints.DefaultHealthTTL / 3)
+				if renew.After(due) {
+					due = renew
+				}
+			}
+			targets[key] = &scheduledProbe{job: job, due: due, priority: priority}
+		}
+	}
+	for key := range targets {
+		if !seen[key] {
+			delete(targets, key)
+		}
+	}
+	r.logger.Debug("VLESS protocol scheduling refreshed", "pools", len(inputs), "targets", len(targets))
 }
 
 func NewProtocolProbeConfig(echoPort int) (ProtocolProbeConfig, error) {

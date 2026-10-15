@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Settings2 } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
 import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
 import StatePanel from '@/components/StatePanel.vue'
 import DeleteNodeDialog from '@/features/nodes/DeleteNodeDialog.vue'
 import ProbeMembers from '@/features/probe/ProbeMembers.vue'
-import ProbeRefreshSettingsDialog from '@/features/probe/ProbeRefreshSettingsDialog.vue'
 import MemberWeightDialog from '@/features/groups/MemberWeightDialog.vue'
 import { formatRate, hasLiveProbeReading, monitorStatus } from '@/features/probe/format'
-import { readProbeRefreshIntervals, saveProbeRefreshIntervals, type ProbeRefreshIntervals } from '@/features/probe/refreshPreferences'
 import { displayError } from '@/lib/displayFormatters'
 import { serverNow } from '@/lib/serverClock'
 
@@ -24,14 +21,16 @@ const groupsError = ref('')
 const monitoringError = ref('')
 const statusFilter = ref<StatusFilter>('all')
 const now = ref(serverNow())
-const refreshIntervals = ref(readProbeRefreshIntervals())
-const settingsOpen = ref(false)
-const settingsError = ref('')
 const groupMembers = ref<DeviceGroupMember[]>([])
 const allGroupMembers = ref<Record<string, DeviceGroupMember[]>>({})
 const groupMembersError = ref('')
 const editingMember = ref<DeviceGroupMember | null>(null)
 const deletingNode = ref<ProbeMember | null>(null)
+const deletingUnassigned = ref(false)
+function askDelete(member: ProbeMember, unassigned = false): void {
+  deletingNode.value = member
+  deletingUnassigned.value = unassigned
+}
 
 const availableGroups = computed(() => groups.value.filter((group) => !group.hide_in_probe))
 const selectedGroup = computed(() => availableGroups.value.find((group) => group.id === selectedGroupId.value))
@@ -75,10 +74,11 @@ const sectionSpeed = (items: typeof members.value, field: 'net_in_speed_bytes_pe
 let requestId = 0
 let memberRequestId = 0
 let groupRequestId = 0
+let groupsInFlight = false
+let monitoringController: AbortController | undefined
 async function loadGroupMembers(): Promise<void> {
   const groupId = selectedGroupId.value
   const currentRequest = ++memberRequestId
-  groupMembers.value = []
   groupMembersError.value = ''
   try {
     const targetGroups = groupId ? availableGroups.value.filter((group) => group.id === groupId) : availableGroups.value
@@ -100,12 +100,15 @@ async function loadGroupMembers(): Promise<void> {
     }
   } catch (error) {
     if (currentRequest === memberRequestId) {
-      allGroupMembers.value = {}
       groupMembersError.value = displayError(error)
     }
   }
 }
 async function loadMonitoring(clearSnapshot = false): Promise<void> {
+  if (!active || (monitoringLoading.value && !clearSnapshot)) return
+  monitoringController?.abort()
+  const controller = new AbortController()
+  monitoringController = controller
   const groupId = selectedGroupId.value
   const currentRequest = ++requestId
   if (clearSnapshot) {
@@ -114,8 +117,8 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
   }
   monitoringLoading.value = true
   try {
-    const result = groupId ? await probeApi.getGroup(groupId) : await probeApi.getInventory()
-    if (currentRequest === requestId) {
+    const result = groupId ? await probeApi.getGroup(groupId, controller.signal) : await probeApi.getInventory(controller.signal)
+    if (active && currentRequest === requestId) {
       now.value = serverNow()
       response.value = result
       monitoringError.value = ''
@@ -130,17 +133,21 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
 function selectGroup(): void {
   statusFilter.value = 'all'
   editingMember.value = null
+  groupMembers.value = []
   void loadGroupMembers()
   void loadMonitoring(true)
 }
 
 async function nodeDeleted(nodeId: string): Promise<void> {
   deletingNode.value = null
+  deletingUnassigned.value = false
   requestId++
   memberRequestId++
+  monitoringController?.abort()
+  monitoringLoading.value = false
   if (response.value) response.value = { ...response.value, items: response.value.items.filter((item) => item.node_id !== nodeId) }
   if (editingMember.value?.node_id === nodeId) editingMember.value = null
-  await loadGroups()
+  await Promise.all([loadMonitoring(), loadGroups(true)])
 }
 
 function weightSaved(member: DeviceGroupMember): void {
@@ -149,61 +156,75 @@ function weightSaved(member: DeviceGroupMember): void {
   editingMember.value = null
 }
 
-async function loadGroups(): Promise<void> {
+async function loadGroups(quiet = false): Promise<void> {
+  if (!active || groupsInFlight) return
+  groupsInFlight = true
   const currentRequest = ++groupRequestId
-  groupsLoading.value = true
+  if (!quiet) groupsLoading.value = true
   groupsError.value = ''
   try {
     const result = await api.getDeviceGroups()
-    if (!active || currentRequest !== groupRequestId) return
-    groups.value = result.items
-    if (selectedGroupId.value && !availableGroups.value.some((group) => group.id === selectedGroupId.value)) {
+    if (active && currentRequest === groupRequestId) groups.value = result.items
+    if (active && selectedGroupId.value && !availableGroups.value.some((group) => group.id === selectedGroupId.value)) {
       selectedGroupId.value = ''
       response.value = null
+      monitoringController?.abort()
+      requestId++
+      monitoringLoading.value = false
     }
   } catch (error) {
     if (active && currentRequest === groupRequestId) groupsError.value = displayError(error)
   } finally {
     if (active && currentRequest === groupRequestId) groupsLoading.value = false
   }
-  if (!active || currentRequest !== groupRequestId) return
-  await Promise.all([loadGroupMembers(), loadMonitoring()])
+  try {
+    if (!active || currentRequest !== groupRequestId) return
+    await Promise.all([loadGroupMembers(), ...(!quiet || !response.value ? [loadMonitoring()] : [])])
+  } finally { groupsInFlight = false }
 }
 
 let refreshTimer: ReturnType<typeof setTimeout> | undefined
+let membershipTimer: ReturnType<typeof setTimeout> | undefined
 let active = false
+function scheduleMembershipRefresh(): void {
+  if (membershipTimer) clearTimeout(membershipTimer)
+  if (!active || document.visibilityState !== 'visible') return
+  membershipTimer = setTimeout(async () => {
+    await loadGroups(true)
+    scheduleMembershipRefresh()
+  }, 15_000)
+}
 function scheduleRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
   if (!active) return
-  refreshTimer = setTimeout(async () => {
+  refreshTimer = setTimeout(() => {
     refreshTimer = undefined
     now.value = serverNow()
-    if (!monitoringLoading.value) await loadMonitoring()
+    void loadMonitoring()
     scheduleRefresh()
-  }, document.visibilityState === 'visible' ? refreshIntervals.value.foreground : refreshIntervals.value.background)
+  }, document.visibilityState === 'visible' ? 1_000 : 10_000)
 }
 
 function onVisibilityChange(): void {
   now.value = serverNow()
-  if (document.visibilityState === 'visible' && !monitoringLoading.value) void loadMonitoring()
+  if (document.visibilityState === 'visible') {
+    void loadMonitoring()
+    void loadGroups(true)
+  }
   scheduleRefresh()
+  scheduleMembershipRefresh()
 }
 
-function updateIntervals(next: ProbeRefreshIntervals): void {
-  refreshIntervals.value = next
-  settingsError.value = ''
-  try {
-    saveProbeRefreshIntervals(next)
-  } catch {
-    settingsError.value = '刷新间隔已在当前页面生效，但浏览器未能保存设置。'
-  }
-  settingsOpen.value = false
-  scheduleRefresh()
-}
+function onOnline(): void { onVisibilityChange() }
+
 onMounted(() => {
   active = true
   document.addEventListener('visibilitychange', onVisibilityChange)
-  void loadGroups().finally(scheduleRefresh)
+  window.addEventListener('online', onOnline)
+  void loadMonitoring()
+  void loadGroups(true)
+  scheduleRefresh()
+  scheduleMembershipRefresh()
 })
 onUnmounted(() => {
   active = false
@@ -211,7 +232,10 @@ onUnmounted(() => {
   memberRequestId++
   groupRequestId++
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  window.removeEventListener('online', onOnline)
+  monitoringController?.abort()
   if (refreshTimer) clearTimeout(refreshTimer)
+  if (membershipTimer) clearTimeout(membershipTimer)
 })
 </script>
 
@@ -219,7 +243,7 @@ onUnmounted(() => {
   <div class="page-stack probe-page">
     <header class="page-heading">
       <div><h2>设备探针</h2><p>HL主机监控</p></div>
-      <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div><button class="button button--secondary" type="button" title="刷新间隔设置" aria-label="刷新间隔设置" @click="settingsOpen = true"><Settings2 :size="16" /></button></div>
+      <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div></div>
     </header>
 
     <StatePanel v-if="groupsLoading && !response" state="loading" title="正在读取设备探针" />
@@ -229,11 +253,9 @@ onUnmounted(() => {
         <div class="probe-overview__metrics"><div><span>成员</span><strong>{{ response ? counts.all : '未采集' }}</strong></div><div><span>在线</span><strong>{{ hasProbeSource ? counts.online : '未采集' }}</strong></div><div><span>下行速率</span><strong>{{ inboundSpeed }}</strong></div><div><span>上行速率</span><strong>{{ outboundSpeed }}</strong></div></div>
       </section>
       <p v-if="selectedGroup" class="probe-group-context">{{ selectedGroup.name }} · {{ selectedGroup.kind === 'EXIT' ? '出口组' : '入口组' }} · {{ selectedGroup.member_count }} 位设备组成员</p>
-      <p v-if="response?.upstream_status === 'disabled'" class="inline-warning">哪吒连接未配置。HL 主机探针独立工作，注册后的节点会通过心跳上报指标。</p>
-      <p v-else-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
+      <p v-if="response?.upstream_status === 'unavailable'" class="inline-warning">哪吒服务当前不可用；HL 主机探针仍按各节点最近心跳显示，哪吒指标暂不可用。</p>
       <p v-if="groupsError" class="inline-warning">设备组读取失败，分组列表可能不完整：{{ groupsError }}</p>
       <p v-if="groupMembersError" class="inline-warning">设备组成员读取失败，无法设置权重：{{ groupMembersError }}</p>
-      <p v-if="settingsError" class="inline-warning">{{ settingsError }}</p>
       <p v-if="monitoringError && response" class="inline-warning">探针刷新失败，仍显示上次采样：{{ monitoringError }}</p>
 
       <StatePanel v-if="monitoringLoading && !response" state="loading" title="正在读取探针采样" />
@@ -243,21 +265,20 @@ onUnmounted(() => {
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">
-        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="filteredMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="deletingNode = $event" />
+        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="filteredMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
         <div v-else class="probe-sections">
           <section v-for="section in groupedMembers" :key="section.group.id" class="probe-section" :aria-label="`${section.group.name}探针`">
             <header class="probe-section__heading"><span class="probe-section__name">{{ section.group.name }}</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(section.items, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(section.items, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="section.items" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="deletingNode = $event" />
+            <ProbeMembers :items="section.items" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
           </section>
           <section v-if="ungroupedMembers.length" class="probe-section" aria-label="未入组机器探针">
             <header class="probe-section__heading"><span class="probe-section__name">未入组机器</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(ungroupedMembers, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(ungroupedMembers, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="ungroupedMembers" :upstream-status="upstreamStatus" :now="now" @delete-node="deletingNode = $event" />
+            <ProbeMembers :items="ungroupedMembers" unassigned :upstream-status="upstreamStatus" :now="now" @delete-node="askDelete($event, true)" />
           </section>
         </div>
       </template>
     </template>
-    <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null" @deleted="nodeDeleted" />
-    <ProbeRefreshSettingsDialog v-if="settingsOpen" :intervals="refreshIntervals" @close="settingsOpen = false" @save="updateIntervals" />
+    <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :unassigned="deletingUnassigned" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null; deletingUnassigned = false" @deleted="nodeDeleted" />
     <MemberWeightDialog v-if="editingMember" :member="editingMember" :label="[members.find((item) => item.node_id === editingMember?.node_id)?.name || editingMember.node_id, members.find((item) => item.node_id === editingMember?.node_id)?.ipv4 || editingMember.dial_host].filter(Boolean).join(' · ')" @close="editingMember = null" @saved="weightSaved" />
   </div>
 </template>

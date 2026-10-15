@@ -107,21 +107,35 @@ import ipaddress,re,sys
 value=sys.argv[1].strip()
 try: print(ipaddress.ip_address(value)); sys.exit(0)
 except ValueError: pass
-value=value.lower().rstrip('.')
+if re.fullmatch(r'[0-9.]+', value):
+    raise SystemExit('节点 IPv4 地址无效')
+value=value.lower().removesuffix('.')
 if len(value)>253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',s) for s in value.split('.')):
     raise SystemExit('节点地址须为一个 IP 或域名，不含协议、端口或路径')
 print(value)
 PY
 )
-python3 - "$origin" "$ca_file" <<'PY'
-import ssl, sys, urllib.parse
+origin=$(python3 - "$origin" "$ca_file" <<'PY'
+import ipaddress, re, ssl, sys, urllib.parse
 try:
     address = urllib.parse.urlsplit(sys.argv[1])
+    if address.scheme != 'https' or address.username is not None or address.password is not None or address.path or address.query or address.fragment:
+        raise ValueError()
+    host = address.hostname or ''
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        if re.fullmatch(r'[0-9.]+', host): raise ValueError()
+        host = host.removesuffix('.')
+        if len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')):
+            raise ValueError()
     if address.port is not None and not 1 <= address.port <= 65535: raise ValueError()
     if sys.argv[2]: ssl.create_default_context(cafile=sys.argv[2])
+    print('https://' + host + (':' + str(address.port) if address.port is not None else ''))
 except (ValueError, OSError, ssl.SSLError):
-    raise SystemExit('面板端口或 CA 证书无效；未修改节点')
+    raise SystemExit('面板域名、端口或 CA 证书无效；未修改节点')
 PY
+)
 temporary=$(mktemp -d)
 created_install=0
 install_ready=0
@@ -193,6 +207,12 @@ for asset in bin/xray bin/gost; do
   [[ -f "$release/$asset" ]] || { echo '安装包缺少转发引擎；未修改节点，请使用新版本。' >&2; exit 1; }
   chmod 0755 "$release/$asset"
 done
+python3 - "$release/bin/xray" <<'PY'
+import subprocess, sys
+result = subprocess.run([sys.argv[1], 'version'], capture_output=True, timeout=15)
+if result.returncode or not result.stdout.startswith(b'Xray 26.7.28 '):
+    raise SystemExit('Xray 版本未通过旧客户端兼容验收；要求 26.7.28，未修改节点。')
+PY
 if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
   [[ -f "$release/deploy/reinstall-node.py" ]] || { echo '该版本不支持重装换组，请先更新面板后重新复制安装命令。' >&2; exit 1; }
   echo '[HL-panel 节点] 发现已有节点，按本次有效命令重新安装并切换设备组…'
@@ -269,6 +289,7 @@ p=pathlib.Path('/etc/hl-panel/edge-agent.json'); c=json.loads(p.read_text())
 if c.get('dial_host') and c['dial_host'] != __import__('sys').argv[1]:
     raise SystemExit('已有注册配置的节点地址不同；使用原 --node-address 重试')
 c['dial_host']=__import__('sys').argv[1]
+c['heartbeat_interval']='1s'
 fd,name=tempfile.mkstemp(dir=p.parent)
 with os.fdopen(fd,'w') as f: f.write(json.dumps(c)+'\n')
 os.chown(name,p.stat().st_uid,p.stat().st_gid); os.chmod(name,0o640); os.replace(name,p)

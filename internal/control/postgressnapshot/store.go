@@ -6,7 +6,6 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -14,11 +13,28 @@ import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
-	"github.com/hongle/hl-panel/internal/control/nodes"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 const operationTimeout = 10 * time.Second
+
+// Heartbeat resources change on every sample and do not need a full snapshot
+// rewrite at the agent heartbeat cadence. Stable lifecycle changes still write
+// immediately; routine telemetry is persisted at least twice per online TTL.
+const heartbeatSnapshotInterval = 30 * time.Second
+
+// PoolConfig controls the bounded connection pool used by the snapshot store.
+// The variadic argument on Open keeps existing callers source-compatible while
+// allowing the control API to size the pool for concurrent probes and heartbeats.
+type PoolConfig struct {
+	MaxOpenConns int
+	MaxIdleConns int
+}
+
+const (
+	defaultMaxOpenConns = 16
+	defaultMaxIdleConns = 8
+)
 
 // Writes always load private state inside a row-locked database transaction.
 // Reads reuse a validated snapshot only while its database row identity matches.
@@ -28,6 +44,16 @@ type Store struct {
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
 	readCache      snapshotReadCache
+	heartbeatMu    sync.Mutex
+	heartbeats     map[string]heartbeatPersistence
+	telemetryMu    sync.RWMutex
+	telemetry      map[string]heartbeatTelemetry
+}
+
+type heartbeatPersistence struct {
+	fingerprint [32]byte
+	persisted   time.Time
+	inFlight    bool
 }
 
 type snapshotReadCache struct {
@@ -35,13 +61,38 @@ type snapshotReadCache struct {
 	revision      int64
 	transactionID string
 	payload       []byte
+	identities    *memoryrepo.IdentityReadView
+	usage         *memoryrepo.UsageReadView
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
-	// Coalesce concurrent cold reads. PostgreSQL still validates every request;
-	// xmin also detects restores or external repairs that do not bump revision.
+	cached, state, err := s.validatedReadSnapshot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil {
+		state, err = decodeReadSnapshot(cached.payload, cached.version, uint64(cached.revision))
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := mergeRuleTrafficOverlays(ctx, tx, state); err != nil {
+		return nil, err
+	}
+	if err := mergeProtocolHealthOverlays(ctx, tx, state); err != nil {
+		return nil, err
+	}
+	s.applyHeartbeatTelemetry(state)
+	return state, nil
+}
+
+func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshotReadCache, *memoryrepo.Store, error) {
+	// Only protect the in-process cache. PostgreSQL validation and snapshot
+	// decoding can take milliseconds to seconds and must not serialize all
+	// authentication, subscription and panel reads behind one mutex.
 	s.readMu.Lock()
 	cached := s.readCache
+	s.readMu.Unlock()
 	var next snapshotReadCache
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text,
@@ -49,61 +100,58 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
  FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
-		s.readMu.Unlock()
-		return nil, errors.New("PostgreSQL snapshot read failed")
+		return snapshotReadCache{}, nil, errors.New("PostgreSQL snapshot read failed")
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
-		s.readMu.Unlock()
-		return nil, errors.New("unsupported PostgreSQL snapshot version")
+		return snapshotReadCache{}, nil, errors.New("unsupported PostgreSQL snapshot version")
 	}
 	if raw == nil && cached.payload != nil {
-		// The cached bytes are immutable. Decode into request-private state
-		// outside the lock so independent reads do not serialize their CPU work.
-		s.readMu.Unlock()
-		state, err := decodeReadSnapshot(cached.payload, next.version, uint64(next.revision))
-		if err != nil {
-			return nil, err
-		}
-		return state, hydrateHeartbeats(ctx, tx, state)
+		// The bytes and detached identity projection are immutable. Database
+		// identity is checked even when a request only needs authentication.
+		return cached, nil, nil
 	}
 	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
 	if err != nil {
-		s.readMu.Unlock()
-		return nil, err
+		return snapshotReadCache{}, nil, err
 	}
 	next.payload = raw
-	s.readCache = next
+	next.identities = state.IdentityReadView()
+	next.usage = state.UsageReadView()
+	// Do not let a slower transaction publish an older snapshot over a newer
+	// committed one. Equal revisions with a different xmin are external
+	// repairs; the first reader that observes the replacement wins.
+	s.readMu.Lock()
+	current := s.readCache
+	if current.payload == nil || next.revision > current.revision ||
+		(next.revision == current.revision && next.transactionID == current.transactionID) ||
+		(next.revision == current.revision && current.transactionID == cached.transactionID) {
+		s.readCache = next
+	}
 	s.readMu.Unlock()
-	return state, hydrateHeartbeats(ctx, tx, state)
+	return next, state, nil
 }
 
-func hydrateHeartbeats(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
-	rows, err := tx.QueryContext(ctx, `SELECT node_id, heartbeat_at, payload FROM hl_panel_node_heartbeats`)
+func readIdentity[T any](parent context.Context, s *Store, operation func(*memoryrepo.IdentityReadView) (T, error)) (T, error) {
+	var zero T
+	ctx, cancel := context.WithTimeout(parent, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		return errors.New("PostgreSQL heartbeat read failed")
+		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var nodeID string
-		var at time.Time
-		var raw []byte
-		if err := rows.Scan(&nodeID, &at, &raw); err != nil {
-			return errors.New("PostgreSQL heartbeat decode failed")
-		}
-		var heartbeat nodes.Heartbeat
-		if err := json.Unmarshal(raw, &heartbeat); err != nil {
-			return errors.New("PostgreSQL heartbeat payload invalid")
-		}
-		if err := state.MergeHeartbeat(ctx, nodeID, heartbeat, at); err != nil {
-			// A deleted node may leave a stale telemetry row until a later
-			// maintenance pass; it must never be revived by a heartbeat.
-			continue
-		}
+	defer tx.Rollback()
+	cached, _, err := s.validatedReadSnapshot(ctx, tx)
+	if err != nil {
+		return zero, err
 	}
-	if err := rows.Err(); err != nil {
-		return errors.New("PostgreSQL heartbeat iteration failed")
+	result, err := operation(cached.identities)
+	if err != nil {
+		return result, err
 	}
-	return nil
+	if err := tx.Commit(); err != nil {
+		return zero, errors.New("PostgreSQL transaction commit failed")
+	}
+	return result, nil
 }
 
 // Each request owns its decoded maps, slices and runtime material. Retaining
@@ -121,15 +169,32 @@ func (s *Store) DesiredConfigChanges(nodeID string) <-chan struct{} {
 	return s.desiredChanges.ForNode(nodeID)
 }
 
-func Open(ctx context.Context, databaseURL string, bootstrap auth.Administrator) (*Store, error) {
+func (s *Store) ReleaseDesiredConfigChanges(nodeID string, channel <-chan struct{}) {
+	s.desiredChanges.Release(nodeID, channel)
+}
+
+func Open(ctx context.Context, databaseURL string, bootstrap auth.Administrator, pool ...PoolConfig) (*Store, error) {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		return nil, errors.New("invalid PostgreSQL connection configuration")
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	settings := PoolConfig{MaxOpenConns: defaultMaxOpenConns, MaxIdleConns: defaultMaxIdleConns}
+	if len(pool) > 0 {
+		settings = pool[0]
+	}
+	if settings.MaxOpenConns <= 0 {
+		settings.MaxOpenConns = defaultMaxOpenConns
+	}
+	if settings.MaxIdleConns < 0 {
+		settings.MaxIdleConns = 0
+	}
+	if settings.MaxIdleConns > settings.MaxOpenConns {
+		settings.MaxIdleConns = settings.MaxOpenConns
+	}
+	db.SetMaxOpenConns(settings.MaxOpenConns)
+	db.SetMaxIdleConns(settings.MaxIdleConns)
 	db.SetConnMaxLifetime(30 * time.Minute)
-	store := &Store{db: db}
+	store := &Store{db: db, heartbeats: make(map[string]heartbeatPersistence)}
 	if err := store.initialize(ctx, bootstrap); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -160,14 +225,6 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	)`); err != nil {
 		return errors.New("PostgreSQL snapshot table initialization failed")
 	}
-	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hl_panel_node_heartbeats (
-		node_id text PRIMARY KEY,
-		heartbeat_at timestamptz NOT NULL,
-		payload jsonb NOT NULL CHECK (jsonb_typeof(payload) = 'object'),
-		updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
-	)`); err != nil {
-		return errors.New("PostgreSQL heartbeat table initialization failed")
-	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM nyvp_control_snapshots`).Scan(&count); err != nil {
 		return errors.New("PostgreSQL snapshot lookup failed")
@@ -184,7 +241,16 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 			return errors.New("PostgreSQL initial snapshot write failed")
 		}
 	}
+	if err := initializeRuleTrafficOverlays(ctx, tx); err != nil {
+		return err
+	}
+	if err := initializeProtocolHealthOverlays(ctx, tx); err != nil {
+		return err
+	}
 	if err := initializeAuditJournal(ctx, tx); err != nil {
+		return err
+	}
+	if err := initializeNodeConfigHistory(ctx, tx); err != nil {
 		return err
 	}
 	if err := migrationTables(ctx, tx); err != nil {
@@ -197,16 +263,10 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 }
 
 func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, error) {
-	return readStateWithClause(ctx, tx, map[bool]string{true: " FOR UPDATE", false: ""}[lock])
-}
-
-func readStateShared(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
-	return readStateWithClause(ctx, tx, " FOR SHARE")
-}
-
-func readStateWithClause(ctx context.Context, tx *sql.Tx, suffix string) (*memoryrepo.Store, error) {
 	query := `SELECT format_version, revision, payload FROM nyvp_control_snapshots WHERE singleton = true`
-	query += suffix
+	if lock {
+		query += ` FOR UPDATE`
+	}
 	var version int
 	var revision int64
 	var raw []byte
@@ -219,21 +279,23 @@ func readStateWithClause(ctx context.Context, tx *sql.Tx, suffix string) (*memor
 	state, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
 	if err == nil {
 		state.SetPersistenceRevision(uint64(revision))
+		err = mergeRuleTrafficOverlays(ctx, tx, state)
+		if err == nil {
+			err = mergeProtocolHealthOverlays(ctx, tx, state)
+		}
 	}
-	if err != nil {
-		return state, err
-	}
-	if err := hydrateHeartbeats(ctx, tx, state); err != nil {
-		return nil, err
-	}
-	return state, nil
+	return state, err
 }
 
 func transact[T any](parent context.Context, s *Store, write bool, operation func(*memoryrepo.Store) (T, error)) (T, error) {
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: !write})
+	options := &sql.TxOptions{ReadOnly: !write}
+	if !write {
+		options.Isolation = sql.LevelRepeatableRead
+	}
+	tx, err := s.db.BeginTx(ctx, options)
 	if err != nil {
 		return zero, errors.New("PostgreSQL transaction unavailable")
 	}
@@ -241,14 +303,19 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	var state *memoryrepo.Store
 	if write {
 		state, err = readState(ctx, tx, true)
+		if err == nil {
+			s.applyHeartbeatTelemetry(state)
+		}
 	} else {
 		state, err = s.readSnapshot(ctx, tx)
 	}
 	if err != nil {
 		return zero, err
 	}
+	attachNodeConfigHistoryReader(ctx, tx, state)
 	var before map[string]int64
 	var auditCount int
+	var committedCache snapshotReadCache
 	if write {
 		before = state.DesiredGenerationIndex()
 		auditCount = len(state.AuditEvents())
@@ -265,11 +332,22 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		if err := appendAuditJournal(ctx, tx, events[auditCount:]); err != nil {
 			return zero, err
 		}
-		raw, err := state.EncodeSnapshotWithAudit(nil)
+		if err := persistNodeConfigHistory(ctx, tx, state.DetachHistoricalNodeConfigs()); err != nil {
+			return zero, err
+		}
+		raw, err := encodeHotSnapshot(state)
 		if err != nil {
 			return zero, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload = $1, format_version = $2, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = true`, raw, memoryrepo.SnapshotVersion); err != nil {
+		// Proofs were merged before the mutation and are now in the new snapshot.
+		// Clear overlays atomically so an old proof cannot undo a business edit.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM hl_panel_protocol_health`); err != nil {
+			return zero, errors.New("protocol health projection fold failed")
+		}
+		committedCache.version = memoryrepo.SnapshotVersion
+		committedCache.payload = raw
+		if err := tx.QueryRowContext(ctx, `UPDATE nyvp_control_snapshots SET payload = $1, format_version = $2, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = true RETURNING revision, xmin::text`, raw, memoryrepo.SnapshotVersion).
+			Scan(&committedCache.revision, &committedCache.transactionID); err != nil {
 			return zero, errors.New("PostgreSQL snapshot write failed")
 		}
 	}
@@ -277,6 +355,16 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		return zero, errors.New("PostgreSQL transaction commit failed")
 	}
 	if write {
+		// Publish only committed bytes and detached identities. The next request
+		// still validates the database row, but need not decode the entire state
+		// again merely because this instance just recorded a heartbeat or probe.
+		committedCache.identities = state.IdentityReadView()
+		committedCache.usage = state.UsageReadView()
+		s.readMu.Lock()
+		if s.readCache.revision <= committedCache.revision {
+			s.readCache = committedCache
+		}
+		s.readMu.Unlock()
 		after := state.DesiredGenerationIndex()
 		for id, generation := range after {
 			if generation != before[id] {
@@ -290,6 +378,48 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		}
 	}
 	return result, nil
+}
+
+// transactNoopAware runs a cheap read-only attempt first. Protocol probes are
+// frequently stale while a node is restarting; those batches must not acquire
+// the snapshot write path or rewrite the full payload. When the operation
+// changes protocol health or activation audit state, it is replayed in the
+// normal row-locked transaction so concurrent writes remain serialized.
+func transactNoopAware[T any](parent context.Context, s *Store, operation func(*memoryrepo.Store) (T, error)) (T, error) {
+	var zero T
+	ctx, cancel := context.WithTimeout(parent, operationTimeout)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return zero, errors.New("PostgreSQL transaction unavailable")
+	}
+	defer tx.Rollback()
+	state, err := s.readSnapshot(ctx, tx)
+	if err != nil {
+		return zero, err
+	}
+	attachNodeConfigHistoryReader(ctx, tx, state)
+	beforeRevision, beforeAudits := state.PersistenceMutationState()
+	result, err := operation(state)
+	if err != nil {
+		return result, err
+	}
+	afterRevision, afterAudits := state.PersistenceMutationState()
+	if beforeRevision == afterRevision && beforeAudits == afterAudits {
+		if err := tx.Commit(); err != nil {
+			return zero, errors.New("PostgreSQL transaction commit failed")
+		}
+		return result, nil
+	}
+	// A concurrent writer may have committed while the read-only attempt ran.
+	// Re-run the pure in-memory operation against the latest row-locked state.
+	// Release the read-only connection before starting the write transaction;
+	// otherwise a small pool can deadlock while the deferred rollback waits for
+	// the write attempt to finish.
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return zero, errors.New("PostgreSQL read transaction rollback failed")
+	}
+	return transact(parent, s, true, operation)
 }
 
 func mutate(ctx context.Context, s *Store, operation func(*memoryrepo.Store) error) error {

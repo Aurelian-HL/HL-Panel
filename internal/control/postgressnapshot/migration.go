@@ -47,6 +47,15 @@ func captureMigration(ctx context.Context, tx *sql.Tx) (migrationbackup.State, e
 	if err != nil {
 		return state, errors.New("migration snapshot invalid")
 	}
+	if err = mergeRuleTrafficOverlays(ctx, tx, decoded); err != nil {
+		return state, err
+	}
+	if err = mergeProtocolHealthOverlays(ctx, tx, decoded); err != nil {
+		return state, err
+	}
+	if err = joinNodeConfigHistory(ctx, tx, decoded); err != nil {
+		return state, err
+	}
 	events, err := readAuditJournal(ctx, tx)
 	if err != nil {
 		return state, err
@@ -143,7 +152,7 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if !errors.Is(err, sql.ErrNoRows) {
 		return result, errors.New("migration receipt lookup failed")
 	}
-	if _, err = tx.ExecContext(ctx, `LOCK TABLE nyvp_control_snapshots, hl_panel_audit_journal, `+strings.Join(migrationbackup.Tables(), ", ")+` IN ACCESS EXCLUSIVE MODE`); err != nil {
+	if _, err = tx.ExecContext(ctx, `LOCK TABLE nyvp_control_snapshots, hl_panel_node_config_history, hl_panel_audit_journal, `+strings.Join(migrationbackup.Tables(), ", ")+` IN ACCESS EXCLUSIVE MODE`); err != nil {
 		return result, errors.New("migration business lock failed")
 	}
 	current, err := readState(ctx, tx, false)
@@ -182,7 +191,13 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if err = appendAuditJournal(ctx, tx, restoredState.AuditEvents()); err != nil {
 		return result, err
 	}
-	restored, err = restoredState.EncodeSnapshotWithAudit(nil)
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_node_config_history`); err != nil {
+		return result, errors.New("migration node configuration history replacement failed")
+	}
+	if err = persistNodeConfigHistory(ctx, tx, restoredState.DetachHistoricalNodeConfigs()); err != nil {
+		return result, err
+	}
+	restored, err = encodeHotSnapshot(restoredState)
 	if err != nil {
 		return result, err
 	}
@@ -214,6 +229,14 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 		if _, err = tx.ExecContext(ctx, `INSERT INTO `+table+` (`+projection+`) SELECT `+projection+` FROM json_populate_recordset(NULL::`+table+`,$1::json)`, string(input.Bundle.State.Usage[table])); err != nil {
 			return result, errors.New("migration ledger data invalid; existing panel data retained")
 		}
+	}
+	// Imported snapshots carry their own counters. Never overlay counters from
+	// the replaced panel, even when rule IDs and revisions happen to match.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_protocol_health`); err != nil {
+		return result, errors.New("migration protocol health projection replacement failed")
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM hl_panel_rule_traffic`); err != nil {
+		return result, errors.New("migration traffic projection replacement failed")
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload=$1,format_version=$2,revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true`, restored, memoryrepo.SnapshotVersion); err != nil {
 		return result, errors.New("migration snapshot restore failed")

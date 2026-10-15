@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -139,5 +141,64 @@ func TestEchoThroughSOCKSRequiresMatchingChallenge(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
+	originalValidate, originalStart := validateXray, startXray
+	t.Cleanup(func() { validateXray, startXray = originalValidate, originalStart })
+	validateXray = func(context.Context, string, string) error { return nil }
+	var attempts int
+	startXray = func(_ context.Context, _ string, configPath string) (probeProcess, error) {
+		attempts++
+		if attempts == 1 {
+			done := make(chan struct{})
+			close(done)
+			return probeProcess{done: done}, nil
+		}
+		var config struct {
+			Inbounds []struct {
+				Port int `json:"port"`
+			} `json:"inbounds"`
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil || json.Unmarshal(data, &config) != nil || len(config.Inbounds) != 1 {
+			t.Fatalf("read probe config: %v", err)
+		}
+		listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(config.Inbounds[0].Port)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			conn, acceptErr := listener.Accept()
+			if acceptErr == nil {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+				hello := make([]byte, 3)
+				if _, err := io.ReadFull(conn, hello); err == nil {
+					_, _ = conn.Write([]byte{5, 0})
+					request := make([]byte, 5+len("echo.example.com")+2)
+					if _, err := io.ReadFull(conn, request); err == nil {
+						_, _ = conn.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 1})
+						challenge := make([]byte, 32)
+						if _, err := io.ReadFull(conn, challenge); err == nil {
+							_, _ = conn.Write(challenge)
+						}
+					}
+				}
+			}
+			_ = listener.Close()
+			close(done)
+		}()
+		return probeProcess{done: done, stop: func() { _ = listener.Close() }}, nil
+	}
+	spec := validSpec()
+	spec.XrayBinary = os.Args[0]
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	verified, err := Check(ctx, spec)
+	if err != nil || verified.IsZero() || attempts != 2 {
+		t.Fatalf("Check() = (%v, %v), attempts=%d; want successful second attempt", verified, err, attempts)
 	}
 }

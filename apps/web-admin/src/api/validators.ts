@@ -14,6 +14,7 @@ import type {
   EndpointPoolsResponse,
   AddDeviceGroupMemberResponse,
   RetireDeviceGroupMemberResponse,
+  DeleteDeviceGroupMemberResponse,
   UpdateDeviceGroupMemberWeightResponse,
   CreateGroupRevisionResponse,
   LoginResponse,
@@ -349,6 +350,12 @@ export function parseRetireDeviceGroupMemberResponse(value: unknown): RetireDevi
   const member = parseDeviceGroupMember(body.member)
   if (!member.retired_at) throw new ContractError('retire_device_group_member.member.retired_at 必须存在')
   return { member, assignments: parseAssignments(body.assignments), replayed: body.replayed }
+}
+
+export function parseDeleteDeviceGroupMemberResponse(value: unknown): DeleteDeviceGroupMemberResponse {
+  const body = record(value, 'delete_device_group_member')
+  if (body.deleted !== true || typeof body.replayed !== 'boolean') throw new ContractError('退役成员删除结果无效')
+  return { group_id: text(body.group_id, 'group_id'), node_id: text(body.node_id, 'node_id'), deleted: true, replayed: body.replayed }
 }
 
 export function parseUpdateDeviceGroupMemberWeightResponse(value: unknown): UpdateDeviceGroupMemberWeightResponse {

@@ -1,11 +1,41 @@
 package config
 
 import (
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDefaultHeartbeatSamplesEverySecond(t *testing.T) {
+	cfg := Config{}
+	cfg.setDefaults()
+	if cfg.HeartbeatInterval.Duration() != time.Second {
+		t.Fatal("default probe cadence must be 1s")
+	}
+}
+
+func TestHTTPClientUsesBoundedLongLivedTransport(t *testing.T) {
+	cfg := Config{RequestTimeout: Duration(17 * time.Second)}
+	client, err := cfg.HTTPClient()
+	if err != nil {
+		t.Fatalf("HTTPClient() error = %v", err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTPClient() transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.MaxIdleConns != 100 || transport.MaxIdleConnsPerHost != 16 || transport.MaxConnsPerHost != 32 {
+		t.Fatalf("transport connection limits = (%d, %d, %d), want (100, 16, 32)", transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost)
+	}
+	if transport.IdleConnTimeout != 25*time.Second || transport.TLSHandshakeTimeout != 10*time.Second || transport.ResponseHeaderTimeout != 17*time.Second {
+		t.Fatalf("transport timeouts = idle %s, tls %s, header %s", transport.IdleConnTimeout, transport.TLSHandshakeTimeout, transport.ResponseHeaderTimeout)
+	}
+	if client.Timeout != 17*time.Second {
+		t.Fatalf("client timeout = %s, want 17s", client.Timeout)
+	}
+}
 
 func TestValidateRequiresTLSExceptExplicitLoopback(t *testing.T) {
 	t.Parallel()

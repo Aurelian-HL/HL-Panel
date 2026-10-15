@@ -29,26 +29,26 @@ func (s *RouterSelector) Select() (tcpproxy.Backend, error) {
 }
 
 func (s *RouterSelector) SelectKey(key string) (tcpproxy.Backend, error) {
-	return s.SelectKeyExcluding(key, nil)
-}
-
-func (s *RouterSelector) SelectExcluding(excluded map[string]struct{}) (tcpproxy.Backend, error) {
-	return s.SelectKeyExcluding("", excluded)
-}
-
-func (s *RouterSelector) SelectKeyExcluding(key string, excluded map[string]struct{}) (tcpproxy.Backend, error) {
-	endpoint, err := s.router.SelectKeyExcluding(key, excluded)
+	endpoint, revision, err := s.router.SelectKeyWithRevision(key)
 	if err != nil {
 		return tcpproxy.Backend{}, err
 	}
-	return tcpproxy.Backend{ID: endpoint.ID, Address: endpoint.Address}, nil
+	return tcpproxy.Backend{ID: endpoint.ID, Address: endpoint.Address, MembershipRevision: revision}, nil
 }
 
 func (s *RouterSelector) Release(endpointID string) error {
 	return s.router.Release(endpointID)
 }
 
+func (s *RouterSelector) SetLocalReachability(endpointID, observedAddress string, reachable bool) error {
+	return s.router.SetLocalReachability(endpointID, observedAddress, reachable)
+}
+
+func (s *RouterSelector) SetLocalReachabilityAtRevision(endpointID, observedAddress string, revision uint64, reachable bool) error {
+	return s.router.SetLocalReachabilityAtRevision(endpointID, observedAddress, revision, reachable)
+}
+
 var _ tcpproxy.Selector = (*RouterSelector)(nil)
 var _ tcpproxy.KeyedSelector = (*RouterSelector)(nil)
-var _ tcpproxy.ExcludingSelector = (*RouterSelector)(nil)
-var _ tcpproxy.KeyedExcludingSelector = (*RouterSelector)(nil)
+var _ tcpproxy.ReachabilitySelector = (*RouterSelector)(nil)
+var _ tcpproxy.VersionedReachabilitySelector = (*RouterSelector)(nil)

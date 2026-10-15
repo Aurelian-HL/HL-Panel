@@ -78,6 +78,28 @@ func TestAutomaticRealityRuleRoundTripAndIdentityProjection(t *testing.T) {
 	if err != nil || replayed || updated.RealityPublicKey != rule.RealityPublicKey || s.autoRealityKeys[rule.ID] != privateKey {
 		t.Fatalf("blank Reality fields did not preserve existing material: replay=%v err=%v", replayed, err)
 	}
+	if updated.RealityServerName != rule.RealityServerName || updated.RealityDestination != rule.RealityDestination {
+		t.Fatal("blank edit changed the existing Reality target")
+	}
+	request.Revision = updated.Revision
+	request.RealityServerName, request.RealityDestination = "new.example.com", "target.example.com:8443"
+	updated, _, err = unconfigured.UpdateForAdministrator(ctx, "admin", rule.ID, request, "auto-reality-custom-target")
+	if err != nil || updated.RealityServerName != request.RealityServerName || updated.RealityDestination != request.RealityDestination || updated.RealityPublicKey != rule.RealityPublicKey || updated.RealityShortID != rule.RealityShortID || s.autoRealityKeys[rule.ID] != privateKey {
+		t.Fatalf("explicit target edit rotated credentials or lost target: %v", err)
+	}
+	request.Revision = updated.Revision
+	request.RealityServerName, request.RealityDestination = "", ""
+	updated, _, err = service.UpdateForAdministrator(ctx, "admin", rule.ID, request, "auto-reality-retain-custom-target")
+	if err != nil || updated.RealityServerName != "new.example.com" || updated.RealityDestination != "target.example.com:8443" || s.autoRealityKeys[rule.ID] != privateKey {
+		t.Fatalf("global defaults overwrote the issued custom target on blank edit: %v", err)
+	}
+	request.Revision = updated.Revision
+	request.RealityServerName, request.RealityDestination = "manual.example.com", "manual.example.com:443"
+	request.RealityPublicKey, request.RealityShortID = rule.RealityPublicKey, rule.RealityShortID
+	updated, _, err = service.UpdateForAdministrator(ctx, "admin", rule.ID, request, "auto-reality-ui-target-edit")
+	if err != nil || updated.RealityServerName != "manual.example.com" || updated.RealityPublicKey != rule.RealityPublicKey || s.autoRealityKeys[rule.ID] != privateKey {
+		t.Fatalf("UI target edit with issued public material lost private key: %v", err)
+	}
 	firstNode := s.nodes[fixture.nodeID]
 	firstNode.CredentialHash = strings.Repeat("a", 64)
 	s.nodes[fixture.nodeID] = firstNode

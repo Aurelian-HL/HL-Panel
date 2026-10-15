@@ -68,7 +68,7 @@ func TestSingleVLESSRealityVisionLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requestThrough := func(name, link string) error {
+	requestThrough := func(t *testing.T, name, link string) error {
 		clientPort := freeLoopbackPort(t)
 		startXray(t, binary, privateConfig(t, realityNativeClientFromURI(t, link, clientPort)), localAddress(clientPort))
 		proxyURL, _ := url.Parse("socks5://" + localAddress(clientPort))
@@ -88,8 +88,24 @@ func TestSingleVLESSRealityVisionLoopback(t *testing.T) {
 		}
 		return nil
 	}
-	if err := requestThrough("valid Reality Vision", uri); err != nil {
+	if err := requestThrough(t, "valid Reality Vision", uri); err != nil {
 		t.Fatal(err)
+	}
+	// Old ClientHello fingerprints omit ML-KEM. A latest-Chrome-only test
+	// missed the 26.9.8+ server incompatibility reported in 3x-ui #6543.
+	for _, fingerprint := range []string{"hellochrome_100", "hellochrome_120", "hellochrome_131", "hellosafari_16_0"} {
+		t.Run(fingerprint, func(t *testing.T) {
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := parsed.Query()
+			query.Set("fp", fingerprint)
+			parsed.RawQuery = query.Encode()
+			if err := requestThrough(t, fingerprint, parsed.String()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 
 	invalidCases := []struct {
@@ -109,7 +125,7 @@ func TestSingleVLESSRealityVisionLoopback(t *testing.T) {
 			query := parsed.Query()
 			invalid.mutate(query)
 			parsed.RawQuery = query.Encode()
-			if err := requestThrough(invalid.name, parsed.String()); err == nil {
+			if err := requestThrough(t, invalid.name, parsed.String()); err == nil {
 				t.Fatal("invalid Reality parameters unexpectedly reached target")
 			}
 		})
@@ -119,7 +135,7 @@ func TestSingleVLESSRealityVisionLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed.User = url.User("615db532-728a-4a34-8353-873b34d12de2")
-	if err := requestThrough("wrong UUID", parsed.String()); err == nil {
+	if err := requestThrough(t, "wrong UUID", parsed.String()); err == nil {
 		t.Fatal("invalid VLESS identity unexpectedly reached target")
 	}
 }

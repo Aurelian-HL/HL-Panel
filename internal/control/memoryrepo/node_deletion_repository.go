@@ -33,8 +33,21 @@ func (s *Store) DeleteOffline(_ context.Context, input nodes.DeleteInput, event 
 		}
 		return result, true, nil
 	}
-	// Recheck under the same lock as heartbeat writes, including future clocks.
-	if node.LastHeartbeatAt != nil && input.DeletedAt.Sub(*node.LastHeartbeatAt) <= input.OnlineFor {
+	// UI classification is advisory. Recheck membership under the same lock as
+	// enrollment, group changes and heartbeat writes before allowing online cleanup.
+	if input.OnlyUnassigned {
+		for _, members := range s.membersByGroup {
+			if member, exists := members[node.ID]; exists && member.RetiredAt == nil {
+				return result, false, fmt.Errorf("%w: 节点已加入设备组，请刷新后先退役再删除", faults.ErrConflict)
+			}
+		}
+		for _, members := range s.endpointMembers {
+			if _, exists := members[node.ID]; exists {
+				return result, false, fmt.Errorf("%w: 节点仍被端点池引用，请先移除再删除", faults.ErrConflict)
+			}
+		}
+	}
+	if !input.OnlyUnassigned && node.LastHeartbeatAt != nil && input.DeletedAt.Sub(*node.LastHeartbeatAt) <= input.OnlineFor {
 		return result, false, fmt.Errorf("%w: 节点仍在线，请等待节点离线后再删除", faults.ErrConflict)
 	}
 	result = nodes.DeleteResult{NodeID: node.ID, DeletedAt: input.DeletedAt.UTC()}

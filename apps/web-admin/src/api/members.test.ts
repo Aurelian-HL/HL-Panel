@@ -3,6 +3,23 @@ import { describe, expect, it, vi } from 'vitest'
 import { api } from './index'
 
 describe('device-group member API', () => {
+  it('deletes a retired member with its timestamp and checks response identity', async () => {
+    const response = { group_id: 'group/1', node_id: 'node/1', deleted: true, replayed: false }
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } })))
+    vi.stubGlobal('fetch', fetchMock)
+    expect((await api.deleteRetiredDeviceGroupMember('group/1', 'node/1', '2026-10-12T00:00:00Z', 'delete-operation')).deleted).toBe(true)
+    const [path, options] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(path).toBe('/api/v1/device-groups/group%2F1/members/node%2F1')
+    expect(options.method).toBe('DELETE')
+    expect(new Headers(options.headers).get('Idempotency-Key')).toBe('delete-operation')
+    expect(JSON.parse(options.body as string)).toEqual({ updated_at: '2026-10-12T00:00:00Z' })
+    response.node_id = 'wrong-node'
+    await expect(api.deleteRetiredDeviceGroupMember('group/1', 'node/1', '2026-10-12T00:00:00Z', 'delete-operation')).rejects.toThrow('不匹配')
+    response.node_id = 'node/1'
+    response.deleted = false
+    await expect(api.deleteRetiredDeviceGroupMember('group/1', 'node/1', '2026-10-12T00:00:00Z', 'delete-operation')).rejects.toThrow('删除结果无效')
+  })
+
   it('loads the member envelope and retires a member with an operation key', async () => {
     const member = { group_id: 'group/1', node_id: 'node/1', dial_host: 'edge.example.test', weight: 100, priority: 0, created_at: '', updated_at: '', retired_at: '2026-10-03T00:00:00Z' }
     const fetchMock = vi.fn()

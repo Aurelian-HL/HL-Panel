@@ -11,7 +11,7 @@
   "xray_stats_api_address": "127.0.0.1:10085",
   "gost_binary_path": "",
   "gost_auto_start": false,
-  "heartbeat_interval": "20s",
+  "heartbeat_interval": "1s",
   "desired_poll_interval": "10s",
   "usage_report_interval": "30s",
   "enforcement_poll_interval": "10s",

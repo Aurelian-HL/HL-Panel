@@ -27,6 +27,7 @@ type runtimeConfig struct {
 	MembershipTokenFile       string
 	MembershipRefreshInterval time.Duration
 	DialTimeout               time.Duration
+	MaxDialAttempts           int
 	TCPReachability           tcpReachabilityConfig
 }
 
@@ -48,6 +49,7 @@ type fileConfig struct {
 	MembershipTokenFile       string `json:"membership_token_file"`
 	MembershipRefreshInterval string `json:"membership_refresh_interval"`
 	DialTimeout               string `json:"dial_timeout"`
+	MaxDialAttempts           *int   `json:"max_dial_attempts"`
 	TCPReachability           struct {
 		Enabled          bool   `json:"enabled"`
 		Interval         string `json:"interval"`
@@ -85,6 +87,7 @@ func loadRuntimeConfig(path string) (runtimeConfig, error) {
 		MembershipTokenFile:       strings.TrimSpace(input.MembershipTokenFile),
 		MembershipRefreshInterval: time.Second,
 		DialTimeout:               10 * time.Second,
+		MaxDialAttempts:           3,
 		TCPReachability: tcpReachabilityConfig{
 			Enabled: input.TCPReachability.Enabled, Interval: 5 * time.Second, Timeout: time.Second,
 			FailureThreshold: 3, SuccessThreshold: 2, MaxConcurrency: 32,
@@ -124,6 +127,12 @@ func loadRuntimeConfig(path string) (runtimeConfig, error) {
 	}
 	if configuration.DialTimeout < 100*time.Millisecond || configuration.DialTimeout > 2*time.Minute {
 		return runtimeConfig{}, errors.New("dial_timeout must be between 100ms and 2m")
+	}
+	if input.MaxDialAttempts != nil {
+		configuration.MaxDialAttempts = *input.MaxDialAttempts
+	}
+	if configuration.MaxDialAttempts < 1 || configuration.MaxDialAttempts > 32 {
+		return runtimeConfig{}, errors.New("max_dial_attempts must be between 1 and 32")
 	}
 	if input.TCPReachability.Interval != "" {
 		configuration.TCPReachability.Interval, err = time.ParseDuration(input.TCPReachability.Interval)

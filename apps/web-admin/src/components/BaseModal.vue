@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted } from 'vue'
+import { ref } from 'vue'
 import { X } from '@lucide/vue'
+import { useDialogFocus } from '@/composables/useDialogFocus'
 
 const props = withDefaults(defineProps<{
   title: string
@@ -11,30 +12,19 @@ const props = withDefaults(defineProps<{
 }>(), { description: '', width: 'medium', closeDisabled: false })
 
 const emit = defineEmits<{ close: [] }>()
+const dialog = ref<HTMLElement | null>(null)
 
 function close(): void {
   if (!props.closeDisabled) emit('close')
 }
 
-function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') close()
-}
-
-onMounted(() => {
-  document.body.classList.add('modal-open')
-  window.addEventListener('keydown', onKeydown)
-})
-
-onBeforeUnmount(() => {
-  document.body.classList.remove('modal-open')
-  window.removeEventListener('keydown', onKeydown)
-})
+useDialogFocus(dialog, close)
 </script>
 
 <template>
   <Teleport to="body">
     <div class="modal-backdrop" role="presentation" @mousedown.self="close">
-      <section class="modal" :class="[`modal--${width}`, dialogClass]" role="dialog" aria-modal="true" :aria-label="title">
+      <section ref="dialog" tabindex="-1" class="modal" :class="[`modal--${width}`, dialogClass]" role="dialog" aria-modal="true" :aria-label="title">
         <header class="modal__header">
           <div>
             <h2>{{ title }}</h2>

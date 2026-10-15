@@ -19,13 +19,26 @@ func TestLoadRuntimeConfigUsesSafeLoopbackDefaults(t *testing.T) {
 	if configuration.SelectionPolicy != endpointrouter.SelectionPolicyWeightedRoundRobin {
 		t.Fatalf("selection policy = %q", configuration.SelectionPolicy)
 	}
-	if configuration.MembershipRefreshInterval != time.Second || configuration.DialTimeout != 10*time.Second {
-		t.Fatalf("duration defaults = %s, %s", configuration.MembershipRefreshInterval, configuration.DialTimeout)
+	if configuration.MembershipRefreshInterval != time.Second || configuration.DialTimeout != 10*time.Second || configuration.MaxDialAttempts != 3 {
+		t.Fatalf("gateway defaults = refresh %s, timeout %s, attempts %d", configuration.MembershipRefreshInterval, configuration.DialTimeout, configuration.MaxDialAttempts)
 	}
 	if configuration.TCPReachability.Enabled || configuration.TCPReachability.Interval != 5*time.Second ||
 		configuration.TCPReachability.Timeout != time.Second || configuration.TCPReachability.FailureThreshold != 3 ||
 		configuration.TCPReachability.SuccessThreshold != 2 || configuration.TCPReachability.MaxConcurrency != 32 {
 		t.Fatalf("unsafe TCP reachability defaults: %#v", configuration.TCPReachability)
+	}
+}
+
+func TestLoadRuntimeConfigValidatesMaxDialAttempts(t *testing.T) {
+	membershipPath := filepath.Join(t.TempDir(), "members.json")
+	configuration := loadConfigForTest(t, "{\"membership_file\":"+quoteJSON(membershipPath)+",\"max_dial_attempts\":7}")
+	if configuration.MaxDialAttempts != 7 {
+		t.Fatalf("max dial attempts = %d, want 7", configuration.MaxDialAttempts)
+	}
+	for _, value := range []string{"0", "33"} {
+		if _, err := loadRuntimeConfig(writeConfigForTest(t, "{\"membership_file\":"+quoteJSON(membershipPath)+",\"max_dial_attempts\":"+value+"}")); err == nil {
+			t.Fatalf("accepted max_dial_attempts=%s", value)
+		}
 	}
 }
 

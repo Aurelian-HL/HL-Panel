@@ -110,6 +110,10 @@ describe('ForwardRuleInventory', () => {
     ['udp_engine_unsupported', 'UDP 暂不支持下发'],
     ['advanced_options_engine_unsupported', '高级选项暂不支持下发'],
     ['selection_engine_unsupported', '最小连接数暂不支持下发'],
+    ['node_configuration_pending', '配置同步中'],
+    ['protocol_verification_pending', '验证中'],
+    ['protocol_health_expired', '健康验证过期'],
+    ['no_available_nodes', '暂无可用节点'],
   ])('shows %s as a blocking status, not ordinary pending activation', (reason, label) => {
     const rule: ForwardRule = { ...baseRule, activation_reason: reason }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })

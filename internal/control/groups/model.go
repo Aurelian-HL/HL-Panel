@@ -97,3 +97,18 @@ type RetireMemberResult struct {
 	Assignments []generations.NodeConfigGeneration `json:"assignments"`
 	Replayed    bool                               `json:"replayed"`
 }
+
+// DeleteMemberInput removes only a retired membership, never the node identity.
+type DeleteMemberInput struct {
+	GroupID, NodeID                          string
+	ExpectedUpdatedAt                        time.Time
+	DeletedAt                                time.Time
+	IdempotencyKey, RequestSHA256, DeletedBy string
+}
+
+type DeleteMemberResult struct {
+	GroupID  string `json:"group_id"`
+	NodeID   string `json:"node_id"`
+	Deleted  bool   `json:"deleted"`
+	Replayed bool   `json:"replayed"`
+}

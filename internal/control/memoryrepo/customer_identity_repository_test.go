@@ -174,18 +174,25 @@ func TestCustomerIdentityReturnsOwnReadyVLESSSubscription(t *testing.T) {
 	store, customer := customerRepositoryFixture(t)
 	store.customers[customer.ID] = customer
 	now := time.Date(2026, time.October, 3, 1, 0, 0, 0, time.UTC)
-	store.forwardRules["rule-vless"] = forwarding.Rule{
-		ID: "rule-vless", Name: "Reality 订阅", CustomerID: customer.ID, EntryGroupID: "entry-1", EgressMode: forwarding.EgressDirect,
-		IngressProtocol: forwarding.IngressVLESSReality, VLESSFlow: "xtls-rprx-vision", RealityServerName: "edge.example.test",
-		RealityPublicKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", RealityShortID: "01234567", RealityDestination: "edge.example.test:443", Protocol: forwarding.ProtocolTCP,
-		ListenPort: 20443, Status: forwarding.StatusActive, IngressStatus: forwarding.IngressReady, Deployed: true, Revision: 1,
-	}
-	store.endpointPools["pool-vless"] = endpoints.EndpointPool{ID: "pool-vless", Name: "统一 VLESS 入口", GroupID: "entry-1", RuleID: "rule-vless", Mode: endpoints.ModeSingleServiceEndpoint, Protocol: "vless", Hostname: "vless.example.test", Port: 443}
-	store.endpointMembers["pool-vless"] = map[string]endpoints.EndpointPoolMember{
-		"node-1": {PoolID: "pool-vless", GroupID: "entry-1", NodeID: "node-1", Weight: 1, State: endpoints.CandidateEligible, LastHealthAt: ptrTime(time.Now().UTC().Add(-time.Second))},
+	proofStore, proof := protocolPublicationFixture(t)
+	rule := proofStore.forwardRules[proof.RuleID]
+	rule.CustomerID = customer.ID
+	rule.Name = "Reality 订阅"
+	rule.Deployed = true
+	rule.RealityDestination = "edge.example.test:443"
+	store.forwardRules[rule.ID] = rule
+	store.nodes = proofStore.nodes
+	store.membersByGroup = proofStore.membersByGroup
+	store.endpointPools = proofStore.endpointPools
+	store.endpointMembers = proofStore.endpointMembers
+	store.nodeConfigsByNode = proofStore.nodeConfigsByNode
+	store.applyAttemptsByNode = proofStore.applyAttemptsByNode
+	store.applyResultsByNode = proofStore.applyResultsByNode
+	if err := store.PublishProtocolHealth(ctx, proof); err != nil {
+		t.Fatal(err)
 	}
 	store.vlessBindings["binding-vless"] = vlessidentity.CredentialRecord{
-		Binding:        vlessidentity.Binding{ID: "binding-vless", CustomerID: customer.ID, ForwardingRuleID: "rule-vless", EndpointPoolID: "pool-vless", State: vlessidentity.StateActive, Revision: 1, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
+		Binding:        vlessidentity.Binding{ID: "binding-vless", CustomerID: customer.ID, ForwardingRuleID: rule.ID, EndpointPoolID: "pool", State: vlessidentity.StateActive, Revision: 1, CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute)},
 		CredentialUUID: "123e4567-e89b-12d3-a456-426614174000",
 	}
 	service := newCustomerIdentityService(t, store, now)

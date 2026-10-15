@@ -58,8 +58,20 @@ type Router struct {
 	membershipRevision uint64
 	members            map[string]Endpoint
 	active             map[string]int
-	localUnreachable   map[string]string
+	localUnreachable   map[string]localReachability
+	probeUnreachable   map[string]string
 }
+
+type localReachability struct {
+	address string
+	until   time.Time
+}
+
+// A failed data-plane dial is local evidence, not an authoritative endpoint
+// state. Keep the endpoint out of selection briefly, then allow a fresh dial
+// so a transient network flap cannot permanently remove it when the optional
+// health monitor is disabled.
+const localFailureCooldown = 10 * time.Second
 
 func New(policy SelectionPolicy) (*Router, error) {
 	schedulerPolicy, err := toSchedulerPolicy(policy)
@@ -76,7 +88,8 @@ func New(policy SelectionPolicy) (*Router, error) {
 		now:              time.Now,
 		members:          make(map[string]Endpoint),
 		active:           make(map[string]int),
-		localUnreachable: make(map[string]string),
+		localUnreachable: make(map[string]localReachability),
+		probeUnreachable: make(map[string]string),
 	}, nil
 }
 
@@ -126,10 +139,16 @@ func (r *Router) replaceMembershipLocked(revision uint64, endpoints []Endpoint) 
 		}
 		return fmt.Errorf("%w: revision %d", ErrMembershipConflict, revision)
 	}
-	for endpointID, observedAddress := range r.localUnreachable {
+	for endpointID, blocked := range r.localUnreachable {
 		endpoint, exists := next[endpointID]
-		if !exists || endpoint.Address != observedAddress {
+		if !exists || endpoint.Address != blocked.address {
 			delete(r.localUnreachable, endpointID)
+		}
+	}
+	for endpointID, address := range r.probeUnreachable {
+		endpoint, exists := next[endpointID]
+		if !exists || endpoint.Address != address {
+			delete(r.probeUnreachable, endpointID)
 		}
 	}
 	r.membershipRevision = revision
@@ -171,42 +190,26 @@ func (r *Router) ReplaceCompiledMembership(members []agentv1.EndpointMembership)
 // Select reserves one endpoint for a new connection. It is equivalent to
 // SelectKey with an empty affinity key.
 func (r *Router) Select() (Endpoint, error) {
-	return r.SelectKeyExcluding("", nil)
+	return r.SelectKey("")
 }
 
 // SelectKey reserves one endpoint for a new connection. Rendezvous routing
 // uses the key for stable affinity; the other policies ignore it.
 func (r *Router) SelectKey(key string) (Endpoint, error) {
-	return r.SelectKeyExcluding(key, nil)
+	endpoint, _, err := r.SelectKeyWithRevision(key)
+	return endpoint, err
 }
 
-// SelectExcluding reserves one healthy endpoint while skipping the supplied
-// endpoint IDs. It is used when a single client connection retries after a
-// backend dial failure, so the retry can make progress without changing the
-// normal routing policy.
-func (r *Router) SelectExcluding(excluded map[string]struct{}) (Endpoint, error) {
-	return r.SelectKeyExcluding("", excluded)
-}
-
-// SelectKeyExcluding is SelectKey with per-call endpoint exclusions. The
-// exclusion only applies to this selection and does not alter membership or
-// local reachability state.
-func (r *Router) SelectKeyExcluding(key string, excluded map[string]struct{}) (Endpoint, error) {
+// SelectKeyWithRevision reserves one endpoint and returns the membership
+// revision used for that decision. Data-plane observations must carry this
+// revision back when updating local reachability so a connection selected
+// from an older snapshot cannot mutate the state of a newer snapshot.
+func (r *Router) SelectKeyWithRevision(key string) (Endpoint, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	eligible := r.eligibleLocked()
-	if len(excluded) > 0 {
-		filtered := eligible[:0]
-		for _, endpoint := range eligible {
-			if _, skip := excluded[endpoint.ID]; skip {
-				continue
-			}
-			filtered = append(filtered, endpoint)
-		}
-		eligible = filtered
-	}
 	if len(eligible) == 0 {
-		return Endpoint{}, ErrNoHealthyEndpoint
+		return Endpoint{}, 0, ErrNoHealthyEndpoint
 	}
 	candidates := make([]scheduler.Candidate, 0, len(eligible))
 	byID := make(map[string]Endpoint, len(eligible))
@@ -221,11 +224,11 @@ func (r *Router) SelectKeyExcluding(key string, excluded map[string]struct{}) (E
 	}
 	selectedCandidate, err := r.scheduler.Select(candidates, key)
 	if err != nil {
-		return Endpoint{}, err
+		return Endpoint{}, 0, err
 	}
 	selected := byID[selectedCandidate.ID]
 	r.active[selected.ID]++
-	return selected, nil
+	return selected, r.membershipRevision, nil
 }
 
 // Release returns a completed connection reservation to the selected member.
@@ -275,6 +278,31 @@ func (r *Router) SetLocalReachabilityAtRevision(endpointID, observedAddress stri
 	return r.setLocalReachabilityLocked(endpointID, observedAddress, reachable)
 }
 
+// SetProbeReachabilityAtRevision owns the active monitor's veto. Unlike a
+// failed client dial, a sustained probe failure remains vetoed until the
+// monitor reaches its recovery threshold. A late successful client dial must
+// not clear that verdict or make a failing member eligible every cooldown.
+func (r *Router) SetProbeReachabilityAtRevision(endpointID, observedAddress string, observedRevision uint64, reachable bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if observedRevision == 0 || observedRevision != r.membershipRevision {
+		return ErrStaleReachabilityResult
+	}
+	endpoint, exists := r.members[endpointID]
+	if !exists {
+		return ErrUnknownEndpoint
+	}
+	if endpoint.Address != observedAddress {
+		return ErrStaleReachabilityResult
+	}
+	if reachable {
+		delete(r.probeUnreachable, endpointID)
+	} else {
+		r.probeUnreachable[endpointID] = observedAddress
+	}
+	return nil
+}
+
 func (r *Router) setLocalReachabilityLocked(endpointID, observedAddress string, reachable bool) error {
 	endpoint, exists := r.members[endpointID]
 	if !exists {
@@ -286,7 +314,10 @@ func (r *Router) setLocalReachabilityLocked(endpointID, observedAddress string, 
 	if reachable {
 		delete(r.localUnreachable, endpointID)
 	} else {
-		r.localUnreachable[endpointID] = observedAddress
+		r.localUnreachable[endpointID] = localReachability{
+			address: observedAddress,
+			until:   r.now().Add(localFailureCooldown),
+		}
 	}
 	return nil
 }
@@ -298,7 +329,21 @@ func (r *Router) LocallyBlocked(endpointID string) (bool, error) {
 	if !exists {
 		return false, ErrUnknownEndpoint
 	}
-	return r.localUnreachable[endpointID] == endpoint.Address, nil
+	return r.locallyBlockedLocked(endpoint, r.now()), nil
+}
+
+func (r *Router) locallyBlockedLocked(endpoint Endpoint, now time.Time) bool {
+	if address, exists := r.probeUnreachable[endpoint.ID]; exists && address == endpoint.Address {
+		return true
+	}
+	blocked, exists := r.localUnreachable[endpoint.ID]
+	if !exists || blocked.address != endpoint.Address || !blocked.until.After(now) {
+		if exists {
+			delete(r.localUnreachable, endpoint.ID)
+		}
+		return false
+	}
+	return true
 }
 
 func (r *Router) eligibleLocked() []Endpoint {
@@ -308,7 +353,7 @@ func (r *Router) eligibleLocked() []Endpoint {
 		if endpoint.Status != EndpointReady || endpoint.Weight == 0 || !endpoint.HealthLeaseExpiresAt.After(current) {
 			continue
 		}
-		if r.localUnreachable[endpoint.ID] == endpoint.Address {
+		if r.locallyBlockedLocked(endpoint, current) {
 			continue
 		}
 		eligible = append(eligible, endpoint)

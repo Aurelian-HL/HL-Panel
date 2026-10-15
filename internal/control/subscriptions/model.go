@@ -59,3 +59,10 @@ type Repository interface {
 type NativeResolver interface {
 	ResolveSubscriptionLine(context.Context, string, string, string) (string, error)
 }
+
+// NativeBatchResolver resolves all native lines from one consistent snapshot.
+// Implementations must return independent per-binding errors so one unavailable
+// line does not hide other usable lines in the same subscription.
+type NativeBatchResolver interface {
+	ResolveSubscriptionLines(context.Context, string, string, []string) (map[string]string, map[string]error, error)
+}

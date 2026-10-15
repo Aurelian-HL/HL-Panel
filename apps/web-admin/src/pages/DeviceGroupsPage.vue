@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ExternalLink, FolderTree, Plus, RefreshCw, Search, SlidersHorizontal } from '@lucide/vue'
+import { ExternalLink, FolderTree, Plus, RefreshCw, Search } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupKind, type EdgeNode } from '@/api'
 import { businessApi, type GroupNetwork, type UserGroup } from '@/api/business'
@@ -127,7 +127,6 @@ onMounted(load)
       <div><h2>设备组管理（站点管理员）</h2><p>管理入口与出口设备组、节点成员和路由网络配置</p></div>
       <div class="page-heading__actions">
         <button class="button button--primary" type="button" :disabled="!actionsReady" @click="showCreateDialog = true"><Plus :size="16" />添加设备组</button>
-        <button class="button button--secondary" type="button" disabled title="清空流量暂未开放"><SlidersHorizontal :size="16" />清空流量</button>
         <button class="button button--secondary" type="button" :disabled="loading" @click="load"><RefreshCw :class="{ spin: loading }" :size="16" />刷新</button>
         <RouterLink class="button button--secondary" to="/user-groups"><FolderTree :size="16" />管理分组<ExternalLink :size="14" /></RouterLink>
       </div>

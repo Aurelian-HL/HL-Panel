@@ -10,13 +10,20 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 	"net"
 	"strconv"
-	"time"
 )
 
 type Service struct {
 	identities *vlessidentity.Service
 	forwarding *forwarding.Service
 	endpoints  *endpoints.Service
+	batch      BatchSource
+}
+
+// BatchSource is implemented by a durable snapshot repository. It lets the
+// service resolve many bindings without opening one database transaction per
+// subscription line.
+type BatchSource interface {
+	ResolveSubscriptionLines(context.Context, string, string, []string) (map[string]string, map[string]error, error)
 }
 type Connection struct {
 	URI      string `json:"uri"`
@@ -31,8 +38,29 @@ func (e unavailable) Error() string              { return faults.ErrConflict.Err
 func (e unavailable) Unwrap() error              { return faults.ErrConflict }
 func (e unavailable) SubscriptionReason() string { return e.reason }
 
-func NewService(i *vlessidentity.Service, f *forwarding.Service, e *endpoints.Service) *Service {
-	return &Service{i, f, e}
+func NewService(i *vlessidentity.Service, f *forwarding.Service, e *endpoints.Service, batch ...BatchSource) *Service {
+	var source BatchSource
+	if len(batch) > 0 {
+		source = batch[0]
+	}
+	return &Service{identities: i, forwarding: f, endpoints: e, batch: source}
+}
+
+func (s *Service) ResolveSubscriptionLines(ctx context.Context, admin, customer string, bindings []string) (map[string]string, map[string]error, error) {
+	if s.batch != nil {
+		return s.batch.ResolveSubscriptionLines(ctx, admin, customer, bindings)
+	}
+	uris := make(map[string]string, len(bindings))
+	errorsByBinding := make(map[string]error)
+	for _, binding := range bindings {
+		uri, err := s.ResolveSubscriptionLine(ctx, admin, customer, binding)
+		if err != nil {
+			errorsByBinding[binding] = err
+			continue
+		}
+		uris[binding] = uri
+	}
+	return uris, errorsByBinding, nil
 }
 func (s *Service) ResolveSubscriptionLine(ctx context.Context, admin, customer, binding string) (string, error) {
 	record, err := s.identities.CredentialByIDForAdministrator(ctx, admin, binding)
@@ -69,11 +97,11 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if pool.GroupID != rule.EntryGroupID || pool.RuleID != rule.ID || pool.Protocol != "vless" {
 		return Connection{}, faults.ErrConflict
 	}
-	members, err := s.endpoints.CandidateSet(ctx, pool.ID, time.Now().UTC(), endpoints.DefaultHealthTTL)
+	count, err := s.endpoints.ReadyCandidateCount(ctx, pool.ID)
 	if err != nil {
 		return Connection{}, err
 	}
-	if len(members) == 0 {
+	if count == 0 {
 		return Connection{}, unavailable{"设备组暂无健康在线节点，请检查节点状态"}
 	}
 	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: rule.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.VLESSFlow}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})

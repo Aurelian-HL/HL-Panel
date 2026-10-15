@@ -3,7 +3,6 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -20,13 +19,13 @@ var _ enrollment.Repository = (*Store)(nil)
 var _ nodes.Repository = (*Store)(nil)
 
 func (s *Store) AdministratorByUsername(ctx context.Context, username string) (auth.Administrator, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Administrator, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Administrator, error) {
 		return state.AdministratorByUsername(ctx, username)
 	})
 }
 
 func (s *Store) AdministratorByID(ctx context.Context, id string) (auth.Administrator, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Administrator, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Administrator, error) {
 		return state.AdministratorByID(ctx, id)
 	})
 }
@@ -42,7 +41,9 @@ func (s *Store) CreateSession(ctx context.Context, session auth.Session, event a
 }
 
 func (s *Store) SessionByTokenHash(ctx context.Context, hash string, now time.Time) (auth.Session, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (auth.Session, error) { return state.SessionByTokenHash(ctx, hash, now) })
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (auth.Session, error) {
+		return state.SessionByTokenHash(ctx, hash, now)
+	})
 }
 
 func (s *Store) AppendAudit(ctx context.Context, event audit.Event) error {
@@ -113,11 +114,17 @@ func (s *Store) RevokeEnrollmentToken(ctx context.Context, input enrollment.Revo
 }
 
 func (s *Store) NodeByCredentialHash(ctx context.Context, hash string) (nodes.Node, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Node, error) { return state.NodeByCredentialHash(ctx, hash) })
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.Node, error) {
+		return state.NodeByCredentialHash(ctx, hash)
+	})
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]nodes.Node, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]nodes.Node, error) { return state.ListNodes(ctx) })
+	items, err := readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) ([]nodes.Node, error) { return state.ListNodes(ctx) })
+	if err == nil {
+		s.mergeNodeTelemetry(items)
+	}
+	return items, err
 }
 
 func (s *Store) ListNezhaBindings(ctx context.Context) (map[string]uint64, error) {
@@ -139,43 +146,32 @@ func (s *Store) RotateCredential(ctx context.Context, input nodes.RotateCredenti
 }
 
 func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.Heartbeat, now time.Time, event audit.Event) (nodes.Node, error) {
-	operationCtx, cancel := context.WithTimeout(ctx, operationTimeout)
-	defer cancel()
-	tx, err := s.db.BeginTx(operationCtx, nil)
-	if err != nil {
-		return nodes.Node{}, errors.New("PostgreSQL heartbeat transaction unavailable")
-	}
-	defer tx.Rollback()
-	state, err := readStateShared(operationCtx, tx)
-	if err != nil {
-		return nodes.Node{}, err
-	}
-	node, requiresCompile, err := state.PrepareHeartbeat(operationCtx, id, heartbeat, now)
-	if err != nil {
-		return nodes.Node{}, err
-	}
-	if requiresCompile {
-		// Release the shared snapshot lock before opening the full write
-		// transaction. Keeping this transaction open would block FOR UPDATE
-		// and can deadlock when a capability change needs recompilation.
-		_ = tx.Rollback()
-		return transact(ctx, s, true, func(full *memoryrepo.Store) (nodes.Node, error) {
-			return full.UpdateHeartbeat(ctx, id, heartbeat, now, event)
+	// Resource samples are high-frequency telemetry. Replaying the update against
+	// a read-only snapshot keeps the agent response current while avoiding a
+	// full singleton snapshot rewrite on every heartbeat. Lifecycle/configuration
+	// changes bypass the throttle and use the normal durable write path.
+	if !s.claimHeartbeatPersistence(id, heartbeat, now) {
+		result, err := readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.Node, error) {
+			return state.PreviewHeartbeatTelemetry(ctx, id, heartbeat, now, event)
 		})
+		if err == nil {
+			s.publishHeartbeatTelemetry(result)
+		}
+		if err != nil || result.BundleCompilerRevision >= memoryrepo.NodeBundleCompilerRevision ||
+			!s.claimHeartbeatCompilerReconcile(id, heartbeat, now) {
+			return result, err
+		}
 	}
-	payload, err := json.Marshal(heartbeat)
-	if err != nil {
-		return nodes.Node{}, errors.New("PostgreSQL heartbeat encoding failed")
+	result, err := transact(ctx, s, true, func(state *memoryrepo.Store) (nodes.Node, error) {
+		return state.UpdateHeartbeat(ctx, id, heartbeat, now, event)
+	})
+	if err == nil {
+		s.publishDurableHeartbeatTelemetry(result)
+		s.markHeartbeatPersisted(id, heartbeat, now)
+	} else {
+		s.releaseHeartbeatPersistence(id)
 	}
-	if _, err := tx.ExecContext(operationCtx, `INSERT INTO hl_panel_node_heartbeats(node_id,heartbeat_at,payload,updated_at)
-		VALUES($1,$2,$3,clock_timestamp())
-		ON CONFLICT(node_id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at,payload=excluded.payload,updated_at=clock_timestamp()`, id, now, payload); err != nil {
-		return nodes.Node{}, errors.New("PostgreSQL heartbeat write failed")
-	}
-	if err := tx.Commit(); err != nil {
-		return nodes.Node{}, errors.New("PostgreSQL heartbeat commit failed")
-	}
-	return node, nil
+	return result, err
 }
 
 func (s *Store) Overview(ctx context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {

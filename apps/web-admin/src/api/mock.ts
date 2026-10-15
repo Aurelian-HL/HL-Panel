@@ -25,6 +25,7 @@ import type {
   OverviewResponse,
   PanelControlResult,
   RetireDeviceGroupMemberResponse,
+  DeleteDeviceGroupMemberResponse,
 } from './types'
 import { ApiError } from './http'
 
@@ -93,6 +94,7 @@ const groupMembers = new Map<string, Map<string, DeviceGroupMember>>([
 const groupRevisionRequests = new Map<string, { fingerprint: string; response: CreateGroupRevisionResponse }>()
 const endpointPoolRequests = new Map<string, { fingerprint: string; response: CreateEndpointPoolResponse }>()
 const endpointPoolDeletions = new Map<string, string>()
+const retiredMemberDeletions = new Map<string, string>()
 const pendingEnrollmentTokens = new Map<string, PendingEnrollmentToken>()
 let panelControlResult: PanelControlResult | null = null
 
@@ -130,10 +132,12 @@ export const mockApi = {
     return pause(clone(result))
   },
   getPanelControl(): Promise<PanelControlResult | null> { return pause(clone(panelControlResult)) },
-  async deleteNode(nodeId: string, _key: string): Promise<{ node_id: string; replayed: boolean }> {
+  async deleteNode(nodeId: string, _key: string, scope?: 'unassigned'): Promise<{ node_id: string; replayed: boolean }> {
     const index = nodes.findIndex((node) => node.id === nodeId)
     if (index < 0) return pause({ node_id: nodeId, replayed: true })
-    if (nodes[index]?.status !== 'offline') throw new ApiError('节点仍在线，请等待节点离线后再删除', 409, 'conflict')
+    if (scope === 'unassigned') {
+      if ([...groupMembers.values()].some((members) => { const member = members.get(nodeId); return member && !member.retired_at })) throw new ApiError('节点已加入设备组，请刷新后先退役再删除', 409, 'conflict')
+    } else if (nodes[index]?.status !== 'offline') throw new ApiError('节点仍在线，请等待节点离线后再删除', 409, 'conflict')
     nodes.splice(index, 1)
     for (const [groupId, members] of groupMembers) {
       members.delete(nodeId)
@@ -239,6 +243,21 @@ export const mockApi = {
       pool.updated_at = retiredAt
     }
     return pause(clone({ member: target, assignments: [], replayed: false }))
+  },
+  async deleteRetiredDeviceGroupMember(groupId: string, nodeId: string, updatedAt: string, key: string): Promise<DeleteDeviceGroupMemberResponse> {
+    const operation = JSON.stringify([groupId, nodeId, key])
+    const previous = retiredMemberDeletions.get(operation)
+    if (previous !== undefined) {
+      if (previous !== updatedAt) throw new ApiError('操作已变更，请刷新后重试', 409, 'conflict')
+      return pause({ group_id: groupId, node_id: nodeId, deleted: true, replayed: true })
+    }
+    const members = groupMembers.get(groupId)
+    const target = members?.get(nodeId)
+    if (!target) throw new ApiError('设备组成员不存在', 404, 'member_not_found')
+    if (!target.retired_at || target.updated_at !== updatedAt) throw new ApiError('成员状态已改变，请刷新后重试', 409, 'conflict')
+    members!.delete(nodeId)
+    retiredMemberDeletions.set(operation, updatedAt)
+    return pause({ group_id: groupId, node_id: nodeId, deleted: true, replayed: false })
   },
   async createGroupRevision(groupId: string, request: CreateGenerationRequest): Promise<CreateGroupRevisionResponse> {
     const group = groups.find((item) => item.id === groupId)

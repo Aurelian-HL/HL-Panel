@@ -43,6 +43,10 @@ describe('AppShell navigation', () => {
 
     await wrapper.get('.mobile-nav-toggle').trigger('click')
     expect(wrapper.get('.sidebar').classes()).toContain('sidebar--open')
+    expect(wrapper.get('.mobile-nav-toggle').attributes('aria-label')).toBe('收起菜单')
+    await wrapper.get('.sidebar').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.get('.sidebar').classes()).not.toContain('sidebar--open')
+    await wrapper.get('.mobile-nav-toggle').trigger('click')
     probeLink.element.addEventListener('click', (event) => event.preventDefault(), { once: true })
     await probeLink.trigger('click')
     expect(router.currentRoute.value.path).toBe('/overview')

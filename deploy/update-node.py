@@ -24,6 +24,12 @@ METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nR
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
 
 
+def verify_xray_version(binary):
+    # Reject an untested handshake change before stopping the current service.
+    require(run([str(binary), 'version']).startswith(b'Xray 26.7.28 '),
+            'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
+
+
 def private_credentials():
     # systemd runs the agent as hl-edge; its atomically written state belongs
     # to that account, while executable files and configuration remain root-owned.
@@ -62,6 +68,20 @@ def active():
             run(['systemctl','is-active','--quiet',SERVICE])
             return
     raise UpdateError('节点新版本未启动')
+
+
+def install_config(source):
+    info = CONFIG.stat()
+    fd, name = tempfile.mkstemp(dir=CONFIG.parent)
+    os.close(fd)
+    try:
+        shutil.copyfile(source, name)
+        os.chown(name, info.st_uid, info.st_gid)
+        os.chmod(name, info.st_mode & 0o777)
+        os.replace(name, CONFIG)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def start_service():
@@ -114,6 +134,9 @@ def rollback(backup):
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
     restore_metrics(backup)
     run(['systemctl','stop',SERVICE])
+    if (backup/'edge-agent.json').exists():
+        private_regular(backup/'edge-agent.json')
+        install_config(backup/'edge-agent.json')
     for name in FILES:
         install(backup/name,ROOT/name)
     install(backup/'update-node.py',ROOT/'update-node.py')
@@ -160,9 +183,13 @@ def main():
         release.mkdir()
         extract_verified(archive,release)
         require((release/'deploy/update-node.py').is_file(),'此版本未提供节点升级器')
-        run([str(release/'bin/xray'),'version'])
+        verify_xray_version(release/'bin/xray')
         run([str(release/'bin/gost'),'-V'])
         credential=digest(STATE/'credentials.json')
+        shutil.copy2(CONFIG, backup/'edge-agent.json')
+        config['heartbeat_interval'] = '1s'
+        (backup/'new-edge-agent.json').write_text(json.dumps(config)+'\n')
+        (backup/'new-edge-agent.json').chmod(0o600)
         manifest={'credential_sha256':credential,'files':{}}
         for name in FILES:
             private_regular(ROOT/name)
@@ -189,6 +216,7 @@ def main():
                 install(release/source,ROOT/name)
             for name in ('update-node.py','update.py'):
                 install(release/'deploy'/name,ROOT/name)
+            install_config(backup/'new-edge-agent.json')
             start_service()
             active()
             require(digest(STATE/'credentials.json')==credential,'节点身份发生变化')

@@ -24,6 +24,18 @@ beforeEach(() => {
 })
 
 describe('ProfilePage', () => {
+  it('rejects repeated submits while a password change is pending', async () => {
+    let resolve!: () => void
+    mocked.changePassword.mockReturnValueOnce(new Promise<void>(done => { resolve = done }))
+    const wrapper = mount(ProfilePage); await flushPromises()
+    const inputs = wrapper.findAll('.profile-password-form input')
+    await inputs[0]!.setValue('old-password')
+    await inputs[1]!.setValue('new-password')
+    await inputs[2]!.setValue('new-password')
+    await wrapper.get('form').trigger('submit'); await wrapper.get('form').trigger('submit')
+    expect(mocked.changePassword).toHaveBeenCalledOnce()
+    resolve(); await flushPromises(); wrapper.unmount()
+  })
   it('explains the initial password requirement returned by the server', async () => {
     mocked.current.mockResolvedValueOnce({ id: 'adm-1', username: 'admin', created_at: '2026-10-03T00:00:00Z', must_change_password: true })
     const wrapper = mount(ProfilePage)

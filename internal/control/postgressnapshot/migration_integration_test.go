@@ -70,6 +70,9 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	require(err)
 	_, err = source.CreateGroupRevision(ctx, generations.CreateGroupRevisionInput{ID: "revision-one", GroupID: "group-one", Engine: agentv1.EngineGOST, Config: json.RawMessage(`{"services":[]}`), ConfigSHA256: "fixture-config", RequestSHA256: "fixture-request", IdempotencyKey: "fixture-generation", CreatedBy: "admin-one", CreatedAt: now}, event)
 	require(err)
+	// Export/restore must carry archived generations, not only the desired one.
+	_, err = source.CreateGroupRevision(ctx, generations.CreateGroupRevisionInput{ID: "revision-two", GroupID: "group-one", Engine: agentv1.EngineGOST, Config: json.RawMessage(`{"services":[],"test":2}`), ConfigSHA256: "fixture-config-two", RequestSHA256: "fixture-request-two", IdempotencyKey: "fixture-generation-two", CreatedBy: "admin-one", CreatedAt: now}, event)
+	require(err)
 	customer, _, err := customers.NewService(source, nil).CreateCustomer(ctx, "admin-one", customers.CustomerInput{Username: "migration-customer", Password: "isolated-customer", IdempotencyKey: "migration-customer"})
 	require(err)
 	subService := subscriptions.NewService(source, nil, nil)
@@ -91,6 +94,10 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 		_, err = source.db.ExecContext(ctx, query)
 		require(err)
 	}
+	// Export includes counters not yet folded into the business snapshot.
+	require(source.SyncRuleTraffic(ctx, rule.ID, 123, now))
+	_, err = target.db.ExecContext(ctx, `INSERT INTO hl_panel_rule_traffic VALUES($1,$2,false,'',900,now())`, rule.ID, rule.Revision)
+	require(err)
 	runtime := migrationbackup.RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{7}, 32), GatewayPoolTokens: map[string]string{"fixture-pool": strings.Repeat("g", 32)}}
 	backupPass := "isolated-backup-password"
 	// Seed a target-only node so restore coverage includes both sides of the
@@ -121,11 +128,18 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 		t.Fatal("preview mutated target")
 	}
 	addedNodeWake := target.DesiredConfigChanges("node-one")
+	_, err = target.db.ExecContext(ctx, `INSERT INTO hl_panel_protocol_health VALUES('target-only-rule','target-only-node','{}')`)
+	require(err)
 	removedNodeWake := target.DesiredConfigChanges("target-only-node")
 	result, err := importer.Restore(ctx, "target-admin", "isolated-test-password", backupPass, "restore-fixture", preview.Digest, "https://target.example.com", raw)
 	require(err)
 	if result.Replayed || result.RecoveryID == "" {
 		t.Fatal("missing restore receipt")
+	}
+	var healthOverlays int
+	require(target.db.QueryRowContext(ctx, `SELECT count(*) FROM hl_panel_protocol_health`).Scan(&healthOverlays))
+	if healthOverlays != 0 {
+		t.Fatal("restore retained target health proofs")
 	}
 	select {
 	case <-addedNodeWake:
@@ -139,6 +153,11 @@ func TestPostgreSQLMigrationFullRestoreRecoveryRollbackAndRestart(t *testing.T) 
 	}
 	restored, err := target.ExportMigration(ctx)
 	require(err)
+	restoredRule, err := target.ForwardingRule(ctx, rule.ID)
+	require(err)
+	if restoredRule.TrafficUsedBytes != 123 {
+		t.Fatal("restored traffic lost source projection or inherited target projection", restoredRule.TrafficUsedBytes)
+	}
 	sourceState, err := source.ExportMigration(ctx)
 	require(err)
 	if !reflect.DeepEqual(sourceState.Usage, restored.Usage) {

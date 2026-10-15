@@ -24,6 +24,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/usage"
+	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
@@ -43,6 +44,8 @@ type controlRepository interface {
 	gatewaymembership.Repository
 	gatewaymembership.ProtocolProbeConfigSource
 	gatewaymembership.ProtocolProbeConfigurator
+	ProtocolProbeStates(context.Context) ([]gatewaymembership.ProbeState, error)
+	PublishProtocolHealthBatch(context.Context, []gatewaymembership.ProtocolObservation) ([]error, error)
 	groupconfig.Repository
 	rulegroups.Repository
 	siteconfig.Repository
@@ -50,6 +53,7 @@ type controlRepository interface {
 	usage.RuleTrafficRepository
 	announcements.Repository
 	vlessidentity.Repository
+	vlessconnection.BatchSource
 	vlessruntime.Repository
 	deploymentreceipts.Repository
 	licensing.Repository
@@ -57,7 +61,10 @@ type controlRepository interface {
 
 func openRepository(ctx context.Context, config runtimeConfig, bootstrap auth.Administrator) (controlRepository, func(), error) {
 	if config.DatabaseURL != "" {
-		store, err := postgressnapshot.Open(ctx, config.DatabaseURL, bootstrap)
+		store, err := postgressnapshot.Open(ctx, config.DatabaseURL, bootstrap, postgressnapshot.PoolConfig{
+			MaxOpenConns: config.DatabaseMaxOpenConns,
+			MaxIdleConns: config.DatabaseMaxIdleConns,
+		})
 		if err != nil {
 			return nil, nil, err
 		}

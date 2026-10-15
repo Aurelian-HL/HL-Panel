@@ -52,12 +52,14 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	node.Name, node.Hostname, node.DialHost = token.Name, input.Node.Hostname, input.Node.DialHost
 	node.Platform, node.Architecture, node.AgentVersion = input.Node.Platform, input.Node.Architecture, input.Node.AgentVersion
 	node.UpdatedAt = now
+	mutations := []groupMemberMutationSnapshot{s.captureGroupMemberMutationLocked(token.GroupID, node.ID)}
 	previousMembers := make(map[string]groups.Member)
 	retired := make([]groups.Member, 0)
 	for groupID, members := range s.membersByGroup {
 		if member, exists := members[node.ID]; exists {
 			previousMembers[groupID] = member
 			if groupID != token.GroupID && member.RetiredAt == nil {
+				mutations = append(mutations, s.captureGroupMemberMutationLocked(groupID, node.ID))
 				member.RetiredAt, member.UpdatedAt = &now, now
 				members[node.ID] = member
 				retired = append(retired, member)
@@ -70,13 +72,9 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 		member.CreatedAt, member.Weight, member.Priority = old.CreatedAt, old.Weight, old.Priority
 	}
 	restore := func() {
-		for groupID, old := range previousMembers {
-			s.membersByGroup[groupID][node.ID] = old
+		for _, mutation := range mutations {
+			s.restoreGroupMemberMutationLocked(mutation)
 		}
-		if _, exists := previousMembers[token.GroupID]; !exists {
-			delete(s.membersByGroup[token.GroupID], node.ID)
-		}
-		s.nodes[node.ID] = previous
 	}
 	if err := s.validateForwardingMemberListenersLocked(member); err != nil {
 		restore()
@@ -84,6 +82,11 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	}
 	s.membersByGroup[token.GroupID][node.ID] = member
 	s.nodes[node.ID] = node
+	// The target group's endpoint projection authorizes automatic Reality
+	// material. Update it before compiling, with rollback on compilation failure.
+	for _, changed := range append(retired, member) {
+		s.syncGroupMemberToEndpointPoolsLocked(changed)
+	}
 	// Compile once after both sides change so old listeners are removed before
 	// installing the new group's listeners, including same-port group switches.
 	if _, _, err := s.compileNodeConfigLocked(node.ID, now); err != nil {
@@ -91,7 +94,6 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 		return nodes.Node{}, err
 	}
 	for _, changed := range append(retired, member) {
-		s.syncGroupMemberToEndpointPoolsLocked(changed)
 		group := s.deviceGroups[changed.GroupID]
 		group.UpdatedAt = now
 		s.deviceGroups[group.ID] = group

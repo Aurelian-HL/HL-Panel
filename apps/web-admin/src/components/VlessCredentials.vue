@@ -4,6 +4,7 @@ import { Copy, KeyRound, Plus, RefreshCw, RotateCcw, ShieldOff } from '@lucide/v
 import { api, type EndpointPool } from '@/api'
 import { businessApi, type Customer, type ForwardRule, type VlessIdentity } from '@/api/business'
 import StatePanel from '@/components/StatePanel.vue'
+import DialogSurface from '@/components/DialogSurface.vue'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { displayError } from '@/lib/displayFormatters'
@@ -53,15 +54,16 @@ function openCreate(): void {
 function selectRule(): void {
   if (!availablePools.value.some((pool) => pool.id === poolID.value)) poolID.value = availablePools.value[0]?.id ?? ''
 }
-function closeCreate(): void { formOpen.value = false }
+function closeCreate(): void { if (!busyID.value) formOpen.value = false }
 async function create(): Promise<void> {
+  if (busyID.value) return
   const rule = selectedRule.value
   if (!rule || !poolID.value) { actionError.value = '请选择可用的 VLESS 规则和服务端点'; return }
   busyID.value = 'create'; actionError.value = ''
   try {
     await businessApi.provisionVlessIdentity({ customer_id: rule.customer_id, forwarding_rule_id: rule.id, endpoint_pool_id: poolID.value }, mutationKey({ operation: 'provision', rule_id: rule.id, pool_id: poolID.value }))
     toast.success('VLESS 凭据已创建', rule.name)
-    closeCreate(); await load()
+    formOpen.value = false; await load()
   } catch (cause) { actionError.value = displayError(cause) } finally { busyID.value = '' }
 }
 async function copy(row: (typeof rows.value)[number]): Promise<void> {
@@ -98,7 +100,7 @@ onMounted(load)
     <StatePanel v-else-if="!identities.length" state="empty" title="还没有VLESS 凭据" message="先创建一条已配置端点的 VLESS 规则，再签发VLESS 凭据。" />
     <div v-else class="business-inventory subscription-inventory"><div class="table-wrap"><table class="data-table business-table"><thead><tr><th>VLESS 凭据</th><th>关联规则</th><th>服务端点</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody><tr v-for="row in rows" :key="row.identity.id"><td><strong class="table-primary"><KeyRound :size="14" />{{ row.rule?.name ?? row.identity.id }}</strong><small class="table-secondary">{{ row.customer?.display_name || row.customer?.username || row.identity.customer_id }}</small></td><td>{{ row.rule?.name || row.identity.forwarding_rule_id }}</td><td>{{ row.pool ? `${row.pool.hostname}:${row.pool.port}` : row.identity.endpoint_pool_id }}</td><td><span class="business-status" :class="{ 'business-status--muted': row.identity.state !== 'active' }">{{ stateLabel(row.identity.state) }}</span></td><td>{{ new Date(row.identity.updated_at).toLocaleString() }}</td><td><div class="subscription-actions"><button class="button button--quiet" type="button" :disabled="row.identity.state !== 'active' || !!busyID || !row.rule" title="复制VLESS 凭据链接" @click="copy(row)"><Copy :size="14" />复制</button><button class="button button--quiet" type="button" :disabled="row.identity.state !== 'active' || !!busyID" title="轮换VLESS 凭据" @click="rotate(row.identity)"><RotateCcw :size="14" />轮换</button><button class="button button--quiet subscription-danger" type="button" :disabled="row.identity.state !== 'active' || !!busyID" title="撤销VLESS 凭据" @click="revoke(row.identity)"><ShieldOff :size="14" />撤销</button></div></td></tr></tbody></table></div></div>
     <p v-if="error && identities.length" class="inline-warning">刷新失败，保留上次数据：{{ error }}</p>
-    <div v-if="formOpen" class="modal-backdrop" @click.self="closeCreate"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="subscription-create-title"><header class="modal__header"><div><h2 id="subscription-create-title">创建VLESS 凭据</h2><p>只可为已具备 Reality 参数的 VLESS 规则签发。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="closeCreate">×</button></header><form class="modal__body form-stack" @submit.prevent="create"><label class="field"><span>VLESS 规则</span><select v-model="ruleID" required @change="selectRule"><option value="" disabled>请选择规则</option><option v-for="rule in availableRules" :key="rule.id" :value="rule.id">{{ rule.name }} · {{ rule.listen_port }}</option></select></label><label class="field"><span>服务端点</span><select v-model="poolID" required><option value="" disabled>请选择端点</option><option v-for="pool in availablePools" :key="pool.id" :value="pool.id">{{ pool.name }} · {{ pool.hostname }}:{{ pool.port }}</option></select></label><p v-if="!availableRules.length" class="form-note">当前没有可签发的 VLESS 规则。请先在转发规则中完成 Reality 参数和端点配置。</p><div class="modal__footer"><button class="button button--secondary" type="button" :disabled="!!busyID" @click="closeCreate">取消</button><button class="button button--primary" type="submit" :disabled="!!busyID || !ruleID || !poolID">{{ busyID === 'create' ? '创建中' : '创建VLESS 凭据' }}</button></div></form></section></div>
+    <div v-if="formOpen" class="modal-backdrop" @click.self="closeCreate"><DialogSurface class="modal" aria-labelledby="subscription-create-title" :close-disabled="!!busyID" @close="closeCreate"><header class="modal__header"><div><h2 id="subscription-create-title">创建VLESS 凭据</h2><p>只可为已具备 Reality 参数的 VLESS 规则签发。</p></div><button class="icon-button" type="button" aria-label="关闭" @click="closeCreate">×</button></header><form class="modal__body form-stack" @submit.prevent="create"><label class="field"><span>VLESS 规则</span><select v-model="ruleID" required @change="selectRule"><option value="" disabled>请选择规则</option><option v-for="rule in availableRules" :key="rule.id" :value="rule.id">{{ rule.name }} · {{ rule.listen_port }}</option></select></label><label class="field"><span>服务端点</span><select v-model="poolID" required><option value="" disabled>请选择端点</option><option v-for="pool in availablePools" :key="pool.id" :value="pool.id">{{ pool.name }} · {{ pool.hostname }}:{{ pool.port }}</option></select></label><p v-if="!availableRules.length" class="form-note">当前没有可签发的 VLESS 规则。请先在转发规则中完成 Reality 参数和端点配置。</p><div class="modal__footer"><button class="button button--secondary" type="button" :disabled="!!busyID" @click="closeCreate">取消</button><button class="button button--primary" type="submit" :disabled="!!busyID || !ruleID || !poolID">{{ busyID === 'create' ? '创建中' : '创建VLESS 凭据' }}</button></div></form></DialogSurface></div>
   </div>
 </template>
 

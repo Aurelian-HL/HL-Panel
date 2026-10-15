@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,10 @@ type Monitor struct {
 	mu          sync.Mutex
 	targets     map[string]targetState
 	nextVersion uint64
+	// probeCursor is the last target dispatched by a cycle. Probe targets are
+	// rotated from the following ID so a large membership cannot starve the
+	// tail when a cycle reaches its time budget before every target is sent.
+	probeCursor string
 }
 
 type targetState struct {
@@ -123,12 +128,14 @@ func New(config Config) (*Monitor, error) {
 
 // ReplaceTargets installs the latest authoritative view. Probe state survives
 // a reload only while endpoint ID and address are unchanged. Readiness and
-// lease changes cancel in-flight observations and reset streak counters, but do
-// not clear an existing local veto.
+// lease changes cancel in-flight observations. A continuous lease renewal keeps
+// completed streaks; changes in authority or a lease gap reset them. Neither
+// change clears an existing local veto.
 func (m *Monitor) ReplaceTargets(targets []Target) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := make(map[string]targetState, len(targets))
+	now := time.Now()
 	for _, target := range targets {
 		if strings.TrimSpace(target.ID) == "" || strings.TrimSpace(target.Address) == "" || target.MembershipRevision == 0 || target.LeaseExpiresAt.IsZero() {
 			continue
@@ -142,10 +149,18 @@ func (m *Monitor) ReplaceTargets(targets []Target) {
 			next[target.ID] = state
 			continue
 		}
-		if state.AuthoritativelyReady != target.AuthoritativelyReady || !state.LeaseExpiresAt.Equal(target.LeaseExpiresAt) {
-			state.version = m.nextTargetVersionLocked()
-			state.consecutiveFailures = 0
-			state.consecutiveSuccesses = 0
+		authorityChanged := state.AuthoritativelyReady != target.AuthoritativelyReady || !state.LeaseExpiresAt.Equal(target.LeaseExpiresAt)
+		if authorityChanged {
+			continuousRenewal := state.AuthoritativelyReady && target.AuthoritativelyReady &&
+				state.LeaseExpiresAt.After(now) && !target.LeaseExpiresAt.Before(state.LeaseExpiresAt)
+			// The source revision also advances for unrelated snapshot writes.
+			// Only an authority break makes a TCP observation stale; a continuous
+			// lease renewal keeps both the failure streak and in-flight probe valid.
+			if !continuousRenewal {
+				state.version = m.nextTargetVersionLocked()
+				state.consecutiveFailures = 0
+				state.consecutiveSuccesses = 0
+			}
 		}
 		state.Target = target
 		next[target.ID] = state
@@ -171,6 +186,14 @@ func (m *Monitor) Run(ctx context.Context) {
 }
 
 func (m *Monitor) probeCycle(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A full target set can take several timeout windows to probe. Bound one
+	// cycle to the configured interval so a slow group cannot make Run drift
+	// indefinitely and cause overlapping-looking stale observations.
+	cycleContext, cancel := context.WithTimeout(ctx, m.interval)
+	defer cancel()
 	targets := m.probeTargets(time.Now())
 	if len(targets) == 0 || ctx.Err() != nil {
 		return
@@ -186,21 +209,25 @@ func (m *Monitor) probeCycle(ctx context.Context) {
 		go func() {
 			defer workersDone.Done()
 			for target := range jobs {
-				m.probe(ctx, target)
+				m.probe(cycleContext, target)
 			}
 		}()
 	}
+	lastDispatched := ""
 	for _, target := range targets {
 		select {
 		case jobs <- target:
-		case <-ctx.Done():
+			lastDispatched = target.ID
+		case <-cycleContext.Done():
 			close(jobs)
 			workersDone.Wait()
+			m.advanceProbeCursor(lastDispatched)
 			return
 		}
 	}
 	close(jobs)
 	workersDone.Wait()
+	m.advanceProbeCursor(lastDispatched)
 }
 
 func (m *Monitor) probeTargets(now time.Time) []probeTarget {
@@ -213,7 +240,29 @@ func (m *Monitor) probeTargets(now time.Time) []probeTarget {
 		}
 		targets = append(targets, probeTarget{Target: state.Target, version: state.version})
 	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
+	if len(targets) > 1 && m.probeCursor != "" {
+		start := sort.Search(len(targets), func(index int) bool { return targets[index].ID > m.probeCursor })
+		if start == len(targets) {
+			start = 0
+		}
+		rotated := make([]probeTarget, 0, len(targets))
+		rotated = append(rotated, targets[start:]...)
+		rotated = append(rotated, targets[:start]...)
+		targets = rotated
+	}
 	return targets
+}
+
+func (m *Monitor) advanceProbeCursor(id string) {
+	if id == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.targets[id]; exists {
+		m.probeCursor = id
+	}
 }
 
 func (m *Monitor) probe(parent context.Context, target probeTarget) {
@@ -226,7 +275,10 @@ func (m *Monitor) probe(parent context.Context, target probeTarget) {
 	if parent.Err() != nil {
 		return
 	}
-	m.record(target, err == nil)
+	// A Dial implementation must return a live connection as well as a nil
+	// error. Treating (nil, nil) as reachable lets a broken/custom dialer keep
+	// an unreachable node in the candidate pool indefinitely.
+	m.record(target, err == nil && connection != nil)
 }
 
 func (m *Monitor) record(target probeTarget, reachable bool) {
@@ -238,7 +290,7 @@ func (m *Monitor) record(target probeTarget, reachable bool) {
 	var verdict *Verdict
 	m.mu.Lock()
 	state, exists := m.targets[target.ID]
-	if !exists || state.Address != target.Address || state.MembershipRevision != target.MembershipRevision || state.version != target.version ||
+	if !exists || state.Address != target.Address || state.version != target.version ||
 		!state.AuthoritativelyReady || !state.LeaseExpiresAt.After(time.Now()) {
 		m.mu.Unlock()
 		if transitionLocked {
@@ -246,13 +298,13 @@ func (m *Monitor) record(target probeTarget, reachable bool) {
 		}
 		return
 	}
+	previousBlocked := state.blocked
 	if reachable {
 		state.consecutiveFailures = 0
 		if state.consecutiveSuccesses < m.successThreshold {
 			state.consecutiveSuccesses++
 		}
 		if state.blocked && state.consecutiveSuccesses >= m.successThreshold {
-			state.blocked = false
 			verdict = &Verdict{
 				ID: state.ID, Address: state.Address, MembershipRevision: state.MembershipRevision,
 				Reachable: true, Consecutive: state.consecutiveSuccesses,
@@ -264,11 +316,18 @@ func (m *Monitor) record(target probeTarget, reachable bool) {
 			state.consecutiveFailures++
 		}
 		if !state.blocked && state.consecutiveFailures >= m.failureThreshold {
-			state.blocked = true
 			verdict = &Verdict{
 				ID: state.ID, Address: state.Address, MembershipRevision: state.MembershipRevision,
 				Reachable: false, Consecutive: state.consecutiveFailures,
 			}
+		}
+	}
+	// Keep the local state unchanged until an authoritative router apply
+	// succeeds. A transient apply failure must be retried on the next probe;
+	// otherwise the monitor and router can disagree indefinitely.
+	if verdict == nil || m.apply == nil {
+		if verdict != nil {
+			state.blocked = !verdict.Reachable
 		}
 	}
 	m.targets[target.ID] = state
@@ -277,6 +336,15 @@ func (m *Monitor) record(target probeTarget, reachable bool) {
 	if verdict != nil {
 		if m.apply != nil {
 			applyErr = m.apply(*verdict)
+			if applyErr == nil {
+				m.mu.Lock()
+				current, currentExists := m.targets[target.ID]
+				if currentExists && current.Address == target.Address && current.version == target.version && current.blocked == previousBlocked {
+					current.blocked = !verdict.Reachable
+					m.targets[target.ID] = current
+				}
+				m.mu.Unlock()
+			}
 		} else {
 			m.observe(*verdict)
 		}

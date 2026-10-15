@@ -11,6 +11,7 @@ vi.mock('@/api/releases', async original => ({
   checkVersion: vi.fn().mockResolvedValue({ state: 'up_to_date', current_version: 'test' }),
 }))
 import SystemSettingsPage from './SystemSettingsPage.vue'
+import { toast } from '@/composables/toast'
 
 const settings: SiteSettings = {
   id: 'global', site_name: '鸿乐线路', panel_title: '线路管理面板', public_description: '站点说明',
@@ -32,6 +33,30 @@ beforeEach(() => {
 })
 
 describe('SystemSettingsPage', () => {
+  it('does not call a successful save a failure when the public-info refresh fails', async () => {
+    const success = vi.spyOn(toast, 'success'), error = vi.spyOn(toast, 'error')
+    mocked.publicInfo.mockRejectedValueOnce(new Error('临时断网'))
+    const wrapper = mount(SystemSettingsPage); await flushPromises()
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(success).toHaveBeenCalledWith('系统设置已保存')
+    expect(error).toHaveBeenCalledWith('设置已保存，页面信息刷新失败', '请刷新页面获取最新站点信息')
+    expect(error).not.toHaveBeenCalledWith('系统设置保存失败', expect.anything())
+    expect(mocked.saveSettings).toHaveBeenCalledOnce()
+    wrapper.unmount(); success.mockRestore(); error.mockRestore()
+  })
+  it('prevents concurrent saves and shows a refresh failure with retained settings', async () => {
+    let resolve!: (value: SiteSettings) => void
+    mocked.saveSettings.mockReturnValueOnce(new Promise<SiteSettings>(done => { resolve = done }))
+    const wrapper = mount(SystemSettingsPage); await flushPromises()
+    await wrapper.get('form').trigger('submit'); await wrapper.get('form').trigger('submit')
+    expect(mocked.saveSettings).toHaveBeenCalledOnce()
+    resolve({ ...settings, revision: 3 }); await flushPromises()
+    mocked.settings.mockRejectedValueOnce(new Error('临时断网'))
+    await wrapper.get('.page-heading button').trigger('click'); await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('刷新失败，保留上次设置')
+    expect((wrapper.get('input[maxlength="80"]').element as HTMLInputElement).value).toBe(settings.site_name)
+    wrapper.unmount()
+  })
   it('loads durable settings and saves a complete replacement', async () => {
     const wrapper = mount(SystemSettingsPage)
     await flushPromises()

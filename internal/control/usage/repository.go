@@ -2,6 +2,12 @@ package usage
 
 import "context"
 
+// RuleChargedBytesReader lets quota reconciliation read only its required
+// aggregate, without counting events or fetching enforcement/detail pages.
+type RuleChargedBytesReader interface {
+	RuleChargedBytes(context.Context, Query) (int64, error)
+}
+
 // DecisionProjector is invoked only for a newly persisted event, after the
 // repository has atomically calculated the post-ingest customer totals. It
 // keeps business policy in Service while allowing event, total, cursor and

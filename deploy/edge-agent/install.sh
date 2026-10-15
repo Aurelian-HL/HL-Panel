@@ -113,7 +113,7 @@ install -m 0755 -o root -g root "$binary" /opt/hl-panel/edge-agent
 created_unit=1
 install -m 0644 -o root -g root "$unit" /etc/systemd/system/hl-panel-edge-agent.service
 created_config=1
-printf '{"control_plane_url":"%s","data_dir":"/var/lib/hl-panel-edge","engine_mode":"%s","xray_binary_path":"%s","gost_binary_path":"%s","xray_auto_start":%s,"gost_auto_start":%s}\n' \
+printf '{"control_plane_url":"%s","data_dir":"/var/lib/hl-panel-edge","heartbeat_interval":"1s","engine_mode":"%s","xray_binary_path":"%s","gost_binary_path":"%s","xray_auto_start":%s,"gost_auto_start":%s}\n' \
   "$origin" "$engine_mode" "$xray_binary_path" "$gost_binary_path" "$auto_start" "$auto_start" > /etc/hl-panel/edge-agent.json
 chown root:hl-edge /etc/hl-panel/edge-agent.json
 chmod 0640 /etc/hl-panel/edge-agent.json

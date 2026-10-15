@@ -30,13 +30,37 @@ type IdentitySource interface {
 }
 
 type Service struct {
-	networks   NetworkSource
-	endpoints  EndpointSource
-	identities IdentitySource
+	networks         NetworkSource
+	endpoints        EndpointSource
+	identities       IdentitySource
+	reconcileTimeout time.Duration
 }
 
-func NewService(networks NetworkSource, endpointSource EndpointSource, identities IdentitySource) *Service {
-	return &Service{networks: networks, endpoints: endpointSource, identities: identities}
+const defaultReconcileTimeout = 20 * time.Second
+
+type Option func(*Service)
+
+func WithReconcileTimeout(timeout time.Duration) Option {
+	return func(service *Service) {
+		if timeout > 0 {
+			service.reconcileTimeout = timeout
+		}
+	}
+}
+
+func NewService(networks NetworkSource, endpointSource EndpointSource, identities IdentitySource, options ...Option) *Service {
+	service := &Service{
+		networks:         networks,
+		endpoints:        endpointSource,
+		identities:       identities,
+		reconcileTimeout: defaultReconcileTimeout,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 // Ensure is resumable after any intermediate write or a replayed rule save.
@@ -125,7 +149,10 @@ func (s *Service) Run(ctx context.Context, source RuleSource, logger *slog.Logge
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	for {
-		if err := s.Reconcile(ctx, source); err != nil && ctx.Err() == nil {
+		bounded, cancel := context.WithTimeout(ctx, s.reconcileTimeout)
+		err := s.Reconcile(bounded, source)
+		cancel()
+		if err != nil && ctx.Err() == nil {
 			logger.Warn("pending VLESS setup reconciliation failed", "error", err)
 		}
 		select {

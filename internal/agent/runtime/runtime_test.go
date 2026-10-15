@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -123,6 +125,31 @@ func TestAgentBootstrapHeartbeatAndDesiredApplyOverHTTPTestServer(t *testing.T) 
 	}
 }
 
+func TestHeartbeatBackoffIsBoundedIndependently(t *testing.T) {
+	cfg := config.Config{Backoff: config.BackoffConfig{
+		Initial:        config.Duration(2 * time.Second),
+		Maximum:        config.Duration(2 * time.Minute),
+		Multiplier:     2,
+		JitterFraction: 0,
+	}}
+	settings := heartbeatBackoffConfig(cfg)
+	if settings.Maximum.Duration() != heartbeatRetryMaximum {
+		t.Fatalf("heartbeat maximum = %s, want %s", settings.Maximum.Duration(), heartbeatRetryMaximum)
+	}
+	if settings.Initial.Duration() != 2*time.Second {
+		t.Fatalf("heartbeat initial = %s, want 2s", settings.Initial.Duration())
+	}
+	short := config.Config{Backoff: config.BackoffConfig{
+		Initial:    config.Duration(30 * time.Second),
+		Maximum:    config.Duration(time.Minute),
+		Multiplier: 2,
+	}}
+	shortSettings := heartbeatBackoffConfig(short)
+	if shortSettings.Initial.Duration() != heartbeatRetryMaximum || shortSettings.Maximum.Duration() != heartbeatRetryMaximum {
+		t.Fatalf("heartbeat initial/maximum = (%s, %s), want both %s", shortSettings.Initial.Duration(), shortSettings.Maximum.Duration(), heartbeatRetryMaximum)
+	}
+}
+
 func TestAgentRunContinuesHeartbeatWhenProbeEchoPortIsUnavailable(t *testing.T) {
 	var heartbeats atomic.Int32
 	heartbeatSeen := make(chan struct{})
@@ -189,5 +216,70 @@ func TestAgentRunContinuesHeartbeatWhenProbeEchoPortIsUnavailable(t *testing.T) 
 	}
 	if heartbeats.Load() < 1 {
 		t.Fatal("agent stopped before recording a heartbeat")
+	}
+}
+
+func TestProbeEchoRecoversAfterInitialPortConflict(t *testing.T) {
+	previousInterval := probeEchoRetryInterval
+	probeEchoRetryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { probeEchoRetryInterval = previousInterval })
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve probe echo port: %v", err)
+	}
+	port := occupied.Addr().(*net.TCPAddr).Port
+	agent := &Agent{
+		cfg:    config.Config{ProtocolProbeEchoPort: port},
+		logger: slog.Default(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- agent.probeEchoLoop(ctx) }()
+
+	// The first bind must fail while the port is held, then recover without
+	// restarting the Agent after the competing listener is released.
+	time.Sleep(20 * time.Millisecond)
+	if err := occupied.Close(); err != nil {
+		t.Fatalf("release occupied port: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		connection, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 50*time.Millisecond)
+		if dialErr == nil {
+			_ = connection.Close()
+			cancel()
+			if runErr := <-done; !errors.Is(runErr, context.Canceled) {
+				t.Fatalf("probeEchoLoop() error = %v, want context cancellation", runErr)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatalf("probe echo did not recover after the occupied port was released")
+}
+
+func TestAgentCloseSerializesWithEngineLifecycle(t *testing.T) {
+	agent := &Agent{}
+	agent.usageApplyMu.Lock()
+	closed := make(chan struct{})
+	go func() {
+		_ = agent.Close(context.Background())
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		t.Fatal("Close bypassed the engine lifecycle lock")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	agent.usageApplyMu.Unlock()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close remained blocked after the lifecycle lock was released")
 	}
 }

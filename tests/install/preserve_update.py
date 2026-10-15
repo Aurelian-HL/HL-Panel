@@ -46,6 +46,21 @@ assert len(groups['items']) == 1
 previous = Path('/opt/hl-panel/current').resolve()
 previous_audit_journal = subprocess.check_output(['runuser','-u','postgres','--','psql','-XAt','--dbname=hl_panel_control',
     '-c', "SELECT coalesce(to_regclass('public.hl_panel_audit_journal')::text,'absent')"]).strip()
+usage_schema_query = """SELECT json_build_array(
+    to_regclass('public.usage_rule_totals')::text,
+    to_regclass('public.hl_panel_rule_traffic')::text,
+    to_regclass('public.hl_panel_protocol_health')::text,
+    to_regclass('public.usage_query_totals')::text,
+    to_regprocedure('public.usage_query_totals_added()')::text,
+    to_regprocedure('public.usage_query_totals_removed()')::text,
+    to_regprocedure('public.usage_query_totals_cleared()')::text,
+    to_regprocedure('public.usage_rule_totals_added()')::text,
+    to_regprocedure('public.usage_rule_totals_removed()')::text,
+    to_regprocedure('public.usage_rule_totals_cleared()')::text)::text"""
+def usage_schema():
+    return subprocess.check_output(['runuser','-u','postgres','--','psql','-XAt','--dbname=hl_panel_control',
+        '-c', usage_schema_query]).strip()
+previous_usage_schema = usage_schema()
 
 def fingerprint():
     values={}
@@ -138,9 +153,12 @@ corrupt=False
 # The candidate really starts, then fault injection forces the production
 # rollback path to restore PostgreSQL and the old binary.
 real_healthy=update.healthy
+candidate_started=False
 def reject_candidate(origin,version):
+    global candidate_started
     real_healthy(origin,version)
     if version==args.version:
+        candidate_started=True
         raise update.UpdateError('Isolated CI post-start failure')
 update.healthy=reject_candidate
 try:
@@ -148,8 +166,10 @@ try:
     raise AssertionError('Expected forced update failure')
 except update.UpdateError:
     pass
+assert candidate_started, 'fault injection must reach a healthy candidate before rollback'
 assert Path('/opt/hl-panel/current').resolve()==previous
 verify(args.previous_version)
+assert usage_schema() == previous_usage_schema, 'rollback retained new usage schema objects'
 
 update.healthy=real_healthy
 assert subprocess.check_output(['runuser','-u','postgres','--','psql','-XAt','--dbname=hl_panel_control',

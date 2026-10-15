@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -29,10 +30,11 @@ type GOSTProcessAdapter struct {
 	runner     GOSTRunner
 	autoStart  bool
 
-	counterEpoch     uint64
-	mu               sync.Mutex
-	process          GOSTProcess
-	processStartedAt time.Time
+	counterEpoch        uint64
+	mu                  sync.Mutex
+	process             GOSTProcess
+	processStartedAt    time.Time
+	processConfigSHA256 [sha256.Size]byte
 }
 
 func NewGOSTProcessAdapter(options GOSTAdapterOptions) (*GOSTProcessAdapter, error) {
@@ -111,6 +113,12 @@ func (a *GOSTProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 	}
 	oldProcess := a.process
 	oldRunning := oldProcess != nil && oldProcess.Running()
+	// Keep sessions on an unchanged owned process. Compare its recorded native
+	// config as well as the file, which may have been edited externally.
+	if previousExists && bytes.Equal(previous, candidate) &&
+		(!a.autoStart || oldRunning && a.processConfigSHA256 == sha256.Sum256(candidate)) {
+		return nil
+	}
 	if a.autoStart && oldRunning {
 		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop previous gost process: %w", err)
@@ -200,6 +208,26 @@ func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var data []byte
+	if previous != nil {
+		// A rejected rollback must not terminate the current healthy process.
+		if err := a.verifyStaged(*previous); err != nil {
+			return fmt.Errorf("validate rollback gost configuration: %w", err)
+		}
+		var err error
+		data, err = readRegularFile(previous.adapterPath, MaxConfigurationBytes)
+		if err != nil {
+			return fmt.Errorf("read rollback gost configuration: %w", err)
+		}
+		active, exists, err := readOptionalRegularFile(a.activePath)
+		if err != nil {
+			return fmt.Errorf("read active gost configuration for rollback: %w", err)
+		}
+		if exists && bytes.Equal(active, data) && (!a.autoStart ||
+			a.process != nil && a.process.Running() && a.processConfigSHA256 == sha256.Sum256(data)) {
+			return nil
+		}
+	}
 	if a.autoStart && a.process != nil && a.process.Running() {
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop gost process for rollback: %w", err)
@@ -208,13 +236,6 @@ func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	}
 	if previous == nil {
 		return removeRegularFile(a.activePath)
-	}
-	if err := a.verifyStaged(*previous); err != nil {
-		return fmt.Errorf("validate rollback gost configuration: %w", err)
-	}
-	data, err := readRegularFile(previous.adapterPath, MaxConfigurationBytes)
-	if err != nil {
-		return fmt.Errorf("read rollback gost configuration: %w", err)
 	}
 	if err := writeFileAtomic(a.activePath, data, 0o600); err != nil {
 		return fmt.Errorf("restore gost configuration: %w", err)
@@ -270,12 +291,17 @@ func (a *GOSTProcessAdapter) verifyStaged(prepared PreparedConfiguration) error 
 }
 
 func (a *GOSTProcessAdapter) startLocked(ctx context.Context, path string) (GOSTProcess, error) {
+	data, err := readRegularFile(path, MaxConfigurationBytes)
+	if err != nil {
+		return nil, ErrGOSTStart
+	}
 	process, err := a.runner.Start(ctx, path)
 	if err != nil || process == nil || !process.Running() {
 		return nil, ErrGOSTStart
 	}
 	a.counterEpoch++
 	a.processStartedAt = time.Now().UTC()
+	a.processConfigSHA256 = sha256.Sum256(data)
 	return process, nil
 }
 

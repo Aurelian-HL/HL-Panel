@@ -89,3 +89,39 @@ func TestConcurrentHeartbeatAndDeleteCannotRemoveOnlineNodeOrReviveDeletion(t *t
 		}
 	}
 }
+
+func TestUnassignedDeletionRejectsMembershipAndPoolReferencesAtomically(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, reference := range []string{"active-group", "pool", "retired-only", "none"} {
+		t.Run(reference, func(t *testing.T) {
+			s := New(auth.Administrator{ID: "admin", Username: "admin"})
+			s.nodes["node"] = nodes.Node{ID: "node", CreatedAt: now, UpdatedAt: now, LastHeartbeatAt: &now}
+			s.membersByGroup["group"] = map[string]groups.Member{}
+			if reference == "active-group" || reference == "retired-only" {
+				m := groups.Member{GroupID: "group", NodeID: "node", Weight: 100}
+				if reference == "retired-only" {
+					m.RetiredAt = &now
+				}
+				s.membersByGroup["group"]["node"] = m
+			}
+			if reference == "pool" {
+				s.endpointMembers["pool"] = map[string]endpoints.EndpointPoolMember{"node": {PoolID: "pool", NodeID: "node", State: endpoints.CandidateDisabled}}
+			}
+			input := nodes.DeleteInput{NodeID: "node", DeletedBy: "admin", IdempotencyKey: "delete", RequestSHA256: "hash", DeletedAt: now, OnlineFor: time.Minute, OnlyUnassigned: true}
+			_, _, err := s.DeleteOffline(ctx, input, audit.Event{})
+			if reference == "active-group" || reference == "pool" {
+				if !errors.Is(err, faults.ErrConflict) || s.nodes["node"].DeletedAt != nil || len(s.AuditEvents()) != 0 || len(s.businessIdempotency) != 0 {
+					t.Fatal("protected reference deletion mutated state")
+				}
+				return
+			}
+			if err != nil || s.nodes["node"].DeletedAt == nil {
+				t.Fatalf("online orphan deletion failed: %v", err)
+			}
+			if _, err := s.UpdateHeartbeat(ctx, "node", nodes.Heartbeat{}, now, audit.Event{}); !errors.Is(err, faults.ErrUnauthorized) {
+				t.Fatal("deleted node returned via heartbeat")
+			}
+		})
+	}
+}

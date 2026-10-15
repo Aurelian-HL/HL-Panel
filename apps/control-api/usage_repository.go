@@ -21,8 +21,8 @@ func openUsageRepository(ctx context.Context, config runtimeConfig) (usage.Repos
 	if err != nil {
 		return nil, nil, errors.New("invalid usage PostgreSQL connection configuration")
 	}
-	db.SetMaxOpenConns(4)
-	db.SetMaxIdleConns(2)
+	db.SetMaxOpenConns(config.DatabaseMaxOpenConns)
+	db.SetMaxIdleConns(config.DatabaseMaxIdleConns)
 	db.SetConnMaxLifetime(30 * time.Minute)
 	closeRepository := func() { _ = db.Close() }
 	runner, err := usagemigration.New(db)

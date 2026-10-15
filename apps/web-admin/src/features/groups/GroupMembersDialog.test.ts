@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DeviceGroup, EdgeNode } from '@/api'
 
-const mocked = vi.hoisted(() => ({ getDeviceGroupMembers: vi.fn(), retireDeviceGroupMember: vi.fn(), updateDeviceGroupMemberWeight: vi.fn() }))
+const mocked = vi.hoisted(() => ({ getDeviceGroupMembers: vi.fn(), retireDeviceGroupMember: vi.fn(), deleteRetiredDeviceGroupMember: vi.fn(), updateDeviceGroupMemberWeight: vi.fn() }))
 vi.mock('@/api', () => ({ api: mocked }))
 
 import GroupMembersDialog from './GroupMembersDialog.vue'
@@ -16,9 +16,46 @@ beforeEach(() => {
   mocked.getDeviceGroupMembers.mockReset().mockResolvedValue({ items: [member] })
   mocked.retireDeviceGroupMember.mockReset().mockResolvedValue({ member: { ...member, retired_at: '2026-10-03T00:00:00Z' }, assignments: [], replayed: false })
   mocked.updateDeviceGroupMemberWeight.mockReset().mockResolvedValue({ member: { ...member, weight: 0 }, assignments: [], replayed: false })
+  mocked.deleteRetiredDeviceGroupMember.mockReset().mockResolvedValue({ group_id: group.id, node_id: member.node_id, deleted: true, replayed: false })
 })
 
 describe('GroupMembersDialog', () => {
+  it('deletes only a confirmed retired membership and removes it from the list', async () => {
+    const retired = { ...member, retired_at: '2026-10-12T00:00:00Z', updated_at: '2026-10-12T00:00:00Z' }
+    mocked.getDeviceGroupMembers.mockResolvedValue({ items: [retired, { ...member, node_id: 'active-node' }] })
+    const wrapper = mount(GroupMembersDialog, { props: { group, nodes }, global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(wrapper.findAll('button[aria-label^="删除退役记录"]')).toHaveLength(1)
+    await wrapper.get('button[aria-label="删除退役记录 入口一号"]').trigger('click')
+    expect(mocked.deleteRetiredDeviceGroupMember).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('保留这台机器在其他组的成员关系')
+    await wrapper.findAll('button').find((button) => button.text().includes('确认删除'))!.trigger('click')
+    await flushPromises()
+    expect(mocked.deleteRetiredDeviceGroupMember).toHaveBeenCalledWith(group.id, 'node-1', retired.updated_at, expect.any(String))
+    expect(wrapper.text()).not.toContain('已退役')
+    expect(wrapper.text()).toContain('active-node')
+    expect(wrapper.emitted('changed')?.[0]).toEqual([0])
+    wrapper.unmount()
+  })
+
+  it('keeps a failed deletion visible and uses the same key for retry', async () => {
+    mocked.getDeviceGroupMembers.mockResolvedValue({ items: [{ ...member, retired_at: '2026-10-12T00:00:00Z' }] })
+    mocked.deleteRetiredDeviceGroupMember.mockRejectedValueOnce(new Error('成员已重新入组，请刷新'))
+    const wrapper = mount(GroupMembersDialog, { props: { group, nodes }, global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    await wrapper.get('button[aria-label="删除退役记录 入口一号"]').trigger('click')
+    const confirm = () => wrapper.findAll('button').find((button) => button.text().includes('确认删除'))!
+    await confirm().trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('成员已重新入组')
+    expect(wrapper.text()).toContain('已退役')
+    const key = mocked.deleteRetiredDeviceGroupMember.mock.calls[0]![3]
+    await confirm().trigger('click')
+    await flushPromises()
+    expect(mocked.deleteRetiredDeviceGroupMember.mock.calls[1]![3]).toBe(key)
+    wrapper.unmount()
+  })
+
   it('loads members and requires explicit confirmation before retirement', async () => {
     const wrapper = mount(GroupMembersDialog, { props: { group, nodes }, global: { stubs: { Teleport: true } } })
     await flushPromises()

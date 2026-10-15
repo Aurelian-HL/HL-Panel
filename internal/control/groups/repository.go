@@ -50,3 +50,7 @@ type IdempotentRepository interface {
 	UpsertGroupMemberIdempotent(context.Context, UpsertGroupMemberInput, audit.Event) (Member, []generations.NodeConfigGeneration, bool, error)
 	RetireGroupMemberIdempotent(context.Context, RetireGroupMemberInput, audit.Event) (RetireMemberResult, error)
 }
+
+type RetiredMemberDeletionRepository interface {
+	DeleteRetiredGroupMember(context.Context, DeleteMemberInput, audit.Event) (DeleteMemberResult, error)
+}

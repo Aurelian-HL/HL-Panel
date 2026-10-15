@@ -9,7 +9,7 @@ import { formatDateTime } from '@/lib/displayFormatters'
 import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, formatUptime, hasLiveProbeReading, measuredPercent, monitorStatus, probeReadingState } from './format'
 import ProbeMetricBar from './ProbeMetricBar.vue'
 
-const props = withDefaults(defineProps<{ items: ProbeMember[]; groupMembers?: DeviceGroupMember[]; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { groupMembers: () => [] })
+const props = withDefaults(defineProps<{ items: ProbeMember[]; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { groupMembers: () => [], unassigned: false })
 const emit = defineEmits<{ editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember] }>()
 const groupMember = (nodeId: string) => props.groupMembers.find((member) => member.node_id === nodeId && !member.retired_at)
 const selectedId = ref<string | null>(null)
@@ -22,7 +22,7 @@ const rateHovered = computed(() => props.items.find((item) => item.node_id === r
 const rateTooltipPosition = ref({ left: 0, top: 0 })
 const nodeName = (member: ProbeMember) => member.name?.trim() || (member.link_status === 'unmanaged' ? `哪吒服务器 #${member.nezha_server_id}` : member.node_id)
 const collected = (value?: string) => value?.trim() || '未采集'
-const canDelete = (member: ProbeMember) => member.source === 'hl' && monitorStatus(member, props.upstreamStatus, props.now).text === '离线'
+const canDelete = (member: ProbeMember) => member.link_status !== 'unmanaged' && (member.source === 'hl' || member.link_status === 'linked' || member.link_status === 'native') && (props.unassigned || monitorStatus(member, props.upstreamStatus, props.now).text === '离线')
 const live = (member: ProbeMember) => hasLiveProbeReading(member, props.upstreamStatus, props.now)
 const metric = (member: ProbeMember, key: keyof ProbeMember): number | undefined => {
   const value = member[key]

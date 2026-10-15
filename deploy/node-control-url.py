@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 
+ROOT = Path('/opt/hl-panel')
 CONFIG = Path('/etc/hl-panel/edge-agent.json')
 STATE = Path('/var/lib/hl-panel-edge')
 BACKUPS = Path('/var/backups/hl-panel-node')
@@ -106,8 +107,15 @@ def main():
     if args.ca_file:
         ca = Path(args.ca_file)
         require(ca.is_absolute() and ca.is_file() and not ca.is_symlink(), 'CA 文件必须是本机普通文件的绝对路径')
-    with open('/run/hl-panel-node-update.lock', 'a') as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    require(ROOT.is_dir() and not ROOT.is_symlink() and ROOT.stat().st_uid == 0 and not ROOT.stat().st_mode & 0o022,
+            '节点程序目录不安全')
+    # Serialize address migration with managed updates and group reinstallation.
+    descriptor = os.open(ROOT / '.node-update.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise MoveError('另一个节点更新、重装或地址迁移正在执行，请完成后重试') from None
         move(origin(args.panel_url), args.ca_file)
 
 if __name__ == '__main__':

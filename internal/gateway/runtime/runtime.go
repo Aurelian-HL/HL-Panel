@@ -16,11 +16,14 @@ import (
 )
 
 var (
-	ErrSourceRequired  = errors.New("membership source is required")
-	ErrRouterRequired  = errors.New("membership router is required")
-	ErrServerRequired  = errors.New("gateway server is required")
-	ErrRefreshInterval = errors.New("membership refresh interval must be positive")
+	ErrSourceRequired    = errors.New("membership source is required")
+	ErrRouterRequired    = errors.New("membership router is required")
+	ErrServerRequired    = errors.New("gateway server is required")
+	ErrRefreshInterval   = errors.New("membership refresh interval must be positive")
+	ErrSourceLoadTimeout = errors.New("membership source load timeout must be positive")
 )
+
+const defaultSourceLoadTimeout = 15 * time.Second
 
 type Source interface {
 	Load(context.Context) (membership.Snapshot, error)
@@ -44,6 +47,7 @@ type Config struct {
 	Server              Server
 	ReachabilityMonitor ReachabilityMonitor
 	RefreshInterval     time.Duration
+	SourceLoadTimeout   time.Duration
 	Logger              *slog.Logger
 }
 
@@ -53,6 +57,7 @@ type Runtime struct {
 	server              Server
 	reachabilityMonitor ReachabilityMonitor
 	refreshInterval     time.Duration
+	sourceLoadTimeout   time.Duration
 	logger              *slog.Logger
 }
 
@@ -74,6 +79,12 @@ func New(config Config) (*Runtime, error) {
 	if config.RefreshInterval <= 0 {
 		return nil, ErrRefreshInterval
 	}
+	if config.SourceLoadTimeout < 0 {
+		return nil, ErrSourceLoadTimeout
+	}
+	if config.SourceLoadTimeout == 0 {
+		config.SourceLoadTimeout = defaultSourceLoadTimeout
+	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
@@ -83,6 +94,7 @@ func New(config Config) (*Runtime, error) {
 		server:              config.Server,
 		reachabilityMonitor: config.ReachabilityMonitor,
 		refreshInterval:     config.RefreshInterval,
+		sourceLoadTimeout:   config.SourceLoadTimeout,
 		logger:              config.Logger,
 	}, nil
 }
@@ -91,7 +103,7 @@ func (r *Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	initial, err := r.source.Load(ctx)
+	initial, err := r.load(ctx)
 	if err != nil {
 		return fmt.Errorf("load initial membership: %w", err)
 	}
@@ -132,7 +144,7 @@ func (r *Runtime) watch(ctx context.Context, state appliedSnapshot) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			snapshot, err := r.source.Load(ctx)
+			snapshot, err := r.load(ctx)
 			if err != nil {
 				if ctx.Err() == nil {
 					r.logger.Warn("membership refresh failed; retaining last known good snapshot", "error", normalizedError(err))
@@ -150,6 +162,15 @@ func (r *Runtime) watch(ctx context.Context, state appliedSnapshot) {
 			}
 		}
 	}
+}
+
+func (r *Runtime) load(ctx context.Context) (membership.Snapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	loadContext, cancel := context.WithTimeout(ctx, r.sourceLoadTimeout)
+	defer cancel()
+	return r.source.Load(loadContext)
 }
 
 func (r *Runtime) apply(snapshot membership.Snapshot, current appliedSnapshot) (appliedSnapshot, error) {

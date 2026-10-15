@@ -32,6 +32,7 @@ type GOSTRunner interface {
 // otherwise reveal target addresses or future credential-bearing settings.
 type ExecGOSTRunner struct {
 	binaryPath string
+	version    string
 }
 
 func NewExecGOSTRunner(binaryPath string) (*ExecGOSTRunner, error) {
@@ -55,7 +56,7 @@ func NewExecGOSTRunner(binaryPath string) (*ExecGOSTRunner, error) {
 	if err != nil || !IsSupportedGOSTVersion(string(version)) {
 		return nil, errors.New("gost binary must be version 3.3.1 or pinned v3.3.1-nightly.20260922")
 	}
-	return &ExecGOSTRunner{binaryPath: binaryPath}, nil
+	return &ExecGOSTRunner{binaryPath: binaryPath, version: parseEngineVersion("gost", version)}, nil
 }
 
 // IsSupportedGOSTVersion accepts only versions verified with the native compiler
@@ -69,6 +70,8 @@ func (r *ExecGOSTRunner) Test(ctx context.Context, configPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithTimeout(ctx, engineValidationTimeout)
+	defer cancel()
 	command := exec.CommandContext(ctx, r.binaryPath, "-C", configPath, "-O", "json")
 	command.Stdout = io.Discard
 	command.Stderr = io.Discard

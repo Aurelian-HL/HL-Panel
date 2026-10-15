@@ -24,6 +24,22 @@ type updateDeviceGroupMemberWeightRequest struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+func (api *API) deleteRetiredDeviceGroupMember(writer http.ResponseWriter, request *http.Request, session auth.Session) {
+	var input struct {
+		UpdatedAt time.Time `json:"updated_at"`
+	}
+	if err := decodeJSON(writer, request, &input); err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	result, err := api.groups.DeleteRetiredMember(request.Context(), session.AdminID, request.PathValue("group_id"), request.PathValue("node_id"), input.UpdatedAt, request.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, result)
+}
+
 func (api *API) updateDeviceGroupMemberWeight(writer http.ResponseWriter, request *http.Request, session auth.Session) {
 	var input updateDeviceGroupMemberWeightRequest
 	if err := decodeJSON(writer, request, &input); err != nil {

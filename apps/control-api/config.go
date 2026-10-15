@@ -28,6 +28,8 @@ type runtimeConfig struct {
 	AllowInsecureNonLoopback       bool
 	AllowVolatileStore             bool
 	DatabaseURL                    string
+	DatabaseMaxOpenConns           int
+	DatabaseMaxIdleConns           int
 	AdministratorUsername          string
 	AdministratorPasswordHash      []byte
 	CustomerPasswordFingerprintKey []byte
@@ -87,6 +89,14 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 		}
 	}
 	configuration.DatabaseURL = databaseURL
+	configuration.DatabaseMaxOpenConns, err = boundedIntEnv("CONTROL_DB_MAX_OPEN_CONNS", 16, 1, 256)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
+	configuration.DatabaseMaxIdleConns, err = boundedIntEnv("CONTROL_DB_MAX_IDLE_CONNS", 8, 0, configuration.DatabaseMaxOpenConns)
+	if err != nil {
+		return runtimeConfig{}, err
+	}
 	if configuration.AdministratorUsername == "" {
 		return runtimeConfig{}, fmt.Errorf("CONTROL_BOOTSTRAP_ADMIN_USERNAME is required")
 	}
@@ -379,4 +389,13 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func boundedIntEnv(name string, fallback, minimum, maximum int) (int, error) {
+	value := envOrDefault(name, strconv.Itoa(fallback))
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, minimum, maximum)
+	}
+	return parsed, nil
 }

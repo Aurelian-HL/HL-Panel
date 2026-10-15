@@ -159,7 +159,7 @@ func (s *Store) ConsumeEnrollmentToken(_ context.Context, input enrollment.Consu
 		event.Metadata["nezha_server_id"] = token.NezhaServerID
 	}
 	s.appendAuditLocked(event)
-	return cloneNode(node), nil
+	return cloneNode(s.nodes[node.ID]), nil
 }
 
 func enrollmentTokenRevokeKey(input enrollment.RevokeInput) string {

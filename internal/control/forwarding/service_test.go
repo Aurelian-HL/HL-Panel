@@ -357,6 +357,33 @@ func TestAutomaticRealityDefaultsAndSecretBoundary(t *testing.T) {
 	}
 }
 
+func TestAutomaticRealityCustomTarget(t *testing.T) {
+	request := validRequest()
+	request.IngressProtocol = IngressVLESSReality
+	request.VLESSOutboundMode = VLESSOutboundSOCKS5
+	request.VLESSSOCKS5Host, request.VLESSSOCKS5Port = "landing.example.com", 1080
+	request.VLESSSOCKS5Username, request.VLESSSOCKS5Password = "user", "secret"
+	request.RealityServerName = "www.example.com"
+	repo := &captureRepository{}
+	service := NewService(repo, nil)
+	rule, _, err := service.Create(context.Background(), "admin", request, "custom-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repo.created.AutoReality || repo.created.RealityPrivateKey == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination != "www.example.com:443" {
+		t.Fatal("custom target must generate independent key material without global defaults")
+	}
+	request.RealityDestination = "target.example.com:8443"
+	rule, _, err = service.Create(context.Background(), "admin", request, "custom-target-port")
+	if err != nil || rule.RealityDestination != request.RealityDestination || rule.RealityServerName != request.RealityServerName {
+		t.Fatalf("explicit Target and SNI were not preserved: %v", err)
+	}
+	request.RealityServerName = ""
+	if _, _, err := service.Create(context.Background(), "admin", request, "custom-target-no-sni"); !errors.Is(err, faults.ErrValidation) {
+		t.Fatalf("Target without SNI accepted: %v", err)
+	}
+}
+
 func TestAvailabilityStatusBoundaries(t *testing.T) {
 	now := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
 	future := now.Add(time.Second)

@@ -17,6 +17,7 @@ type DeleteInput struct {
 	NodeID, DeletedBy, IdempotencyKey, RequestSHA256 string
 	DeletedAt                                        time.Time
 	OnlineFor                                        time.Duration
+	OnlyUnassigned                                   bool
 }
 
 type DeleteResult struct {
@@ -25,6 +26,16 @@ type DeleteResult struct {
 }
 
 func (s *Service) DeleteOffline(ctx context.Context, administratorID, nodeID, key string) (DeleteResult, bool, error) {
+	return s.delete(ctx, administratorID, nodeID, key, false)
+}
+
+// DeleteUnassigned also permits an online orphan, but the repository must
+// atomically reject active group membership and endpoint-pool references.
+func (s *Service) DeleteUnassigned(ctx context.Context, administratorID, nodeID, key string) (DeleteResult, bool, error) {
+	return s.delete(ctx, administratorID, nodeID, key, true)
+}
+
+func (s *Service) delete(ctx context.Context, administratorID, nodeID, key string, onlyUnassigned bool) (DeleteResult, bool, error) {
 	administratorID, nodeID, key = strings.TrimSpace(administratorID), strings.TrimSpace(nodeID), strings.TrimSpace(key)
 	if !validIdentifier(administratorID) || !validIdentifier(nodeID) || !validIdempotencyKey(key) {
 		return DeleteResult{}, false, fmt.Errorf("%w: node, administrator, and Idempotency-Key are required", faults.ErrValidation)
@@ -34,8 +45,12 @@ func (s *Service) DeleteOffline(ctx context.Context, administratorID, nodeID, ke
 	if err != nil {
 		return DeleteResult{}, false, err
 	}
-	digest := sha256.Sum256([]byte("node.delete\x00" + nodeID))
-	return s.repository.DeleteOffline(ctx, DeleteInput{NodeID: nodeID, DeletedBy: administratorID, IdempotencyKey: key, RequestSHA256: hex.EncodeToString(digest[:]), DeletedAt: now, OnlineFor: s.onlineFor}, event)
+	fingerprint := "node.delete\x00" + nodeID
+	if onlyUnassigned {
+		fingerprint += "\x00unassigned"
+	}
+	digest := sha256.Sum256([]byte(fingerprint))
+	return s.repository.DeleteOffline(ctx, DeleteInput{NodeID: nodeID, DeletedBy: administratorID, IdempotencyKey: key, RequestSHA256: hex.EncodeToString(digest[:]), DeletedAt: now, OnlineFor: s.onlineFor, OnlyUnassigned: onlyUnassigned}, event)
 }
 
 // Recovering a deleted identity requires its private credential AND a fresh

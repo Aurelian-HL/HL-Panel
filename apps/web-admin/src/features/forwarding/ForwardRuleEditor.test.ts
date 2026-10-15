@@ -130,7 +130,7 @@ describe('ForwardRuleEditor', () => {
     const copy = mountEditor({ rule: issued, copy: true })
     await fieldStartingWith(copy, '目标地址').get('textarea').setValue('192.0.2.10:443:landing-user:landing-secret')
     await submit(copy)
-    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ reality_public_key: '', reality_short_id: '', listen_port: 0, paused: true })
+    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ reality_public_key: '', reality_short_id: '', reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443', listen_port: 0, paused: true })
     expect(mocked.saveRule.mock.calls[1]?.[1]).toBeNull()
     copy.unmount()
   })
@@ -142,6 +142,33 @@ describe('ForwardRuleEditor', () => {
     await submit(edit)
     expect(mocked.saveRule).toHaveBeenCalledOnce()
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ vless_socks5_username: 'landing-user', vless_socks5_password: 'landing-secret', targets: [] })
+    edit.unmount()
+  })
+
+  it('saves a custom Reality target while leaving key generation automatic', async () => {
+    const wrapper = mountEditor()
+    await populate(wrapper)
+    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+    await field(wrapper, '目标地址').get('textarea').setValue('198.51.100.20:6019:user:secret')
+    await field(wrapper, 'Reality SNI').get('input').setValue('www.example.com')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443', reality_public_key: '', reality_short_id: '' })
+    wrapper.unmount()
+  })
+
+  it('requires SNI for a custom Target and warns on an issued target change', async () => {
+    const issued = { ...rule, ingress_protocol: 'vless_reality' as const, reality_server_name: 'www.example.com', reality_public_key: 'public-key', reality_short_id: '0123456789abcdef', reality_destination: 'www.example.com:443' }
+    const edit = mountEditor({ rule: issued })
+    await field(edit, '目标地址').get('textarea').setValue('198.51.100.20:6019:user:secret')
+    await field(edit, 'Reality Target').get('input').setValue('other.example.com:443')
+    await field(edit, 'Reality SNI').get('input').setValue('')
+    await submit(edit)
+    expect(mocked.saveRule).not.toHaveBeenCalled()
+    expect(edit.text()).toContain('也需要填写对应的 SNI')
+    await field(edit, 'Reality SNI').get('input').setValue('other.example.com')
+    expect(edit.text()).toContain('客户需要更新订阅或重新导入节点')
+    await submit(edit)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ reality_public_key: 'public-key', reality_short_id: '0123456789abcdef', reality_server_name: 'other.example.com', reality_destination: 'other.example.com:443' })
     edit.unmount()
   })
 

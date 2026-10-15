@@ -25,9 +25,11 @@ func (s *Store) GatewayMembershipStates(ctx context.Context, poolIDs []string) (
 }
 
 func (s *Store) PublishProtocolHealth(ctx context.Context, observation gatewaymembership.ProtocolObservation) error {
-	return mutate(ctx, s, func(state *memoryrepo.Store) error {
-		return state.PublishProtocolHealth(ctx, observation)
-	})
+	results, err := s.publishProtocolHealth(ctx, []gatewaymembership.ProtocolObservation{observation}, false)
+	if err != nil {
+		return err
+	}
+	return results[0]
 }
 
 func (s *Store) ProtocolProbeConfig(ctx context.Context, ruleID string) (gatewaymembership.ProtocolProbeConfig, error) {
@@ -40,4 +42,14 @@ func (s *Store) ConfigureProtocolProbe(ctx context.Context, ruleID string, confi
 	return mutate(ctx, s, func(state *memoryrepo.Store) error {
 		return state.ConfigureProtocolProbe(ctx, ruleID, config)
 	})
+}
+
+func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
+	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]gatewaymembership.ProbeState, error) {
+		return state.ProtocolProbeStates(ctx)
+	})
+}
+
+func (s *Store) PublishProtocolHealthBatch(ctx context.Context, observations []gatewaymembership.ProtocolObservation) ([]error, error) {
+	return s.publishProtocolHealth(ctx, observations, true)
 }

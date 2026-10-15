@@ -228,6 +228,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("POST /api/v1/device-groups/{group_id}/members", api.requireAdministrator(api.addDeviceGroupMember))
 	mux.HandleFunc("PUT /api/v1/device-groups/{group_id}/members/{node_id}/weight", api.requireAdministrator(api.updateDeviceGroupMemberWeight))
 	mux.HandleFunc("POST /api/v1/device-groups/{group_id}/members/{node_id}/retire", api.requireAdministrator(api.retireDeviceGroupMember))
+	mux.HandleFunc("DELETE /api/v1/device-groups/{group_id}/members/{node_id}", api.requireAdministrator(api.deleteRetiredDeviceGroupMember))
 	mux.HandleFunc("POST /api/v1/device-groups/{group_id}/generations", api.requireAdministrator(api.createGroupRevision))
 	mux.HandleFunc("POST /api/v1/endpoint-pools", api.requireAdministrator(api.createEndpointPool))
 	mux.HandleFunc("GET /api/v1/endpoint-pools", api.requireAdministrator(api.listEndpointPools))

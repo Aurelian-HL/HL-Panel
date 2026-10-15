@@ -119,14 +119,17 @@ func (s *Service) RecordHeartbeat(ctx context.Context, nodeID string, heartbeat 
 	if !validApplyStatus(heartbeat.LastApplyStatus) {
 		return Node{}, fmt.Errorf("%w: invalid last_apply_status", faults.ErrValidation)
 	}
-	now := s.now().UTC()
-	event, err := audit.NewEvent(now, "node", nodeID, "node.heartbeat", "node", nodeID, "succeeded", map[string]any{
-		"boot_id": heartbeat.BootID,
-	})
-	if err != nil {
-		return Node{}, err
+	if !validApplyPhase(heartbeat.LastApplyPhase) {
+		return Node{}, fmt.Errorf("%w: invalid last_apply_phase", faults.ErrValidation)
 	}
-	return s.repository.UpdateHeartbeat(ctx, nodeID, heartbeat, now, event)
+	if len(heartbeat.LastApplyMessage) > 1024 {
+		return Node{}, fmt.Errorf("%w: last_apply_message is too long", faults.ErrValidation)
+	}
+	now := s.now().UTC()
+	// Heartbeats are high-frequency liveness telemetry. They update node state
+	// but are deliberately excluded from the business audit journal; control,
+	// enrollment and configuration events remain audited.
+	return s.repository.UpdateHeartbeat(ctx, nodeID, heartbeat, now, audit.Event{})
 }
 
 func (s *Service) Overview(ctx context.Context) (Overview, error) {
@@ -212,6 +215,15 @@ func nodeStatus(node Node, now time.Time, onlineFor time.Duration) string {
 func validApplyStatus(status string) bool {
 	switch status {
 	case "", "succeeded", "failed", "rolled_back":
+		return true
+	default:
+		return false
+	}
+}
+
+func validApplyPhase(phase string) bool {
+	switch phase {
+	case "", "prepare", "validate", "commit", "verify", "rollback":
 		return true
 	default:
 		return false

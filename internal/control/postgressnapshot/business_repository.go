@@ -2,6 +2,7 @@ package postgressnapshot
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
@@ -21,7 +22,9 @@ func (s *Store) ListCustomers(ctx context.Context) ([]customers.Customer, error)
 }
 
 func (s *Store) Customer(ctx context.Context, id string) (customers.Customer, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (customers.Customer, error) { return state.Customer(ctx, id) })
+	return readUsage(ctx, s, func(_ context.Context, _ *sql.Tx, view *memoryrepo.UsageReadView) (customers.Customer, error) {
+		return view.Customer(ctx, id)
+	})
 }
 
 func (s *Store) SaveCustomer(ctx context.Context, input customers.SaveCustomerInput, event audit.Event) (customers.Customer, bool, error) {

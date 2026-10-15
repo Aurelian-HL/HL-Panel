@@ -82,7 +82,6 @@ func (s *AtomicStateStore) Begin(desired agentv1.DesiredNodeConfig, now time.Tim
 		ConfigSHA256: desired.ConfigSHA256,
 		StartedAt:    now.UTC().Format(time.RFC3339Nano),
 	}
-	current.PendingReceipts = nil
 	current.LastApplyPhase = agentv1.ApplyPhasePrepare
 	current.LastApplyStatus = ""
 	current.LastApplyMessage = "configuration apply pending"
@@ -139,7 +138,7 @@ func (s *AtomicStateStore) complete(desired agentv1.DesiredNodeConfig, receipts 
 		AppliedAt:    now.UTC().Format(time.RFC3339Nano),
 	}
 	current.Pending = nil
-	current.PendingReceipts = append([]agentv1.ApplyResultRequest(nil), receipts...)
+	current.PendingReceipts = append(current.PendingReceipts, receipts...)
 	current.LastApplyPhase = agentv1.ApplyPhaseVerify
 	current.LastApplyStatus = agentv1.ApplyStatusSucceeded
 	current.LastApplyMessage = "configuration committed and verified"

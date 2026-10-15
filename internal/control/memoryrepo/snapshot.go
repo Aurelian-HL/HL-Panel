@@ -21,7 +21,6 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
-	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -30,7 +29,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 19
+const SnapshotVersion = 18
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -45,7 +44,10 @@ const protocolHealthSnapshotVersion = 12
 const protocolProbeSnapshotVersion = 13
 const nezhaBindingSnapshotVersion = 14
 const vlessSOCKS5SnapshotVersion = 15
-const MaxSnapshotBytes = 16 << 20
+
+// Full migration exports include archived configuration generations. The hot
+// PostgreSQL row remains capped separately at 16 MiB.
+const MaxSnapshotBytes = 64 << 20
 
 func SupportsSnapshotVersion(version int) bool {
 	return version >= 1 && version <= SnapshotVersion
@@ -167,8 +169,6 @@ type snapshot struct {
 	ProtocolHealth          map[string]map[string]gatewaymembership.ProtocolObservation
 	ProtocolProbes          map[string]gatewaymembership.ProtocolProbeConfig
 	BusinessIdempotency     map[string]businessMutation
-	LicenseCodes            map[string]licensing.Code
-	LicenseLease            *licensing.Lease
 }
 
 // EncodeSnapshot is only for the confidential persistence adapter.
@@ -210,19 +210,6 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		}
 		groupNetworks[id] = normalized
 	}
-	for id, item := range s.licenseCodes {
-		if id == "" || item.ID != id {
-			return nil, errors.New("encode invalid license code")
-		}
-		if _, err := licensing.ValidateStoredCode(item); err != nil {
-			return nil, errors.New("encode invalid license code")
-		}
-	}
-	if s.licenseLease != nil {
-		if _, err := licensing.ValidateLease(*s.licenseLease); err != nil {
-			return nil, errors.New("encode invalid license lease")
-		}
-	}
 	state := snapshot{
 		Version:        SnapshotVersion,
 		Administrators: make(map[string]storedAdministrator, len(s.adminsByUsername)),
@@ -245,8 +232,6 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		VLESSBindings:           make(map[string]storedVLESSBinding, len(s.vlessBindings)),
 		VLESSRuntimeMaterials:   make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
 		BusinessIdempotency:     s.businessIdempotency,
-		LicenseCodes:            s.licenseCodes,
-		LicenseLease:            s.licenseLease,
 		ProtocolHealth:          s.protocolHealth,
 		GatewayMutationRevision: s.gatewayMutationRevision,
 		ProtocolProbes:          s.protocolProbes,
@@ -359,6 +344,16 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		state.NodeConfigsByRevision == nil || state.ApplyResultsByNode == nil || state.AuditEvents == nil {
 		return nil, errors.New("incomplete persistence state")
 	}
+	seenRulePools := make(map[string]string)
+	for id, pool := range state.EndpointPools {
+		if pool.RuleID == "" {
+			continue
+		}
+		if _, exists := seenRulePools[pool.RuleID]; exists {
+			return nil, errors.New("duplicate persisted endpoint pool for forwarding rule")
+		}
+		seenRulePools[pool.RuleID] = id
+	}
 	s := New(auth.Administrator{})
 	if state.Version == 1 {
 		if state.Customers != nil || state.UserGroups != nil || state.GroupNetworks != nil || state.ForwardRules != nil || state.BusinessIdempotency != nil {
@@ -373,9 +368,6 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		}
 		if state.Version >= siteSnapshotVersion && (state.Announcements == nil || siteconfig.ValidateStored(state.SiteSettings) != nil) {
 			return nil, errors.New("incomplete site persistence state")
-		}
-		if state.Version >= SnapshotVersion && state.LicenseCodes == nil {
-			return nil, errors.New("incomplete license persistence state")
 		}
 		if state.Version >= customerSessionsSnapshotVersion && state.CustomerSessions == nil {
 			return nil, errors.New("incomplete customer session persistence state")
@@ -475,25 +467,6 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		}
 		if state.CustomerSessions != nil {
 			s.customerSessions = state.CustomerSessions
-		}
-		if state.LicenseCodes != nil {
-			for id, item := range state.LicenseCodes {
-				if id == "" || item.ID != id {
-					return nil, errors.New("invalid persisted license code")
-				}
-				validated, err := licensing.ValidateStoredCode(item)
-				if err != nil {
-					return nil, errors.New("invalid persisted license code")
-				}
-				s.licenseCodes[id] = validated
-			}
-		}
-		if state.LicenseLease != nil {
-			lease, err := licensing.ValidateLease(*state.LicenseLease)
-			if err != nil {
-				return nil, errors.New("invalid persisted license lease")
-			}
-			s.licenseLease = &lease
 		}
 		if state.VLESSBindings != nil {
 			for id, stored := range state.VLESSBindings {

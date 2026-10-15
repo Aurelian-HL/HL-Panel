@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { LoaderCircle, Plus, RefreshCw, Settings2, UserMinus } from '@lucide/vue'
+import { LoaderCircle, Plus, RefreshCw, Settings2, Trash2, UserMinus } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember, type EdgeNode } from '@/api'
 import BaseModal from '@/components/BaseModal.vue'
@@ -14,6 +14,7 @@ const loading = ref(true)
 const errorMessage = ref('')
 const actionError = ref('')
 const confirmingNodeId = ref<string | null>(null)
+const deletingMember = ref<DeviceGroupMember | null>(null)
 const submittingNodeId = ref<string | null>(null)
 const operationKey = ref<string | null>(null)
 const editingMember = ref<DeviceGroupMember | null>(null)
@@ -43,9 +44,36 @@ async function load(): Promise<void> {
 }
 
 function askRetire(nodeId: string): void {
+  deletingMember.value = null
   confirmingNodeId.value = nodeId
   operationKey.value = crypto.randomUUID()
   actionError.value = ''
+}
+
+function askDelete(member: DeviceGroupMember): void {
+  if (!member.retired_at || submittingNodeId.value) return
+  confirmingNodeId.value = null
+  deletingMember.value = { ...member }
+  operationKey.value = crypto.randomUUID()
+  actionError.value = ''
+}
+
+async function deleteRetired(): Promise<void> {
+  const member = deletingMember.value
+  if (!member || !operationKey.value || submittingNodeId.value) return
+  submittingNodeId.value = member.node_id
+  actionError.value = ''
+  try {
+    await api.deleteRetiredDeviceGroupMember(props.group.id, member.node_id, member.updated_at, operationKey.value)
+    members.value = members.value.filter((item) => item.node_id !== member.node_id)
+    deletingMember.value = null
+    operationKey.value = null
+    emit('changed', 0)
+  } catch (error) {
+    actionError.value = displayError(error)
+  } finally {
+    submittingNodeId.value = null
+  }
 }
 
 async function retire(): Promise<void> {
@@ -93,7 +121,10 @@ onMounted(load)
             <small>{{ member.dial_host || '未设置拨号地址' }} · 权重 {{ member.weight }} · 优先级 {{ member.priority }}</small>
             <small v-if="member.retired_at">退役于 {{ formatDateTime(member.retired_at) }}</small>
           </div>
-          <span v-if="member.retired_at" class="member-status">已退役</span>
+          <div v-if="member.retired_at" class="member-row__actions">
+            <span class="member-status">已退役</span>
+            <button class="button button--quiet" type="button" :disabled="!!submittingNodeId" :aria-label="`删除退役记录 ${nodeLabel(member.node_id)}`" @click="askDelete(member)"><Trash2 :size="15" />删除</button>
+          </div>
           <div v-else class="member-row__actions"><button class="button button--quiet" type="button" :disabled="!!submittingNodeId" :aria-label="`更改 ${nodeLabel(member.node_id)} 权重`" @click="editingMember = member"><Settings2 :size="15" />权重</button><button class="button button--quiet" type="button" :disabled="!!submittingNodeId" :aria-label="`退役 ${nodeLabel(member.node_id)}`" @click="askRetire(member.node_id)"><UserMinus :size="15" />退役</button></div>
         </li>
       </ul>
@@ -106,6 +137,15 @@ onMounted(load)
       <div class="member-confirm__actions">
         <button class="button button--secondary" type="button" :disabled="!!submittingNodeId" @click="confirmingNodeId = null; operationKey = null">取消</button>
         <button class="button button--primary" type="button" :disabled="!!submittingNodeId" @click="retire"><LoaderCircle v-if="submittingNodeId" class="spin" :size="15" /><UserMinus v-else :size="15" />确认退役</button>
+      </div>
+    </div>
+    <div v-if="deletingMember" class="member-confirm">
+      <strong>确认删除 {{ nodeLabel(deletingMember.node_id) }} 的退役记录？</strong>
+      <p>仅清理当前设备组的退役记录，保留这台机器在其他组的成员关系、节点身份和历史流量。</p>
+      <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
+      <div class="member-confirm__actions">
+        <button class="button button--secondary" type="button" :disabled="!!submittingNodeId" @click="deletingMember = null; operationKey = null">取消</button>
+        <button class="button button--primary" type="button" :disabled="!!submittingNodeId" @click="deleteRetired"><LoaderCircle v-if="submittingNodeId" class="spin" :size="15" /><Trash2 v-else :size="15" />确认删除</button>
       </div>
     </div>
     <template #footer>
@@ -124,11 +164,11 @@ onMounted(load)
 .member-row__main { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
 .member-row__main strong { font-size: 13px; color: var(--navy-800); }
 .member-row__main small { font-size: 11px; color: var(--gray-600); }
-.member-row__actions { display: flex; flex: none; gap: 4px; }
+.member-row__actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .member-status { flex: none; font-size: 11px; color: var(--gray-500); }
 .member-confirm { margin-top: 16px; padding: 12px; border: 1px solid #e4d2a9; background: var(--amber-100); }
 .member-confirm strong { font-size: 13px; }
 .member-confirm p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
 .member-confirm__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-@media (max-width: 640px) { .member-row { align-items: flex-start; } .member-row .button { flex: none; } }
+@media (max-width: 640px) { .member-row { align-items: flex-start; flex-wrap: wrap; } .member-row__actions { margin-left: auto; } .member-row .button { flex: none; } }
 </style>

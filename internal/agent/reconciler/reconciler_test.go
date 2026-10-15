@@ -18,6 +18,19 @@ type recordingReporter struct {
 	failVerifyOnce bool
 }
 
+type blockingReporter struct {
+	started chan struct{}
+}
+
+func (r *blockingReporter) ReportApplyResult(ctx context.Context, _ string, _ agentv1.ApplyResultRequest) error {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (r *recordingReporter) ReportApplyResult(_ context.Context, _ string, result agentv1.ApplyResultRequest) error {
 	if result.Phase == agentv1.ApplyPhaseVerify && r.failVerifyOnce {
 		r.failVerifyOnce = false
@@ -70,6 +83,43 @@ func TestVerifiedReceiptsSurviveReportFailureAndRetrySameGeneration(t *testing.T
 	last := reporter.results[len(reporter.results)-1]
 	if last.Phase != agentv1.ApplyPhaseVerify || last.AttemptID != firstAttempt || last.EngineMode != "gost" {
 		t.Fatalf("retried receipt = %#v", last)
+	}
+}
+
+func TestApplyKeepsLocalStateWhenReceiptReporterBlocks(t *testing.T) {
+	directory := t.TempDir()
+	store := state.NewAtomicStateStore(directory+"/state.json", directory+"/configurations")
+	fileAdapter, err := engine.NewDryRunFileAdapter(directory+"/staging/config.json", directory+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter := &blockingReporter{started: make(chan struct{}, 8)}
+	r, err := New(store, fileAdapter, reporter, "node-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := testDesired(1, `{"schema_version":1,"fragments":[]}`)
+	done := make(chan error, 1)
+	go func() { done <- r.Apply(context.Background(), desired) }()
+	select {
+	case <-reporter.started:
+	case <-time.After(time.Second):
+		t.Fatal("receipt reporter was not invoked")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Apply() error = %v", err)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("Apply() remained blocked by receipt reporter")
+	}
+	current, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Applied == nil || current.Applied.Generation != desired.Generation || len(current.PendingReceipts) == 0 {
+		t.Fatalf("local apply state = %#v, want applied generation and durable receipts", current)
 	}
 }
 
@@ -268,18 +318,18 @@ func TestRestoreAppliedAttestsRunningEngineAndRecoversStoppedProcess(t *testing.
 	if live.commits != 1 || !live.running {
 		t.Fatalf("restored adapter commits = %d, running = %v", live.commits, live.running)
 	}
-	if len(reporter.results) != 4 {
-		t.Fatalf("restore reports = %#v, want prepare, validate, commit and verify", reporter.results)
+	if len(reporter.results) != 2 {
+		t.Fatalf("restore reports = %#v, want durable commit and verify", reporter.results)
 	}
 	attemptID := reporter.results[0].AttemptID
 	if len(attemptID) != 32 {
 		t.Fatalf("restore attempt id = %q, want 32 hex characters", attemptID)
 	}
-	for index, result := range reporter.results {
+	for _, result := range reporter.results {
 		if result.AttemptID != attemptID || result.Status != agentv1.ApplyStatusSucceeded {
 			t.Fatalf("restored report = %#v, want same successful attempt", result)
 		}
-		if index >= 2 && result.EngineMode != "gost" {
+		if result.EngineMode != "gost" {
 			t.Fatalf("restored report = %#v, want real engine acknowledgement", result)
 		}
 	}
@@ -315,8 +365,8 @@ func TestRestoreAppliedFailureDoesNotAttestEngine(t *testing.T) {
 	if err := restarted.RestoreApplied(context.Background()); err == nil {
 		t.Fatal("RestoreApplied() succeeded despite failed commit")
 	}
-	if len(reporter.results) != 3 || reporter.results[2].Status != agentv1.ApplyStatusFailed {
-		t.Fatalf("failure reports = %#v, want failed commit after prepare and validate", reporter.results)
+	if len(reporter.results) != 1 || reporter.results[0].Status != agentv1.ApplyStatusFailed {
+		t.Fatalf("failure reports = %#v, want failed commit", reporter.results)
 	}
 	for _, result := range reporter.results {
 		if result.EngineMode != "" {
@@ -326,6 +376,59 @@ func TestRestoreAppliedFailureDoesNotAttestEngine(t *testing.T) {
 	current, err := store.Load()
 	if err != nil || current.LastApplyStatus != agentv1.ApplyStatusFailed {
 		t.Fatalf("Load() after failed restore = (%#v, %v)", current, err)
+	}
+}
+
+func TestEnsureAppliedRecoversLocallyAndLeavesLiveProcessAlone(t *testing.T) {
+	directory := t.TempDir()
+	store := state.NewAtomicStateStore(directory+"/state.json", directory+"/configurations")
+	fileAdapter, err := engine.NewDryRunFileAdapter(directory+"/staging/config.json", directory+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := testDesired(1, `{"schema_version":1,"fragments":[{"group_id":"test","group_generation":1,"engine":"gost","config":{"services":[]}}]}`)
+	initial, _ := New(store, fileAdapter, nil, "")
+	if err := initial.Apply(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	live := &recordingLiveAdapter{DryRunFileAdapter: fileAdapter}
+	reporter := &recordingReporter{}
+	r, _ := New(store, live, reporter, "node-secret")
+	if restored, err := r.EnsureApplied(context.Background()); err != nil || !restored || !live.running {
+		t.Fatalf("local recovery = %v, %v; running=%v", restored, err, live.running)
+	}
+	if len(reporter.results) != 0 {
+		t.Fatal("local recovery contacted control plane")
+	}
+	current, err := store.Load()
+	if err != nil || len(current.PendingReceipts) != 2 {
+		t.Fatalf("local recovery lost durable receipts: %v", err)
+	}
+	if restored, err := r.EnsureApplied(context.Background()); err != nil || restored || live.commits != 1 {
+		t.Fatalf("live process was restarted: %v, %v, commits=%d", restored, err, live.commits)
+	}
+	if err := r.FlushReceipts(context.Background()); err != nil || len(reporter.results) != 2 {
+		t.Fatalf("deferred receipts = %d, %v", len(reporter.results), err)
+	}
+}
+
+func TestEnsureAppliedDoesNotStartEmptyConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	store := state.NewAtomicStateStore(directory+"/state.json", directory+"/configurations")
+	fileAdapter, err := engine.NewDryRunFileAdapter(directory+"/staging/config.json", directory+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, _ := New(store, fileAdapter, nil, "")
+	if err := initial.Apply(context.Background(), testDesired(1, `{"schema_version":1,"fragments":[]}`)); err != nil {
+		t.Fatal(err)
+	}
+	live := &recordingLiveAdapter{DryRunFileAdapter: fileAdapter}
+	r, _ := New(store, live, nil, "")
+	for i := 0; i < 2; i++ {
+		if restored, err := r.EnsureApplied(context.Background()); err != nil || restored || live.commits != 0 {
+			t.Fatalf("empty configuration entered recovery loop: %v, %v", restored, err)
+		}
 	}
 }
 
