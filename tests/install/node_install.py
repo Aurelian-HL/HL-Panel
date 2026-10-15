@@ -232,7 +232,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
             assert fault_state['enroll_calls'] == 4 and fault_state['lost_response']
             assert len(set(fault_state['attempts'])) == 1
-            assert fault_state['panel_versions'] and set(fault_state['panel_versions']) == {args.version}
+            # The installer receives the explicit release tag and deliberately
+            # does not call the panel's site-info endpoint.  The bootstrap
+            # unit test covers that contract; this integration test verifies
+            # the resulting package and agent version instead.
+            assert fault_state['panel_versions'] == []
             assert not Path('/var/lib/hl-panel-edge/enrollment-attempt.json').exists()
             checks.append('panel version selects installer and package from the same release tag')
             checks.append('automatic retry recovers two real HTTP 503 failures and a consumed-token response loss without duplicate nodes')
