@@ -21,6 +21,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -29,7 +30,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 18
+const SnapshotVersion = 19
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -169,6 +170,8 @@ type snapshot struct {
 	ProtocolHealth          map[string]map[string]gatewaymembership.ProtocolObservation
 	ProtocolProbes          map[string]gatewaymembership.ProtocolProbeConfig
 	BusinessIdempotency     map[string]businessMutation
+	LicenseCodes            map[string]licensing.Code
+	LicenseLease            *licensing.Lease
 }
 
 // EncodeSnapshot is only for the confidential persistence adapter.
@@ -232,6 +235,8 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		VLESSBindings:           make(map[string]storedVLESSBinding, len(s.vlessBindings)),
 		VLESSRuntimeMaterials:   make(map[string]storedVLESSRuntimeMaterial, len(s.vlessRuntimeMaterials)),
 		BusinessIdempotency:     s.businessIdempotency,
+		LicenseCodes:            s.licenseCodes,
+		LicenseLease:            s.licenseLease,
 		ProtocolHealth:          s.protocolHealth,
 		GatewayMutationRevision: s.gatewayMutationRevision,
 		ProtocolProbes:          s.protocolProbes,
@@ -262,6 +267,19 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		state.VLESSSOCKS5Upstreams[id] = storedVLESSSOCKS5Upstream{
 			Hostname: normalized.Hostname, Port: normalized.Port,
 			Username: normalized.Username, Password: normalized.Password,
+		}
+	}
+	for id, item := range s.licenseCodes {
+		if id == "" || item.ID != id {
+			return nil, errors.New("encode invalid license code")
+		}
+		if _, err := licensing.ValidateStoredCode(item); err != nil {
+			return nil, errors.New("encode invalid license code")
+		}
+	}
+	if s.licenseLease != nil {
+		if _, err := licensing.ValidateLease(*s.licenseLease); err != nil {
+			return nil, errors.New("encode invalid license lease")
 		}
 	}
 	for id, customer := range s.customers {
@@ -387,6 +405,9 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version >= protocolProbeSnapshotVersion && state.ProtocolProbes == nil {
 			return nil, errors.New("incomplete protocol probe persistence state")
 		}
+		if state.Version >= SnapshotVersion && state.LicenseCodes == nil {
+			return nil, errors.New("incomplete license persistence state")
+		}
 		if state.Version >= applyAttemptsSnapshotVersion && state.ApplyAttemptsByNode == nil {
 			return nil, errors.New("incomplete apply attempt persistence state")
 		}
@@ -467,6 +488,25 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		}
 		if state.CustomerSessions != nil {
 			s.customerSessions = state.CustomerSessions
+		}
+		if state.LicenseCodes != nil {
+			for id, item := range state.LicenseCodes {
+				if id == "" || item.ID != id {
+					return nil, errors.New("invalid persisted license code")
+				}
+				validated, err := licensing.ValidateStoredCode(item)
+				if err != nil {
+					return nil, errors.New("invalid persisted license code")
+				}
+				s.licenseCodes[id] = validated
+			}
+		}
+		if state.LicenseLease != nil {
+			lease, err := licensing.ValidateLease(*state.LicenseLease)
+			if err != nil {
+				return nil, errors.New("invalid persisted license lease")
+			}
+			s.licenseLease = &lease
 		}
 		if state.VLESSBindings != nil {
 			for id, stored := range state.VLESSBindings {

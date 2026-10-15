@@ -129,7 +129,7 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 	if err != nil || configuration.ProtocolProbeEchoPort < 1 || configuration.ProtocolProbeEchoPort > 65535 {
 		return runtimeConfig{}, fmt.Errorf("CONTROL_PROTOCOL_PROBE_ECHO_PORT must be between 1 and 65535")
 	}
-	configuration.ProtocolProbeInterval, err = time.ParseDuration(envOrDefault("CONTROL_PROTOCOL_PROBE_INTERVAL", "15s"))
+	configuration.ProtocolProbeInterval, err = time.ParseDuration(envOrDefault("CONTROL_PROTOCOL_PROBE_INTERVAL", "30s"))
 	if err != nil || configuration.ProtocolProbeInterval < time.Second {
 		return runtimeConfig{}, fmt.Errorf("CONTROL_PROTOCOL_PROBE_INTERVAL must be at least 1s")
 	}

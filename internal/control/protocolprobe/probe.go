@@ -25,7 +25,10 @@ var ErrUnhealthy = errors.New("VLESS protocol probe failed")
 // It must match the protocol scheduler's worker budget: a smaller fixed value
 // leaves workers queued inside Check and can make a large pool miss its health
 // lease renewal window even when every node is healthy.
-const maxConcurrentChecks = 8
+// Keep protocol validation bounded independently from the scheduler. Four
+// short-lived Xray processes are enough to renew the 90-second health lease
+// while avoiding the CPU spikes caused by probing eight nodes at once.
+const maxConcurrentChecks = 4
 const maxPortStartAttempts = 3
 
 var checkSlots = make(chan struct{}, maxConcurrentChecks)

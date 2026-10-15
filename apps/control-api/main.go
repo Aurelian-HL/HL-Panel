@@ -32,6 +32,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/hostgeo"
 	"github.com/hongle/hl-panel/internal/control/httpapi"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/panelmigration"
@@ -171,6 +172,19 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	protocolRunner := gatewaymembership.NewProtocolRunner(store, configuration.ProtocolProbeXrayBinary, configuration.ProtocolProbeEchoPort, configuration.ProtocolProbeInterval, logger)
 	endpointService := endpoints.NewServiceWithReadyCandidateSource(store, time.Now, gatewayMembershipService)
 	generationService := generations.NewService(store, time.Now, generations.WithDeploymentNotification(protocolRunner.NotifyDeployment))
+	licensingService := licensing.NewService(store, time.Now)
+	var remoteLicenseIssuer *licensing.RemoteIssuer
+	var remoteLicenseLease licensing.Lease
+	if configuration.LicenseIssuerURL != "" {
+		remoteLicenseIssuer, err = licensing.NewRemoteIssuer(configuration.LicenseIssuerURL, configuration.LicenseHTTPTimeout)
+		if err != nil {
+			return fmt.Errorf("configure remote license issuer: %w", err)
+		}
+		remoteLicenseLease, err = bootstrapRemoteLicense(context.Background(), licensingService, remoteLicenseIssuer, configuration, logger)
+		if err != nil {
+			return err
+		}
+	}
 	customerService := customers.NewService(store, time.Now)
 	forwardingService := forwarding.NewService(store, time.Now, forwarding.WithRealityDefaults(configuration.RealityDefaults), forwarding.WithProtocolProbeEchoPort(configuration.ProtocolProbeEchoPort))
 	vlessIdentityService, err := vlessidentity.NewService(store, time.Now, nil)
@@ -192,6 +206,15 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var licenseBackground sync.WaitGroup
+	if remoteLicenseIssuer != nil {
+		licenseBackground.Add(1)
+		go func() {
+			defer licenseBackground.Done()
+			runRemoteLicenseRenewal(shutdownContext, licensingService, remoteLicenseIssuer, configuration, remoteLicenseLease, logger)
+		}()
+	}
+	defer licenseBackground.Wait()
 	var migrationGate sync.RWMutex
 	fence, err := panelmigration.OpenFence("automatic-migration")
 	if err != nil {
@@ -243,6 +266,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	options := []httpapi.Option{
 		httpapi.WithReleases(versionService),
 		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
+		httpapi.WithLicensing(licensingService),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
@@ -325,7 +349,11 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		if r.URL.Path == "/healthz" && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": platformVersion, "migration_isolated": fence.Active()})
+			licenseActive := true
+			if configuration.LicenseEnforce {
+				_, licenseActive, _ = licensingService.CurrentLease(r.Context())
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": platformVersion, "migration_isolated": fence.Active(), "license_active": licenseActive})
 			return
 		}
 		if !fence.Allows(r) {
@@ -340,6 +368,19 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 			w.Header().Set("Retry-After", "2")
 			http.Error(w, "面板正在恢复，请稍后重新登录", http.StatusServiceUnavailable)
 			return
+		}
+		if configuration.LicenseEnforce && !licenseExempt(r) {
+			if _, ok, err := licensingService.CurrentLease(r.Context()); err != nil || !ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Cache-Control", "no-store")
+				w.WriteHeader(http.StatusForbidden)
+				code, message := "license_invalid", "面板未激活授权"
+				if errors.Is(err, licensing.ErrExpired) {
+					code, message = "license_expired", "面板授权已到期"
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
+				return
+			}
 		}
 		handler.ServeHTTP(w, r)
 	})
@@ -390,4 +431,187 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 		return err
 	}
+}
+
+func licenseExempt(r *http.Request) bool {
+	if r.URL.Path == "/healthz" || r.URL.Path == "/api/v1/auth/login" {
+		return true
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/public/license/") {
+		return true
+	}
+	if r.URL.Path == "/api/v1/license" || strings.HasPrefix(r.URL.Path, "/api/v1/license/") {
+		return true
+	}
+	return false
+}
+
+func bootstrapRemoteLicense(ctx context.Context, service *licensing.Service, issuer *licensing.RemoteIssuer, configuration runtimeConfig, logger *slog.Logger) (licensing.Lease, error) {
+	lease, available, err := service.CurrentLease(ctx)
+	if err != nil && !errors.Is(err, licensing.ErrExpired) {
+		return licensing.Lease{}, fmt.Errorf("read persisted license lease: %w", err)
+	}
+	if available || hasRemoteLeaseData(lease) {
+		if err := validateRemoteLeaseAt(lease, configuration, "", time.Now().UTC()); err != nil {
+			return licensing.Lease{}, fmt.Errorf("validate persisted license lease: %w", err)
+		}
+		renewed, renewErr := renewRemoteLicense(ctx, issuer, lease, configuration)
+		if renewErr == nil {
+			if err := service.StoreLease(ctx, renewed); err != nil {
+				return licensing.Lease{}, fmt.Errorf("store renewed license lease: %w", err)
+			}
+			return renewed, nil
+		}
+		if isLicenseConfigurationError(renewErr) {
+			return licensing.Lease{}, fmt.Errorf("renew persisted license lease: %w", renewErr)
+		}
+		logger.Warn("remote license renewal unavailable; keeping current valid lease", "error", renewErr, "expires_at", lease.ExpiresAt)
+		return lease, nil
+	}
+	activated, activateErr := activateRemoteLicense(ctx, issuer, configuration)
+	if activateErr != nil {
+		return licensing.Lease{}, fmt.Errorf("remote license activation failed: %w", activateErr)
+	}
+	if err := service.StoreLease(ctx, activated); err != nil {
+		return licensing.Lease{}, fmt.Errorf("store activated license lease: %w", err)
+	}
+	return activated, nil
+}
+
+func activateRemoteLicense(ctx context.Context, issuer *licensing.RemoteIssuer, configuration runtimeConfig) (licensing.Lease, error) {
+	requestContext, cancel := context.WithTimeout(ctx, configuration.LicenseHTTPTimeout)
+	defer cancel()
+	lease, err := issuer.Activate(requestContext, configuration.LicenseCode, configuration.LicenseDomain, configuration.LicenseInstanceID)
+	if err != nil {
+		return licensing.Lease{}, err
+	}
+	if err := validateRemoteLeaseAt(lease, configuration, "", time.Now().UTC()); err != nil {
+		return licensing.Lease{}, err
+	}
+	return lease, nil
+}
+
+func renewRemoteLicense(ctx context.Context, issuer *licensing.RemoteIssuer, lease licensing.Lease, configuration runtimeConfig) (licensing.Lease, error) {
+	requestContext, cancel := context.WithTimeout(ctx, configuration.LicenseHTTPTimeout)
+	defer cancel()
+	renewed, err := issuer.Renew(requestContext, lease.LicenseID, configuration.LicenseCode, configuration.LicenseDomain, configuration.LicenseInstanceID)
+	if err != nil {
+		return licensing.Lease{}, err
+	}
+	if err := validateRemoteLeaseAt(renewed, configuration, lease.LicenseID, time.Now().UTC()); err != nil {
+		return licensing.Lease{}, err
+	}
+	return renewed, nil
+}
+
+func validateRemoteLease(lease licensing.Lease, configuration runtimeConfig, expectedLicenseID string) error {
+	return validateRemoteLeaseAt(lease, configuration, expectedLicenseID, time.Now().UTC())
+}
+
+const remoteLeaseClockSkew = 5 * time.Minute
+
+func validateRemoteLeaseAt(lease licensing.Lease, configuration runtimeConfig, expectedLicenseID string, now time.Time) error {
+	now = now.UTC()
+	if strings.TrimSpace(lease.LicenseID) == "" || strings.TrimSpace(lease.InstanceID) == "" || strings.TrimSpace(lease.Domain) == "" || lease.ActivatedAt.IsZero() || lease.CheckedAt.IsZero() || lease.ExpiresAt.IsZero() {
+		return licensing.ErrInvalidCode
+	}
+	if expectedLicenseID != "" && lease.LicenseID != expectedLicenseID {
+		return licensing.ErrBound
+	}
+	if lease.InstanceID != configuration.LicenseInstanceID {
+		return licensing.ErrBound
+	}
+	if !licensing.DomainMatches(lease.Domain, configuration.LicenseDomain) {
+		return licensing.ErrDomainMismatch
+	}
+	if !lease.ExpiresAt.After(now) || !lease.ExpiresAt.After(lease.ActivatedAt) {
+		return licensing.ErrExpired
+	}
+	if lease.ActivatedAt.After(now.Add(remoteLeaseClockSkew)) || lease.CheckedAt.After(now.Add(remoteLeaseClockSkew)) || lease.CheckedAt.Before(lease.ActivatedAt) {
+		return licensing.ErrInvalidCode
+	}
+	return nil
+}
+
+func hasRemoteLeaseData(lease licensing.Lease) bool {
+	return lease.LicenseID != "" || lease.InstanceID != "" || lease.Domain != "" || !lease.ActivatedAt.IsZero() || !lease.ExpiresAt.IsZero() || !lease.CheckedAt.IsZero()
+}
+
+func runRemoteLicenseRenewal(ctx context.Context, service *licensing.Service, issuer *licensing.RemoteIssuer, configuration runtimeConfig, lease licensing.Lease, logger *slog.Logger) {
+	timer := time.NewTimer(licenseRenewalDelay(time.Now().UTC(), lease.ExpiresAt, configuration.LicenseRenewInterval))
+	defer timer.Stop()
+	failureAttempt := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			renewed, err := renewRemoteLicense(ctx, issuer, lease, configuration)
+			if err != nil {
+				logger.Warn("remote license renewal failed", "error", err, "expires_at", lease.ExpiresAt)
+				if isLicenseConfigurationError(err) {
+					return
+				}
+				failureAttempt++
+				timer.Reset(licenseRenewalRetryDelay(time.Now().UTC(), lease.ExpiresAt, failureAttempt))
+				continue
+			}
+			if err := service.StoreLease(ctx, renewed); err != nil {
+				logger.Warn("store remote license lease failed", "error", err)
+				if isLicenseConfigurationError(err) {
+					return
+				}
+				failureAttempt++
+				timer.Reset(licenseRenewalRetryDelay(time.Now().UTC(), lease.ExpiresAt, failureAttempt))
+				continue
+			}
+			lease = renewed
+			failureAttempt = 0
+			logger.Info("remote license renewed", "expires_at", lease.ExpiresAt)
+			timer.Reset(licenseRenewalDelay(time.Now().UTC(), lease.ExpiresAt, configuration.LicenseRenewInterval))
+		}
+	}
+}
+
+func licenseRenewalDelay(now, expiresAt time.Time, interval time.Duration) time.Duration {
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	remaining := expiresAt.Sub(now)
+	if remaining <= 0 {
+		return time.Second
+	}
+	delay := interval
+	if half := remaining / 2; half > 0 && half < delay {
+		delay = half
+	}
+	if delay < time.Second {
+		return time.Second
+	}
+	return delay
+}
+
+func licenseRenewalRetryDelay(now, expiresAt time.Time, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := time.Minute
+	for i := 1; i < attempt && delay < 15*time.Minute; i++ {
+		delay *= 2
+	}
+	if delay > 15*time.Minute {
+		delay = 15 * time.Minute
+	}
+	remaining := expiresAt.Sub(now)
+	if remaining > 0 && remaining/3 < delay {
+		delay = remaining / 3
+	}
+	if delay < time.Second {
+		delay = time.Second
+	}
+	return delay
+}
+
+func isLicenseConfigurationError(err error) bool {
+	return errors.Is(err, licensing.ErrInvalidCode) || errors.Is(err, licensing.ErrExpired) || errors.Is(err, licensing.ErrRevoked) || errors.Is(err, licensing.ErrBound) || errors.Is(err, licensing.ErrDomainMismatch)
 }

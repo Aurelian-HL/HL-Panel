@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
 )
@@ -146,6 +147,21 @@ func TestRuntimeConfigProbeUsesBundledXrayAndPreservesOverride(t *testing.T) {
 	config, err = loadRuntimeConfig()
 	if err != nil || config.ProtocolProbeXrayBinary != "/opt/custom/xray" {
 		t.Fatalf("explicit probe engine override was lost: %q, %v", config.ProtocolProbeXrayBinary, err)
+	}
+}
+
+func TestRuntimeConfigUsesConservativeProtocolProbeInterval(t *testing.T) {
+	clearRuntimeEnvironment(t)
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_USERNAME", "admin")
+	t.Setenv("CONTROL_BOOTSTRAP_ADMIN_PASSWORD", "explicit-local-secret")
+	t.Setenv("CONTROL_ALLOW_VOLATILE_STORE", "true")
+	setCustomerFingerprintKey(t)
+	config, err := loadRuntimeConfig()
+	if err != nil {
+		t.Fatalf("load runtime config: %v", err)
+	}
+	if config.ProtocolProbeInterval != 30*time.Second {
+		t.Fatalf("default protocol probe interval = %v, want 30s", config.ProtocolProbeInterval)
 	}
 }
 

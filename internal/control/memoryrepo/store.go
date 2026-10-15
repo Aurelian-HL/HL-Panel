@@ -15,6 +15,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
+	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -74,6 +75,8 @@ type Store struct {
 	protocolHealth        map[string]map[string]gatewaymembership.ProtocolObservation
 	protocolProbes        map[string]gatewaymembership.ProtocolProbeConfig
 	businessIdempotency   map[string]businessMutation
+	licenseCodes          map[string]licensing.Code
+	licenseLease          *licensing.Lease
 }
 
 func New(admin auth.Administrator) *Store {
@@ -114,5 +117,6 @@ func New(admin auth.Administrator) *Store {
 		protocolHealth:        make(map[string]map[string]gatewaymembership.ProtocolObservation),
 		protocolProbes:        make(map[string]gatewaymembership.ProtocolProbeConfig),
 		businessIdempotency:   make(map[string]businessMutation),
+		licenseCodes:          make(map[string]licensing.Code),
 	}
 }

@@ -30,7 +30,9 @@ type protocolRunnerRepository interface {
 	PublishProtocolHealthBatch(context.Context, []ProtocolObservation) ([]error, error)
 }
 
-const protocolProbeWorkers = 8
+// Protocol probes start a short-lived Xray process. Keep the scheduler below
+// the old eight-worker burst so health checks cannot starve the control API.
+const protocolProbeWorkers = 4
 
 // Protocol observations are published outside the scheduler loop. A blocked
 // database write must not stop probes, lease renewal, or failure detection.
@@ -94,7 +96,7 @@ func NewProtocolRunner(repository protocolRunnerRepository, xrayBinary string, e
 		logger = slog.Default()
 	}
 	if interval <= 0 || interval > endpoints.DefaultHealthTTL/3 {
-		interval = 15 * time.Second
+		interval = 30 * time.Second
 	}
 	return &ProtocolRunner{repository: repository, observer: NewProtocolObserver(repository, time.Now), xrayBinary: xrayBinary, echoPort: echoPort, interval: interval, repositoryTimeout: protocolRepositoryTimeout, logger: logger, wake: make(chan struct{}, 1)}
 }
