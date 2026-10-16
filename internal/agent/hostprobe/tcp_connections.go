@@ -44,12 +44,15 @@ func parseTCPSockets(tables ...string) (*uint64, map[string]uint64) {
 			if !ok || err != nil {
 				return nil, nil
 			}
-			total++
 			key := strconv.FormatUint(port, 10)
 			switch f[3] {
 			case "0A":
 				listeners[key] = 0
 			case "01":
+				// Match the NY probe's TCP metric: count only sockets that
+				// are currently established. LISTEN, TIME_WAIT and handshake
+				// states describe socket lifecycle, not active connections.
+				total++
 				established[key]++
 			}
 		}

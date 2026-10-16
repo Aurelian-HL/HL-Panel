@@ -15,8 +15,20 @@ func TestTCPListenerConnectionsAcrossFamilies(t *testing.T) {
 4: 00000000:2711 00000000:0000 0A`, `sl local_address remote_address st
 0: 00000000000000000000000000000000:2710 00000000000000000000000000000000:0000 0A
 1: 00000000000000000000000001000000:2710 00000000000000000000000002000000:C004 01`)
-	if total == nil || *total != 7 || len(ports) != 2 || ports["10000"] != 2 || ports["10001"] != 0 {
+	if total == nil || *total != 3 || len(ports) != 2 || ports["10000"] != 2 || ports["10001"] != 0 {
 		t.Fatalf("counts: %v %v", total, ports)
+	}
+}
+
+func TestTCPTotalExcludesNonEstablishedSockets(t *testing.T) {
+	total, ports := parseTCPSockets(`sl local_address rem_address st
+0: 00000000:2710 00000000:0000 0A
+1: 0100007F:2710 0200007F:C001 02
+2: 0100007F:2710 0200007F:C002 06
+3: 0100007F:2710 0200007F:C003 01
+4: 0100007F:C004 0200007F:2710 05`)
+	if total == nil || *total != 1 || ports["10000"] != 1 {
+		t.Fatalf("non-established sockets counted: total=%v ports=%v", total, ports)
 	}
 }
 
