@@ -69,32 +69,22 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 	if err = tx.QueryRowContext(ctx, `SELECT revision FROM nyvp_control_snapshots WHERE singleton=true FOR UPDATE`).Scan(&revision); err != nil {
 		return nil, errors.New("protocol health snapshot lock failed")
 	}
-	cached, state, err := s.validatedReadSnapshot(ctx, tx)
+	cached, _, err := s.validatedReadSnapshot(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	if state == nil {
-		state, err = decodeReadSnapshot(cached.payload, cached.version, uint64(cached.revision))
-		if err != nil {
-			return nil, err
-		}
-	}
-	if err := s.mergeCachedRuleTrafficOverlays(ctx, tx, state); err != nil {
+	traffic, err := s.ruleTrafficOverlays(ctx, tx)
+	if err != nil {
 		return nil, err
 	}
-	if err := s.mergeCachedProtocolHealthOverlays(ctx, tx, state); err != nil {
+	health, err := s.protocolHealthOverlays(ctx, tx)
+	if err != nil {
 		return nil, err
 	}
-	attachNodeConfigHistoryReader(ctx, tx, state)
-	beforeRevision, beforeAudit := state.PersistenceMutationState()
-	needsActivation := false
-	if activate {
-		for _, observation := range observations {
-			rule, err := state.ForwardingRule(ctx, observation.RuleID)
-			if err == nil && !rule.Deployed {
-				needsActivation = true
-			}
-		}
+	view := cached.forwarding.WithOverlays(uint64(cached.revision), traffic, health, nil)
+	results, changed, needsActivation, err := view.CheckProtocolHealthRenewal(ctx, observations)
+	if err != nil {
+		return nil, err
 	}
 	apply := func(m *memoryrepo.Store) ([]error, error) {
 		if activate {
@@ -106,12 +96,7 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 		}
 		return results, nil
 	}
-	results, err := apply(state)
-	if err != nil {
-		return nil, err
-	}
-	afterRevision, afterAudit := state.PersistenceMutationState()
-	if beforeAudit != afterAudit || (needsActivation && beforeRevision != afterRevision) {
+	if activate && needsActivation && changed {
 		if err = tx.Rollback(); err != nil {
 			return nil, errors.New("protocol health read rollback failed")
 		}
@@ -119,7 +104,7 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 		// before waiting for the normal audited write.
 		return transact(parent, s, true, apply)
 	}
-	if beforeRevision != afterRevision {
+	if changed {
 		for i, observation := range observations {
 			if results[i] != nil {
 				continue
@@ -140,7 +125,7 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 	if err = tx.Commit(); err != nil {
 		return nil, errors.New("protocol health transaction commit failed")
 	}
-	if beforeRevision != afterRevision {
+	if changed {
 		// The immutable base payload/identity/usage views did not change.
 		s.readMu.Lock()
 		if s.readCache.revision <= cached.revision {

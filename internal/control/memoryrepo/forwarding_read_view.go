@@ -118,3 +118,28 @@ func (v *ForwardingReadView) GatewayMembershipStates(ctx context.Context, ids []
 func (v *ForwardingReadView) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
 	return v.state.ProtocolProbeStates(ctx)
 }
+
+// CheckProtocolHealthRenewal validates proofs on a detached request copy. It
+// never activates a rule or changes this view. First activation must be replayed
+// by the persistence adapter against its complete audited write state.
+func (v *ForwardingReadView) CheckProtocolHealthRenewal(ctx context.Context, observations []gatewaymembership.ProtocolObservation) (results []error, changed, needsActivation bool, err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, false, false, err
+	}
+	state := v.WithOverlays(v.state.persistenceRevision, nil, nil, nil).state
+	for _, observation := range observations {
+		rule, lookupErr := state.ForwardingRule(ctx, observation.RuleID)
+		if lookupErr == nil && !rule.Deployed {
+			needsActivation = true
+		}
+	}
+	results = make([]error, len(observations))
+	for i, observation := range observations {
+		if err = ctx.Err(); err != nil {
+			return nil, false, false, err
+		}
+		results[i] = state.PublishProtocolHealth(ctx, observation)
+		changed = changed || results[i] == nil
+	}
+	return results, changed, needsActivation, nil
+}
