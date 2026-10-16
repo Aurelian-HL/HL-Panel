@@ -36,6 +36,22 @@ type EngineAdapter interface {
 	Rollback(context.Context, *PreparedConfiguration) error
 }
 
+// ValidatedCommitter is an internal fast path for the reconciler. The public
+// Commit method keeps its defensive validation for callers that may not have
+// validated a prepared configuration first. Reconciliation already performs
+// that check immediately before activation, so repeating expensive native
+// engine validation only adds latency and CPU without changing the decision.
+type ValidatedCommitter interface {
+	CommitValidated(context.Context, PreparedConfiguration) error
+}
+
+func CommitValidated(ctx context.Context, adapter EngineAdapter, prepared PreparedConfiguration) error {
+	if committer, ok := adapter.(ValidatedCommitter); ok {
+		return committer.CommitValidated(ctx, prepared)
+	}
+	return adapter.Commit(ctx, prepared)
+}
+
 type PreparedConfiguration struct {
 	Generation   agentv1.NodeConfigGeneration
 	Engine       agentv1.Engine

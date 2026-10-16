@@ -230,12 +230,16 @@ func TestGOSTProcessAdapterValidationAndLiveness(t *testing.T) {
 
 type recordingGOSTRunner struct {
 	testErr     error
+	tests       []string
 	startErrors []error
 	processes   []*recordingGOSTProcess
 	stopAfter   time.Duration
 }
 
-func (r *recordingGOSTRunner) Test(context.Context, string) error { return r.testErr }
+func (r *recordingGOSTRunner) Test(_ context.Context, path string) error {
+	r.tests = append(r.tests, path)
+	return r.testErr
+}
 
 func (r *recordingGOSTRunner) Start(context.Context, string) (GOSTProcess, error) {
 	if len(r.startErrors) != 0 {

@@ -55,6 +55,57 @@ func TestMixedAdapterRestoresBothEnginesAfterSecondStartFails(t *testing.T) {
 	}
 }
 
+func TestMixedAdapterValidatedCommitSkipsDuplicateValidationAndRestoresLastGood(t *testing.T) {
+	ctx := context.Background()
+	xrayRunner := &recordingXrayRunner{}
+	gostRunner := &recordingGOSTRunner{}
+	adapter, err := NewMixedProcessAdapter(newTestXrayAdapter(t, xrayRunner, true), newTestGOSTAdapter(t, gostRunner, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := adapter.Prepare(ctx, testDesired(t, 1, mixedFragments("xray-one", "forward-one")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Validate(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.CommitValidated(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if len(xrayRunner.tests) != 1 || len(gostRunner.tests) != 1 {
+		t.Fatalf("first generation native validation calls: xray=%d gost=%d, want 1 each", len(xrayRunner.tests), len(gostRunner.tests))
+	}
+	if err := adapter.Verify(ctx, first); err != nil || adapter.ActiveEngineMode() != "mixed" {
+		t.Fatalf("first generation was not fully active: %v, mode=%q", err, adapter.ActiveEngineMode())
+	}
+
+	second, err := adapter.Prepare(ctx, testDesired(t, 2, mixedFragments("xray-two", "forward-two")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Validate(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if len(xrayRunner.tests) != 2 || len(gostRunner.tests) != 2 {
+		t.Fatalf("second generation validation calls: xray=%d gost=%d, want 2 each", len(xrayRunner.tests), len(gostRunner.tests))
+	}
+	gostRunner.startErrors = []error{errors.New("second process failed")}
+	if err := adapter.CommitValidated(ctx, second); err == nil {
+		t.Fatal("second engine failure was accepted")
+	}
+	if len(xrayRunner.tests) != 2 || len(gostRunner.tests) != 2 {
+		t.Fatalf("validated commit repeated native validation: xray=%d gost=%d, want 2 each", len(xrayRunner.tests), len(gostRunner.tests))
+	}
+	if mode := adapter.ActiveEngineMode(); mode != "mixed" {
+		t.Fatalf("compensating rollback did not restore the previous live mode: %q", mode)
+	}
+	if err := adapter.Verify(ctx, first); err != nil {
+		t.Fatalf("previous complete generation not restored: %v", err)
+	}
+}
+
 func TestMixedAdapterAttestsSingleEngineOnlyWhenRunning(t *testing.T) {
 	ctx := context.Background()
 	adapter, err := NewMixedProcessAdapter(newTestXrayAdapter(t, &recordingXrayRunner{}, true), newTestGOSTAdapter(t, &recordingGOSTRunner{}, true))

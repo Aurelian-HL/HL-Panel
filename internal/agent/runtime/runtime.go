@@ -703,19 +703,26 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 	var failedKey string
 	for {
 		watchSupported := false
+		watchWaited := false
 		waitForPoll := false
 		err := func(callContext context.Context) error {
-			desired, supported, err := a.client.DesiredWatch(callContext, a.nodeSecret)
+			current, err := a.state.Load()
+			if err != nil {
+				return fmt.Errorf("load applied generation before desired watch: %w", err)
+			}
+			desired, supported, waited, err := a.client.DesiredWatch(callContext, a.nodeSecret, current.AppliedGeneration())
 			watchSupported = supported
+			watchWaited = waited
 			if err != nil {
 				return err
 			}
+			waitForPoll = !watchSupported
 			if desired == nil {
 				failedKey = ""
 				// Some proxies and older control planes return 204 immediately
 				// instead of holding the watch request. Avoid a tight reconnect loop
 				// that can overload the panel and starve heartbeat traffic.
-				waitForPoll = true
+				waitForPoll = waitForPoll || !watchWaited
 				return nil
 			}
 			key := fmt.Sprintf("%d/%s", desired.Generation, strings.ToLower(strings.TrimSpace(desired.ConfigSHA256)))
@@ -747,7 +754,7 @@ func (a *Agent) desiredLoop(ctx context.Context) error {
 			continue
 		}
 		backoff.Reset()
-		if !watchSupported || waitForPoll {
+		if waitForPoll {
 			if err := waitContext(ctx, a.cfg.DesiredPollInterval.Duration()); err != nil {
 				return err
 			}

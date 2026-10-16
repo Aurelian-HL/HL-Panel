@@ -92,21 +92,53 @@ func (a *MixedProcessAdapter) Commit(ctx context.Context, prepared PreparedConfi
 	if err := a.Validate(ctx, prepared); err != nil {
 		return err
 	}
+	return a.commitValidated(ctx, prepared)
+}
+
+func (a *MixedProcessAdapter) CommitValidated(ctx context.Context, prepared PreparedConfiguration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := a.checkOwner(prepared); err != nil {
+		return err
+	}
+	for engine, part := range prepared.components {
+		var err error
+		switch engine {
+		case agentv1.EngineXray:
+			err = a.xray.verifyStaged(part)
+		case agentv1.EngineGOST:
+			err = a.gost.verifyStaged(part)
+		default:
+			err = ErrUnsupportedEngine
+		}
+		if err != nil {
+			return fmt.Errorf("validate staged %s configuration: %w", engine, err)
+		}
+	}
+	return a.commitValidated(ctx, prepared)
+}
+
+func (a *MixedProcessAdapter) commitValidated(ctx context.Context, prepared PreparedConfiguration) error {
 	previous := a.lastGoodSnapshot()
 	a.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		a.mu.Unlock()
+		return err
+	}
 	a.expectXray, a.expectGOST = false, false
 	_, a.usageXray = prepared.components[agentv1.EngineXray]
 	_, a.usageGOST = prepared.components[agentv1.EngineGOST]
 	a.mu.Unlock()
 	if part, ok := prepared.components[agentv1.EngineXray]; ok {
-		if err := a.xray.Commit(ctx, part); err != nil {
+		if err := a.xray.CommitValidated(ctx, part); err != nil {
 			return a.compensateCommitFailure(ctx, previous, "xray", err)
 		}
 	} else if err := a.xray.Rollback(ctx, nil); err != nil {
 		return a.compensateCommitFailure(ctx, previous, "stop obsolete xray component", err)
 	}
 	if part, ok := prepared.components[agentv1.EngineGOST]; ok {
-		if err := a.gost.Commit(ctx, part); err != nil {
+		if err := a.gost.CommitValidated(ctx, part); err != nil {
 			return a.compensateCommitFailure(ctx, previous, "gost", err)
 		}
 	} else if err := a.gost.Rollback(ctx, nil); err != nil {

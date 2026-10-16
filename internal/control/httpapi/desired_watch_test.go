@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,18 @@ func TestDesiredWatchWakesAfterCommitAndReauthenticates(t *testing.T) {
 			var enrolled agentv1.EnrollmentResponse
 			decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/agent/enroll", "", agentv1.EnrollmentRequest{EnrollmentToken: issued.Token, Hostname: "watch-test", Platform: "linux", Architecture: "amd64", AgentVersion: "test"}, 201), &enrolled)
 			addMember(t, handler, f.token, f.entry.ID, enrolled.NodeID)
+			if _, err := generations.NewService(f.store, time.Now).CreateGroupRevision(context.Background(), "adm_business", f.entry.ID, agentv1.EngineGOST, []byte(`{"services":[]}`), "initial-watch-generation"); err != nil {
+				t.Fatal(err)
+			}
+			current, _, err := f.store.DesiredNodeConfig(context.Background(), enrolled.NodeID)
+			if err != nil {
+				t.Fatalf("read initial desired config: %v", err)
+			}
 			request := httptest.NewRequest(http.MethodGet, "/api/v1/agent/desired-watch", nil)
+			query := request.URL.Query()
+			query.Set("applied_generation", strconv.FormatInt(current.Generation, 10))
+			query.Set("wait_ms", "2000")
+			request.URL.RawQuery = query.Encode()
 			request.Header.Set("Authorization", "Bearer "+enrolled.NodeCredential)
 			recorder := httptest.NewRecorder()
 			done := make(chan struct{})
@@ -81,6 +93,69 @@ func TestDesiredWatchWakesAfterCommitAndReauthenticates(t *testing.T) {
 				t.Fatal("revoked credential received configuration")
 			}
 		})
+	}
+}
+
+func TestDesiredWatchReturnsWaitedNoContentWhenGenerationIsUnchanged(t *testing.T) {
+	f := newBusinessFixture(t)
+	repo := &watchedRepository{Store: f.store, read: make(chan struct{}, 4)}
+	handler := httpapi.New(auth.NewService(f.store, audit.NewService(f.store), time.Now, time.Hour), enrollment.NewService(f.store, time.Now, time.Hour), nodes.NewService(f.store, time.Now, time.Minute), groups.NewService(f.store, time.Now), endpoints.NewService(f.store, time.Now), generations.NewService(repo, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var issued enrollment.IssueResult
+	decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/enrollment-tokens", f.token, map[string]any{"name": "watch-timeout", "expires_in_seconds": 900}, 201), &issued)
+	var enrolled agentv1.EnrollmentResponse
+	decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/agent/enroll", "", agentv1.EnrollmentRequest{EnrollmentToken: issued.Token, Hostname: "watch-timeout", Platform: "linux", Architecture: "amd64", AgentVersion: "test"}, 201), &enrolled)
+	addMember(t, handler, f.token, f.entry.ID, enrolled.NodeID)
+	if _, err := generations.NewService(f.store, time.Now).CreateGroupRevision(context.Background(), "adm_business", f.entry.ID, agentv1.EngineGOST, []byte(`{"services":[]}`), "timeout-watch-generation"); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := f.store.DesiredNodeConfig(context.Background(), enrolled.NodeID)
+	if err != nil {
+		t.Fatalf("read initial desired config: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/agent/desired-watch", nil)
+	request.Header.Set("Authorization", "Bearer "+enrolled.NodeCredential)
+	query := request.URL.Query()
+	query.Set("applied_generation", strconv.FormatInt(current.Generation, 10))
+	query.Set("wait_ms", "20")
+	request.URL.RawQuery = query.Encode()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || recorder.Header().Get("X-Desired-Watch-Waited") != "true" || recorder.Body.Len() != 0 {
+		t.Fatalf("unchanged watch response status=%d waited=%q body=%q", recorder.Code, recorder.Header().Get("X-Desired-Watch-Waited"), recorder.Body.String())
+	}
+}
+
+func TestDesiredWatchUsesPersistedGenerationForLegacyAgent(t *testing.T) {
+	f := newBusinessFixture(t)
+	repo := &watchedRepository{Store: f.store, read: make(chan struct{}, 4)}
+	handler := httpapi.New(auth.NewService(f.store, audit.NewService(f.store), time.Now, time.Hour), enrollment.NewService(f.store, time.Now, time.Hour), nodes.NewService(f.store, time.Now, time.Minute), groups.NewService(f.store, time.Now), endpoints.NewService(f.store, time.Now), generations.NewService(repo, time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var issued enrollment.IssueResult
+	decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/enrollment-tokens", f.token, map[string]any{"name": "legacy-watch", "expires_in_seconds": 900}, 201), &issued)
+	var enrolled agentv1.EnrollmentResponse
+	decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/agent/enroll", "", agentv1.EnrollmentRequest{EnrollmentToken: issued.Token, Hostname: "legacy-watch", Platform: "linux", Architecture: "amd64", AgentVersion: "legacy"}, 201), &enrolled)
+	addMember(t, handler, f.token, f.entry.ID, enrolled.NodeID)
+	if _, err := generations.NewService(f.store, time.Now).CreateGroupRevision(context.Background(), "adm_business", f.entry.ID, agentv1.EngineGOST, []byte(`{"services":[]}`), "legacy-watch-generation"); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := f.store.DesiredNodeConfig(context.Background(), enrolled.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestJSON(t, handler, http.MethodPost, "/api/v1/agent/apply-results", enrolled.NodeCredential, agentv1.ApplyResultRequest{
+		Generation: agentv1.NodeConfigGeneration(current.Generation), Phase: agentv1.ApplyPhaseCommit, Status: agentv1.ApplyStatusSucceeded,
+		ConfigSHA256: current.ConfigSHA256,
+	}, http.StatusNoContent)
+	requestJSON(t, handler, http.MethodPost, "/api/v1/agent/apply-results", enrolled.NodeCredential, agentv1.ApplyResultRequest{
+		Generation: agentv1.NodeConfigGeneration(current.Generation), Phase: agentv1.ApplyPhaseVerify, Status: agentv1.ApplyStatusSucceeded,
+		ConfigSHA256: current.ConfigSHA256,
+	}, http.StatusNoContent)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/agent/desired-watch?wait_ms=20", nil)
+	request.Header.Set("Authorization", "Bearer "+enrolled.NodeCredential)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent || recorder.Header().Get("X-Desired-Watch-Waited") != "true" {
+		t.Fatalf("legacy watch status=%d waited=%q body=%q", recorder.Code, recorder.Header().Get("X-Desired-Watch-Waited"), recorder.Body.String())
 	}
 }
 

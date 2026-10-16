@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 const (
 	apiPrefix               = "/api/v1"
-	desiredWatchTimeout     = 2 * time.Second
+	desiredWatchTimeout     = 8 * time.Second
 	maxOrdinaryResponseBody = 64 << 10
 	maxDesiredResponseBody  = (4 << 20) + (64 << 10)
 	maxErrorBody            = 512
@@ -112,19 +113,37 @@ func (c *Client) Desired(ctx context.Context, nodeCredential string) (*agentv1.D
 }
 
 // DesiredWatch falls back to the ordinary endpoint on older control planes.
-// supported tells the caller whether to reconnect immediately or keep polling.
-func (c *Client) DesiredWatch(ctx context.Context, nodeCredential string) (*agentv1.DesiredNodeConfig, bool, error) {
-	wait := desiredWatchTimeout
+// supported reports whether the watch endpoint exists; waited is true only
+// when a 204 confirms that the server held the request until its wait completed.
+func (c *Client) DesiredWatch(ctx context.Context, nodeCredential string, appliedGeneration agentv1.NodeConfigGeneration) (*agentv1.DesiredNodeConfig, bool, bool, error) {
+	maximumWait := desiredWatchTimeout
 	if timeout := c.httpClient.Timeout; timeout > 0 && timeout < 10*time.Second {
-		wait = timeout / 2
+		maximumWait = timeout / 2
 	}
-	body, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/agent/desired-watch?wait_ms=%d", max(1, wait.Milliseconds())), nodeCredential, nil, maxDesiredResponseBody)
+	if deadline, ok := ctx.Deadline(); ok {
+		contextWait := time.Until(deadline) / 2
+		if contextWait < maximumWait {
+			maximumWait = max(contextWait, time.Millisecond)
+		}
+	}
+	maximumMillis := max(1, maximumWait.Milliseconds())
+	minimumMillis := max(1, maximumMillis*3/4)
+	waitMillis := minimumMillis + rand.Int64N(maximumMillis-minimumMillis+1)
+	body, status, headers, err := c.doWithHeaders(ctx, http.MethodGet, fmt.Sprintf("/agent/desired-watch?applied_generation=%d&wait_ms=%d", appliedGeneration, waitMillis), nodeCredential, nil, maxDesiredResponseBody)
+	// Previous panels cap wait_ms at two seconds. Retry within that budget
+	// during rolling upgrades so a newer agent can still receive rules.
+	if err == nil && status == http.StatusBadRequest && waitMillis > 2000 {
+		body, status, headers, err = c.doWithHeaders(ctx, http.MethodGet, fmt.Sprintf("/agent/desired-watch?applied_generation=%d&wait_ms=2000", appliedGeneration), nodeCredential, nil, maxDesiredResponseBody)
+	}
 	if err == nil && status == http.StatusNotFound {
 		desired, err := c.Desired(ctx, nodeCredential)
-		return desired, false, err
+		return desired, false, false, err
 	}
 	desired, err := decodeDesired(body, status, err)
-	return desired, true, err
+	if status == http.StatusNoContent && err == nil {
+		return desired, true, headers.Get("X-Desired-Watch-Waited") == "true", err
+	}
+	return desired, true, false, err
 }
 
 func decodeDesired(body []byte, status int, err error) (*agentv1.DesiredNodeConfig, error) {
@@ -242,24 +261,29 @@ func (c *Client) ReportEnforcementResult(ctx context.Context, nodeCredential str
 }
 
 func (c *Client) do(ctx context.Context, method, path, nodeCredential string, payload any, maximumResponse int64) ([]byte, int, error) {
+	body, status, _, err := c.doWithHeaders(ctx, method, path, nodeCredential, payload, maximumResponse)
+	return body, status, err
+}
+
+func (c *Client) doWithHeaders(ctx context.Context, method, path, nodeCredential string, payload any, maximumResponse int64) ([]byte, int, http.Header, error) {
 	var requestBody io.Reader
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
-			return nil, 0, fmt.Errorf("encode control plane request: %w", err)
+			return nil, 0, nil, fmt.Errorf("encode control plane request: %w", err)
 		}
 		requestBody = bytes.NewReader(encoded)
 	}
 	endpoint := *c.baseURL
 	relative, err := url.Parse(path)
 	if err != nil {
-		return nil, 0, errors.New("invalid control plane endpoint")
+		return nil, 0, nil, errors.New("invalid control plane endpoint")
 	}
 	endpoint.Path = apiPrefix + relative.Path
 	endpoint.RawQuery = relative.RawQuery
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), requestBody)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	request.Header.Set("Accept", "application/json")
 	if payload != nil {
@@ -268,21 +292,21 @@ func (c *Client) do(ctx context.Context, method, path, nodeCredential string, pa
 	if nodeCredential != "" {
 		request.Header.Set("Authorization", "Bearer "+nodeCredential)
 	} else if path != "/agent/enroll" {
-		return nil, 0, errors.New("node credential is required")
+		return nil, 0, nil, errors.New("node credential is required")
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return nil, 0, fmt.Errorf("control plane request failed: %w", err)
+		return nil, 0, nil, fmt.Errorf("control plane request failed: %w", err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumResponse+1))
 	if err != nil {
-		return nil, 0, fmt.Errorf("read control plane response: %w", err)
+		return nil, 0, nil, fmt.Errorf("read control plane response: %w", err)
 	}
 	if int64(len(body)) > maximumResponse {
-		return nil, 0, fmt.Errorf("control plane response exceeds %d bytes", maximumResponse)
+		return nil, 0, nil, fmt.Errorf("control plane response exceeds %d bytes", maximumResponse)
 	}
-	return body, response.StatusCode, nil
+	return body, response.StatusCode, response.Header.Clone(), nil
 }
 
 func httpError(status int, body []byte) error {

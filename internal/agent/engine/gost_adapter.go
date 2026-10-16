@@ -103,6 +103,27 @@ func (a *GOSTProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 	if err := a.Validate(ctx, prepared); err != nil {
 		return err
 	}
+	return a.commitValidatedLocked(ctx, prepared)
+}
+
+// CommitValidated retains the staged-file integrity check while avoiding a
+// second native gost validation after the reconciler has already validated it.
+func (a *GOSTProcessAdapter) CommitValidated(ctx context.Context, prepared PreparedConfiguration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.commitValidatedLocked(ctx, prepared)
+}
+
+func (a *GOSTProcessAdapter) commitValidatedLocked(ctx context.Context, prepared PreparedConfiguration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := a.verifyStaged(prepared); err != nil {
+		return fmt.Errorf("validate staged gost configuration: %w", err)
+	}
 	candidate, err := readRegularFile(prepared.adapterPath, MaxConfigurationBytes)
 	if err != nil {
 		return fmt.Errorf("read staged gost configuration: %w", err)

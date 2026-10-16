@@ -67,6 +67,9 @@ func (a *DryRunFileAdapter) Commit(ctx context.Context, prepared PreparedConfigu
 	if err := a.Validate(ctx, prepared); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := writeFileAtomic(a.activePath, prepared.canonicalConfig, 0o600); err != nil {
 		return fmt.Errorf("activate engine configuration: %w", err)
 	}

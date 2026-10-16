@@ -120,3 +120,86 @@ func TestDesiredLoopRetriesSameGenerationAfterTransientApplyFailure(t *testing.T
 		t.Fatalf("desired-watch calls = %d, want a failed apply, wait, and retry", calls)
 	}
 }
+
+func TestDesiredLoopThrottlesLegacyControlPlanePolling(t *testing.T) {
+	raw := []byte(`{"schema_version":1,"fragments":[]}`)
+	hash := sha256.Sum256(raw)
+	desired := agentv1.DesiredNodeConfig{
+		Generation: 1, Engine: agentv1.EngineNodeBundle,
+		ConfigSHA256: hex.EncodeToString(hash[:]), Config: raw,
+	}
+	const pollInterval = time.Second
+	var desiredCalls atomic.Int32
+	firstDesiredAt := make(chan time.Time, 1)
+	secondDesiredAfter := make(chan time.Duration, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/agent/enroll":
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(agentv1.EnrollmentResponse{NodeID: "legacy-node", NodeCredential: "legacy-credential"})
+		case "/api/v1/agent/desired-watch":
+			http.NotFound(writer, request)
+		case "/api/v1/agent/desired":
+			call := desiredCalls.Add(1)
+			now := time.Now()
+			if call == 1 {
+				firstDesiredAt <- now
+			} else if call == 2 {
+				first := <-firstDesiredAt
+				secondDesiredAfter <- now.Sub(first)
+			}
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(desired)
+		case "/api/v1/agent/apply-results":
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			writer.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Config{
+		ControlPlaneURL: server.URL, AllowInsecureLoopback: true,
+		DataDir: filepath.Join(t.TempDir(), "state"), Hostname: "legacy-node",
+		AgentVersion: "test", EnrollmentTokenEnv: "NYVP_LEGACY_TOKEN",
+		EngineMode:          config.EngineModeDryRun,
+		HeartbeatInterval:   config.Duration(time.Second),
+		DesiredPollInterval: config.Duration(pollInterval),
+		RequestTimeout:      config.Duration(time.Second),
+		Backoff:             config.BackoffConfig{Initial: config.Duration(time.Second), Maximum: config.Duration(time.Second), Multiplier: 1},
+	}
+	t.Setenv("NYVP_LEGACY_TOKEN", "legacy-token")
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- agent.desiredLoop(ctx) }()
+
+	select {
+	case elapsed := <-secondDesiredAfter:
+		if elapsed < pollInterval*3/4 {
+			t.Fatalf("legacy desired poll interval = %v, want at least %v", elapsed, pollInterval*3/4)
+		}
+		cancel()
+	case <-ctx.Done():
+		t.Fatal("legacy panel was not polled a second time")
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("desiredLoop() error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("desiredLoop did not stop after cancellation")
+	}
+}

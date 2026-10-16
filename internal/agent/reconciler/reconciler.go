@@ -124,7 +124,7 @@ func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNod
 	}
 	r.report(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, agentv1.ApplyStatusSucceeded, "configuration validated")
 
-	if err := r.adapter.Commit(ctx, prepared); err != nil {
+	if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
 		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseCommit, err)
 	}
 	if err := r.adapter.Verify(ctx, prepared); err != nil {
@@ -225,7 +225,7 @@ func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.D
 	if err := r.adapter.Validate(ctx, prepared); err != nil {
 		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, err, deliver)
 	}
-	if err := r.adapter.Commit(ctx, prepared); err != nil {
+	if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
 		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseCommit, err, deliver)
 	}
 	if err := r.adapter.Verify(ctx, prepared); err != nil {

@@ -181,6 +181,31 @@ func (a *XrayProcessAdapter) Commit(ctx context.Context, prepared PreparedConfig
 	if err := a.Validate(ctx, prepared); err != nil {
 		return err
 	}
+	return a.commitValidatedLocked(ctx, prepared)
+}
+
+// CommitValidated is used after the reconciler has completed Validate. It
+// keeps cheap ownership and staged-file checks to protect against a TOCTOU
+// change, while avoiding a second native xray -test invocation.
+func (a *XrayProcessAdapter) CommitValidated(ctx context.Context, prepared PreparedConfiguration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.commitValidatedLocked(ctx, prepared)
+}
+
+func (a *XrayProcessAdapter) commitValidatedLocked(ctx context.Context, prepared PreparedConfiguration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := a.checkOwner(prepared); err != nil {
+		return err
+	}
+	if err := a.verifyStaged(prepared); err != nil {
+		return fmt.Errorf("validate staged xray configuration: %w", err)
+	}
 	candidate, err := readRegularFile(prepared.adapterPath, MaxConfigurationBytes)
 	if err != nil {
 		return fmt.Errorf("read staged xray configuration: %w", err)
