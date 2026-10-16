@@ -214,8 +214,13 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                                HL_PANEL_CANDIDATE_META=str(metadata), HL_PANEL_REAL_CURL=shutil.which('curl'))
 
             def install(token, ca=cert):
-                return run(['bash', str(repo / 'install-node.sh'), '--panel-url', origin,
-                            '--token', token, '--ca-file', str(ca), '--node-address', '127.0.0.1'], env=install_env, timeout=420)
+                # The root bootstrap intentionally resolves the latest published
+                # release.  This candidate is not published until every job has
+                # passed, so using that wrapper here would silently test the
+                # previous public release instead of the archive under test.
+                return run(['bash', str(repo / 'deploy/install-node.sh'), '--version', args.version,
+                            '--panel-url', origin, '--token', token, '--ca-file', str(ca),
+                            '--node-address', '127.0.0.1'], env=install_env, timeout=420)
 
             expired = issue(1)
             time.sleep(2)
