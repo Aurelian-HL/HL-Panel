@@ -99,6 +99,7 @@ export interface ForwardRuleInput {
   revision: number
 }
 export interface ForwardRule extends Omit<ForwardRuleInput, 'vless_socks5_password'> {
+  connection?: { status: 'online' | 'offline' | 'error'; connections: number; sampled_at?: string; reason: string; error_nodes?: number }
   outbound_summary?: { mode: 'SOCKS5' | 'DIRECT' | 'MIXED' | 'UNKNOWN'; host?: string; port?: number }
   imported_traffic?: { source_id?: string; batch_id?: string; line_id?: number; upload_bytes: number; download_bytes: number }
   id: string

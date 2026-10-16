@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { DeviceGroup } from '@/api'
 import type { ForwardRule, GroupNetwork, RuleGroup } from '@/api/business'
 import BusinessStatus from '@/components/BusinessStatus.vue'
 import { byteAmount, effectiveIngressProtocol, ingressProtocolLabel, targetAddress } from '@/lib/businessFormatters'
 import { ruleDisplayStatus } from '@/lib/ruleActivation'
 import ForwardRuleActions from './ForwardRuleActions.vue'
+import { ruleConnectionPresentation } from './ruleConnection'
 
 const props = withDefaults(defineProps<{
   rules: ForwardRule[]
@@ -18,6 +19,19 @@ const props = withDefaults(defineProps<{
   downloadBusyId?: string
 }>(), { networks: () => [], trafficByRule: () => ({}) })
 const emit = defineEmits<{ select: [rule: ForwardRule, selected: boolean]; edit: [rule: ForwardRule]; copy: [rule: ForwardRule]; connection: [rule: ForwardRule]; toggle: [rule: ForwardRule]; delete: [rule: ForwardRule] }>()
+
+// One clock per table, including the mobile layout. Use monotonic elapsed time
+// so an incorrect client system date cannot keep a stale observation green.
+const clock = ref(performance.now())
+const received = new WeakMap<object, number>()
+watch(() => props.rules, (rules) => {
+  const now = performance.now()
+  for (const rule of rules) if (rule.connection && !received.has(rule.connection)) received.set(rule.connection, now)
+}, { immediate: true })
+let clockTimer: number | undefined
+onMounted(() => { clockTimer = window.setInterval(() => { clock.value = performance.now() }, 1000) })
+onUnmounted(() => { window.clearInterval(clockTimer) })
+const connectionStatus = (rule: ForwardRule) => ruleConnectionPresentation(rule, Math.max(0, clock.value - (rule.connection ? received.get(rule.connection) ?? -Infinity : -Infinity)))
 
 const allSelected = computed(() => props.rules.length > 0 && props.rules.every((rule) => props.selectedIds.includes(rule.id)))
 const someSelected = computed(() => props.rules.some((rule) => props.selectedIds.includes(rule.id)) && !allSelected.value)
@@ -69,7 +83,7 @@ function selectVisible(selected: boolean): void {
         </tr></thead>
         <tbody><tr v-for="rule in rules" :key="rule.id">
           <td class="rule-select-column"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /></td>
-          <td><strong class="table-primary">{{ rule.name }}</strong><small class="table-secondary rule-protocol">{{ protocolSummary(rule) }}</small><small v-if="rule.description" class="table-secondary">{{ rule.description }}</small></td>
+          <td><div class="rule-name-line"><strong class="table-primary">{{ rule.name }}</strong><span class="rule-connection" :class="`is-${connectionStatus(rule).status}`" :title="connectionStatus(rule).title">{{ connectionStatus(rule).label }}</span></div><small class="table-secondary rule-protocol">{{ protocolSummary(rule) }}</small><small v-if="rule.description" class="table-secondary">{{ rule.description }}</small></td>
           <td class="rule-entry-cell"><div class="rule-route-heading"><span>入口：{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></td>
           <td class="rule-exit-cell"><div class="rule-route-heading"><span>出口：{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></td>
           <td class="rule-used-traffic">{{ usedTraffic(rule.id) }}<small class="table-secondary">{{ rule.traffic_limit_bytes ? `限额 ${byteAmount(rule.traffic_limit_bytes)}` : '不限量' }}</small><small v-if="!rule.traffic_quota_monthly && rule.imported_traffic" class="table-secondary">含迁移前 {{ byteAmount(rule.imported_traffic.upload_bytes + rule.imported_traffic.download_bytes) }}</small><small v-if="rule.traffic_quota_monthly" class="table-secondary">每月清零</small><small v-if="rule.traffic_limit_bytes && (rule.traffic_used_bytes ?? 0) >= rule.traffic_limit_bytes" class="table-secondary">额度用完，自动暂停</small></td>
@@ -80,7 +94,7 @@ function selectVisible(selected: boolean): void {
     </div>
     <div class="business-mobile">
       <article v-for="rule in rules" :key="rule.id" class="business-card">
-        <header><div class="rule-card-select"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /><div><h3>{{ rule.name }}</h3><p>{{ protocolSummary(rule) }}</p></div></div><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></header>
+        <header><div class="rule-card-select"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /><div><div class="rule-name-line"><h3>{{ rule.name }}</h3><span class="rule-connection" :class="`is-${connectionStatus(rule).status}`" :title="connectionStatus(rule).title">{{ connectionStatus(rule).label }}</span></div><p>{{ protocolSummary(rule) }}</p></div></div><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></header>
         <dl>
           <div class="rule-card-route"><dt>入口</dt><dd><div class="rule-route-heading"><span>{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></dd></div>
           <div class="rule-card-route"><dt>出口</dt><dd><div class="rule-route-heading"><span>{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></dd></div>
@@ -110,6 +124,13 @@ function selectVisible(selected: boolean): void {
 .rule-multiplier { flex: 0 0 auto; padding: 0 5px; border: 1px solid #b7dfad; border-radius: 3px; color: #45882f; font-size: 10px; font-weight: 400; line-height: 20px; white-space: nowrap; }
 .rule-address { display: block; margin-top: 4px; color: var(--gray-800); overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
 .rule-protocol { font-size: 10px; }
+.rule-name-line { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 7px; min-width: 0; }
+.rule-name-line > strong, .rule-name-line > h3 { min-width: 0; overflow-wrap: anywhere; }
+.rule-connection { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 400; line-height: 18px; white-space: nowrap; }
+.rule-connection::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.rule-connection.is-online { color: #23834b; background: #eaf7ef; }
+.rule-connection.is-offline { color: #747e8c; background: #f0f2f5; }
+.rule-connection.is-error { color: #946500; background: #fff5d9; }
 .rule-used-traffic { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .rule-card-route { grid-column: 1 / -1; }
 @media (max-width: 1100px) and (min-width: 761px) {

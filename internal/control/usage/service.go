@@ -65,6 +65,10 @@ func NewService(repository Repository, policies CustomerPolicyProvider, now func
 }
 
 func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult, error) {
+	// Only successful server-side resolution of a generation-bound report can
+	// authorize accounting after its customer has been deleted. The agent's
+	// supplied customer ID, or a missing current policy alone, is not evidence.
+	historicalOwnership := false
 	if strings.TrimSpace(input.LegacyRuleID) != "" || service.legacyRuleMetadata != nil {
 		if repository, ok := service.repository.(LegacyReplayRepository); ok {
 			result, replayed, err := repository.ReplayLegacy(ctx, input)
@@ -89,6 +93,7 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 			return IngestResult{}, err
 		}
 	}
+	historicalOwnership = input.ConfigGeneration != 0 && service.legacyRuleMetadata != nil
 	normalized, err := normalizeReport(input)
 	if err != nil {
 		return IngestResult{}, err
@@ -109,6 +114,11 @@ func (service *Service) Ingest(ctx context.Context, input Report) (IngestResult,
 	result, err := service.repository.Ingest(ctx, event, func(totals CustomerTotals) (*EnforcementDecision, error) {
 		policy, err := service.policies.UsagePolicy(ctx, normalized.CustomerID)
 		if err != nil {
+			if historicalOwnership && errors.Is(err, faults.ErrNotFound) {
+				// Preserve immutable usage and the node's ordered cursor without
+				// resurrecting a deleted subject or issuing new enforcement for it.
+				return nil, nil
+			}
 			return nil, err
 		}
 		if policy.CustomerID != normalized.CustomerID || policy.TrafficLimitBytes < 0 {

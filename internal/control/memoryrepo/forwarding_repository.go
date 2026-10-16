@@ -522,6 +522,12 @@ func (s *Store) updatedVLESSSOCKS5Upstream(rule, previous forwarding.Rule, passw
 }
 
 func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
+	item = s.forwardingDeploymentViewLocked(item)
+	item.Connection = s.ruleConnectionLocked(item, time.Now().UTC())
+	return item
+}
+
+func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.Rule {
 	item = s.forwardingBaseViewLocked(item)
 	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !item.Paused &&
 		(item.Status == forwarding.StatusPendingActivation || item.Status == forwarding.StatusActive) {
@@ -586,6 +592,7 @@ func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
 func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	customer := s.customers[item.CustomerID]
 	item = cloneForwardingRule(item)
+	item.Connection = nil // Live observations never enter configuration or revisions.
 	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}
 	if item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport() {
 		availability = forwarding.CustomerAvailability{Enabled: s.hasNonCustomerSubjectLocked(item)}
@@ -669,5 +676,13 @@ func (s *Store) vlessRuntimeMaterialReadyLocked(rule forwarding.Rule) bool {
 
 func cloneForwardingRule(item forwarding.Rule) forwarding.Rule {
 	item.Targets = append([]forwarding.Target{}, item.Targets...)
+	if item.Connection != nil {
+		copy := *item.Connection
+		if copy.SampledAt != nil {
+			at := *copy.SampledAt
+			copy.SampledAt = &at
+		}
+		item.Connection = &copy
+	}
 	return item
 }

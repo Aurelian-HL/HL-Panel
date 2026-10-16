@@ -195,7 +195,7 @@ func Snapshot() *agentv1.HostSnapshot {
 		previous.netValid = false
 	}
 	previous.at = now
-	s.TCPConnCount = connections("/proc/net/tcp", "/proc/net/tcp6")
+	s.TCPConnCount, s.TCPListeners = tcpSockets("/proc/net/tcp", "/proc/net/tcp6")
 	s.UDPConnCount = connections("/proc/net/udp", "/proc/net/udp6")
 	addresses, err := net.InterfaceAddrs()
 	collectIPAddresses(s, addresses, err)

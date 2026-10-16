@@ -18,7 +18,6 @@ import { useMutationKey } from '@/composables/useMutationKey'
 import { ruleInput } from '@/lib/businessFormatters'
 import { displayError } from '@/lib/displayFormatters'
 import { ruleActivationNotice } from '@/lib/ruleActivation'
-import { readProbeRefreshIntervals } from '@/features/probe/refreshPreferences'
 const rules = ref<ForwardRule[]>([])
 const devices = ref<DeviceGroup[]>([])
 const networks = ref<GroupNetwork[]>([])
@@ -55,7 +54,7 @@ let trafficLoadEpoch = 0
 let visibleTrafficInFlight: Promise<void> | null = null
 let trafficReloadPending = false
 let active = false
-const trafficRefreshIntervals = readProbeRefreshIntervals()
+const trafficRefreshIntervals = { foreground: 1000, background: 10000 }
 const ready = computed(() => !loading.value && !error.value)
 function isUnauthorized(cause: unknown): boolean { return cause instanceof ApiError && cause.status === 401 }
 function invalidateSession(): void {
@@ -192,12 +191,15 @@ function scheduleTrafficRefresh(): void {
   if (trafficTimer !== undefined) window.clearTimeout(trafficTimer)
   if (!active) return
   const interval = document.visibilityState === 'visible' ? trafficRefreshIntervals.foreground : trafficRefreshIntervals.background
-  trafficTimer = window.setTimeout(async () => {
-    await refreshTraffic()
+  trafficTimer = window.setTimeout(() => {
     scheduleTrafficRefresh()
+    void refreshTraffic()
   }, interval)
 }
-function handleTrafficVisibilityChange(): void { scheduleTrafficRefresh() }
+function handleTrafficVisibilityChange(): void {
+  scheduleTrafficRefresh()
+  if (document.visibilityState === 'visible') void refreshTraffic()
+}
 function startCreate(): void {
   if (!ready.value || resourcesLoading.value || refreshing.value || batchBusy.value || busyId.value) return
   actionError.value = ''

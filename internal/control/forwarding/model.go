@@ -105,7 +105,18 @@ type OutboundSummary struct {
 	Port int    `json:"port,omitempty"`
 }
 
+// RuleConnection is a read-only observation of established TCP connections on
+// this rule's verified listener. It is neither a user count nor an egress probe.
+type RuleConnection struct {
+	Status      string     `json:"status"`
+	Connections uint64     `json:"connections"`
+	SampledAt   *time.Time `json:"sampled_at,omitempty"`
+	Reason      string     `json:"reason"`
+	ErrorNodes  int        `json:"error_nodes,omitempty"`
+}
+
 type Rule struct {
+	Connection *RuleConnection `json:"connection,omitempty"`
 	// UserGroupDetached preserves authorization for this existing listener after
 	// its user group is deleted. It is not accepted by rule write requests.
 	UserGroupDetached   bool              `json:"user_group_detached,omitempty"`

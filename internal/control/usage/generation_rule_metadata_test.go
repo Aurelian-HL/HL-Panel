@@ -3,12 +3,49 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 	"testing"
 	"time"
 )
+
+func TestHistoricalUsageForDeletedCustomerDoesNotBlockFollowingReports(t *testing.T) {
+	history := historicalUsageFixture(t)
+	ledger := &stubRepository{}
+	s := NewService(ledger, stubPolicies{err: faults.ErrNotFound}, nil,
+		WithLegacyRuleMetadataProvider(NewLegacyRuleMetadataProvider(history)))
+	now := time.Now().UTC()
+	r := Report{NodeID: "node-1", BootID: "boot", Sequence: 1, ConfigGeneration: agentv1.NodeConfigGeneration(history.historical.Config.Generation),
+		LegacyRuleID: "rule-1", RuleID: "rule-1", OccurredAt: now, PeriodStartedAt: now.Add(-time.Minute), PeriodEndedAt: now, RuleActualBytes: 42}
+	for seq := int64(1); seq <= 2; seq++ {
+		r.Sequence = seq
+		got, err := s.Ingest(context.Background(), r)
+		if err != nil || got.Event.CustomerID != "customer-1" || got.Event.ChargedBytes != 84 || got.Decision != nil {
+			t.Fatalf("historical accounting must survive subject deletion without new enforcement: %#v %v", got, err)
+		}
+	}
+	// Neither an unverified current report nor a caller-supplied generation
+	// without a metadata provider may bypass the missing-customer policy.
+	r.ConfigGeneration = 0
+	if _, err := s.Ingest(context.Background(), r); err == nil {
+		t.Fatal("current unverifiable ownership accepted")
+	}
+	s = NewService(&stubRepository{}, stubPolicies{err: faults.ErrNotFound}, nil)
+	plain := testReport()
+	plain.ConfigGeneration = 1
+	if _, err := s.Ingest(context.Background(), plain); !errors.Is(err, faults.ErrNotFound) {
+		t.Fatalf("unverified generation bypassed policy: %v", err)
+	}
+	r.ConfigGeneration = agentv1.NodeConfigGeneration(history.historical.Config.Generation)
+	s = NewService(&stubRepository{}, stubPolicies{err: errors.New("database unavailable")}, nil,
+		WithLegacyRuleMetadataProvider(NewLegacyRuleMetadataProvider(history)))
+	if _, err := s.Ingest(context.Background(), r); err == nil || errors.Is(err, faults.ErrNotFound) {
+		t.Fatalf("policy outage swallowed: %v", err)
+	}
+}
 
 type historicalUsageRepository struct {
 	legacyRuleInputRepository

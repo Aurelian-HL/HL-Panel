@@ -19,8 +19,11 @@ type HostSnapshot struct {
 	NetInSpeedBytesPerSecond  *uint64  `json:"net_in_speed_bytes_per_second,omitempty"`
 	NetOutSpeedBytesPerSecond *uint64  `json:"net_out_speed_bytes_per_second,omitempty"`
 	TCPConnCount              *uint64  `json:"tcp_conn_count,omitempty"`
-	UDPConnCount              *uint64  `json:"udp_conn_count,omitempty"`
-	IPv4                      string   `json:"ipv4,omitempty"`
-	IPv6                      string   `json:"ipv6,omitempty"`
-	IPCollectionStatus        string   `json:"ip_collection_status,omitempty"`
+	// Local TCP listener port -> established connections. Null means unknown;
+	// an empty object is a successful sample with no listeners. No peer IPs.
+	TCPListeners       map[string]uint64 `json:"tcp_listeners"`
+	UDPConnCount       *uint64           `json:"udp_conn_count,omitempty"`
+	IPv4               string            `json:"ipv4,omitempty"`
+	IPv6               string            `json:"ipv6,omitempty"`
+	IPCollectionStatus string            `json:"ip_collection_status,omitempty"`
 }

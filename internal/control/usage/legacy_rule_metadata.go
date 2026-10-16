@@ -182,6 +182,12 @@ func hasXrayInboundTag(raw json.RawMessage, expected string, rule forwarding.Rul
 		}
 		encoded, ok := strings.CutPrefix(inbound.Tag, "vless-reality-"+rule.ID+"--")
 		if !ok {
+			// Imported KL listeners used this prefix before the standard
+			// compiler. Their immutable bundle and receipts are still verified
+			// by the caller; ownership must also match the encoded tag below.
+			encoded, ok = strings.CutPrefix(inbound.Tag, "vless-reality-kl-native-"+rule.ID+"--")
+		}
+		if !ok {
 			continue
 		}
 		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
