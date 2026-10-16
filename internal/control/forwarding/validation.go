@@ -35,8 +35,11 @@ func NormalizeRequest(input Request) (Request, error) {
 	if !validReference(input.CustomerID) || !validReference(input.EntryGroupID) || (input.ExitGroupID != "" && !validReference(input.ExitGroupID)) {
 		return Request{}, fmt.Errorf("%w: customer_id and entry_group_id must be bounded identifiers", faults.ErrValidation)
 	}
-	if input.OwnerKind != "" && input.OwnerKind != OwnerCustomer && input.OwnerKind != OwnerAdministrator || input.OwnerID != "" && !validReference(input.OwnerID) {
+	if input.OwnerKind != "" && input.OwnerKind != OwnerCustomer && input.OwnerKind != OwnerAdministrator && input.OwnerKind != OwnerUnassigned || input.OwnerID != "" && !validReference(input.OwnerID) {
 		return Request{}, fmt.Errorf("%w: invalid rule owner", faults.ErrValidation)
+	}
+	if input.OwnerKind == OwnerUnassigned && (input.VLESSOutboundMode != VLESSOutboundNative || input.OwnerID != "" || input.CustomerID != "klunassigned_"+input.EntryGroupID) {
+		return Request{}, fmt.Errorf("%w: invalid unassigned import subject", faults.ErrValidation)
 	}
 	if input.RuleGroupID != "" && !validReference(input.RuleGroupID) {
 		return Request{}, fmt.Errorf("%w: rule_group_id must be empty or a bounded identifier", faults.ErrValidation)
@@ -77,38 +80,45 @@ func NormalizeRequest(input Request) (Request, error) {
 			// bypass the landing with Xray's DIRECT outbound.
 			input.VLESSOutboundMode = VLESSOutboundSOCKS5
 		}
-		if input.VLESSOutboundMode != VLESSOutboundSOCKS5 {
+		if input.VLESSOutboundMode != VLESSOutboundSOCKS5 && input.VLESSOutboundMode != VLESSOutboundNative {
 			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires SOCKS5 outbound", faults.ErrValidation)
 		}
-		if input.VLESSSOCKS5Host == "" {
-			return Request{}, fmt.Errorf("%w: SOCKS5 outbound host is required", faults.ErrValidation)
-		}
-		host, err := serviceaddress.NormalizeHost(input.VLESSSOCKS5Host)
-		if err != nil {
-			return Request{}, fmt.Errorf("%w: SOCKS5 outbound host is invalid", faults.ErrValidation)
-		}
-		input.VLESSSOCKS5Host = host
-		if input.VLESSSOCKS5Port < 1 || input.VLESSSOCKS5Port > 65535 {
-			return Request{}, fmt.Errorf("%w: SOCKS5 outbound port must be 1 to 65535", faults.ErrValidation)
-		}
-		if len(input.VLESSSOCKS5Username) > 255 || len(input.VLESSSOCKS5Password) > 255 || strings.IndexFunc(input.VLESSSOCKS5Username, unicode.IsControl) >= 0 || strings.IndexFunc(input.VLESSSOCKS5Password, unicode.IsControl) >= 0 {
-			return Request{}, fmt.Errorf("%w: SOCKS5 credentials must be printable and at most 255 characters", faults.ErrValidation)
-		}
-		// Existing rules may omit write-only credentials while retaining their
-		// landing endpoint. Legacy clients may also echo the original username
-		// without its password. The repository checks that username under its
-		// update lock and rejects changed endpoints or unavailable credentials.
-		preserveSOCKS5Credentials := input.Revision > 0 && input.VLESSSOCKS5Password == ""
-		if !preserveSOCKS5Credentials && (input.VLESSSOCKS5Username == "" || input.VLESSSOCKS5Password == "") {
-			return Request{}, fmt.Errorf("%w: SOCKS5 username and password are both required", faults.ErrValidation)
+		if input.VLESSOutboundMode == VLESSOutboundNative {
+			if len(input.Targets) != 0 || input.VLESSSOCKS5Host != "" || input.VLESSSOCKS5Port != 0 || input.VLESSSOCKS5Username != "" || input.VLESSSOCKS5Password != "" ||
+				input.RealityServerName == "" || input.RealityPublicKey == "" || !input.VLESSFlowExplicit || input.AcceptProxyProtocol || input.SendProxyProtocol != 0 || input.IPLimit != 0 || input.ConnectionLimit != 0 {
+				return Request{}, fmt.Errorf("%w: imported runtime parameters must be preserved", faults.ErrValidation)
+			}
+		} else {
+			if input.VLESSSOCKS5Host == "" {
+				return Request{}, fmt.Errorf("%w: SOCKS5 outbound host is required", faults.ErrValidation)
+			}
+			host, err := serviceaddress.NormalizeHost(input.VLESSSOCKS5Host)
+			if err != nil {
+				return Request{}, fmt.Errorf("%w: SOCKS5 outbound host is invalid", faults.ErrValidation)
+			}
+			input.VLESSSOCKS5Host = host
+			if input.VLESSSOCKS5Port < 1 || input.VLESSSOCKS5Port > 65535 {
+				return Request{}, fmt.Errorf("%w: SOCKS5 outbound port must be 1 to 65535", faults.ErrValidation)
+			}
+			if len(input.VLESSSOCKS5Username) > 255 || len(input.VLESSSOCKS5Password) > 255 || strings.IndexFunc(input.VLESSSOCKS5Username, unicode.IsControl) >= 0 || strings.IndexFunc(input.VLESSSOCKS5Password, unicode.IsControl) >= 0 {
+				return Request{}, fmt.Errorf("%w: SOCKS5 credentials must be printable and at most 255 characters", faults.ErrValidation)
+			}
+			// Existing rules may omit write-only credentials while retaining their
+			// landing endpoint. Legacy clients may also echo the original username
+			// without its password. The repository checks that username under its
+			// update lock and rejects changed endpoints or unavailable credentials.
+			preserveSOCKS5Credentials := input.Revision > 0 && input.VLESSSOCKS5Password == ""
+			if !preserveSOCKS5Credentials && (input.VLESSSOCKS5Username == "" || input.VLESSSOCKS5Password == "") {
+				return Request{}, fmt.Errorf("%w: SOCKS5 username and password are both required", faults.ErrValidation)
+			}
 		}
 		if input.AcceptProxyProtocol {
 			return Request{}, fmt.Errorf("%w: VLESS Reality ingress does not support receiving Proxy Protocol in this slice", faults.ErrValidation)
 		}
-		if input.VLESSFlow == "" {
+		if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
 			input.VLESSFlow = "xtls-rprx-vision"
 		}
-		if input.VLESSFlow != "xtls-rprx-vision" {
+		if input.VLESSFlow != "" && input.VLESSFlow != "xtls-rprx-vision" {
 			return Request{}, fmt.Errorf("%w: vless_flow must be empty or xtls-rprx-vision", faults.ErrValidation)
 		}
 		if input.RealityServerName != "" {
@@ -148,7 +158,7 @@ func NormalizeRequest(input Request) (Request, error) {
 		return Request{}, fmt.Errorf("%w: ingress_protocol must be tcp, udp, socks5, or vless_reality", faults.ErrValidation)
 	}
 	if input.IngressProtocol != IngressVLESSReality &&
-		(input.VLESSFlow != "" || input.RealityServerName != "" || input.RealityPublicKey != "" || input.RealityShortID != "" || input.RealityDestination != "" || input.VLESSOutboundMode != "" || input.VLESSSOCKS5Host != "" || input.VLESSSOCKS5Port != 0 || input.VLESSSOCKS5Username != "" || input.VLESSSOCKS5Password != "") {
+		(input.VLESSFlowExplicit || input.VLESSFlow != "" || input.RealityServerName != "" || input.RealityPublicKey != "" || input.RealityShortID != "" || input.RealityDestination != "" || input.VLESSOutboundMode != "" || input.VLESSSOCKS5Host != "" || input.VLESSSOCKS5Port != 0 || input.VLESSSOCKS5Username != "" || input.VLESSSOCKS5Password != "") {
 		return Request{}, fmt.Errorf("%w: Reality parameters are only valid for vless_reality ingress", faults.ErrValidation)
 	}
 	if input.ListenPort < 0 || input.ListenPort > 65535 {
@@ -177,7 +187,7 @@ func NormalizeRequest(input Request) (Request, error) {
 	// fixed target. DIRECT VLESS and every other ingress retain the normal
 	// target requirements.
 	minimumTargets := 1
-	dynamicVLESSSOCKS5 := input.EffectiveIngressProtocol() == IngressVLESSReality && input.VLESSOutboundMode == VLESSOutboundSOCKS5
+	dynamicVLESSSOCKS5 := input.EffectiveIngressProtocol() == IngressVLESSReality && (input.VLESSOutboundMode == VLESSOutboundSOCKS5 || input.VLESSOutboundMode == VLESSOutboundNative)
 	if dynamicVLESSSOCKS5 {
 		minimumTargets = 0
 	}

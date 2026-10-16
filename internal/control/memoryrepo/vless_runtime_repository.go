@@ -1,6 +1,7 @@
 package memoryrepo
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/importedconfig"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
@@ -54,6 +56,7 @@ func (s *Store) SaveRuntimeMaterial(_ context.Context, input vlessruntime.SaveIn
 		EndpointPoolID: binding.Binding.EndpointPoolID, State: vlessruntime.StateActive,
 		Revision: 1, CreatedAt: input.CreatedAt.UTC(), UpdatedAt: input.CreatedAt.UTC(),
 		CredentialUUID: binding.CredentialUUID, RealityPrivateKey: strings.TrimSpace(input.RealityPrivateKey),
+		NativeConfig: bytes.Clone(input.NativeConfig),
 	}
 	if err := s.validateVLESSRuntimeMaterialLocked(record); err != nil {
 		return vlessruntime.PublicMaterial{}, false, err
@@ -147,6 +150,9 @@ func (s *Store) runtimeMaterialForNodeLocked(nodeID, bindingID string) (vlessrun
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
 	privateKey := s.autoRealityKeys[rule.ID]
+	if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		return vlessruntime.Material{}, faults.ErrNotFound
+	}
 	if privateKey == "" || !vlessruntime.RealityKeyMatchesPublicKey(privateKey, rule.RealityPublicKey) {
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
@@ -193,6 +199,7 @@ func (s *Store) RevokeRuntimeMaterial(_ context.Context, input vlessruntime.Revo
 	record.RevokedAt = &revokedAt
 	record.CredentialUUID = ""
 	record.RealityPrivateKey = ""
+	record.NativeConfig = nil
 	if err := s.validateVLESSRuntimeMaterialLocked(record); err != nil {
 		return vlessruntime.PublicMaterial{}, false, err
 	}
@@ -221,7 +228,7 @@ func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Materia
 		return fmt.Errorf("%w: invalid VLESS runtime material metadata", faults.ErrValidation)
 	}
 	if material.State == vlessruntime.StateRevoked {
-		if material.RevokedAt == nil || material.RevokedAt.Before(material.CreatedAt) || material.CredentialUUID != "" || material.RealityPrivateKey != "" {
+		if material.RevokedAt == nil || material.RevokedAt.Before(material.CreatedAt) || material.CredentialUUID != "" || material.RealityPrivateKey != "" || len(material.NativeConfig) != 0 {
 			return fmt.Errorf("%w: revoked VLESS runtime material retained secret state", faults.ErrValidation)
 		}
 		// Revoked records are historical audit state. They remain readable in a
@@ -266,7 +273,26 @@ func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Materia
 	if material.RevokedAt != nil || !vlessruntime.ValidCredentialUUID(material.CredentialUUID) || !vlessruntime.ValidRealityPrivateKey(material.RealityPrivateKey) {
 		return fmt.Errorf("%w: active VLESS runtime material lacks valid secrets", faults.ErrValidation)
 	}
+	if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		profile, err := importedconfig.InspectNative(material.NativeConfig)
+		if err != nil || binding.Binding.ImportedFrom == nil || profile.UUID != material.CredentialUUID || profile.PrivateKey != material.RealityPrivateKey ||
+			profile.Port != rule.ListenPort || profile.Flow != rule.EffectiveVLESSFlow() || profile.Destination != rule.RealityDestination ||
+			!containsNativeValue(profile.ServerNames, rule.RealityServerName) || !containsNativeValue(profile.ShortIDs, rule.RealityShortID) {
+			return fmt.Errorf("%w: native runtime material does not match imported rule", faults.ErrConflict)
+		}
+	} else if len(material.NativeConfig) != 0 {
+		return fmt.Errorf("%w: native material requires an imported rule", faults.ErrValidation)
+	}
 	return nil
+}
+
+func containsNativeValue(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) safeRuntimeAuditEvent(event audit.Event, action, actorID string, public vlessruntime.PublicMaterial, revoked bool) audit.Event {
@@ -310,6 +336,7 @@ func vlessRuntimeMutationKey(actorID, operation, idempotencyKey string) string {
 }
 
 func cloneVLESSRuntimeMaterial(material vlessruntime.Material) vlessruntime.Material {
+	material.NativeConfig = bytes.Clone(material.NativeConfig)
 	if material.RevokedAt != nil {
 		value := *material.RevokedAt
 		material.RevokedAt = &value

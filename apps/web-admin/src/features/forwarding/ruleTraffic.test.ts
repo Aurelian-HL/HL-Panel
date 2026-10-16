@@ -13,6 +13,12 @@ beforeEach(() => {
 })
 
 describe('loadRuleTraffic', () => {
+  it('adds imported lifetime traffic exactly once and keeps monthly totals separate', async () => {
+    mocked.query.mockImplementation(async (query) => ({ totals: { charged_bytes: 42 }, ...(!query.from ? { imported_traffic: { total_bytes: 100 } } : {}) }))
+    const onValue = vi.fn()
+    await loadRuleTraffic([{ id: 'lifetime' }, { id: 'monthly', traffic_quota_monthly: true }], { isCurrent: () => true, onValue, onUnauthorized: vi.fn() })
+    expect(onValue.mock.calls).toEqual([['lifetime', 142], ['monthly', 42]])
+  })
   it('queries monthly fallback totals within the UTC month using server time and deduplicates rules', async () => {
     const onValue = vi.fn()
     await loadRuleTraffic([

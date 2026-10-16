@@ -14,12 +14,13 @@ func (api *API) registerBusinessRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/v1/user-groups/{id}", api.requireAdministrator(api.saveUserGroup))
 	}
 	if api.forwarding != nil {
+		mux.HandleFunc("POST /api/v1/customers/{id}/forwarding-rules", api.requireAdministrator(api.createCustomerForwardingRule))
 		mux.HandleFunc("GET /api/v1/forwarding-rules", api.requireAdministrator(api.listForwardingRules))
 		mux.HandleFunc("GET /api/v1/forwarding-rules/export", api.requireAdministrator(api.exportForwardingRules))
 		mux.HandleFunc("POST /api/v1/forwarding-rules/import/preview", api.requireAdministrator(api.previewForwardingImport))
 		mux.HandleFunc("POST /api/v1/forwarding-rules/import", api.requireAdministrator(api.importForwardingRules))
-	mux.HandleFunc("GET /api/v1/forwarding-rules/{id}", api.requireAdministrator(api.getForwardingRule))
-	mux.HandleFunc("GET /api/v1/forwarding-rules/{id}/connection", api.requireAdministrator(api.getForwardingRuleConnection))
+		mux.HandleFunc("GET /api/v1/forwarding-rules/{id}", api.requireAdministrator(api.getForwardingRule))
+		mux.HandleFunc("GET /api/v1/forwarding-rules/{id}/connection", api.requireAdministrator(api.getForwardingRuleConnection))
 		mux.HandleFunc("POST /api/v1/forwarding-rules", api.requireAdministrator(api.saveForwardingRule))
 		mux.HandleFunc("PUT /api/v1/forwarding-rules/{id}", api.requireAdministrator(api.saveForwardingRule))
 	}

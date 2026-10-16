@@ -65,6 +65,7 @@ export interface UsageResponse {
   total: number
   page: number
   page_size: number
+  imported_traffic?: { upload_bytes: number; download_bytes: number; total_bytes: number; rule_count: number; latest_observed_at: string }
 }
 
 export interface EnforcementRevokeResponse {

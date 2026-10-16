@@ -24,10 +24,10 @@ var ErrUnhealthy = errors.New("VLESS protocol probe failed")
 // scheduler limits network workers, but without a second limit a large pool
 // can still fork enough Xray processes to starve the control plane itself.
 // Keep this guard package-wide so multiple runners cannot bypass the limit.
-// Keep the existing three-process budget: reducing it further can expire
+// Preserve the custom scheduler worker budget to avoid expiring
 // healthy targets in large pools. Cache successful static validation to
 // remove redundant forks without sacrificing network-check throughput.
-const maxConcurrentChecks = 3
+const maxConcurrentChecks = 8
 const maxPortStartAttempts = 3
 
 // A successful Reality check remains useful for one scheduler turn. The
@@ -209,7 +209,7 @@ func probeCacheKey(spec Spec, binary string, info os.FileInfo) [sha256.Size]byte
 		strconv.FormatInt(info.ModTime().UnixNano(), 10),
 		strconv.FormatUint(uint64(info.Mode()), 10),
 		spec.DialHost, strconv.Itoa(spec.DialPort), spec.UUID, spec.ServerName,
-		spec.PublicKey, spec.ShortID, spec.EchoHost, strconv.Itoa(spec.EchoPort),
+		spec.PublicKey, spec.ShortID, spec.EffectiveFlow(), spec.EchoHost, strconv.Itoa(spec.EchoPort),
 	}, "\x00")
 	return sha256.Sum256([]byte(value))
 }

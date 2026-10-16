@@ -23,6 +23,10 @@ export function formatRelativeTime(value: string | null | undefined): string {
 export function displayError(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   const translations: Array<[RegExp, string]> = [
+    [/delete customer rules first/i, '该用户仍有关联转发规则，请先删除或转移规则，再删除用户'],
+    [/customer still has subscriptions/i, '该用户仍有关联订阅，请先处理订阅，再删除用户'],
+    [/customer still has VLESS bindings/i, '该用户仍有线路身份绑定，请先解除绑定，再删除用户'],
+    [/user group is referenced by a network policy/i, '此用户组仍被设备组网络授权引用，请先在设备组中解除该授权，再删除用户组'],
     [/endpoint pool is referenced by a customer identity/i, '该规则的接入端点仍绑定客户身份，请先解除身份绑定'],
     [/endpoint pool has active runtime material/i, '该规则的接入端点仍有生效中的运行配置，暂不能删除'],
     [/endpoint pool has active connections/i, '该规则的接入端点仍有活动连接，请等待连接结束后重试'],

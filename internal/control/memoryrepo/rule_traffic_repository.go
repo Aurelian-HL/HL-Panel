@@ -10,6 +10,7 @@ import (
 )
 
 func preserveRuleTraffic(item *forwarding.Rule, previous forwarding.Rule) {
+	item.ImportedTraffic = previous.ImportedTraffic
 	item.TrafficUsedBytes = previous.TrafficUsedBytes
 	item.TrafficUsagePeriod = previous.TrafficUsagePeriod
 	if previous.TrafficQuotaMonthly != item.TrafficQuotaMonthly {

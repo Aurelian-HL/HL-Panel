@@ -83,10 +83,13 @@ func (s *Store) validateBusinessSnapshot() error {
 		if id != rule.ID || id == "" || rule.Revision < 1 || rule.ListenPort < 1 || rule.ListenPort > 65535 {
 			return errors.New("invalid persisted forwarding rule")
 		}
-		adminOwned := rule.OwnerKind == forwarding.OwnerAdministrator
+		if !rule.ImportedTraffic.Valid() || rule.ImportedTraffic != (forwarding.ImportedTraffic{}) && rule.VLESSOutboundMode != forwarding.VLESSOutboundNative {
+			return errors.New("invalid imported traffic baseline")
+		}
+		adminOwned := rule.OwnerKind == forwarding.OwnerAdministrator || rule.IsUnassignedImport()
 		_, customerFound := s.customers[rule.CustomerID]
 		if adminOwned {
-			customerFound = s.hasAdministratorSubjectLocked(rule)
+			customerFound = s.hasNonCustomerSubjectLocked(rule)
 		}
 		if !customerFound || !adminOwned && (rule.OwnerKind != "" && rule.OwnerKind != forwarding.OwnerCustomer || rule.OwnerID != "" && rule.OwnerID != rule.CustomerID) {
 			return errors.New("persisted rule references missing customer")
@@ -120,7 +123,7 @@ func (s *Store) validateBusinessSnapshot() error {
 			EgressMode: rule.EgressMode, VLESSOutboundMode: rule.VLESSOutboundMode,
 			VLESSSOCKS5Host: rule.VLESSSOCKS5Host, VLESSSOCKS5Port: rule.VLESSSOCKS5Port,
 			VLESSSOCKS5Username: validatedSOCKS5Username, VLESSSOCKS5Password: validatedSOCKS5Password, IngressProtocol: rule.EffectiveIngressProtocol(),
-			VLESSFlow: rule.VLESSFlow, RealityServerName: rule.RealityServerName,
+			VLESSFlow: rule.VLESSFlow, VLESSFlowExplicit: rule.VLESSFlowExplicit, RealityServerName: rule.RealityServerName,
 			RealityPublicKey: rule.RealityPublicKey, RealityShortID: rule.RealityShortID, RealityDestination: rule.RealityDestination,
 			Protocol: rule.Protocol, ListenPort: rule.ListenPort, Targets: rule.Targets,
 			SelectionPolicy: rule.SelectionPolicy, AcceptProxyProtocol: rule.AcceptProxyProtocol,
@@ -143,16 +146,17 @@ func (s *Store) validateBusinessSnapshot() error {
 		network, found := s.groupNetworks[rule.EntryGroupID]
 		customer := s.customers[rule.CustomerID]
 		userGroup := s.userGroups[customer.UserGroupID]
-		if !found || !network.ContainsPort(rule.ListenPort) || !adminOwned && !slices.Contains(userGroup.AllowedEntryGroupIDs, rule.EntryGroupID) {
+		detached := rule.UserGroupDetached && customer.UserGroupID == "" && rule.OwnedByCustomer(customer.ID)
+		if !found || !network.ContainsPort(rule.ListenPort) || !adminOwned && !detached && !slices.Contains(userGroup.AllowedEntryGroupIDs, rule.EntryGroupID) {
 			return errors.New("invalid persisted rule entry binding")
 		}
-		if !adminOwned && len(network.AllowedUserGroupIDs) > 0 && !slices.Contains(network.AllowedUserGroupIDs, customer.UserGroupID) {
+		if !adminOwned && !detached && len(network.AllowedUserGroupIDs) > 0 && !slices.Contains(network.AllowedUserGroupIDs, customer.UserGroupID) {
 			return errors.New("invalid persisted rule entry user-group authorization")
 		}
-		if rule.EgressMode == forwarding.EgressDirect && (!network.EffectiveDirectPolicy().AllowsDirect() || !adminOwned && !userGroup.AllowDirect) {
+		if rule.EgressMode == forwarding.EgressDirect && (!network.EffectiveDirectPolicy().AllowsDirect() || !adminOwned && !detached && !userGroup.AllowDirect) {
 			return errors.New("invalid persisted rule direct authorization")
 		}
-		if rule.EgressMode == forwarding.EgressExitGroup && (!network.EffectiveDirectPolicy().AllowsExitGroup() || rule.EntryGroupID == rule.ExitGroupID || !adminOwned && !slices.Contains(userGroup.AllowedExitGroupIDs, rule.ExitGroupID) || !slices.Contains(network.AllowedExitGroupIDs, rule.ExitGroupID)) {
+		if rule.EgressMode == forwarding.EgressExitGroup && (!network.EffectiveDirectPolicy().AllowsExitGroup() || rule.EntryGroupID == rule.ExitGroupID || !adminOwned && !detached && !slices.Contains(userGroup.AllowedExitGroupIDs, rule.ExitGroupID) || !slices.Contains(network.AllowedExitGroupIDs, rule.ExitGroupID)) {
 			return errors.New("invalid persisted rule exit authorization")
 		}
 		if rule.EgressMode == forwarding.EgressExitGroup {
@@ -160,7 +164,7 @@ func (s *Store) validateBusinessSnapshot() error {
 				if len(exitNetwork.AllowedEntryGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedEntryGroupIDs, rule.EntryGroupID) {
 					return errors.New("invalid persisted rule reverse entry authorization")
 				}
-				if !adminOwned && len(exitNetwork.AllowedUserGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedUserGroupIDs, customer.UserGroupID) {
+				if !adminOwned && !detached && len(exitNetwork.AllowedUserGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedUserGroupIDs, customer.UserGroupID) {
 					return errors.New("invalid persisted rule exit user-group authorization")
 				}
 			}
@@ -200,9 +204,16 @@ func (s *Store) validateBusinessSnapshot() error {
 			return errors.New("invalid persisted automatic Reality material")
 		}
 	}
+	importedOrigins := make(map[vlessidentity.ImportOrigin]bool)
 	for id, record := range s.vlessBindings {
 		if id != record.Binding.ID || s.validateVLESSCredentialRecordLocked(record) != nil {
 			return errors.New("invalid persisted VLESS identity binding")
+		}
+		if origin := record.Binding.ImportedFrom; origin != nil {
+			if importedOrigins[*origin] {
+				return errors.New("duplicate persisted VLESS identity import provenance")
+			}
+			importedOrigins[*origin] = true
 		}
 		if record.Binding.State == vlessidentity.StateActive {
 			key := strings.Join([]string{record.Binding.CustomerID, record.Binding.ForwardingRuleID, record.Binding.EndpointPoolID}, "\x00")
@@ -210,6 +221,25 @@ func (s *Store) validateBusinessSnapshot() error {
 				return errors.New("duplicate persisted active VLESS identity binding")
 			}
 			activeVLESSTuples[key] = true
+		}
+	}
+	for _, r := range s.forwardRules {
+		if r.ImportedTraffic == (forwarding.ImportedTraffic{}) && !r.IsUnassignedImport() {
+			continue
+		}
+		found := false
+		for _, b := range s.vlessBindings {
+			origin := b.Binding.ImportedFrom
+			if b.Binding.ForwardingRuleID != r.ID || origin == nil {
+				continue
+			}
+			if r.ImportedTraffic != (forwarding.ImportedTraffic{}) && (origin.BatchID != r.ImportedTraffic.BatchID || origin.LineID != r.ImportedTraffic.LineID) {
+				return errors.New("imported traffic provenance mismatch")
+			}
+			found = true
+		}
+		if !found {
+			return errors.New("imported rule lacks provenance")
 		}
 	}
 	activeRuntimeBindings := make(map[string]bool)

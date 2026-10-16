@@ -5,8 +5,9 @@ import type { DeviceGroup } from '@/api'
 import { businessApi, type ForwardRule, type ForwardRuleInput, type GroupNetwork, type RuleGroup, type IngressProtocol } from '@/api/business'
 import { ApiError } from '@/api/http'
 import BaseModal from '@/components/BaseModal.vue'
+import NativeRuleEditor from './NativeRuleEditor.vue'
 import { useMutationKey } from '@/composables/useMutationKey'
-import { BYTES_PER_GB, parseTargetAddresses, parseVLESSSOCKS5Target, ruleInput, targetAddress } from '@/lib/businessFormatters'
+import { BYTES_PER_GB, effectiveVLESSFlow, parseTargetAddresses, parseVLESSSOCKS5Target, ruleInput, targetAddress } from '@/lib/businessFormatters'
 import { displayError } from '@/lib/displayFormatters'
 import { networkAllowsDirect, networkAllowsExitGroup } from '@/lib/forwardingRoutes'
 
@@ -77,7 +78,7 @@ watch(() => form.ingress_protocol, (protocol) => {
     form.egress_mode = 'DIRECT'
     form.exit_group_id = ''
     if (network.value && !networkAllowsDirect(network.value)) form.entry_group_id = ''
-    form.vless_flow = 'xtls-rprx-vision'
+    form.vless_flow = effectiveVLESSFlow(form)
     form.accept_proxy_protocol = false
     form.send_proxy_protocol = 0
     // The compact target is always an authenticated SOCKS5 upstream.
@@ -91,6 +92,7 @@ watch(() => form.ingress_protocol, (protocol) => {
   }
   if (selectedProtocol !== 'vless_reality') {
     form.vless_flow = ''
+    form.vless_flow_explicit = false
     form.reality_server_name = ''
     form.reality_public_key = ''
     form.reality_short_id = ''
@@ -138,7 +140,7 @@ async function save(): Promise<void> {
   error.value = ''
   if (!form.name.trim() || !form.entry_group_id) { error.value = '请填写规则名称并选择入口'; return }
   const selectedIngress = ingressProtocol.value
-  if (selectedIngress === 'vless_reality' && (form.protocol !== 'tcp' || form.egress_mode !== 'DIRECT')) { error.value = 'VLESS + Reality + Vision 当前仅支持 TCP 入口直出'; return }
+  if (selectedIngress === 'vless_reality' && (form.protocol !== 'tcp' || form.egress_mode !== 'DIRECT')) { error.value = 'VLESS + Reality 当前仅支持 TCP 入口直出'; return }
   let compactSOCKS5: ReturnType<typeof parseVLESSSOCKS5Target> | null = null
   if (selectedIngress === 'vless_reality') {
     form.reality_server_name = form.reality_server_name?.trim() ?? ''
@@ -175,12 +177,12 @@ async function save(): Promise<void> {
   // The compact VLESS value is an authenticated SOCKS5 landing endpoint, not
   // a customer final target. Keep it out of the public target projection.
   try { form.targets = dynamicTargets ? [] : parseTargetAddresses(targetsText.value) } catch (cause) { error.value = displayError(cause); return }
-  if (selectedIngress === 'vless_reality' && !dynamicTargets && form.targets.length !== 1) { error.value = '直连 VLESS + Reality + Vision 需要一个最终目标地址'; return }
+  if (selectedIngress === 'vless_reality' && !dynamicTargets && form.targets.length !== 1) { error.value = '直连 VLESS + Reality 需要一个最终目标地址'; return }
   if (dynamicTargets && form.targets.length > 1) { error.value = 'SOCKS5 出站最多保留一个兼容目标地址；最终目标由客户端提供'; return }
   // New VLESS rules leave Reality material empty so the control plane can
   // generate it once. Keep already-issued material stable during edits;
   // clearing it would rotate the customer's URI on an unrelated change.
-  const input: ForwardRuleInput = { ...form, name: form.name.trim(), description: form.description.trim(), ingress_protocol: selectedIngress, vless_flow: selectedIngress === 'vless_reality' ? 'xtls-rprx-vision' : '', reality_server_name: selectedIngress === 'vless_reality' ? form.reality_server_name : '', reality_public_key: selectedIngress === 'vless_reality' ? form.reality_public_key : '', reality_short_id: selectedIngress === 'vless_reality' ? form.reality_short_id : '', reality_destination: selectedIngress === 'vless_reality' ? form.reality_destination : '', vless_outbound_mode: selectedIngress === 'vless_reality' ? 'SOCKS5' : 'DIRECT', vless_socks5_host: selectedIngress === 'vless_reality' ? form.vless_socks5_host?.trim() : '', vless_socks5_port: selectedIngress === 'vless_reality' ? form.vless_socks5_port : 0, vless_socks5_username: selectedIngress === 'vless_reality' ? form.vless_socks5_username?.trim() : '', vless_socks5_password: selectedIngress === 'vless_reality' ? (form.vless_socks5_password || '') : '', exit_group_id: form.egress_mode === 'DIRECT' ? '' : form.exit_group_id, targets: form.targets.map((item) => ({ host: item.host.trim(), port: item.port })) }
+  const input: ForwardRuleInput = { ...form, name: form.name.trim(), description: form.description.trim(), ingress_protocol: selectedIngress, vless_flow: selectedIngress === 'vless_reality' ? effectiveVLESSFlow(form) : '', vless_flow_explicit: selectedIngress === 'vless_reality' && Boolean(form.vless_flow_explicit), reality_server_name: selectedIngress === 'vless_reality' ? form.reality_server_name : '', reality_public_key: selectedIngress === 'vless_reality' ? form.reality_public_key : '', reality_short_id: selectedIngress === 'vless_reality' ? form.reality_short_id : '', reality_destination: selectedIngress === 'vless_reality' ? form.reality_destination : '', vless_outbound_mode: selectedIngress === 'vless_reality' ? 'SOCKS5' : 'DIRECT', vless_socks5_host: selectedIngress === 'vless_reality' ? form.vless_socks5_host?.trim() : '', vless_socks5_port: selectedIngress === 'vless_reality' ? form.vless_socks5_port : 0, vless_socks5_username: selectedIngress === 'vless_reality' ? form.vless_socks5_username?.trim() : '', vless_socks5_password: selectedIngress === 'vless_reality' ? (form.vless_socks5_password || '') : '', exit_group_id: form.egress_mode === 'DIRECT' ? '' : form.exit_group_id, targets: form.targets.map((item) => ({ host: item.host.trim(), port: item.port })) }
   const quotaBytes = Math.round(Number(trafficLimitGB.value) * BYTES_PER_GB)
   if (!Number.isFinite(Number(trafficLimitGB.value)) || Number(trafficLimitGB.value) < 0 || !Number.isSafeInteger(quotaBytes) || (Number(trafficLimitGB.value) > 0 && quotaBytes < 1)) { error.value = '请输入有效的流量额度'; return }
   input.traffic_limit_bytes = quotaBytes
@@ -192,10 +194,11 @@ async function save(): Promise<void> {
 </script>
 
 <template>
-  <BaseModal :title="title" width="small" :close-disabled="busy" @close="emit('close')">
+  <NativeRuleEditor v-if="rule?.vless_outbound_mode === 'KL_NATIVE'" :rule="rule" @close="emit('close')" @saved="emit('saved', $event)" @unauthorized="emit('unauthorized')" />
+  <BaseModal v-else :title="title" width="small" :close-disabled="busy" @close="emit('close')">
     <form id="forward-rule-editor" class="form-stack ny-compact-form" @submit.prevent="save">
       <label class="field"><span>名称</span><input v-model="form.name" maxlength="120" required /></label>
-      <label class="field"><span>接入协议</span><select v-model="form.ingress_protocol" class="ingress-protocol-selector"><option value="tcp">NY 转发</option><option value="vless_reality">VLESS + Reality + Vision</option><option hidden value="udp">原 NY UDP 规则</option><option hidden value="socks5">原 NY SOCKS5 规则</option></select></label>
+      <label class="field"><span>接入协议</span><select v-model="form.ingress_protocol" class="ingress-protocol-selector"><option value="tcp">NY 转发</option><option value="vless_reality">VLESS + Reality</option><option hidden value="udp">原 NY UDP 规则</option><option hidden value="socks5">原 NY SOCKS5 规则</option></select></label>
       <label class="field"><span>入口</span><select v-model="form.entry_group_id" required><option value="" disabled>请选择入口设备组</option><option v-if="form.entry_group_id && !entries.some(item => item.id === form.entry_group_id)" :value="form.entry_group_id">原入口已不可用</option><option v-for="item in entries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
       <p v-if="!entries.length" class="field-help">暂无入口设备组，请先添加设备组成员。</p>
       <label class="field"><span>监听端口</span><input :value="form.listen_port || ''" type="number" min="0" max="65535" step="1" placeholder="自动分配" @input="form.listen_port = Number(($event.target as HTMLInputElement).value || 0)" /></label>
@@ -209,11 +212,11 @@ async function save(): Promise<void> {
         <template v-if="isVlessReality">
           <label class="field"><span>Reality Target</span><input v-model="form.reality_destination" maxlength="320" placeholder="例如 www.example.com:443" spellcheck="false" /><small class="field-help">握手目标，格式为域名:端口。新规则留空使用面板默认目标；目标需支持 TLS 1.3、X25519，并能从所有入口节点访问。</small></label>
           <label class="field"><span>Reality SNI</span><input v-model="form.reality_server_name" maxlength="253" placeholder="例如 www.example.com" spellcheck="false" /><small class="field-help">填写目标证书覆盖的域名；只填 SNI 时，Target 使用该域名的 443 端口。新规则自动生成独立密钥，编辑保留已有密钥。</small></label>
-          <p class="field-help">客户端 uTLS 指纹：chrome；传输：TCP；Flow：xtls-rprx-vision。</p>
+          <p class="field-help">客户端 uTLS 指纹：chrome；传输：TCP；Flow：{{ effectiveVLESSFlow(form) || '空（保留原配置）' }}。</p>
           <p v-if="realityTargetChanged" class="inline-warning">更改 Target 或 SNI 后，客户需要更新订阅或重新导入节点。</p>
         </template>
         <label class="field"><span>规则分组</span><select v-model="form.rule_group_id"><option value="">未分组</option><option v-if="form.rule_group_id && !ruleGroups.some(item => item.id === form.rule_group_id)" :value="form.rule_group_id">原分组已不可用</option><option v-for="item in ruleGroups" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
-        <label class="field"><span>目标协议</span><select v-model="form.protocol" disabled><option value="tcp">TCP</option><option value="udp">UDP</option></select><small class="field-help">{{ isVlessReality ? 'VLESS + Reality + Vision 解密后固定转为 TCP 目标。' : ingressProtocol === 'udp' ? 'NY UDP 接入固定转发到 UDP 目标。' : ingressProtocol === 'socks5' ? 'NY SOCKS5 客户端入口固定转发到 TCP 目标。' : 'NY TCP 接入固定转发到 TCP 目标。' }}</small></label>
+        <label class="field"><span>目标协议</span><select v-model="form.protocol" disabled><option value="tcp">TCP</option><option value="udp">UDP</option></select><small class="field-help">{{ isVlessReality ? 'VLESS + Reality 解密后固定转为 TCP 目标。' : ingressProtocol === 'udp' ? 'NY UDP 接入固定转发到 UDP 目标。' : ingressProtocol === 'socks5' ? 'NY SOCKS5 客户端入口固定转发到 TCP 目标。' : 'NY TCP 接入固定转发到 TCP 目标。' }}</small></label>
         <label class="field"><span>目标地址选择方式</span><select v-model="form.selection_policy"><option value="round_robin">轮询</option><option value="random">随机</option><option value="ip_hash">IP 哈希</option><option value="least_load">最小连接数</option><option value="failover">故障转移</option></select><small class="field-help">仅用于多个目标地址之间的选择，不影响设备组内机器调度。</small></label>
         <label class="field"><span>接收 Proxy Protocol</span><select v-model="form.accept_proxy_protocol" :disabled="form.protocol === 'udp'"><option :value="false">关闭</option><option :value="true">开启（TCP）</option></select><small class="field-help">开启后，客户端必须发送 Proxy 头，否则连接失败。</small></label>
         <label class="field"><span>发送 Proxy Protocol</span><select v-model.number="form.send_proxy_protocol"><option :value="0">关闭</option><option v-if="form.protocol === 'tcp'" :value="1">v1（TCP）</option><option :value="2">v2（TCP+UDP）</option><option v-if="form.protocol === 'tcp'" :value="3">v2（TCP）</option></select><small class="field-help">目标服务必须支持所选 Proxy Protocol。</small></label>

@@ -71,13 +71,14 @@ export interface ForwardRuleInput {
   exit_group_id: string
   egress_mode: 'DIRECT' | 'EXIT_GROUP'
   ingress_protocol?: IngressProtocol
+  vless_flow_explicit?: boolean
   vless_flow?: 'xtls-rprx-vision' | string
   reality_server_name?: string
   reality_public_key?: string
   reality_short_id?: string
   reality_destination?: string
   /** VLESS decrypted traffic's node-side outbound. Password is write-only. */
-  vless_outbound_mode?: 'DIRECT' | 'SOCKS5'
+  vless_outbound_mode?: 'DIRECT' | 'SOCKS5' | 'KL_NATIVE'
   vless_socks5_host?: string
   vless_socks5_port?: number
   vless_socks5_username?: string
@@ -98,6 +99,8 @@ export interface ForwardRuleInput {
   revision: number
 }
 export interface ForwardRule extends Omit<ForwardRuleInput, 'vless_socks5_password'> {
+  outbound_summary?: { mode: 'SOCKS5' | 'DIRECT' | 'MIXED' | 'UNKNOWN'; host?: string; port?: number }
+  imported_traffic?: { source_id?: string; batch_id?: string; line_id?: number; upload_bytes: number; download_bytes: number }
   id: string
   customer_id: string
   status: string

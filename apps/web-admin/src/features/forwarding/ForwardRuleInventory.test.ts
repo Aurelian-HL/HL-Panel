@@ -73,7 +73,7 @@ describe('ForwardRuleInventory', () => {
   it('shows VLESS Reality + Vision and its pending parameter state', () => {
     const vlessRule: ForwardRule = { ...baseRule, id: 'vless-rule', name: 'Reality 规则', ingress_protocol: 'vless_reality', vless_flow: 'xtls-rprx-vision', ingress_status: 'pending_reality_parameters' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [vlessRule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
-    expect(wrapper.text()).toContain('VLESS + Reality + Vision / TCP')
+    expect(wrapper.text()).toContain('VLESS + Reality / TCP')
     expect(wrapper.text()).toContain('待补 Reality 参数')
     wrapper.unmount()
   })
@@ -130,6 +130,22 @@ describe('ForwardRuleInventory', () => {
     await wrapper.get('.business-desktop button[title="调整流量额度"]').trigger('click')
     expect(wrapper.emitted('edit')?.[0]).toEqual([rule])
     expect(wrapper.emitted('toggle')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('shows native SOCKS landing on both layouts and never calls unknown routing direct', () => {
+    const socks: ForwardRule = { ...baseRule, id: 'socks', ingress_protocol: 'vless_reality', vless_outbound_mode: 'KL_NATIVE', outbound_summary: { mode: 'SOCKS5', host: 'landing.test', port: 1080 } }
+    const unknown: ForwardRule = { ...socks, id: 'unknown', outbound_summary: { mode: 'UNKNOWN' } }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [socks, unknown], devices, networks, ruleGroups: [], selectedIds: [], busyId: '' } })
+    const desktop = wrapper.findAll('.rule-exit-cell')
+    expect(desktop[0]!.text()).toContain('SOCKS5（SK5）')
+    expect(desktop[0]!.text()).toContain('landing.test:1080')
+    expect(desktop[1]!.text()).toContain('出站待核实')
+    expect(desktop[1]!.text()).not.toContain('组内直出')
+    const mobile = wrapper.find('.business-mobile').text()
+    expect(mobile).toContain('SOCKS5（SK5）')
+    expect(mobile).toContain('landing.test:1080')
+    expect(mobile).toContain('出站待核实')
     wrapper.unmount()
   })
 

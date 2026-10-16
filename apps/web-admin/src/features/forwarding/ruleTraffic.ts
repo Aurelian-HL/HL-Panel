@@ -24,7 +24,7 @@ export async function loadRuleTraffic(rules: Pick<ForwardRule, 'id' | 'traffic_q
         const result = await usageApi.query({ scope: 'rule', scope_id: rule.id, page: 1, page_size: 1,
           ...(rule.traffic_quota_monthly ? { from, to } : {}),
         })
-        const bytes = result.totals.charged_bytes
+        const bytes = result.totals.charged_bytes + (result.imported_traffic?.total_bytes ?? 0)
         if (current() && Number.isFinite(bytes) && bytes >= 0) callbacks.onValue(rule.id, bytes)
       } catch (cause) {
         if (current() && cause instanceof ApiError && cause.status === 401) {

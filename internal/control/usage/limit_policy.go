@@ -33,6 +33,15 @@ func (adapter *RuntimeLimitPolicyAdapter) EffectiveLimits(ctx context.Context, c
 	if rule.CustomerID != customerID {
 		return agentv1.EffectiveLimits{}, "", fmt.Errorf("%w: rule does not belong to enforcement customer", faults.ErrConflict)
 	}
+	if rule.IsUnassignedImport() || (rule.OwnerKind == forwarding.OwnerAdministrator && rule.VLESSOutboundMode == forwarding.VLESSOutboundNative && rule.ImportedTraffic.Valid() && rule.ImportedTraffic.SourceID != "") {
+		if reader, ok := adapter.customers.(UnassignedSubjectReader); ok {
+			if err := reader.ValidateUnassignedSubject(ctx, customerID); err != nil {
+				return agentv1.EffectiveLimits{}, "", err
+			}
+			return ruleLimits(rule, 0, 0, 0)
+		}
+		return agentv1.EffectiveLimits{}, "", faults.ErrNotFound
+	}
 	if rule.OwnerKind == forwarding.OwnerAdministrator {
 		if !rule.OwnedByAdministrator(rule.OwnerID) {
 			return agentv1.EffectiveLimits{}, "", faults.ErrNotFound

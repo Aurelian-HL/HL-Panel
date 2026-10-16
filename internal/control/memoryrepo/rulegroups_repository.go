@@ -156,12 +156,17 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		if !exists {
 			return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s does not exist", faults.ErrNotFound, id)
 		}
-		if input.ExpectedCustomerID != "" && current.CustomerID != input.ExpectedCustomerID {
+		adminID, adminScoped := strings.CutPrefix(input.CreatedBy, "admin-rules:")
+		managedImport := adminScoped && s.importedRuleManagedByLocked(current, adminID)
+		managedCustomer := adminScoped && s.delegatedRuleManagedByLocked(current, adminID)
+		if input.ExpectedCustomerID != "" && current.CustomerID != input.ExpectedCustomerID && !managedImport && !managedCustomer {
 			return rulegroups.BatchResult{}, false, faults.ErrNotFound
 		}
-		adminID, adminScoped := strings.CutPrefix(input.CreatedBy, "admin-rules:")
-		if adminScoped && !current.OwnedByAdministrator(adminID) || !adminScoped && current.OwnerKind == forwarding.OwnerAdministrator && !current.OwnedByAdministrator(input.CreatedBy) {
+		if adminScoped && !current.OwnedByAdministrator(adminID) && !managedImport && !managedCustomer || !adminScoped && current.OwnerKind == forwarding.OwnerAdministrator && !current.OwnedByAdministrator(input.CreatedBy) {
 			return rulegroups.BatchResult{}, false, faults.ErrNotFound
+		}
+		if managedImport && request.Operation == rulegroups.BatchMoveGroup && request.RuleGroupID != current.RuleGroupID {
+			return rulegroups.BatchResult{}, false, fmt.Errorf("%w: imported customer ownership and grouping must be preserved", faults.ErrValidation)
 		}
 		if current.Revision != request.ExpectedRevisions[id] || current.Revision == math.MaxInt64 {
 			return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s changed; reload before saving", faults.ErrConflict, id)
@@ -175,7 +180,7 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		case rulegroups.BatchResume:
 			item.Paused = false
 			customer := s.customers[item.CustomerID]
-			if current.OwnerKind != forwarding.OwnerAdministrator && customer.EffectiveStatus(input.UpdatedAt) != customers.StatusActive {
+			if current.OwnerKind != forwarding.OwnerAdministrator && !current.IsUnassignedImport() && customer.EffectiveStatus(input.UpdatedAt) != customers.StatusActive {
 				return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s customer is not active", faults.ErrConflict, id)
 			}
 		case rulegroups.BatchMoveGroup:

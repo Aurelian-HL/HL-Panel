@@ -24,7 +24,7 @@ func cloneSubscription(r subscriptions.Record) subscriptions.Record {
 // rotates its subscription token or changes the stored publication revision.
 func (s *Store) subscriptionNamesLocked(r subscriptions.Record) subscriptions.Record {
 	r = cloneSubscription(r)
-	if rule, ok := s.forwardRules[r.Item.ForwardingRuleID]; ok && rule.OwnedByAdministrator(r.OwnerID) {
+	if rule, ok := s.forwardRules[r.Item.ForwardingRuleID]; ok && (rule.OwnedByAdministrator(r.OwnerID) || s.importedRuleManagedByLocked(rule, r.OwnerID)) {
 		r.Item.Name = rule.Name
 		for i := range r.Draft {
 			r.Draft[i].Name = rule.Name
@@ -85,7 +85,7 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	}
 	if c.Operation == "generate" {
 		rule, ok := s.forwardRules[c.ForwardingRuleID]
-		if !ok || !rule.OwnedByAdministrator(c.AdministratorID) || rule.CustomerID != c.Request.CustomerID || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || len(c.Request.Lines) != 1 {
+		if !ok || (!rule.OwnedByAdministrator(c.AdministratorID) && !s.importedRuleManagedByLocked(rule, c.AdministratorID)) || rule.CustomerID != c.Request.CustomerID || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || len(c.Request.Lines) != 1 {
 			return subscriptions.Item{}, false, faults.ErrNotFound
 		}
 		binding, ok := s.vlessBindings[c.Request.Lines[0].BindingID]
@@ -131,7 +131,7 @@ func (s *Store) MutateSubscription(_ context.Context, c subscriptions.Command, e
 	if err != nil {
 		return subscriptions.Item{}, false, err
 	}
-	if _, ok := s.customers[next.Item.CustomerID]; !ok && !(next.Item.ForwardingRuleID != "" && next.Item.CustomerID == forwarding.AdministratorSubjectID(c.AdministratorID)) {
+	if _, ok := s.customers[next.Item.CustomerID]; !ok && !(next.Item.ForwardingRuleID != "" && (next.Item.CustomerID == forwarding.AdministratorSubjectID(c.AdministratorID) || s.importedSubscriptionSubjectLocked(next.Item.ForwardingRuleID, next.Item.CustomerID, c.AdministratorID))) {
 		return subscriptions.Item{}, false, faults.ErrNotFound
 	}
 	if c.Operation == "create" || c.Operation == "generate" || c.Operation == "update" || c.Operation == "publish" {

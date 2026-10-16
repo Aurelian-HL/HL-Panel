@@ -34,6 +34,17 @@ type Service struct {
 	endpoints        EndpointSource
 	identities       IdentitySource
 	reconcileTimeout time.Duration
+	rules            RuleAccess
+}
+
+// RuleAccess verifies delegated management using the durable create actor.
+type RuleAccess interface {
+	GetForAdministrator(context.Context, string, string) (forwarding.Rule, error)
+	VLESSSetupAdministrator(context.Context, string) (string, error)
+}
+
+func WithRuleAccess(rules RuleAccess) Option {
+	return func(s *Service) { s.rules = rules }
 }
 
 const defaultReconcileTimeout = 20 * time.Second
@@ -72,7 +83,16 @@ func (s *Service) Ensure(ctx context.Context, administratorID string, rule forwa
 		return nil
 	}
 	if !rule.OwnedByAdministrator(administratorID) {
-		return faults.ErrNotFound
+		if s.rules == nil {
+			return faults.ErrNotFound
+		}
+		current, err := s.rules.GetForAdministrator(ctx, administratorID, rule.ID)
+		if err != nil {
+			return err
+		}
+		if current.CustomerID != rule.CustomerID || current.EntryGroupID != rule.EntryGroupID || current.ListenPort != rule.ListenPort {
+			return faults.ErrConflict
+		}
 	}
 	network, err := s.networks.Get(ctx, rule.EntryGroupID)
 	if err != nil {
@@ -134,11 +154,27 @@ func (s *Service) Reconcile(ctx context.Context, source RuleSource) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if rule.OwnerKind != forwarding.OwnerAdministrator || rule.Paused ||
+		if rule.Paused ||
 			rule.Status != forwarding.StatusPendingActivation || rule.ActivationReason != forwarding.ActivationReasonVLESSRuntimeMaterialPending {
 			continue
 		}
-		if err := s.Ensure(ctx, rule.OwnerID, rule); err != nil && first == nil {
+		actor := rule.OwnerID
+		if rule.OwnerKind != forwarding.OwnerAdministrator {
+			if s.rules == nil {
+				continue
+			}
+			actor, err = s.rules.VLESSSetupAdministrator(ctx, rule.ID)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
+			}
+			if actor == "" {
+				continue
+			}
+		}
+		if err := s.Ensure(ctx, actor, rule); err != nil && first == nil {
 			first = err
 		}
 	}

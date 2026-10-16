@@ -20,7 +20,7 @@ var (
 	ErrProtocolObservationTarget      = errors.New("VLESS protocol observation target mismatch")
 )
 
-// ProtocolObserver runs a real VLESS Reality + Vision challenge and publishes
+// ProtocolObserver runs a real VLESS Reality challenge and publishes
 // a short lease only when the challenge is tied to the current rule revision,
 // node configuration generation, and configuration hash.
 type ProtocolObserver struct {
@@ -83,7 +83,7 @@ func (o *ProtocolObserver) ObserveNode(ctx context.Context, poolID, nodeID strin
 // the current deployment in its transaction after the network challenge.
 func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeConfig ProtocolProbeConfig, nodeID string, spec protocolprobe.Spec) (ProtocolObservation, error) {
 	rule := state.Rule
-	if probeConfig.UUID == "" || probeConfig.UUID != spec.UUID || probeConfig.EchoPort != spec.EchoPort {
+	if probeConfig.UUID == "" || probeConfig.UUID != spec.UUID || probeConfig.EchoPort != spec.EchoPort || spec.EffectiveFlow() != rule.EffectiveVLESSFlow() {
 		return ProtocolObservation{}, ErrProtocolObservationTarget
 	}
 	if state.Pool.ID == "" || state.Pool.Protocol != "vless" || state.Pool.RuleID != rule.ID ||

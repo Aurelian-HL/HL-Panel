@@ -27,11 +27,15 @@ type UpdateInput struct {
 	// An omitted target on an automatic-key edit retains the issued target.
 	// An explicit target changes SNI/destination without rotating credentials.
 	PreserveRealityTarget bool
-	ExpectedRevision      int64
-	ExpectedCustomerID    string
-	IdempotencyKey        string
-	RequestSHA256         string
-	CreatedBy             string
+	// Legacy editors must not replace an explicitly configured flow.
+	PreserveVLESSFlow  bool
+	ExpectedRevision   int64
+	ExpectedCustomerID string
+	// Rechecked against current ownership/provenance inside the write lock.
+	ExpectedAdministratorID string
+	IdempotencyKey          string
+	RequestSHA256           string
+	CreatedBy               string
 }
 
 // Repository operations atomically enforce references, group kinds, customer

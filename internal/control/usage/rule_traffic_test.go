@@ -156,3 +156,33 @@ func TestMonthlyUnlimitedRuleTrafficIsReconciled(t *testing.T) {
 		t.Fatalf("monthly unlimited rule was not reconciled: calls=%d total=%d", quota.calls, quota.total)
 	}
 }
+
+func TestImportedHistoryIsAddedOnceOnlyToLifetimeUsage(t *testing.T) {
+	for _, monthly := range []bool{false, true} {
+		baseline := forwarding.ImportedTraffic{SourceID: "kl", BatchID: "batch", LineID: 1, ObservedAt: time.Now(), UploadBytes: 100, DownloadBytes: 200}
+		quota := &quotaStore{rules: []forwarding.Rule{{ID: "rule-one", Revision: 1, TrafficQuotaMonthly: monthly, ImportedTraffic: baseline}}}
+		repository := &stubRepository{queryResult: QueryResult{Totals: Totals{ChargedBytes: 15}}}
+		clock := time.Now().UTC()
+		service := NewService(repository, stubPolicies{}, func() time.Time { return clock }, WithRuleTrafficRepository(quota))
+		if err := service.syncRuleTraffic(context.Background(), "rule-one"); err != nil {
+			t.Fatal(err)
+		}
+		want := int64(315)
+		if monthly {
+			want = 15
+		}
+		if quota.total != want {
+			t.Fatal("source baseline applied to wrong scope", quota.total)
+		}
+		quota.rules[0].TrafficUsedBytes = want
+		quota.rules[0].TrafficUsagePeriod = forwarding.TrafficQuotaPeriod(time.Now())
+		if err := service.syncRuleTraffic(context.Background(), "rule-one"); err != nil || quota.calls != 1 {
+			t.Fatal("source baseline double counted", err)
+		}
+		clock = clock.Add(ruleTrafficSyncInterval)
+		repository.queryResult.Totals.ChargedBytes = 25
+		if err := service.syncRuleTraffic(context.Background(), "rule-one"); err != nil || quota.total != want+10 {
+			t.Fatal("new usage did not accumulate", err)
+		}
+	}
+}

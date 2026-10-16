@@ -10,6 +10,7 @@ import (
 )
 
 var _ vlessidentity.Repository = (*Store)(nil)
+var _ vlessidentity.ImportRepository = (*Store)(nil)
 var _ vlessruntime.Repository = (*Store)(nil)
 
 // ResolveSubscriptionLines resolves every requested binding from one validated
@@ -34,6 +35,18 @@ func (s *Store) Provision(ctx context.Context, input vlessidentity.ProvisionInpu
 	}
 	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
 		binding, replayed, err := state.Provision(ctx, input, event)
+		return result{binding: binding, replayed: replayed}, err
+	})
+	return value.binding, value.replayed, err
+}
+
+func (s *Store) ImportExistingIdentity(ctx context.Context, input vlessidentity.ImportInput, event audit.Event) (vlessidentity.Binding, bool, error) {
+	type result struct {
+		binding  vlessidentity.Binding
+		replayed bool
+	}
+	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+		binding, replayed, err := state.ImportExistingIdentity(ctx, input, event)
 		return result{binding: binding, replayed: replayed}, err
 	})
 	return value.binding, value.replayed, err

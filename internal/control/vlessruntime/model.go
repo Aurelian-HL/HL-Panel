@@ -3,7 +3,10 @@
 // contain the customer UUID or the Reality private key.
 package vlessruntime
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type State string
 
@@ -20,19 +23,20 @@ func (state State) Valid() bool {
 // RealityPrivateKey are deliberately excluded from JSON so an accidental
 // marshal of an internal result cannot turn into an API or audit leak.
 type Material struct {
-	ID                string     `json:"id"`
-	BindingID         string     `json:"binding_id"`
-	NodeID            string     `json:"node_id"`
-	CustomerID        string     `json:"customer_id"`
-	ForwardingRuleID  string     `json:"forwarding_rule_id"`
-	EndpointPoolID    string     `json:"endpoint_pool_id"`
-	State             State      `json:"state"`
-	Revision          int64      `json:"revision"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
-	CredentialUUID    string     `json:"-"`
-	RealityPrivateKey string     `json:"-"`
+	ID                string          `json:"id"`
+	BindingID         string          `json:"binding_id"`
+	NodeID            string          `json:"node_id"`
+	CustomerID        string          `json:"customer_id"`
+	ForwardingRuleID  string          `json:"forwarding_rule_id"`
+	EndpointPoolID    string          `json:"endpoint_pool_id"`
+	State             State           `json:"state"`
+	Revision          int64           `json:"revision"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+	RevokedAt         *time.Time      `json:"revoked_at,omitempty"`
+	CredentialUUID    string          `json:"-"`
+	RealityPrivateKey string          `json:"-"`
+	NativeConfig      json.RawMessage `json:"-"`
 }
 
 // PublicMaterial is the only representation suitable for ordinary list and
@@ -75,6 +79,7 @@ type SaveInput struct {
 	BindingID         string
 	NodeID            string
 	RealityPrivateKey string
+	NativeConfig      json.RawMessage
 	ExpectedRevision  int64
 	IdempotencyKey    string
 	RequestSHA256     string

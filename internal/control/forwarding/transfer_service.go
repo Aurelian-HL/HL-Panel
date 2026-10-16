@@ -198,7 +198,7 @@ func requestFromRule(rule Rule) Request {
 		ExitGroupID: rule.ExitGroupID, EgressMode: rule.EgressMode, VLESSOutboundMode: rule.VLESSOutboundMode,
 		VLESSSOCKS5Host: rule.VLESSSOCKS5Host, VLESSSOCKS5Port: rule.VLESSSOCKS5Port, VLESSSOCKS5Username: rule.VLESSSOCKS5Username,
 		IngressProtocol: rule.EffectiveIngressProtocol(),
-		VLESSFlow:       rule.VLESSFlow, RealityServerName: rule.RealityServerName, RealityPublicKey: rule.RealityPublicKey,
+		VLESSFlow:       rule.VLESSFlow, VLESSFlowExplicit: rule.VLESSFlowExplicit, RealityServerName: rule.RealityServerName, RealityPublicKey: rule.RealityPublicKey,
 		RealityShortID: rule.RealityShortID, RealityDestination: rule.RealityDestination, Protocol: rule.Protocol, ListenPort: rule.ListenPort,
 		Targets: append([]Target(nil), rule.Targets...), SelectionPolicy: rule.SelectionPolicy,
 		AcceptProxyProtocol: rule.AcceptProxyProtocol, SendProxyProtocol: rule.SendProxyProtocol,

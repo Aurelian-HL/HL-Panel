@@ -15,7 +15,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
 
 // SOCKS5 is retained as a distinct legacy endpoint protocol. It must not be
 // rendered as NY TCP, because ingress and landing protocols are separate.
-const protocolLabels = { vless: 'VLESS + Reality + Vision', tcp: 'NY TCP', socks5: 'NY SOCKS5' } as const
+const protocolLabels = { vless: 'VLESS + Reality', tcp: 'NY TCP', socks5: 'NY SOCKS5' } as const
 </script>
 
 <template>

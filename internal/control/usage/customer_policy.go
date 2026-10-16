@@ -15,6 +15,10 @@ type CustomerReader interface {
 	Customer(context.Context, string) (customers.Customer, error)
 }
 
+type UnassignedSubjectReader interface {
+	ValidateUnassignedSubject(context.Context, string) error
+}
+
 type AdministratorReader interface {
 	AdministratorByID(context.Context, string) (auth.Administrator, error)
 }
@@ -31,6 +35,12 @@ func (adapter *CustomerPolicyAdapter) UsagePolicy(ctx context.Context, customerI
 	item, err := adapter.reader.Customer(ctx, customerID)
 	if err != nil {
 		if errors.Is(err, faults.ErrNotFound) {
+			if reader, ok := adapter.reader.(UnassignedSubjectReader); ok && (strings.HasPrefix(customerID, "klunassigned_") || strings.HasPrefix(customerID, "klcus_")) {
+				if err := reader.ValidateUnassignedSubject(ctx, customerID); err != nil {
+					return CustomerPolicy{}, err
+				}
+				return CustomerPolicy{CustomerID: customerID}, nil
+			}
 			adminErr := administratorSubject(ctx, adapter.reader, customerID)
 			if adminErr == nil {
 				return CustomerPolicy{CustomerID: customerID}, nil

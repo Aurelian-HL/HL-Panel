@@ -79,7 +79,8 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
   return {
     name: rule.name, rule_group_id: rule.rule_group_id, entry_group_id: rule.entry_group_id,
     exit_group_id: rule.exit_group_id, egress_mode: rule.egress_mode, ingress_protocol: ingressProtocol,
-    vless_flow: ingressProtocol === 'vless_reality' ? (rule.vless_flow || 'xtls-rprx-vision') : '',
+    vless_flow: ingressProtocol === 'vless_reality' ? effectiveVLESSFlow(rule) : '',
+    vless_flow_explicit: ingressProtocol === 'vless_reality' && Boolean(rule.vless_flow_explicit),
     reality_server_name: ingressProtocol === 'vless_reality' ? (rule.reality_server_name || '') : '',
     reality_public_key: ingressProtocol === 'vless_reality' ? (rule.reality_public_key || '') : '',
     reality_short_id: ingressProtocol === 'vless_reality' ? (rule.reality_short_id || '') : '',
@@ -87,7 +88,7 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
     // VLESS rules in the compact NY-compatible workflow always use the
     // authenticated SOCKS5 landing endpoint. Keep old DIRECT records from
     // leaking back into the editor as an actionable option.
-    vless_outbound_mode: ingressProtocol === 'vless_reality' ? 'SOCKS5' : 'DIRECT',
+    vless_outbound_mode: rule.vless_outbound_mode === 'KL_NATIVE' ? 'KL_NATIVE' : ingressProtocol === 'vless_reality' ? 'SOCKS5' : 'DIRECT',
     vless_socks5_host: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_host || '') : '',
     vless_socks5_port: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_port || 0) : 0,
     vless_socks5_username: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_username || '') : '',
@@ -110,28 +111,36 @@ export function effectiveIngressProtocol(rule: Pick<ForwardRule, 'ingress_protoc
   return rule.ingress_protocol ?? (rule.protocol === 'udp' ? 'udp' : 'tcp')
 }
 
+export function effectiveVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'>): string {
+  return rule.vless_flow_explicit ? (rule.vless_flow ?? '') : (rule.vless_flow || 'xtls-rprx-vision')
+}
+
+export function supportedVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'>): boolean {
+  return ['', 'xtls-rprx-vision'].includes(effectiveVLESSFlow(rule))
+}
+
 export function ingressProtocolLabel(protocol: IngressProtocol): string {
-  if (protocol === 'vless_reality') return 'VLESS + Reality + Vision'
+  if (protocol === 'vless_reality') return 'VLESS + Reality'
   if (protocol === 'socks5') return 'NY SOCKS5'
   return protocol === 'udp' ? 'NY UDP' : 'NY TCP'
 }
 
-export function ingressStatusFor(rule: Pick<ForwardRule, 'ingress_protocol' | 'protocol' | 'vless_flow' | 'reality_server_name' | 'reality_public_key' | 'reality_short_id' | 'ingress_status'>): IngressStatus {
+export function ingressStatusFor(rule: Pick<ForwardRule, 'ingress_protocol' | 'protocol' | 'vless_flow' | 'vless_flow_explicit' | 'reality_server_name' | 'reality_public_key' | 'reality_short_id' | 'ingress_status'>): IngressStatus {
   if (rule.ingress_status === 'pending_reality_parameters') return rule.ingress_status
   if (effectiveIngressProtocol(rule) !== 'vless_reality') return rule.ingress_status ?? 'ready'
-  const complete = rule.vless_flow === 'xtls-rprx-vision' && Boolean(rule.reality_server_name && rule.reality_public_key && rule.reality_short_id)
+  const complete = supportedVLESSFlow(rule) && Boolean(rule.reality_server_name && rule.reality_public_key && rule.reality_short_id)
   return complete ? (rule.ingress_status ?? 'ready') : 'pending_reality_parameters'
 }
 
 /** Validate user-entered, non-secret Reality listener material. Empty values
  * are allowed so an operator can save a rule and finish it later; that rule
  * is surfaced as pending_reality_parameters and cannot be treated as ready. */
-export function validateRealityParameters(input: Pick<ForwardRuleInput, 'ingress_protocol' | 'vless_flow' | 'reality_server_name' | 'reality_public_key' | 'reality_short_id' | 'reality_destination'>): string | null {
+export function validateRealityParameters(input: Pick<ForwardRuleInput, 'ingress_protocol' | 'vless_flow' | 'vless_flow_explicit' | 'reality_server_name' | 'reality_public_key' | 'reality_short_id' | 'reality_destination'>): string | null {
   if (input.ingress_protocol !== 'vless_reality') {
-    if (input.vless_flow || input.reality_server_name || input.reality_public_key || input.reality_short_id || input.reality_destination) return 'Reality 参数只能用于 VLESS + Reality + Vision 接入'
+    if (input.vless_flow_explicit || input.vless_flow || input.reality_server_name || input.reality_public_key || input.reality_short_id || input.reality_destination) return 'Reality 参数只能用于 VLESS + Reality 接入'
     return null
   }
-  if (input.vless_flow && input.vless_flow !== 'xtls-rprx-vision') return 'VLESS 流控必须使用 xtls-rprx-vision'
+  if (!supportedVLESSFlow(input)) return 'VLESS 流控只支持空值或 xtls-rprx-vision'
   if (input.reality_server_name && !validTargetHost(input.reality_server_name)) return 'Reality SNI/服务器名称格式无效，请填写域名或 IP'
   if (input.reality_public_key && !/^(?:[A-Za-z0-9_-]{43}|[A-Za-z0-9_-]{43}=)$/.test(input.reality_public_key)) return 'Reality 公钥格式无效，应为 32 字节 Base64URL 公钥'
   if (input.reality_short_id && (!/^[0-9a-fA-F]{2,16}$/.test(input.reality_short_id) || input.reality_short_id.length % 2 !== 0)) return 'Reality Short ID 必须是 2 至 16 位偶数长度十六进制字符'

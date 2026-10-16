@@ -94,6 +94,10 @@ func (s *Service) syncRuleTrafficProjection(ctx context.Context, rule forwarding
 	if err != nil {
 		return err
 	}
+	// Undated imported history belongs only to lifetime usage.
+	if !rule.TrafficQuotaMonthly {
+		chargedBytes = forwarding.AddTraffic(chargedBytes, rule.ImportedTraffic.Total())
+	}
 	// Avoid rewriting the complete control snapshot for every idle rule every
 	// five seconds. A new monthly period still needs to commit a zero total.
 	if chargedBytes <= rule.TrafficUsedBytes && (!rule.TrafficQuotaMonthly || rule.TrafficUsagePeriod == forwarding.TrafficQuotaPeriod(now)) {
@@ -150,7 +154,7 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 				}
 				// Monthly unlimited rules still need reconciliation so a new UTC
 				// month resets their usage period and audit state.
-				if r.TrafficLimitBytes == 0 && !r.TrafficQuotaMonthly {
+				if r.TrafficLimitBytes == 0 && !r.TrafficQuotaMonthly && r.ImportedTraffic == (forwarding.ImportedTraffic{}) {
 					continue
 				}
 				if syncErr := s.syncRuleTrafficProjection(bounded, r); syncErr != nil && ctx.Err() == nil {

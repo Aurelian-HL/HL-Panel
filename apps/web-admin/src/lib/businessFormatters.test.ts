@@ -53,6 +53,13 @@ describe('operator error messages', () => {
 })
 
 describe('VLESS Reality ingress', () => {
+  it('accepts explicit empty flow while rejecting unknown flow or non-VLESS markers', () => {
+    const input = { protocol: 'tcp' as const, ingress_protocol: 'vless_reality' as const, vless_flow: '', vless_flow_explicit: true, reality_server_name: 'www.example.com', reality_public_key: 'AbCdEf0123456789AbCdEf0123456789AbCdEf01234', reality_short_id: '0123456789abcdef' }
+    expect(ingressStatusFor(input)).toBe('ready')
+    expect(validateRealityParameters(input)).toBeNull()
+    expect(validateRealityParameters({ ...input, vless_flow: 'unknown' })).toContain('流控')
+    expect(validateRealityParameters({ ingress_protocol: 'tcp', vless_flow_explicit: true })).toContain('Reality')
+  })
   it('keeps legacy TCP and UDP records readable while exposing pending Reality state', () => {
     expect(effectiveIngressProtocol({ protocol: 'tcp' })).toBe('tcp')
     expect(effectiveIngressProtocol({ protocol: 'udp' })).toBe('udp')

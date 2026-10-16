@@ -19,15 +19,22 @@ func (state State) Valid() bool {
 // Binding is safe for administrator list and mutation responses. The VLESS
 // UUID deliberately lives only in CredentialRecord and is not JSON serializable.
 type Binding struct {
-	ID               string     `json:"id"`
-	CustomerID       string     `json:"customer_id"`
-	ForwardingRuleID string     `json:"forwarding_rule_id"`
-	EndpointPoolID   string     `json:"endpoint_pool_id"`
-	State            State      `json:"state"`
-	Revision         int64      `json:"revision"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	RevokedAt        *time.Time `json:"revoked_at,omitempty"`
+	ID               string        `json:"id"`
+	CustomerID       string        `json:"customer_id"`
+	ForwardingRuleID string        `json:"forwarding_rule_id"`
+	EndpointPoolID   string        `json:"endpoint_pool_id"`
+	State            State         `json:"state"`
+	Revision         int64         `json:"revision"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
+	RevokedAt        *time.Time    `json:"revoked_at,omitempty"`
+	ImportedFrom     *ImportOrigin `json:"imported_from,omitempty"`
+}
+
+// ImportOrigin is immutable provenance, not a credential or readiness grant.
+type ImportOrigin struct {
+	BatchID string `json:"batch_id"`
+	LineID  int64  `json:"line_id"`
 }
 
 // CredentialRecord is confidential repository state. CredentialUUID must not

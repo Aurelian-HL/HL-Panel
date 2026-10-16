@@ -87,7 +87,7 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if !rule.Deployed || rule.Status != forwarding.StatusActive {
 		return Connection{}, unavailable{"规则尚未部署就绪，请检查节点在线状态与配置应用结果"}
 	}
-	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
+	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || !rule.SupportedVLESSFlow() || rule.RealityServerName == "" || rule.RealityPublicKey == "" || rule.RealityShortID == "" || rule.RealityDestination == "" {
 		return Connection{}, unavailable{"Reality 参数不完整，请检查规则配置"}
 	}
 	pool, err := s.endpoints.GetPoolForAdministrator(ctx, admin, record.Binding.EndpointPoolID)
@@ -104,7 +104,7 @@ func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentit
 	if count == 0 {
 		return Connection{}, unavailable{"设备组暂无健康在线节点，请检查节点状态"}
 	}
-	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: rule.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.VLESSFlow}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})
+	uri, err := provisioningvless.URI(provisioningvless.Profile{Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: rule.Name}, Identity: provisioningvless.Identity{UUID: record.CredentialUUID, Flow: rule.EffectiveVLESSFlow()}, Reality: &provisioningvless.RealityProfile{ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome"}})
 	if err != nil {
 		return Connection{}, faults.ErrConflict
 	}

@@ -189,9 +189,20 @@ type Totals struct {
 }
 
 type QueryResult struct {
-	Items    []Record `json:"items"`
-	Totals   Totals   `json:"totals"`
-	Total    int64    `json:"total"`
-	Page     int      `json:"page"`
-	PageSize int      `json:"page_size"`
+	Items           []Record               `json:"items"`
+	Totals          Totals                 `json:"totals"`
+	Total           int64                  `json:"total"`
+	Page            int                    `json:"page"`
+	PageSize        int                    `json:"page_size"`
+	ImportedTraffic *ImportedTrafficTotals `json:"imported_traffic,omitempty"`
+}
+
+// ImportedTrafficTotals is an undated source observation. It is deliberately
+// separate from dated, multiplied ledger totals and enforcement inputs.
+type ImportedTrafficTotals struct {
+	UploadBytes      int64     `json:"upload_bytes"`
+	DownloadBytes    int64     `json:"download_bytes"`
+	TotalBytes       int64     `json:"total_bytes"`
+	RuleCount        int       `json:"rule_count"`
+	LatestObservedAt time.Time `json:"latest_observed_at"`
 }

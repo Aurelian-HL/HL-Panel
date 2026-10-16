@@ -30,9 +30,7 @@ type protocolRunnerRepository interface {
 	PublishProtocolHealthBatch(context.Context, []ProtocolObservation) ([]error, error)
 }
 
-// Protocol probes start a short-lived Xray process. Keep the scheduler below
-// the old eight-worker burst so health checks cannot starve the control API.
-const protocolProbeWorkers = 4
+const protocolProbeWorkers = 8
 
 // Protocol observations are published outside the scheduler loop. A blocked
 // database write must not stop probes, lease renewal, or failure detection.
@@ -73,7 +71,6 @@ type scheduledProbe struct {
 	due      time.Time
 	inFlight uint64
 	priority int
-	failures uint
 }
 
 type probeResult struct {
@@ -97,7 +94,7 @@ func NewProtocolRunner(repository protocolRunnerRepository, xrayBinary string, e
 		logger = slog.Default()
 	}
 	if interval <= 0 || interval > endpoints.DefaultHealthTTL/3 {
-		interval = 30 * time.Second
+		interval = 15 * time.Second
 	}
 	return &ProtocolRunner{repository: repository, observer: NewProtocolObserver(repository, time.Now), xrayBinary: xrayBinary, echoPort: echoPort, interval: interval, repositoryTimeout: protocolRepositoryTimeout, logger: logger, wake: make(chan struct{}, 1)}
 }
@@ -161,7 +158,7 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 					return
 				case job := <-jobs:
 					state := job.input.State
-					spec := protocolprobe.Spec{XrayBinary: r.xrayBinary, DialHost: job.member.DialHost, DialPort: state.Rule.ListenPort, UUID: job.input.Config.UUID, ServerName: state.Rule.RealityServerName, PublicKey: state.Rule.RealityPublicKey, ShortID: state.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: job.input.Config.EchoPort}
+					spec := protocolprobe.Spec{XrayBinary: r.xrayBinary, DialHost: job.member.DialHost, DialPort: state.Rule.ListenPort, UUID: job.input.Config.UUID, Flow: state.Rule.EffectiveVLESSFlow(), FlowExplicit: true, ServerName: state.Rule.RealityServerName, PublicKey: state.Rule.RealityPublicKey, ShortID: state.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: job.input.Config.EchoPort}
 					observation, err := r.observer.observeState(ctx, state, job.input.Config, job.member.NodeID, spec)
 					select {
 					case results <- probeResult{job, observation, err}:
@@ -316,14 +313,10 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			}
 			if result.err != nil {
 				if target != nil {
-					target.failures++
-					target.due = time.Now().Add(protocolFailureBackoff(r.interval, target.failures))
+					target.due = time.Now().Add(r.interval)
 				}
 				r.logger.Debug("VLESS protocol observation failed", "pool_id", result.job.input.State.Pool.ID, "node_id", result.job.member.NodeID, "error", result.err)
 			} else {
-				if target != nil {
-					target.failures = 0
-				}
 				if len(pending) < protocolPendingLimit {
 					pending = append(pending, result)
 				} else if target != nil {
@@ -378,25 +371,6 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			flush()
 		}
 	}
-}
-
-const protocolFailureBackoffCap = 5 * time.Minute
-
-func protocolFailureBackoff(interval time.Duration, failures uint) time.Duration {
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	if failures == 0 {
-		return interval
-	}
-	delay := interval
-	for i := uint(1); i < failures && delay < protocolFailureBackoffCap; i++ {
-		delay *= 2
-		if delay >= protocolFailureBackoffCap {
-			return protocolFailureBackoffCap
-		}
-	}
-	return delay
 }
 
 func dropExpiredProtocolResults(batch []probeResult, now time.Time) []probeResult {
@@ -488,6 +462,7 @@ func sameProbe(a, b probeJob) bool {
 		a.member.PoolID == b.member.PoolID && a.member.GroupID == b.member.GroupID &&
 		a.member.NodeID == b.member.NodeID && a.member.DialHost == b.member.DialHost &&
 		x.Rule.Revision == y.Rule.Revision && x.Rule.ListenPort == y.Rule.ListenPort &&
+		x.Rule.EffectiveVLESSFlow() == y.Rule.EffectiveVLESSFlow() &&
 		x.Rule.RealityServerName == y.Rule.RealityServerName &&
 		x.Rule.RealityPublicKey == y.Rule.RealityPublicKey &&
 		x.Rule.RealityShortID == y.Rule.RealityShortID &&
@@ -538,26 +513,53 @@ func (r *ProtocolRunner) loadRefresh(ctx context.Context) ([]ProbeState, error) 
 		return nil, err
 	}
 	ready := make([]ProbeState, 0, len(inputs))
+	var initializeRuleID string
+	missing := make(map[string]ProtocolProbeConfig)
 	for _, input := range inputs {
 		state := input.State
 		if state.Rule.Paused || state.Rule.IngressReadiness() != forwarding.IngressReady || (state.Rule.Status != forwarding.StatusPendingActivation && state.Rule.Status != forwarding.StatusActive) {
 			continue
 		}
 		if input.Config.UUID == "" {
-			config, err := NewProtocolProbeConfig(r.echoPort)
-			if err != nil {
-				return nil, err
+			if len(missing) < 512 {
+				missing[state.Rule.ID] = ProtocolProbeConfig{}
 			}
-			if err := r.repository.ConfigureProtocolProbe(ctx, state.Rule.ID, config); err != nil && !errors.Is(err, faults.ErrConflict) {
-				return nil, err
+			if initializeRuleID == "" {
+				initializeRuleID = state.Rule.ID
 			}
-			// The write creates a new desired generation and wakes the agent. Do
-			// not schedule a challenge from this pre-acknowledgement snapshot:
-			// the first valid probe is scheduled after the agent's verified apply
-			// receipt wakes this runner.
 			continue
 		}
 		ready = append(ready, input)
+	}
+	// Initializing each missing identity recompiles the complete node bundle.
+	// Bound that work to one write per refresh, and preserve already configured
+	// probes even when that write fails. A large import must not starve every
+	// existing health lease until all new identities have been initialized.
+	if initializeRuleID != "" {
+		if batch, ok := r.repository.(interface {
+			ConfigureProtocolProbes(context.Context, map[string]ProtocolProbeConfig) error
+		}); ok {
+			for id := range missing {
+				config, err := NewProtocolProbeConfig(r.echoPort)
+				if err != nil {
+					return nil, err
+				}
+				missing[id] = config
+			}
+			if err := batch.ConfigureProtocolProbes(ctx, missing); err != nil {
+				r.logger.Warn("VLESS protocol identity batch initialization deferred", "error", err)
+			}
+			return ready, nil
+		}
+		config, err := NewProtocolProbeConfig(r.echoPort)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.repository.ConfigureProtocolProbe(ctx, initializeRuleID, config); err != nil && !errors.Is(err, faults.ErrConflict) {
+			r.logger.Warn("VLESS protocol identity initialization deferred", "error", err)
+		}
+		// The newly configured identity is deliberately absent from ready.
+		// Its new deployment must be acknowledged before it can be challenged.
 	}
 	return ready, nil
 }

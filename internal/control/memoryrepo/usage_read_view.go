@@ -16,24 +16,29 @@ import (
 // Store or a transaction-bound history reader. Archived generations are resolved
 // by the persistence adapter in the requesting transaction.
 type UsageReadView struct {
-	customers map[string]customers.Customer
-	rules     map[string]forwarding.RuleTrafficState
-	configs   map[string]map[int64]deploymentreceipts.HistoricalInput
+	unassigned map[string]bool
+	customers  map[string]customers.Customer
+	rules      map[string]forwarding.RuleTrafficState
+	configs    map[string]map[int64]deploymentreceipts.HistoricalInput
 }
 
 func (s *Store) UsageReadView() *UsageReadView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	v := &UsageReadView{
-		customers: make(map[string]customers.Customer, len(s.customers)),
-		rules:     make(map[string]forwarding.RuleTrafficState, len(s.forwardRules)),
-		configs:   make(map[string]map[int64]deploymentreceipts.HistoricalInput, len(s.nodeConfigsByNode)),
+		unassigned: make(map[string]bool),
+		customers:  make(map[string]customers.Customer, len(s.customers)),
+		rules:      make(map[string]forwarding.RuleTrafficState, len(s.forwardRules)),
+		configs:    make(map[string]map[int64]deploymentreceipts.HistoricalInput, len(s.nodeConfigsByNode)),
 	}
 	for id, c := range s.customers {
 		v.customers[id] = cloneCustomer(c)
 	}
 	for id, r := range s.forwardRules {
 		v.rules[id] = forwarding.TrafficState(r)
+		if r.IsUnassignedImport() || r.OwnerKind == forwarding.OwnerAdministrator && s.importedRuleManagedByLocked(r, r.OwnerID) && s.hasAdministratorSubjectLocked(r) {
+			v.unassigned[r.CustomerID] = true
+		}
 	}
 	for nodeID, configs := range s.nodeConfigsByNode {
 		v.configs[nodeID] = make(map[int64]deploymentreceipts.HistoricalInput, len(configs))
@@ -114,4 +119,11 @@ func (s *Store) ListRuleTrafficStates(_ context.Context) ([]forwarding.RuleTraff
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
 	return items, nil
+}
+
+func (v *UsageReadView) ValidateUnassignedSubject(_ context.Context, subject string) error {
+	if v.unassigned[subject] {
+		return nil
+	}
+	return faults.ErrNotFound
 }

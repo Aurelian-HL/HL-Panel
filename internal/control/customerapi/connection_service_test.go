@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func validConnectionEvidence(t *testing.T, now time.Time) ConnectionEvidence {
 			VLESSFlow: "xtls-rprx-vision", RealityServerName: "www.example.com",
 			VLESSOutboundMode: forwarding.VLESSOutboundSOCKS5, VLESSSOCKS5Host: "landing.example.test", VLESSSOCKS5Port: 1080,
 			VLESSSOCKS5Username: "landing-user",
-			RealityPublicKey: publicKey, RealityShortID: "a1b2", RealityDestination: "www.example.com:443",
+			RealityPublicKey:    publicKey, RealityShortID: "a1b2", RealityDestination: "www.example.com:443",
 			ListenPort: 443, Revision: 3, Status: forwarding.StatusPendingActivation, Deployed: true,
 		},
 		Pool: endpoints.EndpointPool{ID: "pool_api", RuleID: "rule_api", GroupID: "group_api",
@@ -157,5 +158,39 @@ func TestCustomerConnectionReaderIsCustomerScopedAndUnique(t *testing.T) {
 	response = request(t, handler, http.MethodGet, "/api/v1/customer/connections", token, nil, nil)
 	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "cus_other") {
 		t.Fatalf("foreign evidence escaped: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCustomerConnectionAPIRespectsExplicitEmptyFlow(t *testing.T) {
+	now := time.Now().UTC()
+	for _, flow := range []string{"", "xtls-rprx-vision"} {
+		t.Run("flow="+flow, func(t *testing.T) {
+			evidence := validConnectionEvidence(t, now)
+			evidence.Rule.VLESSFlow, evidence.Rule.VLESSFlowExplicit = flow, true
+			reader := connectionReaderFunc(func(_ context.Context, customerID string) ([]ConnectionEvidence, error) {
+				if customerID != "cus_api" {
+					t.Fatal("connection reader received foreign customer")
+				}
+				return []ConnectionEvidence{evidence}, nil
+			})
+			handler := testConnectionHandler(t, now, reader)
+			token := loginAPI(t, handler)
+			response := request(t, handler, http.MethodGet, "/api/v1/customer/connections", token, nil, nil)
+			views := connectionViews(t, response.Body.Bytes())
+			if response.Code != http.StatusOK || len(views) != 1 || views[0].Status != "ready" {
+				t.Fatal("customer API did not return one ready connection")
+			}
+			parsed, err := url.Parse(views[0].URI)
+			if err != nil || parsed.User == nil || parsed.User.Username() != evidence.Binding.CredentialUUID || parsed.Host != "entry.example.com:443" || parsed.Query().Get("flow") != flow {
+				t.Fatal("customer API changed identity, endpoint or flow")
+			}
+			wantProtocol := "vless+reality"
+			if flow != "" {
+				wantProtocol += "+vision"
+			}
+			if views[0].Protocol != wantProtocol {
+				t.Fatal("customer API protocol label does not match flow")
+			}
+		})
 	}
 }

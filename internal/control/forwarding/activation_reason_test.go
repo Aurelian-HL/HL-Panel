@@ -49,3 +49,12 @@ func TestPendingActivationReasonRejectsVLESSOptionsIgnoredByEngine(t *testing.T)
 		t.Fatalf("VLESS rule with unenforced connection limit reason = %q", got)
 	}
 }
+
+func TestPendingActivationReasonAllowsVLESSSpeedLimit(t *testing.T) {
+	rule := Rule{IngressProtocol: IngressVLESSReality, Protocol: ProtocolTCP, EgressMode: EgressDirect,
+		RealityServerName: "www.example.com", RealityPublicKey: "AbCdEf0123456789AbCdEf0123456789AbCdEf01234", RealityShortID: "0123456789abcdef",
+		SpeedLimitMbps: 20}
+	if got := rule.PendingActivationReason(); got != ActivationReasonVLESSRuntimeMaterialPending {
+		t.Fatalf("VLESS speed limit reason = %q, want %q", got, ActivationReasonVLESSRuntimeMaterialPending)
+	}
+}

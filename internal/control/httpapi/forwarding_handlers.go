@@ -19,6 +19,21 @@ func (api *API) listForwardingRules(w http.ResponseWriter, r *http.Request, sess
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (api *API) createCustomerForwardingRule(w http.ResponseWriter, r *http.Request, session auth.Session) {
+	var input forwarding.Request
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	item, replayed, err := api.forwarding.CreateForCustomerByAdministrator(r.Context(), session.AdminID, r.PathValue("id"), input, r.Header.Get("Idempotency-Key"))
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	api.scheduleSavedVLESSRule(session.AdminID, item)
+	writeBusinessResult(w, r, "rule", item, replayed)
+}
+
 func (api *API) getForwardingRule(w http.ResponseWriter, r *http.Request, session auth.Session) {
 	item, err := api.forwarding.GetForAdministrator(r.Context(), session.AdminID, r.PathValue("id"))
 	if err != nil {
@@ -46,6 +61,11 @@ func (api *API) saveForwardingRule(w http.ResponseWriter, r *http.Request, sessi
 		writeProblem(w, r, err)
 		return
 	}
+	api.scheduleSavedVLESSRule(session.AdminID, item)
+	writeBusinessResult(w, r, "rule", item, replayed)
+}
+
+func (api *API) scheduleSavedVLESSRule(administratorID string, item forwarding.Rule) {
 	if api.vlessSetup != nil {
 		// The rule transaction is already committed. Endpoint and identity setup
 		// can involve several snapshot reads and must not hold the operator's
@@ -58,14 +78,13 @@ func (api *API) saveForwardingRule(w http.ResponseWriter, r *http.Request, sessi
 		case api.vlessSetupSlots <- struct{}{}:
 			go func() {
 				defer func() { <-api.vlessSetupSlots }()
-				api.reconcileSavedVLESSRule(session.AdminID, item)
+				api.reconcileSavedVLESSRule(administratorID, item)
 			}()
 		default:
 			// The periodic reconciler picks up excess work. Never create an
 			// unbounded goroutine backlog while the database is saturated.
 		}
 	}
-	writeBusinessResult(w, r, "rule", item, replayed)
 }
 
 func (api *API) reconcileSavedVLESSRule(administratorID string, item forwarding.Rule) {

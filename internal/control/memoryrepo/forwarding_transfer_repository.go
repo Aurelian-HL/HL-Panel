@@ -120,6 +120,13 @@ func (s *Store) evaluateForwardingImportLocked(candidates []forwarding.ImportCan
 	for _, candidate := range candidates {
 		evaluation := forwarding.ImportEvaluation{Line: candidate.Line}
 		item := cloneForwardingRule(candidate.Rule)
+		// Native imports carry confidential engine material and immutable source
+		// provenance. Ordinary transfer files cannot create or overwrite them.
+		if previous, exists := working[item.ID]; item.VLESSOutboundMode == forwarding.VLESSOutboundNative || exists && previous.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+			evaluation.Issue = importIssue("validation", "原生导入线路不能通过普通批量导入创建或覆盖，请使用线路管理操作")
+			evaluations = append(evaluations, evaluation)
+			continue
+		}
 		if seen[item.ID] {
 			evaluation.Issue = importIssue("revision_conflict", "同一导入文件不能重复修改同一规则")
 			evaluations = append(evaluations, evaluation)

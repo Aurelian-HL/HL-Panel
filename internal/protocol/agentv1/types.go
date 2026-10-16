@@ -84,11 +84,17 @@ type UsageMetadata struct {
 	EntryGroupID          string `json:"entry_group_id"`
 	ExitGroupID           string `json:"exit_group_id"`
 	Protocol              string `json:"protocol"`
+	ListenPort            int    `json:"listen_port,omitempty"`
+	SpeedLimitMbps        int    `json:"speed_limit_mbps,omitempty"`
 	EntryMultiplierMicros int64  `json:"entry_multiplier_micros"`
 	ExitMultiplierMicros  int64  `json:"exit_multiplier_micros"`
 }
 
 const CapabilityUsageGeneration = "usage-config-generation-v1"
+
+// NativeRealityStatsTagPrefix marks source-preserved listeners. These retain
+// the source version policy instead of receiving the legacy HL default.
+const NativeRealityStatsTagPrefix = "vless-reality-kl-native-"
 
 type ConfigurationFragment struct {
 	Usage         *UsageMetadata  `json:"usage,omitempty"`
@@ -221,6 +227,7 @@ type EnforcementAction string
 const (
 	EnforcementDisableCustomer EnforcementAction = "disable_customer_access"
 	EnforcementEnableCustomer  EnforcementAction = "enable_customer_access"
+	EnforcementApplySpeedLimit EnforcementAction = "apply_speed_limit"
 )
 
 type EnforcementCommand struct {
@@ -231,6 +238,7 @@ type EnforcementCommand struct {
 	Action     EnforcementAction `json:"action"`
 	Revision   int64             `json:"revision"`
 	Limits     EffectiveLimits   `json:"effective_limits"`
+	ListenPort int               `json:"listen_port,omitempty"`
 }
 
 // EffectiveLimits is the stricter non-zero value of customer and rule limits.

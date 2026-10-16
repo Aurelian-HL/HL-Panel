@@ -223,7 +223,22 @@ type Resolved struct {
 }
 
 func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved, error) {
-	if !(r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)) {
+	nonLoginSubject := r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)
+	if !nonLoginSubject && r.Item.ForwardingRuleID != "" {
+		if reader, ok := s.repository.(interface {
+			ForwardingRule(context.Context, string) (forwarding.Rule, error)
+		}); ok {
+			rule, e := reader.ForwardingRule(ctx, r.Item.ForwardingRuleID)
+			nonLoginSubject = e == nil && rule.OwnerKind == forwarding.OwnerAdministrator && rule.OwnerID == r.OwnerID && rule.CustomerID == r.Item.CustomerID && rule.VLESSOutboundMode == forwarding.VLESSOutboundNative && rule.ImportedTraffic.Valid() && rule.ImportedTraffic.SourceID != ""
+			if nonLoginSubject {
+				validator, ok := s.repository.(interface {
+					ValidateUnassignedSubject(context.Context, string) error
+				})
+				nonLoginSubject = ok && validator.ValidateUnassignedSubject(ctx, rule.CustomerID) == nil
+			}
+		}
+	}
+	if !nonLoginSubject {
 		customer, err := s.repository.Customer(ctx, r.Item.CustomerID)
 		if err != nil {
 			return nil, subscriptionReadError(err)

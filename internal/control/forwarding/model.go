@@ -29,12 +29,16 @@ type OwnerKind string
 type ActivationReason string
 
 const (
+	OwnerUnassigned     OwnerKind         = "unassigned"
 	OwnerCustomer       OwnerKind         = "customer"
 	OwnerAdministrator  OwnerKind         = "administrator"
 	EgressDirect        EgressMode        = "DIRECT"
 	EgressExitGroup     EgressMode        = "EXIT_GROUP"
 	VLESSOutboundDirect VLESSOutboundMode = "DIRECT"
 	VLESSOutboundSOCKS5 VLESSOutboundMode = "SOCKS5"
+	// Native imported listeners retain their validated transport and routing in
+	// confidential runtime material. Ordinary create APIs cannot select it.
+	VLESSOutboundNative VLESSOutboundMode = "KL_NATIVE"
 	ProtocolTCP         Protocol          = "tcp"
 	ProtocolUDP         Protocol          = "udp"
 	IngressTCP          IngressProtocol   = "tcp"
@@ -95,7 +99,17 @@ type Target struct {
 	Port int    `json:"port"`
 }
 
+type OutboundSummary struct {
+	Mode string `json:"mode"`
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+}
+
 type Rule struct {
+	// UserGroupDetached preserves authorization for this existing listener after
+	// its user group is deleted. It is not accepted by rule write requests.
+	UserGroupDetached   bool              `json:"user_group_detached,omitempty"`
+	OutboundSummary     *OutboundSummary  `json:"outbound_summary,omitempty"`
 	ID                  string            `json:"id"`
 	OwnerKind           OwnerKind         `json:"owner_kind,omitempty"`
 	OwnerID             string            `json:"owner_id,omitempty"`
@@ -111,6 +125,9 @@ type Rule struct {
 	VLESSSOCKS5Username string            `json:"vless_socks5_username,omitempty"`
 	IngressProtocol     IngressProtocol   `json:"ingress_protocol"`
 	VLESSFlow           string            `json:"vless_flow,omitempty"`
+	// VLESSFlowExplicit preserves an intentionally empty flow. Omission keeps
+	// the historical Vision default and cannot overwrite an explicit edit.
+	VLESSFlowExplicit   bool              `json:"vless_flow_explicit,omitempty"`
 	RealityServerName   string            `json:"reality_server_name,omitempty"`
 	RealityPublicKey    string            `json:"reality_public_key,omitempty"`
 	RealityShortID      string            `json:"reality_short_id,omitempty"`
@@ -126,6 +143,7 @@ type Rule struct {
 	ConnectionLimit     int               `json:"connection_limit,omitempty"`
 	TrafficLimitBytes   int64             `json:"traffic_limit_bytes,omitempty"`
 	TrafficUsedBytes    int64             `json:"traffic_used_bytes"`
+	ImportedTraffic     ImportedTraffic   `json:"imported_traffic"`
 	TrafficQuotaMonthly bool              `json:"traffic_quota_monthly,omitempty"`
 	TrafficUsagePeriod  string            `json:"traffic_usage_period,omitempty"`
 	Paused              bool              `json:"paused"`
@@ -146,7 +164,7 @@ func (r Rule) OwnedByAdministrator(adminID string) bool {
 }
 
 func (r Rule) OwnedByCustomer(customerID string) bool {
-	return r.OwnerKind != OwnerAdministrator && r.CustomerID == customerID
+	return (r.OwnerKind == "" || r.OwnerKind == OwnerCustomer) && r.CustomerID == customerID
 }
 
 // TrafficQuotaPeriodBounds returns the half-open UTC natural-month interval
@@ -187,8 +205,14 @@ func (r Rule) PendingActivationReason() ActivationReason {
 	if r.EffectiveIngressProtocol() == IngressSOCKS5 {
 		return ActivationReasonSOCKS5RuntimeMaterialPending
 	}
-	if r.AcceptProxyProtocol || r.SendProxyProtocol != SendProxyDisabled ||
-		r.SpeedLimitMbps != 0 || r.IPLimit != 0 || r.ConnectionLimit != 0 {
+	// The HL VLESS Reality/TCP adapter can enforce a speed limit through the
+	// node's Linux traffic-control capability. IP and connection limits, and
+	// all advanced options on the legacy NY listeners, remain fail-closed.
+	if r.EffectiveIngressProtocol() == IngressVLESSReality {
+		if r.AcceptProxyProtocol || r.SendProxyProtocol != SendProxyDisabled || r.IPLimit != 0 || r.ConnectionLimit != 0 {
+			return ActivationReasonAdvancedOptionsUnsupported
+		}
+	} else if r.AcceptProxyProtocol || r.SendProxyProtocol != SendProxyDisabled || r.SpeedLimitMbps != 0 || r.IPLimit != 0 || r.ConnectionLimit != 0 {
 		return ActivationReasonAdvancedOptionsUnsupported
 	}
 	if r.SelectionPolicy == SelectionLeastLoad {
@@ -217,9 +241,12 @@ type Request struct {
 	VLESSSOCKS5Username string            `json:"vless_socks5_username,omitempty"`
 	// VLESSSOCKS5Password is accepted only on write requests. It is never
 	// copied into Rule, snapshots' public projections, audit events, or exports.
-	VLESSSOCKS5Password string            `json:"vless_socks5_password,omitempty"`
-	IngressProtocol     IngressProtocol   `json:"ingress_protocol"`
-	VLESSFlow           string            `json:"vless_flow,omitempty"`
+	VLESSSOCKS5Password string          `json:"vless_socks5_password,omitempty"`
+	IngressProtocol     IngressProtocol `json:"ingress_protocol"`
+	VLESSFlow           string          `json:"vless_flow,omitempty"`
+	// VLESSFlowExplicit preserves an intentionally empty flow. Omission keeps
+	// the historical Vision default and cannot overwrite an explicit edit.
+	VLESSFlowExplicit   bool              `json:"vless_flow_explicit,omitempty"`
 	RealityServerName   string            `json:"reality_server_name,omitempty"`
 	RealityPublicKey    string            `json:"reality_public_key,omitempty"`
 	RealityShortID      string            `json:"reality_short_id,omitempty"`
@@ -269,7 +296,7 @@ func (r Request) IngressReadiness() IngressStatus {
 	if r.EffectiveIngressProtocol() != IngressVLESSReality {
 		return IngressReady
 	}
-	if r.RealityServerName == "" || r.RealityPublicKey == "" || r.RealityShortID == "" {
+	if r.RealityServerName == "" || r.RealityPublicKey == "" || r.RealityShortID == "" && r.VLESSOutboundMode != VLESSOutboundNative {
 		return IngressPendingReality
 	}
 	return IngressReady
@@ -277,7 +304,8 @@ func (r Request) IngressReadiness() IngressStatus {
 
 func (r Rule) IngressReadiness() IngressStatus {
 	return Request{
-		IngressProtocol: r.EffectiveIngressProtocol(), VLESSFlow: r.VLESSFlow,
+		IngressProtocol: r.EffectiveIngressProtocol(), VLESSFlow: r.VLESSFlow, VLESSFlowExplicit: r.VLESSFlowExplicit,
+		VLESSOutboundMode: r.VLESSOutboundMode,
 		RealityServerName: r.RealityServerName, RealityPublicKey: r.RealityPublicKey,
 		RealityShortID: r.RealityShortID, RealityDestination: r.RealityDestination,
 	}.IngressReadiness()
@@ -312,4 +340,18 @@ func DeriveStatus(rule Rule, customer CustomerAvailability, now time.Time) Statu
 		return StatusActive
 	}
 	return StatusPendingActivation
+}
+
+// EffectiveVLESSFlow resolves the legacy omission without replacing an
+// explicitly empty imported flow.
+func (r Rule) EffectiveVLESSFlow() string {
+	if r.VLESSFlow == "" && !r.VLESSFlowExplicit {
+		return "xtls-rprx-vision"
+	}
+	return r.VLESSFlow
+}
+
+func (r Rule) SupportedVLESSFlow() bool {
+	flow := r.EffectiveVLESSFlow()
+	return flow == "" || flow == "xtls-rprx-vision"
 }

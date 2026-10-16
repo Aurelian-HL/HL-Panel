@@ -99,7 +99,18 @@ func (s *Service) CreateForCustomer(ctx context.Context, customerID string, requ
 	return s.create(ctx, "customer", customerID, request, idempotencyKey)
 }
 
+// CreateForCustomerByAdministrator keeps customer authorization and quotas
+// while recording the authenticated administrator as the mutation actor.
+func (s *Service) CreateForCustomerByAdministrator(ctx context.Context, adminID, customerID string, request Request, idempotencyKey string) (Rule, bool, error) {
+	request.CustomerID = customerID
+	request.OwnerKind, request.OwnerID = OwnerCustomer, customerID
+	return s.create(ctx, "administrator", adminID, request, idempotencyKey)
+}
+
 func (s *Service) create(ctx context.Context, actorType, actorID string, request Request, idempotencyKey string) (Rule, bool, error) {
+	if request.VLESSOutboundMode == VLESSOutboundNative {
+		return Rule{}, false, fmt.Errorf("%w: native listeners require the maintenance import workflow", faults.ErrValidation)
+	}
 	request, err := NormalizeRequest(request)
 	if err != nil {
 		return Rule{}, false, err
@@ -144,6 +155,14 @@ func (s *Service) Update(ctx context.Context, adminID, id string, request Reques
 }
 
 func (s *Service) UpdateForAdministrator(ctx context.Context, adminID, id string, request Request, idempotencyKey string) (Rule, bool, error) {
+	previous, err := s.GetForAdministrator(ctx, adminID, id)
+	if err != nil {
+		return Rule{}, false, err
+	}
+	if !previous.OwnedByAdministrator(adminID) {
+		request.CustomerID, request.OwnerKind, request.OwnerID = previous.CustomerID, previous.OwnerKind, previous.OwnerID
+		return s.update(ctx, "administrator", adminID, previous.CustomerID, id, request, idempotencyKey)
+	}
 	request.CustomerID = AdministratorSubjectID(adminID)
 	request.OwnerKind, request.OwnerID = OwnerAdministrator, adminID
 	return s.update(ctx, "administrator", adminID, request.CustomerID, id, request, idempotencyKey)
@@ -198,7 +217,11 @@ func (s *Service) update(ctx context.Context, actorType, actorID, expectedCustom
 	if err != nil {
 		return Rule{}, false, err
 	}
-	return s.repository.UpdateForwardingRule(ctx, UpdateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, PreserveRealityTarget: preserveRealityTarget, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}, event)
+	input := UpdateInput{Rule: rule, ProtocolProbeEchoPort: s.probeEchoPort, RealityPrivateKey: privateKey, VLESSSOCKS5Password: request.VLESSSOCKS5Password, AutoReality: autoReality, PreserveRealityTarget: preserveRealityTarget, PreserveVLESSFlow: !request.VLESSFlowExplicit, ExpectedRevision: request.Revision, ExpectedCustomerID: expectedCustomerID, IdempotencyKey: idempotencyKey, RequestSHA256: hex.EncodeToString(digest[:]), CreatedBy: createdBy}
+	if actorType == "administrator" && expectedCustomerID != "" {
+		input.ExpectedAdministratorID = actorID
+	}
+	return s.repository.UpdateForwardingRule(ctx, input, event)
 }
 
 func automaticRealityKeys(request Request) bool {
@@ -251,6 +274,11 @@ func (s *Service) List(ctx context.Context) ([]Rule, error) {
 	return s.repository.ListForwardingRules(ctx)
 }
 func (s *Service) ListForAdministrator(ctx context.Context, adminID string) ([]Rule, error) {
+	if repository, ok := s.repository.(interface {
+		ListManagedForwardingRules(context.Context, string) ([]Rule, error)
+	}); ok {
+		return repository.ListManagedForwardingRules(ctx, adminID)
+	}
 	items, err := s.List(ctx)
 	if err != nil {
 		return nil, err
@@ -284,6 +312,15 @@ func (s *Service) GetForAdministrator(ctx context.Context, adminID, id string) (
 		return Rule{}, err
 	}
 	if !rule.OwnedByAdministrator(adminID) {
+		items, err := s.ListForAdministrator(ctx, adminID)
+		if err != nil {
+			return Rule{}, err
+		}
+		for _, item := range items {
+			if item.ID == rule.ID {
+				return item, nil
+			}
+		}
 		return Rule{}, faults.ErrNotFound
 	}
 	return rule, nil
@@ -292,7 +329,7 @@ func (s *Service) GetForAdministrator(ctx context.Context, adminID, id string) (
 func (r Request) rule(id string, now time.Time) Rule {
 	return Rule{ID: id, Name: r.Name, CustomerID: r.CustomerID, OwnerKind: r.OwnerKind, OwnerID: r.OwnerID, RuleGroupID: r.RuleGroupID, EntryGroupID: r.EntryGroupID, ExitGroupID: r.ExitGroupID,
 		EgressMode: r.EgressMode, VLESSOutboundMode: r.VLESSOutboundMode, VLESSSOCKS5Host: r.VLESSSOCKS5Host, VLESSSOCKS5Port: r.VLESSSOCKS5Port, VLESSSOCKS5Username: r.VLESSSOCKS5Username,
-		IngressProtocol: r.IngressProtocol, VLESSFlow: r.VLESSFlow,
+		IngressProtocol: r.IngressProtocol, VLESSFlow: r.VLESSFlow, VLESSFlowExplicit: r.VLESSFlowExplicit,
 		RealityServerName: r.RealityServerName, RealityPublicKey: r.RealityPublicKey, RealityShortID: r.RealityShortID, RealityDestination: r.RealityDestination,
 		IngressStatus: r.IngressReadiness(), Protocol: r.Protocol, ListenPort: r.ListenPort, Targets: r.Targets, SelectionPolicy: r.SelectionPolicy,
 		AcceptProxyProtocol: r.AcceptProxyProtocol, SendProxyProtocol: r.SendProxyProtocol, SpeedLimitMbps: r.SpeedLimitMbps,

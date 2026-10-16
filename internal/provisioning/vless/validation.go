@@ -35,9 +35,6 @@ func (p Profile) Validate() error {
 		return errors.New("VLESS flow is unsupported")
 	}
 	if p.Reality != nil {
-		if p.Identity.Flow != "xtls-rprx-vision" {
-			return errors.New("Reality requires xtls-rprx-vision flow")
-		}
 		return p.Reality.validate()
 	}
 	if !validHost(p.TLS.ServerName) {

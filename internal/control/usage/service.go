@@ -246,6 +246,10 @@ func (service *Service) Query(ctx context.Context, query Query) (QueryResult, er
 		result.Items = []Record{}
 	}
 	result.Page, result.PageSize = normalized.Page, normalized.PageSize
+	result.ImportedTraffic, err = service.importedTrafficTotals(ctx, normalized)
+	if err != nil {
+		return QueryResult{}, err
+	}
 	return result, nil
 }
 

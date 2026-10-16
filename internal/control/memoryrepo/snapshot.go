@@ -30,14 +30,14 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 19
+const SnapshotVersion = 22
+const importedTrafficSnapshotVersion = 21
+const nativeRuntimeSnapshotVersion = 20
+const importedIdentitySnapshotVersion = 19
 
-// readableSnapshotVersion includes compatible snapshots written by the live
-// panel before their format marker was synchronized to this repository. The
-// v20/v21 envelopes contain the same top-level fields as v19; they are read
-// using the current DTO and new writes continue using SnapshotVersion until a
-// deliberate format migration is introduced.
-const readableSnapshotVersion = 21
+// Versions 20 and 21 were written by pre-standard imported-runtime builds.
+// Version 22 preserves those fields together with standard license state.
+const readableSnapshotVersion = SnapshotVersion
 const businessSnapshotVersion = 2
 const networkPolicySnapshotVersion = 3
 const ruleGroupsSnapshotVersion = 4
@@ -128,6 +128,7 @@ type storedVLESSRuntimeMaterial struct {
 	Material          vlessruntime.Material
 	CredentialUUID    string
 	RealityPrivateKey string
+	NativeConfig      json.RawMessage `json:",omitempty"`
 }
 
 // storedVLESSSOCKS5Upstream is a confidential snapshot-only DTO. It is never
@@ -261,7 +262,7 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 	for id, record := range s.vlessRuntimeMaterials {
 		state.VLESSRuntimeMaterials[id] = storedVLESSRuntimeMaterial{
 			Material: cloneVLESSRuntimeMaterial(record), CredentialUUID: record.CredentialUUID,
-			RealityPrivateKey: record.RealityPrivateKey,
+			RealityPrivateKey: record.RealityPrivateKey, NativeConfig: append(json.RawMessage(nil), record.NativeConfig...),
 		}
 	}
 	for id, upstream := range s.vlessSOCKS5Upstreams {
@@ -352,6 +353,13 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 	if state.Version < 17 && len(state.Subscriptions) > 0 {
 		return nil, errors.New("unexpected persisted subscriptions")
 	}
+	if state.Version < 19 {
+		for _, rule := range state.ForwardRules {
+			if rule.VLESSFlowExplicit {
+				return nil, errors.New("legacy snapshot contains explicit VLESS flow")
+			}
+		}
+	}
 	if !SupportsSnapshotVersion(state.Version) {
 		return nil, errors.New("unsupported persistence state version")
 	}
@@ -413,7 +421,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version >= protocolProbeSnapshotVersion && state.ProtocolProbes == nil {
 			return nil, errors.New("incomplete protocol probe persistence state")
 		}
-		if state.Version >= licenseCodesSnapshotVersion && state.LicenseCodes == nil {
+		if (state.Version == licenseCodesSnapshotVersion || state.Version >= SnapshotVersion) && state.LicenseCodes == nil {
 			return nil, errors.New("incomplete license persistence state")
 		}
 		if state.Version >= applyAttemptsSnapshotVersion && state.ApplyAttemptsByNode == nil {
@@ -440,6 +448,21 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 				return nil, errors.New("invalid group network policy")
 			}
 			state.GroupNetworks[id] = normalized
+		}
+		for _, rule := range state.ForwardRules {
+			if state.Version < importedTrafficSnapshotVersion && rule.ImportedTraffic != (forwarding.ImportedTraffic{}) {
+				return nil, errors.New("imported traffic in unsupported snapshot version")
+			}
+			if state.Version < importedTrafficSnapshotVersion && rule.OwnerKind == forwarding.OwnerUnassigned {
+				return nil, errors.New("unassigned import in unsupported snapshot version")
+			}
+		}
+		if state.Version < nativeRuntimeSnapshotVersion {
+			for _, rule := range state.ForwardRules {
+				if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+					return nil, errors.New("native forwarding rule in unsupported snapshot version")
+				}
+			}
 		}
 		s.userGroups, s.groupNetworks, s.forwardRules, s.businessIdempotency = state.UserGroups, state.GroupNetworks, state.ForwardRules, state.BusinessIdempotency
 		if state.AutoRealityKeys != nil {
@@ -518,6 +541,9 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		}
 		if state.VLESSBindings != nil {
 			for id, stored := range state.VLESSBindings {
+				if state.Version < importedIdentitySnapshotVersion && stored.Binding.ImportedFrom != nil {
+					return nil, errors.New("imported VLESS identity requires a newer snapshot version")
+				}
 				s.vlessBindings[id] = vlessidentity.CredentialRecord{Binding: cloneVLESSBinding(stored.Binding), CredentialUUID: stored.CredentialUUID}
 			}
 		}
@@ -526,6 +552,10 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 				material := cloneVLESSRuntimeMaterial(stored.Material)
 				material.CredentialUUID = stored.CredentialUUID
 				material.RealityPrivateKey = stored.RealityPrivateKey
+				if state.Version < nativeRuntimeSnapshotVersion && len(stored.NativeConfig) != 0 {
+					return nil, errors.New("native runtime material in unsupported snapshot version")
+				}
+				material.NativeConfig = append(json.RawMessage(nil), stored.NativeConfig...)
 				s.vlessRuntimeMaterials[id] = material
 			}
 		}
@@ -682,7 +712,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 			}
 			autoRules[key] = true
 		}
-		if _, ok := s.customers[r.Item.CustomerID]; !ok && !(r.Item.ForwardingRuleID != "" && r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID)) {
+		if _, ok := s.customers[r.Item.CustomerID]; !ok && !(r.Item.ForwardingRuleID != "" && (r.Item.CustomerID == forwarding.AdministratorSubjectID(r.OwnerID) || s.importedSubscriptionSubjectLocked(r.Item.ForwardingRuleID, r.Item.CustomerID, r.OwnerID))) {
 			return nil, errors.New("invalid persisted subscription customer")
 		}
 		for _, line := range append(append([]subscriptions.Line(nil), r.Draft...), r.Published...) {

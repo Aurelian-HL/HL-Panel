@@ -3,6 +3,9 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
 // Adapt legacy LKG fragments at execution time without changing their signed
@@ -13,6 +16,10 @@ func compatibleRealityInbound(raw json.RawMessage) (json.RawMessage, error) {
 	var inbound map[string]json.RawMessage
 	if err := decodeJSON(raw, &inbound); err != nil || inbound == nil {
 		return nil, fmt.Errorf("%w: invalid inbound", ErrInvalidConfiguration)
+	}
+	var tag string
+	if json.Unmarshal(inbound["tag"], &tag) == nil && strings.HasPrefix(tag, agentv1.NativeRealityStatsTagPrefix) {
+		return raw, nil
 	}
 	if len(inbound["streamSettings"]) == 0 {
 		return raw, nil

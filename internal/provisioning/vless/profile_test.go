@@ -13,6 +13,26 @@ func testProfile() Profile {
 		Identity: Identity{UUID: "ed08862b-0b98-4a96-b860-503c97b78f55"}, TLS: TLSProfile{ServerName: "entry.example.test"}}
 }
 
+func TestSubscriptionURIPreservesImportedUUIDSpelling(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		profile Profile
+	}{{"tls", testProfile()}, {"reality", realityTestProfile()}} {
+		t.Run(test.name, func(t *testing.T) {
+			profile := test.profile
+			profile.Identity.UUID = "AB08862B-0B98-4A96-B860-503C97B78F55"
+			link, err := URI(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(link)
+			if err != nil || parsed.User == nil || parsed.User.Username() != profile.Identity.UUID {
+				t.Fatal("subscription export rewrote imported UUID spelling")
+			}
+		})
+	}
+}
+
 func TestSingleURIAndIndependentBackendBindings(t *testing.T) {
 	profile := testProfile()
 	link, err := URI(profile)

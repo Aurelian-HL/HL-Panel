@@ -175,10 +175,38 @@ func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snaps
 	if err != nil {
 		return membership.Snapshot{}, err
 	}
+	return snapshotFromState(state, s.clock().UTC()), nil
+}
+
+// Snapshots reads all requested pools from one consistent database snapshot.
+// Each pool retains its own deployment and protocol authorization boundary.
+func (s *Service) Snapshots(ctx context.Context, ids []string) (map[string]membership.Snapshot, error) {
+	result := make(map[string]membership.Snapshot, len(ids))
+	if repository, ok := s.repository.(BatchRepository); ok {
+		states, err := repository.GatewayMembershipStates(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		now := s.clock().UTC()
+		for _, state := range states {
+			result[state.Pool.ID] = snapshotFromState(state, now)
+		}
+		return result, nil
+	}
+	for _, id := range ids {
+		snapshot, err := s.Snapshot(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		result[id] = snapshot
+	}
+	return result, nil
+}
+
+func snapshotFromState(state State, now time.Time) membership.Snapshot {
 	items := make([]endpointrouter.Endpoint, 0, len(state.Members))
 	rule := state.Rule
 	if poolAuthorizesRule(state.Pool, rule) {
-		now := s.clock().UTC()
 		for _, member := range state.Members {
 			if member.PoolID != state.Pool.ID || member.GroupID != state.Pool.GroupID ||
 				member.State != endpoints.CandidateEligible || member.Weight < 1 || member.ActiveConnections < 0 {
@@ -203,7 +231,7 @@ func (s *Service) Snapshot(ctx context.Context, poolID string) (membership.Snaps
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	return membership.Snapshot{Revision: state.Revision, Endpoints: items}, nil
+	return membership.Snapshot{Revision: state.Revision, Endpoints: items}
 }
 
 func poolAuthorizesRule(pool endpoints.EndpointPool, rule forwarding.Rule) bool {

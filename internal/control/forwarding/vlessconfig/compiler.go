@@ -1,6 +1,7 @@
-// Package vlessconfig compiles the bounded VLESS Reality + Vision ingress
-// subset used by direct TCP rules. It does not create identities or persist
-// TLS material; callers must obtain those values from an authorized secret
+// Package vlessconfig compiles the bounded VLESS Reality ingress with either
+// explicit empty flow or Vision flow, using direct TCP or SOCKS5 egress.
+// It does not create identities or persist TLS material; callers must obtain
+// those values from an authorized secret
 // store before asking for a runtime configuration.
 package vlessconfig
 
@@ -123,10 +124,10 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	}
 	profile.Flow = strings.TrimSpace(profile.Flow)
 	if profile.Flow == "" {
-		profile.Flow = "xtls-rprx-vision"
+		profile.Flow = rule.EffectiveVLESSFlow()
 	}
-	if profile.Flow != "xtls-rprx-vision" {
-		return nil, errors.New("VLESS Reality flow must be xtls-rprx-vision")
+	if !rule.SupportedVLESSFlow() || profile.Flow != rule.EffectiveVLESSFlow() {
+		return nil, errors.New("VLESS Reality profile flow must match the rule")
 	}
 	client := map[string]any{"id": identity.UUID, "flow": profile.Flow}
 	inboundTag := statsTag("vless-reality-", rule)

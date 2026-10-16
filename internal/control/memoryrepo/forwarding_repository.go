@@ -3,6 +3,7 @@ package memoryrepo
 import (
 	"context"
 	"fmt"
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"maps"
 	"slices"
 	"sort"
@@ -10,10 +11,10 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
-	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
+	"github.com/hongle/hl-panel/internal/control/importedconfig"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
@@ -105,6 +106,9 @@ func (s *Store) ForwardingRule(_ context.Context, id string) (forwarding.Rule, e
 }
 
 func (s *Store) CreateForwardingRule(_ context.Context, input forwarding.CreateInput, event audit.Event) (forwarding.Rule, bool, error) {
+	if input.Rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		return forwarding.Rule{}, false, fmt.Errorf("%w: native listeners require maintenance import", faults.ErrValidation)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := input.CreatedBy + "\x00forwarding.create\x00" + input.IdempotencyKey
@@ -119,9 +123,11 @@ func (s *Store) CreateForwardingRule(_ context.Context, input forwarding.CreateI
 		return forwarding.Rule{}, false, fmt.Errorf("%w: automatic Reality target is not configured on the control plane", faults.ErrValidation)
 	}
 	item := cloneForwardingRule(input.Rule)
+	item.UserGroupDetached = false
 	if _, exists := s.forwardRules[item.ID]; exists {
 		return forwarding.Rule{}, false, faults.ErrConflict
 	}
+	item.UserGroupDetached = s.detachedRuleAuthorizedLocked(item)
 	if err := s.prepareForwardingRuleLocked(&item); err != nil {
 		return forwarding.Rule{}, false, err
 	}
@@ -175,16 +181,28 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 	if input.ExpectedCustomerID != "" && previous.CustomerID != input.ExpectedCustomerID {
 		return forwarding.Rule{}, false, faults.ErrNotFound
 	}
+	if adminID := input.ExpectedAdministratorID; adminID != "" && !previous.OwnedByAdministrator(adminID) && !s.importedRuleManagedByLocked(previous, adminID) && !s.delegatedRuleManagedByLocked(previous, adminID) {
+		return forwarding.Rule{}, false, faults.ErrNotFound
+	}
 	if previous.OwnerKind == forwarding.OwnerAdministrator && (previous.OwnerKind != item.OwnerKind || previous.OwnerID != item.OwnerID) || previous.OwnerKind != forwarding.OwnerAdministrator && item.OwnerKind == forwarding.OwnerAdministrator {
 		return forwarding.Rule{}, false, faults.ErrNotFound
 	}
 	if previous.Revision != input.ExpectedRevision || item.Revision != input.ExpectedRevision+1 {
 		return forwarding.Rule{}, false, fmt.Errorf("%w: forwarding rule changed; reload before saving", faults.ErrConflict)
 	}
+	if input.PreserveVLESSFlow && previous.VLESSFlowExplicit &&
+		previous.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
+		item.VLESSFlow, item.VLESSFlowExplicit = previous.VLESSFlow, previous.VLESSFlowExplicit
+	}
 	item.CreatedAt = previous.CreatedAt
 	preserveRuleTraffic(&item, previous)
 	if item.ListenPort == 0 && item.EntryGroupID == previous.EntryGroupID && item.Protocol == previous.Protocol {
 		item.ListenPort = previous.ListenPort
+	}
+	if previous.VLESSOutboundMode == forwarding.VLESSOutboundNative || item.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		if !forwarding.SameNativeRuntime(previous, item) || input.RealityPrivateKey != "" || input.VLESSSOCKS5Password != "" {
+			return forwarding.Rule{}, false, fmt.Errorf("%w: imported connection parameters are immutable; name, group, pause and traffic quota may be edited", faults.ErrValidation)
+		}
 	}
 	privateKey := ""
 	if input.AutoReality && previous.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && previous.IngressReadiness() == forwarding.IngressReady {
@@ -198,6 +216,7 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 			return forwarding.Rule{}, false, fmt.Errorf("%w: automatic Reality target is not configured on the control plane", faults.ErrValidation)
 		}
 	}
+	item.UserGroupDetached = s.detachedRuleAuthorizedLocked(item)
 	if err := s.prepareForwardingRuleLocked(&item); err != nil {
 		return forwarding.Rule{}, false, err
 	}
@@ -261,13 +280,13 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 			return fmt.Errorf("%w: administrator rule group is not available to customer rules", faults.ErrValidation)
 		}
 	}
-	adminOwned := item.OwnerKind == forwarding.OwnerAdministrator
+	adminOwned := item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport()
 	customer, found := s.customers[item.CustomerID]
 	if adminOwned {
 		if _, collision := s.customers[item.CustomerID]; collision {
 			return fmt.Errorf("%w: administrator traffic subject collides with a customer", faults.ErrValidation)
 		}
-		found = s.hasAdministratorSubjectLocked(*item)
+		found = s.hasNonCustomerSubjectLocked(*item)
 	} else if item.OwnerKind != "" && item.OwnerKind != forwarding.OwnerCustomer || item.OwnerID != "" && item.OwnerID != item.CustomerID {
 		return fmt.Errorf("%w: invalid customer rule owner", faults.ErrValidation)
 	}
@@ -275,7 +294,8 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 		return fmt.Errorf("%w: customer does not exist", faults.ErrValidation)
 	}
 	userGroup, found := s.userGroups[customer.UserGroupID]
-	if !adminOwned && (!found || !slices.Contains(userGroup.AllowedEntryGroupIDs, item.EntryGroupID)) {
+	detached := s.detachedRuleAuthorizedLocked(*item)
+	if !adminOwned && !detached && (!found || !slices.Contains(userGroup.AllowedEntryGroupIDs, item.EntryGroupID)) {
 		return fmt.Errorf("%w: customer is not authorized for this entry group", faults.ErrValidation)
 	}
 	if err := s.validateAuthorizedGroupsLocked([]string{item.EntryGroupID}, true); err != nil {
@@ -290,15 +310,15 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 		}
 		configured = true
 	}
-	if !adminOwned && len(network.AllowedUserGroupIDs) > 0 && !slices.Contains(network.AllowedUserGroupIDs, customer.UserGroupID) {
+	if !adminOwned && !detached && len(network.AllowedUserGroupIDs) > 0 && !slices.Contains(network.AllowedUserGroupIDs, customer.UserGroupID) {
 		return fmt.Errorf("%w: entry group does not authorize the customer's user group", faults.ErrValidation)
 	}
 	if item.EgressMode == forwarding.EgressDirect {
-		if !network.EffectiveDirectPolicy().AllowsDirect() || !adminOwned && !userGroup.AllowDirect {
+		if !network.EffectiveDirectPolicy().AllowsDirect() || !adminOwned && !detached && !userGroup.AllowDirect {
 			return fmt.Errorf("%w: direct forwarding requires user-group and entry-group authorization", faults.ErrValidation)
 		}
 	} else {
-		if !network.EffectiveDirectPolicy().AllowsExitGroup() || item.EntryGroupID == item.ExitGroupID || !adminOwned && !slices.Contains(userGroup.AllowedExitGroupIDs, item.ExitGroupID) || !slices.Contains(network.AllowedExitGroupIDs, item.ExitGroupID) {
+		if !network.EffectiveDirectPolicy().AllowsExitGroup() || item.EntryGroupID == item.ExitGroupID || !adminOwned && !detached && !slices.Contains(userGroup.AllowedExitGroupIDs, item.ExitGroupID) || !slices.Contains(network.AllowedExitGroupIDs, item.ExitGroupID) {
 			return fmt.Errorf("%w: exit group is not authorized by both user and entry group", faults.ErrValidation)
 		}
 		if err := s.validateAuthorizedGroupsLocked([]string{item.ExitGroupID}, false); err != nil {
@@ -311,7 +331,7 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 		if len(exitNetwork.AllowedEntryGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedEntryGroupIDs, item.EntryGroupID) {
 			return fmt.Errorf("%w: exit group does not authorize this entry group", faults.ErrValidation)
 		}
-		if !adminOwned && len(exitNetwork.AllowedUserGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedUserGroupIDs, customer.UserGroupID) {
+		if !adminOwned && !detached && len(exitNetwork.AllowedUserGroupIDs) > 0 && !slices.Contains(exitNetwork.AllowedUserGroupIDs, customer.UserGroupID) {
 			return fmt.Errorf("%w: exit group does not authorize the customer's user group", faults.ErrValidation)
 		}
 		if err := s.validateExitGroupMembersLocked(item.ExitGroupID); err != nil {
@@ -567,8 +587,8 @@ func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	customer := s.customers[item.CustomerID]
 	item = cloneForwardingRule(item)
 	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}
-	if item.OwnerKind == forwarding.OwnerAdministrator {
-		availability = forwarding.CustomerAvailability{Enabled: s.hasAdministratorSubjectLocked(item)}
+	if item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport() {
+		availability = forwarding.CustomerAvailability{Enabled: s.hasNonCustomerSubjectLocked(item)}
 	}
 	item.Status = forwarding.DeriveStatus(item, availability, time.Now().UTC())
 	// A VLESS Reality rule remains visibly pending until every active member of
@@ -588,11 +608,26 @@ func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	// list/get/import/export projections. The compiler reads the stored rule and
 	// private side-map directly when building an Xray bundle.
 	item.VLESSSOCKS5Username = ""
+	if item.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		if s.forwardingProjection != nil {
+			summary := s.forwardingProjection.summaries[item.ID]
+			item.OutboundSummary = &summary
+			return item
+		}
+		item.OutboundSummary = &forwarding.OutboundSummary{Mode: "UNKNOWN"}
+		for _, material := range s.vlessRuntimeMaterials {
+			if material.ForwardingRuleID == item.ID && len(material.NativeConfig) > 0 {
+				mode, host, port := importedconfig.NativeOutboundSummary(material.NativeConfig)
+				item.OutboundSummary = &forwarding.OutboundSummary{Mode: mode, Host: host, Port: port}
+				break
+			}
+		}
+	}
 	return item
 }
 
 func (s *Store) hasAdministratorSubjectLocked(rule forwarding.Rule) bool {
-	if rule.OwnerKind != forwarding.OwnerAdministrator || rule.OwnerID == "" || rule.CustomerID != forwarding.AdministratorSubjectID(rule.OwnerID) || len(rule.CustomerID) > 128 {
+	if rule.OwnerKind != forwarding.OwnerAdministrator || rule.OwnerID == "" || (rule.CustomerID != forwarding.AdministratorSubjectID(rule.OwnerID) && !s.importedRuleManagedByLocked(rule, rule.OwnerID)) || len(rule.CustomerID) > 128 {
 		return false
 	}
 	for _, admin := range s.adminsByUsername {

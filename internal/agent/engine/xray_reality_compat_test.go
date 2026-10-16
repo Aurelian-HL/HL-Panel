@@ -42,3 +42,13 @@ func TestLegacyRealityBundleCompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeRealityBundlePreservesSourceVersionPolicy(t *testing.T) {
+	for _, policy := range []string{`{}`, `{"minClientVer":""}`, `{"minClientVer":"26.3.27","maxClientVer":"30.0.0","maxTimeDiff":1000}`} {
+		raw := json.RawMessage(`{"tag":"` + agentv1.NativeRealityStatsTagPrefix + `rule--metadata","protocol":"vless","streamSettings":{"security":"reality","realitySettings":` + policy + `}}`)
+		got, err := compatibleRealityInbound(raw)
+		if err != nil || string(got) != string(raw) {
+			t.Fatal("native source version policy changed", err)
+		}
+	}
+}

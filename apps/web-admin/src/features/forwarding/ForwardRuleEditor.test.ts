@@ -41,6 +41,28 @@ async function submit(wrapper: VueWrapper) {
 beforeEach(() => { mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValue(rule) })
 
 describe('ForwardRuleEditor', () => {
+  it('edits imported metadata without rewriting connection parameters', async () => {
+    const issued: ForwardRule = { ...rule, ingress_protocol: 'vless_reality', targets: [], vless_outbound_mode: 'KL_NATIVE', vless_flow: '', vless_flow_explicit: true, reality_server_name: 'example.com', reality_public_key: 'public', reality_short_id: '', reality_destination: 'example.com:443' }
+    const wrapper = mountEditor({ rule: issued })
+    await wrapper.get('input[maxlength="160"]').setValue('迁入线路')
+    await submit(wrapper)
+    const payload = mocked.saveRule.mock.calls[0]?.[0]
+    expect(payload).toMatchObject({ name: '迁入线路', vless_outbound_mode: 'KL_NATIVE', listen_port: issued.listen_port, vless_flow: '', vless_flow_explicit: true, reality_short_id: '', reality_public_key: 'public', targets: [] })
+    expect(wrapper.text()).toContain('继续使用已有订阅')
+    expect(wrapper.findAll('select')).toHaveLength(0)
+    wrapper.unmount()
+  })
+  it.each([false, true])('preserves explicit empty flow on edit or copy (copy=%s)', async (copy) => {
+    const issued: ForwardRule = { ...rule, ingress_protocol: 'vless_reality', vless_flow: '', vless_flow_explicit: true, vless_outbound_mode: 'SOCKS5', vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019, reality_server_name: 'www.example.com', reality_public_key: 'public-key', reality_short_id: '0123456789abcdef', reality_destination: 'www.example.com:443' }
+    const wrapper = mountEditor({ rule: issued, copy })
+    if (copy) await fieldStartingWith(wrapper, '目标地址').get('textarea').setValue('198.51.100.20:6019:user:secret')
+    expect(wrapper.text()).toContain('空（保留原配置）')
+    await submit(wrapper)
+    expect(mocked.saveRule).toHaveBeenCalledOnce()
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ vless_flow: '', vless_flow_explicit: true })
+    wrapper.unmount()
+  })
+
   it('follows the NY field order without an endpoint-pool workflow', () => {
     const wrapper = mountEditor()
     expect(wrapper.findAll('form > label.field').map((item) => item.find('span').text())).toEqual(['名称', '接入协议', '入口', '监听端口', '出口', '目标地址', '规则流量额度（GB）', '每月清零额度'])

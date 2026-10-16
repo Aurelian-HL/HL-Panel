@@ -5,7 +5,6 @@ import (
 	"net"
 	"net/url"
 	"strconv"
-	"strings"
 )
 
 // URI returns exactly one credential-bearing VLESS URI for the stable public
@@ -26,7 +25,7 @@ func URI(profile Profile) (string, error) {
 		query.Set("flow", profile.Identity.Flow)
 	}
 	link := url.URL{
-		Scheme: "vless", User: url.User(strings.ToLower(profile.Identity.UUID)),
+		Scheme: "vless", User: url.User(profile.Identity.UUID),
 		Host:     net.JoinHostPort(profile.Endpoint.Hostname, strconv.Itoa(profile.Endpoint.Port)),
 		RawQuery: query.Encode(), Fragment: profile.Endpoint.Name,
 	}
@@ -45,13 +44,15 @@ func realityURI(profile Profile) (string, error) {
 		"encryption": {"none"}, "security": {"reality"}, "type": {"tcp"},
 		"sni": {reality.ServerName}, "fp": {reality.Fingerprint},
 		"pbk": {reality.PublicKey}, "sid": {reality.ShortID},
-		"flow": {"xtls-rprx-vision"},
+	}
+	if profile.Identity.Flow != "" {
+		query.Set("flow", profile.Identity.Flow)
 	}
 	if reality.SpiderX != "" {
 		query.Set("spx", reality.SpiderX)
 	}
 	link := url.URL{
-		Scheme: "vless", User: url.User(strings.ToLower(profile.Identity.UUID)),
+		Scheme: "vless", User: url.User(profile.Identity.UUID),
 		Host:     net.JoinHostPort(profile.Endpoint.Hostname, strconv.Itoa(profile.Endpoint.Port)),
 		RawQuery: query.Encode(), Fragment: profile.Endpoint.Name,
 	}

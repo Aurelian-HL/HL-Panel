@@ -21,6 +21,37 @@ type scanRepository struct {
 	scanned chan struct{}
 }
 
+type initializationRepository struct {
+	*schedulingRepository
+	configured []string
+	err        error
+}
+
+func (s *initializationRepository) ConfigureProtocolProbe(_ context.Context, id string, _ ProtocolProbeConfig) error {
+	s.configured = append(s.configured, id)
+	return s.err
+}
+
+func TestProbeInitializationDoesNotStarveConfiguredRules(t *testing.T) {
+	for _, initializationErr := range []error{nil, context.DeadlineExceeded} {
+		t.Run(fmt.Sprint(initializationErr), func(t *testing.T) {
+			missingA := schedulingInput("new-a", 1)
+			missingA.Config = ProtocolProbeConfig{}
+			missingB := schedulingInput("new-b", 1)
+			missingB.Config = ProtocolProbeConfig{}
+			repo := &initializationRepository{schedulingRepository: &schedulingRepository{states: []ProbeState{missingA, schedulingInput("existing", 1), missingB}}, err: initializationErr}
+			runner := NewProtocolRunner(repo, "unused", 39000, time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			ready, err := runner.loadRefresh(context.Background())
+			if err != nil || len(ready) != 1 || ready[0].State.Rule.ID != "existing" {
+				t.Fatalf("configured rule lost during initialization: ready=%v err=%v", ready, err)
+			}
+			if len(repo.configured) != 1 || repo.configured[0] != "new-a" {
+				t.Fatalf("initialization must be bounded to one write: %v", repo.configured)
+			}
+		})
+	}
+}
+
 type schedulingRepository struct {
 	protocolRunnerRepository
 	mu              sync.Mutex
@@ -213,10 +244,14 @@ func TestSameProbeRejectsChangedChallengeTarget(t *testing.T) {
 	base := probeJob{key: "same-probe:" + member.NodeID, input: input, member: member, attempt: 1}
 
 	mutations := map[string]func(*probeJob){
-		"pool":                func(job *probeJob) { job.input.State.Pool.ID = "other-pool" },
-		"rule":                func(job *probeJob) { job.input.State.Rule.ID = "other-rule" },
-		"node":                func(job *probeJob) { job.member.NodeID = "other-node" },
-		"listener":            func(job *probeJob) { job.input.State.Rule.ListenPort++ },
+		"pool":     func(job *probeJob) { job.input.State.Pool.ID = "other-pool" },
+		"rule":     func(job *probeJob) { job.input.State.Rule.ID = "other-rule" },
+		"node":     func(job *probeJob) { job.member.NodeID = "other-node" },
+		"listener": func(job *probeJob) { job.input.State.Rule.ListenPort++ },
+		"flow": func(job *probeJob) {
+			job.input.State.Rule.VLESSFlow = ""
+			job.input.State.Rule.VLESSFlowExplicit = true
+		},
 		"reality server name": func(job *probeJob) { job.input.State.Rule.RealityServerName = "other.example" },
 		"reality public key":  func(job *probeJob) { job.input.State.Rule.RealityPublicKey = "other-key" },
 		"reality short id":    func(job *probeJob) { job.input.State.Rule.RealityShortID = "other-short-id" },
@@ -292,16 +327,6 @@ func TestProtocolSchedulerIsFairBoundedAndBatchesWithoutPerNodeReads(t *testing.
 	repo.mu.Unlock()
 	if reads != 1 {
 		t.Fatalf("per-node snapshot reads: %d", reads)
-	}
-}
-
-func TestProtocolFailureBackoffIsBounded(t *testing.T) {
-	interval := 30 * time.Second
-	wants := []time.Duration{interval, 2 * interval, 4 * interval, 8 * interval, 5 * time.Minute}
-	for failures, want := range wants {
-		if got := protocolFailureBackoff(interval, uint(failures+1)); got != want {
-			t.Fatalf("failures=%d backoff=%s, want %s", failures+1, got, want)
-		}
 	}
 }
 

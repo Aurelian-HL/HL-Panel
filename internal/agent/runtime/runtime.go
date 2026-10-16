@@ -22,6 +22,7 @@ import (
 	"github.com/hongle/hl-panel/internal/agent/probeecho"
 	"github.com/hongle/hl-panel/internal/agent/reconciler"
 	"github.com/hongle/hl-panel/internal/agent/state"
+	"github.com/hongle/hl-panel/internal/agent/trafficcontrol"
 	usageagent "github.com/hongle/hl-panel/internal/agent/usage"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -46,6 +47,7 @@ type Agent struct {
 	accessExecutor usageagent.AccessExecutor
 	usageReporter  *usageagent.Reporter
 	enforcement    *usageagent.EnforcementReconciler
+	trafficControl *trafficcontrol.Controller
 	probeEchoMu    sync.RWMutex
 	probeEcho      *probeecho.Server
 }
@@ -78,6 +80,7 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 		return nil, err
 	}
 	var adapter engine.EngineAdapter
+	var trafficController *trafficcontrol.Controller
 	var xrayAdapter *engine.XrayProcessAdapter
 	var gostAdapter *engine.GOSTProcessAdapter
 	switch cfg.EngineMode {
@@ -124,6 +127,12 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 		adapter, err = engine.NewDryRunFileAdapter(cfg.EngineStagingPath(), cfg.EngineActivePath())
 		if err != nil {
 			return nil, err
+		}
+	}
+	if strings.TrimSpace(cfg.TrafficControlInterface) != "" {
+		trafficController, err = trafficcontrol.New(cfg.TrafficControlInterface, cfg.TrafficControlBinary, cfg.TrafficControlStateFile, nil)
+		if err != nil {
+			return nil, fmt.Errorf("initialize traffic control: %w", err)
 		}
 	}
 	if len(options.EngineUsageSources) > 0 {
@@ -180,6 +189,7 @@ func NewWithOptions(cfg config.Config, logger *slog.Logger, options Options) (*A
 		logger:         logger,
 		usageSource:    options.UsageSource,
 		accessExecutor: options.EnforcementExecutor,
+		trafficControl: trafficController,
 	}, nil
 }
 
@@ -361,6 +371,11 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 		if !hadPending {
 			if _, err := reconcilerInstance.EnsureApplied(ctx); err != nil {
 				return fmt.Errorf("restore applied configuration: %w", err)
+			}
+		}
+		if a.trafficControl != nil {
+			if err := a.trafficControl.Restore(ctx); err != nil {
+				return fmt.Errorf("restore traffic control: %w", err)
 			}
 		}
 	}

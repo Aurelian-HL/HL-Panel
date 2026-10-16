@@ -24,6 +24,7 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 	state := &Store{
 		persistenceRevision:     s.persistenceRevision,
 		gatewayMutationRevision: s.gatewayMutationRevision + uint64(len(s.auditEvents)),
+		businessIdempotency:     cloneViewMap(s.businessIdempotency, func(m businessMutation) businessMutation { m.Result = append([]byte(nil), m.Result...); return m }),
 		adminsByUsername:        cloneViewMap(s.adminsByUsername, cloneAdministrator),
 		customers:               cloneViewMap(s.customers, cloneCustomer),
 		groupNetworks:           cloneViewMap(s.groupNetworks, cloneGroupNetwork),
@@ -52,6 +53,7 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 			return attempt
 		}),
 	}
+	state.forwardingProjection = state.buildForwardingProjectionLocked()
 	return &ForwardingReadView{state: state}
 }
 
@@ -82,7 +84,9 @@ func (v *ForwardingReadView) WithOverlays(revision uint64, traffic []RuleTraffic
 	base := v.state
 	state := &Store{
 		persistenceRevision: revision, gatewayMutationRevision: base.gatewayMutationRevision,
-		adminsByUsername: base.adminsByUsername, customers: base.customers,
+		forwardingProjection: base.forwardingProjection,
+		businessIdempotency:  base.businessIdempotency,
+		adminsByUsername:     base.adminsByUsername, customers: base.customers,
 		groupNetworks: base.groupNetworks, membersByGroup: base.membersByGroup,
 		endpointPools: base.endpointPools, protocolProbes: base.protocolProbes,
 		autoRealityKeys: base.autoRealityKeys, vlessBindings: base.vlessBindings,
@@ -117,6 +121,10 @@ func (v *ForwardingReadView) GatewayMembershipStates(ctx context.Context, ids []
 }
 func (v *ForwardingReadView) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
 	return v.state.ProtocolProbeStates(ctx)
+}
+
+func (v *ForwardingReadView) ListManagedForwardingRules(ctx context.Context, adminID string) ([]forwarding.Rule, error) {
+	return v.state.ListManagedForwardingRules(ctx, adminID)
 }
 
 // CheckProtocolHealthRenewal validates proofs on a detached request copy. It

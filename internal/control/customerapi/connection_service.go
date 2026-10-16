@@ -93,7 +93,11 @@ func (service *ConnectionService) List(ctx context.Context, principal customerid
 			continue
 		}
 		seen[record.Rule.ID] = true
-		view := ConnectionView{RuleID: record.Rule.ID, Name: record.Rule.Name, Protocol: "vless+reality+vision", Status: "unavailable"}
+		protocol := "vless+reality+vision"
+		if record.Rule.VLESSFlowExplicit && record.Rule.VLESSFlow == "" {
+			protocol = "vless+reality"
+		}
+		view := ConnectionView{RuleID: record.Rule.ID, Name: record.Rule.Name, Protocol: protocol, Status: "unavailable"}
 		if counts[record.Rule.ID] == 1 {
 			service.populate(&view, profile, record)
 		}
@@ -115,7 +119,7 @@ func (service *ConnectionService) unverified(ctx context.Context, principal cust
 			continue
 		}
 		seen[placeholder.RuleID] = true
-		views = append(views, ConnectionView{RuleID: placeholder.RuleID, Name: placeholder.Name, Protocol: "vless+reality+vision", Status: "unavailable"})
+		views = append(views, ConnectionView{RuleID: placeholder.RuleID, Name: placeholder.Name, Protocol: "vless", Status: "unavailable"})
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].RuleID < views[j].RuleID })
 	return views, nil
@@ -126,7 +130,7 @@ func (service *ConnectionService) populate(view *ConnectionView, profile custome
 	if profile.EffectiveStatus != customers.StatusActive || rule.ID == "" || rule.Paused || !rule.Deployed ||
 		rule.Status != forwarding.StatusPendingActivation || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
 		rule.Protocol != forwarding.ProtocolTCP || rule.IngressReadiness() != forwarding.IngressReady ||
-		rule.VLESSFlow != "xtls-rprx-vision" || rule.RealityDestination == "" ||
+		!rule.SupportedVLESSFlow() || rule.RealityDestination == "" ||
 		evidence.ActiveBindingCount != 1 || evidence.ActivePoolCount != 1 ||
 		pool.RuleID != rule.ID || pool.GroupID != rule.EntryGroupID || pool.Protocol != "vless" ||
 		pool.Mode != endpoints.ModeSingleServiceEndpoint || pool.Port != rule.ListenPort ||
@@ -154,7 +158,7 @@ func (service *ConnectionService) populate(view *ConnectionView, profile custome
 	}
 	generated, err := provisioningvless.URI(provisioningvless.Profile{
 		Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: pool.Name},
-		Identity: provisioningvless.Identity{UUID: binding.CredentialUUID, Flow: rule.VLESSFlow},
+		Identity: provisioningvless.Identity{UUID: binding.CredentialUUID, Flow: rule.EffectiveVLESSFlow()},
 		Reality: &provisioningvless.RealityProfile{
 			ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey,
 			ShortID: rule.RealityShortID, Destination: rule.RealityDestination, Fingerprint: "chrome",

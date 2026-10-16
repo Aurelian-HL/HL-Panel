@@ -28,6 +28,7 @@ const (
 	CapabilityDryRunFileAdapter       = "dry-run-file-adapter"
 	CapabilityXrayVLESSReality        = "xray-vless-reality"
 	CapabilityGOSTTCPDirect           = "gost-tcp-direct"
+	CapabilityLinuxTCSpeedLimit       = "linux-tc-speed-limit-v1"
 	EngineModeDryRun                  = "dry_run"
 	EngineModeXray                    = "xray"
 	EngineModeGOST                    = "gost"
@@ -74,19 +75,22 @@ type Config struct {
 	XrayAutoStart         bool     `json:"xray_auto_start,omitempty"`
 	// XrayAPIAddress is retained for compatibility with older agent
 	// configurations. Stats collection uses XrayStatsAPIAddress below.
-	XrayAPIAddress        string        `json:"xray_api_address,omitempty"`
-	XrayStatsAPIAddress   string        `json:"xray_stats_api_address,omitempty"`
-	GOSTStatsAPIAddress   string        `json:"gost_stats_api_address,omitempty"`
-	GOSTBinaryPath        string        `json:"gost_binary_path,omitempty"`
-	GOSTAutoStart         bool          `json:"gost_auto_start,omitempty"`
-	HeartbeatInterval     Duration      `json:"heartbeat_interval"`
-	DesiredPollInterval   Duration      `json:"desired_poll_interval"`
-	UsageReportInterval   Duration      `json:"usage_report_interval,omitempty"`
-	EnforcementInterval   Duration      `json:"enforcement_poll_interval,omitempty"`
-	ProtocolProbeEchoPort int           `json:"protocol_probe_echo_port,omitempty"`
-	UsageMaxBatch         int           `json:"usage_max_batch,omitempty"`
-	RequestTimeout        Duration      `json:"request_timeout"`
-	Backoff               BackoffConfig `json:"backoff"`
+	XrayAPIAddress          string        `json:"xray_api_address,omitempty"`
+	XrayStatsAPIAddress     string        `json:"xray_stats_api_address,omitempty"`
+	GOSTStatsAPIAddress     string        `json:"gost_stats_api_address,omitempty"`
+	GOSTBinaryPath          string        `json:"gost_binary_path,omitempty"`
+	GOSTAutoStart           bool          `json:"gost_auto_start,omitempty"`
+	TrafficControlInterface string        `json:"traffic_control_interface,omitempty"`
+	TrafficControlBinary    string        `json:"traffic_control_binary,omitempty"`
+	TrafficControlStateFile string        `json:"traffic_control_state_file,omitempty"`
+	HeartbeatInterval       Duration      `json:"heartbeat_interval"`
+	DesiredPollInterval     Duration      `json:"desired_poll_interval"`
+	UsageReportInterval     Duration      `json:"usage_report_interval,omitempty"`
+	EnforcementInterval     Duration      `json:"enforcement_poll_interval,omitempty"`
+	ProtocolProbeEchoPort   int           `json:"protocol_probe_echo_port,omitempty"`
+	UsageMaxBatch           int           `json:"usage_max_batch,omitempty"`
+	RequestTimeout          Duration      `json:"request_timeout"`
+	Backoff                 BackoffConfig `json:"backoff"`
 }
 
 func Load(path string) (Config, error) {
@@ -171,6 +175,15 @@ func (c *Config) setDefaults() {
 	if c.GOSTStatsAPIAddress == "" {
 		c.GOSTStatsAPIAddress = "127.0.0.1:18090"
 	}
+	if c.TrafficControlBinary == "" {
+		c.TrafficControlBinary = "tc"
+	}
+	if c.TrafficControlStateFile == "" {
+		c.TrafficControlStateFile = filepath.Join(c.DataDir, "traffic-control.json")
+	}
+	if strings.TrimSpace(c.TrafficControlInterface) != "" {
+		c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityLinuxTCSpeedLimit))
+	}
 	if c.EngineMode == EngineModeXray || c.EngineMode == EngineModeMixed {
 		c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityXrayVLESSReality))
 	}
@@ -250,6 +263,14 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.DataDir) == "" || !filepath.IsAbs(c.DataDir) {
 		return errors.New("data_dir must be an absolute path")
+	}
+	if strings.TrimSpace(c.TrafficControlInterface) != "" {
+		if strings.TrimSpace(c.TrafficControlBinary) == "" {
+			return errors.New("traffic_control_binary is required when traffic_control_interface is configured")
+		}
+		if strings.TrimSpace(c.TrafficControlStateFile) == "" || !filepath.IsAbs(c.TrafficControlStateFile) {
+			return errors.New("traffic_control_state_file must be an absolute path")
+		}
 	}
 	if strings.TrimSpace(c.Hostname) == "" {
 		return errors.New("hostname could not be determined")

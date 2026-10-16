@@ -98,11 +98,20 @@ func TestCompileDirectForwardUsesOneExplicitTarget(t *testing.T) {
 	}
 }
 
-func TestRealityRequiresVisionAndServerKey(t *testing.T) {
+func TestRealityAllowsEmptyFlowAndRequiresServerKey(t *testing.T) {
 	profile := realityTestProfile()
 	profile.Identity.Flow = ""
-	if _, err := URI(profile); err == nil {
-		t.Fatal("Reality without Vision flow was accepted")
+	uri, err := URI(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(uri)
+	if err != nil || link.Query().Has("flow") {
+		t.Fatal("empty flow was rewritten in Reality URI")
+	}
+	raw, err := Compile(profile, Listener{Address: "127.0.0.1", Port: 8443}, Egress{Mode: EgressDirect})
+	if err != nil || strings.Contains(string(raw), "xtls-rprx-vision") {
+		t.Fatal("empty flow was rewritten in server config")
 	}
 	profile = realityTestProfile()
 	profile.Reality.PrivateKey = ""

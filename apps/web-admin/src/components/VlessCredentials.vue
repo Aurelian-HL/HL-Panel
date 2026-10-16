@@ -8,6 +8,7 @@ import DialogSurface from '@/components/DialogSurface.vue'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { displayError } from '@/lib/displayFormatters'
+import { supportedVLESSFlow } from '@/lib/businessFormatters'
 
 const identities = ref<VlessIdentity[]>([])
 const rules = ref<ForwardRule[]>([])
@@ -26,7 +27,7 @@ const ruleByID = computed(() => new Map(rules.value.map((rule) => [rule.id, rule
 const poolByID = computed(() => new Map(pools.value.map((pool) => [pool.id, pool])))
 const customerByID = computed(() => new Map(customers.value.map((customer) => [customer.id, customer])))
 const selectedRule = computed(() => ruleByID.value.get(ruleID.value) ?? null)
-const availableRules = computed(() => rules.value.filter((rule) => rule.ingress_protocol === 'vless_reality' && rule.protocol === 'tcp' && rule.vless_flow === 'xtls-rprx-vision' && !rule.paused && rule.ingress_status !== 'pending_reality_parameters' && rule.status === 'active' && rule.deployed === true))
+const availableRules = computed(() => rules.value.filter((rule) => rule.ingress_protocol === 'vless_reality' && rule.protocol === 'tcp' && supportedVLESSFlow(rule) && !rule.paused && rule.ingress_status !== 'pending_reality_parameters' && rule.status === 'active' && rule.deployed === true))
 const availablePools = computed(() => pools.value.filter((pool) => pool.protocol === 'vless' && !!selectedRule.value && pool.rule_id === selectedRule.value.id))
 const rows = computed(() => identities.value.map((identity) => ({
   identity,

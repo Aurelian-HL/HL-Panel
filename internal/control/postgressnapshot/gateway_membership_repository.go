@@ -44,6 +44,10 @@ func (s *Store) ConfigureProtocolProbe(ctx context.Context, ruleID string, confi
 	})
 }
 
+func (s *Store) ConfigureProtocolProbes(ctx context.Context, configs map[string]gatewaymembership.ProtocolProbeConfig) error {
+	return mutate(ctx, s, func(state *memoryrepo.Store) error { return state.ConfigureProtocolProbes(ctx, configs) })
+}
+
 func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
 	return readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) ([]gatewaymembership.ProbeState, error) {
 		return state.ProtocolProbeStates(ctx)

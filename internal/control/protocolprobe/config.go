@@ -1,4 +1,4 @@
-// Package protocolprobe checks a VLESS Reality Vision path against a dedicated
+// Package protocolprobe checks a VLESS Reality path against a dedicated
 // echo target. It does not publish gateway health or accept arbitrary targets.
 package protocolprobe
 
@@ -22,18 +22,31 @@ var shortIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{2,16}$`)
 // Spec contains public endpoint material and a probe-only VLESS identity.
 // EchoHost:EchoPort must be the dedicated target of the server-side rule.
 type Spec struct {
-	XrayBinary string
-	DialHost   string
-	DialPort   int
-	UUID       string
-	ServerName string
-	PublicKey  string
-	ShortID    string
-	EchoHost   string
-	EchoPort   int
+	XrayBinary   string
+	DialHost     string
+	DialPort     int
+	UUID         string
+	Flow         string
+	FlowExplicit bool
+	ServerName   string
+	PublicKey    string
+	ShortID      string
+	EchoHost     string
+	EchoPort     int
+}
+
+// EffectiveFlow retains the historical Vision default for older callers.
+func (s Spec) EffectiveFlow() string {
+	if s.Flow == "" && !s.FlowExplicit {
+		return "xtls-rprx-vision"
+	}
+	return s.Flow
 }
 
 func (s Spec) validate() error {
+	if flow := s.EffectiveFlow(); flow != "" && flow != "xtls-rprx-vision" {
+		return ErrInvalidSpec
+	}
 	if _, err := serviceaddress.NormalizeHost(s.DialHost); err != nil {
 		return ErrInvalidSpec
 	}
@@ -74,7 +87,7 @@ func clientConfig(s Spec, socksPort int) ([]byte, error) {
 			"tag": "probe-vless", "protocol": "vless",
 			"settings": map[string]any{"vnext": []any{map[string]any{
 				"address": s.DialHost, "port": s.DialPort,
-				"users": []any{map[string]any{"id": s.UUID, "encryption": "none", "flow": "xtls-rprx-vision"}},
+				"users": []any{map[string]any{"id": s.UUID, "encryption": "none", "flow": s.EffectiveFlow()}},
 			}}},
 			"streamSettings": map[string]any{"network": "tcp", "security": "reality",
 				"realitySettings": map[string]any{

@@ -36,7 +36,20 @@ func (s *Store) ResolveSubscriptionLines(ctx context.Context, administratorID, c
 func (s *Store) Provision(_ context.Context, input vlessidentity.ProvisionInput, event audit.Event) (vlessidentity.Binding, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := vlessMutationKey(input.CreatedBy, "provision", input.IdempotencyKey)
+	return s.provisionVLESSIdentityLocked(input, event, "provision", false)
+}
+
+func (s *Store) ImportExistingIdentity(_ context.Context, input vlessidentity.ImportInput, event audit.Event) (vlessidentity.Binding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !vlessidentity.ValidateImportInput(input) {
+		return vlessidentity.Binding{}, false, fmt.Errorf("%w: invalid VLESS identity import", faults.ErrValidation)
+	}
+	return s.provisionVLESSIdentityLocked(input.ProvisionInput, event, "import", true)
+}
+
+func (s *Store) provisionVLESSIdentityLocked(input vlessidentity.ProvisionInput, event audit.Event, action string, imported bool) (vlessidentity.Binding, bool, error) {
+	key := vlessMutationKey(input.CreatedBy, action, input.IdempotencyKey)
 	var replay vlessidentity.Binding
 	if replayed, err := s.replayBusinessLocked(key, input.RequestSHA256, &replay); err != nil || replayed {
 		return replay, replayed, err
@@ -45,6 +58,9 @@ func (s *Store) Provision(_ context.Context, input vlessidentity.ProvisionInput,
 		return vlessidentity.Binding{}, false, fmt.Errorf("%w: invalid VLESS provision mutation", faults.ErrValidation)
 	}
 	record := cloneVLESSCredentialRecord(input.Record)
+	if !imported && record.Binding.ImportedFrom != nil {
+		return vlessidentity.Binding{}, false, fmt.Errorf("%w: ordinary provision cannot import identity provenance", faults.ErrValidation)
+	}
 	if record.Binding.Revision != 1 {
 		return vlessidentity.Binding{}, false, fmt.Errorf("%w: initial VLESS binding revision must be one", faults.ErrValidation)
 	}
@@ -54,7 +70,16 @@ func (s *Store) Provision(_ context.Context, input vlessidentity.ProvisionInput,
 	if !s.vlessBindingOwnedByAdministratorLocked(record.Binding, input.CreatedBy) {
 		return vlessidentity.Binding{}, false, faults.ErrNotFound
 	}
+	if imported && !s.forwardRules[record.Binding.ForwardingRuleID].Paused {
+		return vlessidentity.Binding{}, false, fmt.Errorf("%w: imported identity requires a paused rule", faults.ErrConflict)
+	}
 	for _, existing := range s.vlessBindings {
+		if imported && existing.Binding.ImportedFrom != nil && *existing.Binding.ImportedFrom == *record.Binding.ImportedFrom {
+			return vlessidentity.Binding{}, false, fmt.Errorf("%w: source identity already imported", faults.ErrConflict)
+		}
+		if imported && existing.Binding.State == vlessidentity.StateActive && strings.EqualFold(existing.CredentialUUID, record.CredentialUUID) {
+			return vlessidentity.Binding{}, false, fmt.Errorf("%w: imported credential already has an active binding", faults.ErrConflict)
+		}
 		if existing.Binding.State == vlessidentity.StateActive && sameVLESSTuple(existing.Binding, record.Binding) {
 			return vlessidentity.Binding{}, false, fmt.Errorf("%w: an active VLESS binding already exists for this customer, rule, and endpoint", faults.ErrConflict)
 		}
@@ -67,10 +92,14 @@ func (s *Store) Provision(_ context.Context, input vlessidentity.ProvisionInput,
 		return vlessidentity.Binding{}, false, err
 	}
 	s.vlessBindings[public.ID] = record
-	if err := s.recompileForwardingGroupsLocked([]string{s.forwardRules[public.ForwardingRuleID].EntryGroupID}, public.CreatedAt); err != nil {
-		delete(s.vlessBindings, public.ID)
-		delete(s.businessIdempotency, key)
-		return vlessidentity.Binding{}, false, err
+	// Import is inert: the owned rule is paused and no material is bound. Do not
+	// publish a generation just because an old credential was archived.
+	if !imported {
+		if err := s.recompileForwardingGroupsLocked([]string{s.forwardRules[public.ForwardingRuleID].EntryGroupID}, public.CreatedAt); err != nil {
+			delete(s.vlessBindings, public.ID)
+			delete(s.businessIdempotency, key)
+			return vlessidentity.Binding{}, false, err
+		}
 	}
 	s.appendAuditLocked(event)
 	return public, false, nil
@@ -249,6 +278,9 @@ func (s *Store) saveVLESSIdentityChangeLocked(key, hash string, record vlessiden
 
 func (s *Store) validateVLESSCredentialRecordLocked(record vlessidentity.CredentialRecord) error {
 	binding := record.Binding
+	if !vlessidentity.ValidImportOrigin(binding.ImportedFrom) {
+		return fmt.Errorf("%w: invalid VLESS identity import provenance", faults.ErrValidation)
+	}
 	if binding.ID == "" || binding.CustomerID == "" || binding.ForwardingRuleID == "" || binding.EndpointPoolID == "" ||
 		!binding.State.Valid() || binding.Revision < 1 || binding.CreatedAt.IsZero() || binding.UpdatedAt.Before(binding.CreatedAt) {
 		return fmt.Errorf("%w: invalid VLESS binding metadata", faults.ErrValidation)
@@ -265,7 +297,7 @@ func (s *Store) validateVLESSCredentialRecordLocked(record vlessidentity.Credent
 	_, customerExists := s.customers[binding.CustomerID]
 	adminSubject := false
 	if rule, exists := s.forwardRules[binding.ForwardingRuleID]; exists && rule.CustomerID == binding.CustomerID {
-		adminSubject = s.hasAdministratorSubjectLocked(rule)
+		adminSubject = s.hasNonCustomerSubjectLocked(rule)
 	}
 	if !customerExists && !adminSubject {
 		return fmt.Errorf("%w: customer does not exist", faults.ErrValidation)
@@ -274,7 +306,7 @@ func (s *Store) validateVLESSCredentialRecordLocked(record vlessidentity.Credent
 	if !exists || rule.CustomerID != binding.CustomerID {
 		return fmt.Errorf("%w: forwarding rule does not belong to the customer", faults.ErrValidation)
 	}
-	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady || rule.VLESSFlow != "xtls-rprx-vision" {
+	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady || !rule.SupportedVLESSFlow() {
 		return fmt.Errorf("%w: VLESS identity requires a ready VLESS Reality Vision TCP DIRECT rule", faults.ErrValidation)
 	}
 	pool, exists := s.endpointPools[binding.EndpointPoolID]
@@ -302,7 +334,7 @@ func vlessProfile(pool endpoints.EndpointPool, rule forwarding.Rule, credentialU
 	}
 	return provisioningvless.Profile{
 		Endpoint: provisioningvless.Endpoint{Hostname: pool.Hostname, Port: pool.Port, Name: pool.Name},
-		Identity: provisioningvless.Identity{UUID: credentialUUID, Flow: rule.VLESSFlow},
+		Identity: provisioningvless.Identity{UUID: credentialUUID, Flow: rule.EffectiveVLESSFlow()},
 		Reality: &provisioningvless.RealityProfile{
 			ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey,
 			ShortID: rule.RealityShortID, Destination: destination, Fingerprint: "chrome",
@@ -340,6 +372,7 @@ func (s *Store) revokeRuntimeMaterialsLocked(bindingID string, at time.Time, act
 		material.RevokedAt = &revokedAt
 		material.CredentialUUID = ""
 		material.RealityPrivateKey = ""
+		material.NativeConfig = nil
 		s.vlessRuntimeMaterials[item.id] = material
 		s.appendAuditLocked(item.event)
 	}
@@ -355,7 +388,7 @@ func (s *Store) vlessBindingOwnedByAdministratorLocked(binding vlessidentity.Bin
 		return false
 	}
 	rule, exists := s.forwardRules[binding.ForwardingRuleID]
-	if !exists || !rule.OwnedByAdministrator(administratorID) || rule.CustomerID != binding.CustomerID {
+	if !exists || (!rule.OwnedByAdministrator(administratorID) && !s.importedRuleManagedByLocked(rule, administratorID) && !s.delegatedRuleManagedByLocked(rule, administratorID)) || rule.CustomerID != binding.CustomerID {
 		return false
 	}
 	pool, exists := s.endpointPools[binding.EndpointPoolID]
@@ -367,6 +400,10 @@ func vlessMutationKey(actorID, operation, idempotencyKey string) string {
 }
 
 func cloneVLESSBinding(binding vlessidentity.Binding) vlessidentity.Binding {
+	if binding.ImportedFrom != nil {
+		origin := *binding.ImportedFrom
+		binding.ImportedFrom = &origin
+	}
 	if binding.RevokedAt != nil {
 		value := *binding.RevokedAt
 		binding.RevokedAt = &value

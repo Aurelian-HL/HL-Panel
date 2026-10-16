@@ -38,7 +38,7 @@ func (s *Store) CreateEndpointPool(_ context.Context, input endpoints.CreatePool
 	}
 	if input.RuleID != "" {
 		rule, exists := s.forwardRules[input.RuleID]
-		if !exists || !rule.OwnedByAdministrator(input.CreatedBy) {
+		if !exists || (!rule.OwnedByAdministrator(input.CreatedBy) && !s.delegatedRuleManagedByLocked(rule, input.CreatedBy)) {
 			return endpoints.EndpointPool{}, false, faults.ErrNotFound
 		}
 		network, configured := s.groupNetworks[input.GroupID]

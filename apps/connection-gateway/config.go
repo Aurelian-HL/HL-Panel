@@ -65,6 +65,11 @@ func loadRuntimeConfig(path string) (runtimeConfig, error) {
 	if err != nil {
 		return runtimeConfig{}, err
 	}
+	return decodeRuntimeConfig(raw)
+}
+
+func decodeRuntimeConfig(raw []byte) (runtimeConfig, error) {
+	var err error
 	var input fileConfig
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()

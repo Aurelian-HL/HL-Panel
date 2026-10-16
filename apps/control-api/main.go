@@ -195,7 +195,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	if err != nil {
 		return fmt.Errorf("configure VLESS runtime service: %w", err)
 	}
-	vlessSetupService := vlesssetup.NewService(groupconfig.NewService(store, time.Now), endpointService, vlessIdentityService)
+	vlessSetupService := vlesssetup.NewService(groupconfig.NewService(store, time.Now), endpointService, vlessIdentityService, vlesssetup.WithRuleAccess(forwardingService))
 	usageService := usage.NewService(
 		usageRepository,
 		usage.NewCustomerPolicyAdapter(store),

@@ -33,6 +33,7 @@ func NewHandler(service *Service, poolTokens map[string]string) (*Handler, error
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/gateway/pools/{pool_id}/membership", h.serveSnapshot)
+	mux.HandleFunc("POST /api/v1/gateway/membership", h.serveBatch)
 }
 
 func (h *Handler) serveSnapshot(writer http.ResponseWriter, request *http.Request) {

@@ -9,10 +9,12 @@ import (
 	"strings"
 	"time"
 
+	agentconfig "github.com/hongle/hl-panel/internal/agent/config"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 	"github.com/hongle/hl-panel/internal/control/forwarding/vlessconfig"
 	"github.com/hongle/hl-panel/internal/control/generations"
+	"github.com/hongle/hl-panel/internal/control/importedconfig"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/idgen"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
@@ -53,6 +55,21 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	if err != nil {
 		return generations.NodeConfigGeneration{}, false, err
 	}
+	// Retain metadata already accepted by legacy agents without enabling a new
+	// traffic-control capability. New legacy bundles keep their original shape.
+	listenerMetadata := nodeSupportsTCSpeedLimit(s.nodes[nodeID])
+	if !listenerMetadata {
+		node := s.nodes[nodeID]
+		var previous agentv1.ConfigurationBundle
+		if current, ok := s.nodeConfigsByNode[nodeID][node.DesiredGeneration]; ok && json.Unmarshal(current.Config, &previous) == nil {
+			for _, fragment := range previous.Fragments {
+				if fragment.Usage != nil && fragment.Usage.ListenPort > 0 {
+					listenerMetadata = true
+					break
+				}
+			}
+		}
+	}
 	if nodeSupportsUsageGeneration(s.nodes[nodeID]) {
 		for i := range forwardingFragments {
 			ruleID := strings.TrimPrefix(strings.TrimPrefix(forwardingFragments[i].GroupID, generations.ForwardingVLESSFragmentPrefix), generations.ForwardingGOSTFragmentPrefix)
@@ -70,8 +87,18 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 					exit = int64(math.Round(n.TrafficMultiplier * float64(agentv1.UsageMultiplierScale)))
 				}
 			}
+			speedLimit := rule.SpeedLimitMbps
+			if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
+				speedLimit = effectiveVLESSSpeedLimit(s, rule)
+			}
+			// Preserve the negotiated or previously accepted metadata shape.
+			listenPort := 0
+			if listenerMetadata {
+				listenPort = rule.ListenPort
+			}
 			forwardingFragments[i].Usage = &agentv1.UsageMetadata{RuleID: rule.ID, CustomerID: rule.CustomerID,
 				EntryGroupID: rule.EntryGroupID, ExitGroupID: rule.ExitGroupID, Protocol: string(rule.Protocol),
+				ListenPort: listenPort, SpeedLimitMbps: speedLimit,
 				EntryMultiplierMicros: entry, ExitMultiplierMicros: exit}
 		}
 	}
@@ -213,6 +240,9 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 		!nodeSupportsVLESSReality(s.nodes[nodeID]) {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
+	if effectiveSpeed := effectiveVLESSSpeedLimit(s, rule); effectiveSpeed > 0 && !nodeSupportsTCSpeedLimit(s.nodes[nodeID]) {
+		return agentv1.ConfigurationFragment{}, false, nil
+	}
 	bindingID, ok := s.activeVLESSBindingIDForRuleLocked(rule)
 	if !ok {
 		return agentv1.ConfigurationFragment{}, false, nil
@@ -227,6 +257,18 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 	if material.CustomerID != rule.CustomerID || material.ForwardingRuleID != rule.ID || material.BindingID != bindingID || material.NodeID != nodeID {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
+	if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
+		options := importedconfig.NativeOptions{RuleID: rule.ID, CustomerID: rule.CustomerID, EntryGroupID: rule.EntryGroupID,
+			UUID: material.CredentialUUID, PrivateKey: material.RealityPrivateKey, ListenAddress: "0.0.0.0", ListenPort: rule.ListenPort}
+		if probe, exists := s.protocolProbes[rule.ID]; exists {
+			options.ProbeUUID, options.EchoPort = probe.UUID, probe.EchoPort
+		}
+		raw, err := importedconfig.CompileNativeFragment(material.NativeConfig, options)
+		if err != nil {
+			return agentv1.ConfigurationFragment{}, false, nil
+		}
+		return agentv1.ConfigurationFragment{GroupID: generations.ForwardingFragmentID(agentv1.EngineXray, rule.ID), GroupRevision: agentv1.GroupRevision(rule.Revision), Engine: agentv1.EngineXray, Config: raw}, true, nil
+	}
 	destination := rule.RealityDestination
 	if destination == "" {
 		// Legacy snapshots predate the explicit decoy field. Preserve their
@@ -239,7 +281,7 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 		Dest:       destination,
 		PrivateKey: material.RealityPrivateKey,
 		ShortIDs:   []string{rule.RealityShortID},
-		Flow:       rule.VLESSFlow,
+		Flow:       rule.EffectiveVLESSFlow(),
 	}
 	listener := vlessconfig.Listener{Address: "0.0.0.0", Port: rule.ListenPort}
 	var socks5 *vlessconfig.SOCKS5Upstream
@@ -331,6 +373,26 @@ func nodeSupportsVLESSReality(node nodes.Node) bool {
 		}
 	}
 	return false
+}
+
+func nodeSupportsTCSpeedLimit(node nodes.Node) bool {
+	for _, capability := range node.Capabilities {
+		if capability == agentconfig.CapabilityLinuxTCSpeedLimit {
+			return true
+		}
+	}
+	return false
+}
+
+func effectiveVLESSSpeedLimit(s *Store, rule forwarding.Rule) int {
+	speed := rule.SpeedLimitMbps
+	if customer, ok := s.customers[rule.CustomerID]; ok && customer.SpeedLimitMbps > 0 && (speed <= 0 || customer.SpeedLimitMbps < speed) {
+		speed = customer.SpeedLimitMbps
+	}
+	if speed < 0 {
+		return 0
+	}
+	return speed
 }
 
 // recompileForwardingGroupsLocked is called inside the same repository write

@@ -26,6 +26,9 @@ import (
 )
 
 type Store struct {
+	// Present only on immutable read projections; authoritative writes never cache authorization.
+	forwardingProjection *forwardingProjection
+
 	mu                      sync.RWMutex
 	desiredChanges          generations.ChangeSignals
 	persistenceRevision     uint64

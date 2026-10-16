@@ -156,7 +156,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 		option(api)
 	}
 	if api.groupNetworks != nil && api.endpoints != nil && api.vlessIdentity != nil {
-		api.vlessSetup = vlesssetup.NewService(api.groupNetworks, api.endpoints, api.vlessIdentity)
+		api.vlessSetup = vlesssetup.NewService(api.groupNetworks, api.endpoints, api.vlessIdentity, vlesssetup.WithRuleAccess(api.forwarding))
 	}
 	mux := http.NewServeMux()
 	api.registerSubscriptionRoutes(mux)

@@ -20,11 +20,16 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.json", "path to the connection-gateway JSON configuration")
+	bundle := flag.Bool("bundle", false, "use a shared membership source for multiple listeners")
 	flag.Parse()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, *configPath, logger); err != nil {
+	runner := run
+	if *bundle {
+		runner = runBundle
+	}
+	if err := runner(ctx, *configPath, logger); err != nil {
 		logger.Error("connection gateway stopped", "error", err)
 		os.Exit(1)
 	}
@@ -44,6 +49,10 @@ func run(ctx context.Context, configPath string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	return runGateway(ctx, configuration, source, logger)
+}
+
+func runGateway(ctx context.Context, configuration runtimeConfig, source gatewayruntime.Source, logger *slog.Logger) error {
 	router, err := endpointrouter.New(configuration.SelectionPolicy)
 	if err != nil {
 		return err
