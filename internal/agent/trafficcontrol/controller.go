@@ -98,10 +98,10 @@ func (c *Controller) ApplyBundle(ctx context.Context, desired agentv1.DesiredNod
 			want[fragment.Usage.ListenPort] = fragment.Usage.SpeedLimitMbps
 		}
 	}
-	return c.apply(ctx, want)
+	return c.apply(ctx, want, false)
 }
 
-func (c *Controller) apply(ctx context.Context, want map[int]int) error {
+func (c *Controller) apply(ctx context.Context, want map[int]int, force bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	previous := make(map[int]int, len(c.ports))
@@ -121,6 +121,13 @@ func (c *Controller) apply(ctx context.Context, want map[int]int) error {
 	}
 	sort.Ints(ports)
 	for _, port := range ports {
+		if !force {
+			oldRate, hadOld := previous[port]
+			newRate, hasNew := want[port]
+			if hadOld == hasNew && (!hadOld || oldRate == newRate) {
+				continue
+			}
+		}
 		if err := c.applyPort(ctx, port, want[port]); err != nil {
 			if restoreErr := c.restore(ctx, previous, ports); restoreErr != nil {
 				return errors.Join(err, fmt.Errorf("restore traffic control: %w", restoreErr))
@@ -192,7 +199,7 @@ func (c *Controller) Restore(ctx context.Context) error {
 	}
 	c.mu.Unlock()
 	sort.Ints(ports)
-	return c.apply(ctx, want)
+	return c.apply(ctx, want, true)
 }
 
 func (c *Controller) load() error {

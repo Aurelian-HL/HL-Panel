@@ -296,7 +296,11 @@ func (a *GOSTProcessAdapter) startLocked(ctx context.Context, path string) (GOST
 		return nil, ErrGOSTStart
 	}
 	process, err := a.runner.Start(ctx, path)
-	if err != nil || process == nil || !process.Running() {
+	if err != nil || process == nil {
+		return nil, ErrGOSTStart
+	}
+	if err := waitForProcessReady(ctx, process); err != nil {
+		stopFailedStartup(process)
 		return nil, ErrGOSTStart
 	}
 	a.counterEpoch++

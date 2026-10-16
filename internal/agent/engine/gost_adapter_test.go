@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
@@ -182,6 +183,22 @@ func TestGOSTProcessAdapterStartFailureRestoresPrevious(t *testing.T) {
 	}
 }
 
+func TestGOSTProcessAdapterRejectsProcessThatExitsDuringReadiness(t *testing.T) {
+	runner := &recordingGOSTRunner{stopAfter: 25 * time.Millisecond}
+	adapter := newTestGOSTAdapter(t, runner, true)
+	desired := testDesired(t, 1, []agentv1.ConfigurationFragment{gostFragment("short-lived", gostServiceA)})
+	prepared, err := adapter.Prepare(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Commit(context.Background(), prepared); !errors.Is(err, ErrGOSTStart) {
+		t.Fatalf("Commit() error = %v, want ErrGOSTStart", err)
+	}
+	if adapter.process != nil && adapter.process.Running() {
+		t.Fatal("short-lived process remained attached after readiness failure")
+	}
+}
+
 func TestGOSTProcessAdapterValidationAndLiveness(t *testing.T) {
 	runner := &recordingGOSTRunner{testErr: errors.New("sensitive engine diagnostic")}
 	adapter := newTestGOSTAdapter(t, runner, true)
@@ -215,6 +232,7 @@ type recordingGOSTRunner struct {
 	testErr     error
 	startErrors []error
 	processes   []*recordingGOSTProcess
+	stopAfter   time.Duration
 }
 
 func (r *recordingGOSTRunner) Test(context.Context, string) error { return r.testErr }
@@ -227,6 +245,13 @@ func (r *recordingGOSTRunner) Start(context.Context, string) (GOSTProcess, error
 	}
 	process := &recordingGOSTProcess{running: true}
 	r.processes = append(r.processes, process)
+	if r.stopAfter > 0 {
+		delay := r.stopAfter
+		go func() {
+			time.Sleep(delay)
+			process.setRunning(false)
+		}()
+	}
 	return process, nil
 }
 

@@ -21,6 +21,27 @@ describe('HttpClient', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('makes mutation timeout and transport failures explicitly status-unknown', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const timed = expect(new HttpClient('/api/v1', () => 'token').request('/nodes/node-1', { method: 'PATCH', body: '{}' })).rejects.toMatchObject({
+      code: 'mutation_status_unknown',
+      message: '提交结果状态未知：可能尚未提交、已提交但响应未返回，或节点尚未应用。请先刷新列表核对，再决定是否重试',
+    })
+    await vi.advanceTimersByTimeAsync(120_000)
+    await timed
+
+    vi.useRealTimers()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('offline')))
+    await expect(new HttpClient('/api/v1', () => 'token').request('/nodes/node-1', { method: 'DELETE' })).rejects.toMatchObject({
+      code: 'mutation_status_unknown',
+      message: '提交结果状态未知：可能尚未提交、已提交但响应未返回，或节点尚未应用。请先刷新列表核对，再决定是否重试',
+    })
+  })
+
   it('keeps the deadline until the response body is received', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn(async (_url, init: RequestInit) => ({
@@ -101,6 +122,23 @@ describe('HttpClient', () => {
     }), { status: 503, headers: { 'content-type': 'application/json' } })))
     await expect(client.request('/public/site-info')).rejects.toMatchObject({
       status: 503, code: 'maintenance', message: '服务维护中',
+    })
+  })
+
+  it('shows migration isolation and recovery state instead of a generic connection error', async () => {
+    const client = new HttpClient('/api/v1', () => null)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'migration_isolated', message: '面板正在迁移，业务已隔离' },
+    }), { status: 503, headers: { 'content-type': 'application/json' } })))
+    await expect(client.request('/device-groups')).rejects.toMatchObject({
+      status: 503, code: 'migration_isolated', message: '面板正在迁移，业务已隔离',
+    })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: { code: 'panel_recovering', message: '面板正在恢复，请稍后重新登录' },
+    }), { status: 503, headers: { 'content-type': 'application/json' } })))
+    await expect(client.request('/device-groups')).rejects.toMatchObject({
+      status: 503, code: 'panel_recovering', message: '面板正在恢复，请稍后重新登录',
     })
   })
 

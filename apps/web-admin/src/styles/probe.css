@@ -25,6 +25,13 @@
 .probe-section__name { max-width: 100%; padding: 6px 14px; border: 1px solid var(--ny-border-dark); border-radius: 20px; background: #fff; color: var(--gray-900); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .probe-section__rate { display: inline-flex; flex-wrap: wrap; gap: 14px; padding: 7px 12px; border-radius: 4px; background: #ece8f8; color: #26384d; font-size: 12px; font-variant-numeric: tabular-nums; }
 .probe-section__rate span { white-space: nowrap; }
+.probe-pagination { display: flex; min-height: 48px; align-items: center; gap: 14px; margin-top: 16px; padding: 8px 12px; border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; color: var(--ny-muted); font-size: 12px; }
+.probe-pagination__filters { flex: 0 0 auto; }
+.probe-pagination__filters button { min-width: 66px; }
+.probe-pagination__size, .probe-pagination__buttons { display: inline-flex; align-items: center; gap: 7px; }
+.probe-pagination__size select { min-height: 30px; padding: 4px 25px 4px 8px; border: 1px solid var(--ny-border-dark); border-radius: 3px; background: #fff; color: var(--ny-text); }
+.probe-pagination__summary { margin-left: auto; white-space: nowrap; }
+.probe-pagination__buttons .button { min-height: 30px; padding: 4px 9px; }
 .probe-table { min-width: 1280px; table-layout: fixed; font-size: 11px; }
 .probe-table th, .probe-table td { padding: 10px 7px; overflow-wrap: anywhere; vertical-align: middle; }
 .probe-table th { white-space: nowrap; }
@@ -122,9 +129,12 @@
   .probe-overview__metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
   .probe-overview__metrics > div { min-height: 46px; padding: 6px 9px; border: 1px solid var(--ny-border); }
   .probe-page__actions { display: flex; width: 100%; }
-  .probe-page__actions .segmented-control { display: flex; min-width: 0; flex: 1; }
-  .probe-page__actions .segmented-control button { min-width: 0; flex: 1; padding: 5px 4px; white-space: nowrap; }
   .probe-page__actions .button { flex: 0 0 34px; width: 34px; }
+  .probe-pagination { align-items: stretch; flex-wrap: wrap; gap: 9px; }
+  .probe-pagination__filters { display: flex; width: 100%; }
+  .probe-pagination__filters button { min-width: 0; flex: 1; padding: 5px 4px; white-space: nowrap; }
+  .probe-pagination__summary { margin-left: 0; }
+  .probe-pagination__buttons { margin-left: auto; }
   .probe-mobile-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .probe-section__heading { align-items: flex-start; flex-direction: column; }
   .probe-mobile-item .probe-meter-list, .probe-details__meters { grid-template-columns: 1fr; }

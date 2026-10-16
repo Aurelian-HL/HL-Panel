@@ -17,6 +17,7 @@ import (
 
 const (
 	apiPrefix               = "/api/v1"
+	desiredWatchTimeout     = 2 * time.Second
 	maxOrdinaryResponseBody = 64 << 10
 	maxDesiredResponseBody  = (4 << 20) + (64 << 10)
 	maxErrorBody            = 512
@@ -113,7 +114,7 @@ func (c *Client) Desired(ctx context.Context, nodeCredential string) (*agentv1.D
 // DesiredWatch falls back to the ordinary endpoint on older control planes.
 // supported tells the caller whether to reconnect immediately or keep polling.
 func (c *Client) DesiredWatch(ctx context.Context, nodeCredential string) (*agentv1.DesiredNodeConfig, bool, error) {
-	wait := 8 * time.Second
+	wait := desiredWatchTimeout
 	if timeout := c.httpClient.Timeout; timeout > 0 && timeout < 10*time.Second {
 		wait = timeout / 2
 	}

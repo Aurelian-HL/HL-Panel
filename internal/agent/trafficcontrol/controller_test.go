@@ -68,6 +68,29 @@ func TestApplyBundleShapesMultiplePortsAndRemovesOldPorts(t *testing.T) {
 	}
 }
 
+func TestApplyBundleSkipsUnchangedPorts(t *testing.T) {
+	runner := &recordingRunner{}
+	path := filepath.Join(t.TempDir(), "traffic-control.json")
+	c, err := New("eth0", "tc", path, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := bundleWithLimits(t, map[int]int{12001: 10, 12002: 20})
+	if err := c.ApplyBundle(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	firstCommandCount := len(runner.commands)
+	if firstCommandCount == 0 {
+		t.Fatal("initial apply issued no traffic-control commands")
+	}
+	if err := c.ApplyBundle(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.commands); got != firstCommandCount {
+		t.Fatalf("unchanged bundle issued %d additional commands", got-firstCommandCount)
+	}
+}
+
 func TestApplyBundleFailureRestoresPersistedState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "traffic-control.json")
 	firstRunner := &recordingRunner{}

@@ -420,6 +420,10 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 	if process == nil {
 		return nil, ErrXrayStart
 	}
+	if err := waitForProcessReady(ctx, process); err != nil {
+		stopFailedStartup(process)
+		return nil, ErrXrayStart
+	}
 	a.counterEpoch++
 	a.processStartedAt = time.Now().UTC()
 	a.processConfigSHA256 = sha256.Sum256(data)

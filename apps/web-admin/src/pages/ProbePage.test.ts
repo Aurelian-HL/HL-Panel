@@ -63,7 +63,7 @@ describe('ProbePage', () => {
     const wrapper = mount(ProbePage)
     await flushPromises()
     expect(wrapper.get('.page-heading p').text()).toContain('HL主机监控')
-    expect(wrapper.findAll('.page-heading__actions .segmented-control button').map((button) => button.text().split(' ')[0])).toEqual(['全部', '在线', '离线'])
+    expect(wrapper.findAll('.probe-pagination__filters button').map((button) => button.text().split(' ')[0])).toEqual(['全部', '在线', '离线'])
     expect(wrapper.find('input[placeholder^="搜索机器"]').exists()).toBe(false)
     expect(wrapper.find('[aria-label="刷新探针"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('哪吒已上报的机器；未关联 HL 节点的机器也在此显示。')
@@ -74,10 +74,64 @@ describe('ProbePage', () => {
     expect(wrapper.get('.probe-overview__metrics').text()).toContain('8.4 Mbps')
     expect(wrapper.get('.probe-overview__metrics').text()).toContain('4.2 Mbps')
     expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(2)
-    const offline = wrapper.findAll('.segmented-control button').find((button) => button.text().includes('离线'))!
+    const offline = wrapper.findAll('.probe-pagination__filters button').find((button) => button.text().includes('离线'))!
     await offline.trigger('click')
     expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(1)
     expect(wrapper.get('.probe-table tbody').text()).toContain('122.13.18.216')
+    wrapper.unmount()
+  })
+
+  it('counts every non-online status in offline and filters the same set', async () => {
+    const fresh = new Date().toISOString()
+    mocked.getDeviceGroups.mockResolvedValue({ items: [] })
+    mocked.getInventory.mockResolvedValue({ upstream_status: 'ok', items: [
+      { ...completeProbeSample.items[0]!, node_id: 'online', name: '在线机器', sampled_at: fresh, online: true },
+      { ...completeProbeSample.items[0]!, node_id: 'offline', name: '明确离线', sampled_at: fresh, online: false },
+      { ...completeProbeSample.items[0]!, node_id: 'expired', name: '采样过期', sampled_at: '2026-10-03T23:00:00Z', online: true },
+      { ...completeProbeSample.items[0]!, node_id: 'uncollected', name: '未采集', sampled_at: undefined, online: undefined },
+      { ...completeProbeSample.items[0]!, node_id: 'unlinked', name: '未关联', link_status: 'unlinked', sampled_at: fresh, online: true },
+    ] })
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    expect(wrapper.findAll('.probe-pagination__filters button').map((button) => button.text())).toEqual(['全部 5', '在线 1', '离线 4'])
+    expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(5)
+    await wrapper.findAll('.probe-pagination__filters button')[2]!.trigger('click')
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 1-4，共 4 台')
+    expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(4)
+    expect(wrapper.get('.probe-table tbody').text()).not.toContain('在线机器')
+    wrapper.unmount()
+  })
+
+  it('paginates inventory, changes page size, and normalizes the page after filtering', async () => {
+    mocked.getDeviceGroups.mockResolvedValue({ items: [] })
+    const fresh = new Date().toISOString()
+    const items = Array.from({ length: 25 }, (_, index) => ({
+      ...completeProbeSample.items[0]!,
+      node_id: `page-node-${index + 1}`,
+      name: `分页机器 ${index + 1}`,
+      ipv4: `192.0.2.${index + 1}`,
+      online: index >= 22 ? false : true,
+      sampled_at: fresh,
+    }))
+    mocked.getInventory.mockResolvedValue({ upstream_status: 'ok', items })
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 1-20，共 25 台')
+    expect(wrapper.get('.probe-pagination__buttons').text()).toContain('第 1 / 2 页')
+    expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(20)
+    await wrapper.findAll('.probe-pagination__buttons button')[1]!.trigger('click')
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 21-25，共 25 台')
+    expect(wrapper.get('.probe-pagination__buttons').text()).toContain('第 2 / 2 页')
+    expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(5)
+    await wrapper.findAll('.probe-pagination__filters button')[2]!.trigger('click')
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 1-3，共 3 台')
+    expect(wrapper.get('.probe-pagination__buttons').text()).toContain('第 1 / 1 页')
+    expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(3)
+    await wrapper.get('.probe-pagination__size select').setValue('50')
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 1-3，共 3 台')
+    await wrapper.findAll('.probe-pagination__filters button')[0]!.trigger('click')
+    expect(wrapper.get('.probe-pagination__summary').text()).toContain('显示 1-25，共 25 台')
+    expect(wrapper.get('.probe-pagination__buttons').text()).toContain('第 1 / 1 页')
     wrapper.unmount()
   })
 
@@ -176,7 +230,7 @@ describe('ProbePage', () => {
     await flushPromises()
     expect(wrapper.get('.probe-overview__metrics').text()).toContain('下行速率未采集')
     expect(wrapper.get('.probe-table tbody').text()).toContain('采样过期')
-    expect(wrapper.findAll('.segmented-control button')).toHaveLength(3)
+    expect(wrapper.findAll('.probe-pagination__filters button')).toHaveLength(3)
     expect(wrapper.findAll('.probe-table tbody tr')).toHaveLength(2)
     wrapper.unmount()
   })

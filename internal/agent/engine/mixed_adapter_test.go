@@ -47,11 +47,8 @@ func TestMixedAdapterRestoresBothEnginesAfterSecondStartFails(t *testing.T) {
 	if err := adapter.Commit(ctx, second); err == nil {
 		t.Fatal("second engine failure was accepted")
 	}
-	if mode := adapter.ActiveEngineMode(); mode != "" {
-		t.Fatalf("partial activation reported live mode %q", mode)
-	}
-	if err := adapter.Rollback(ctx, &first); err != nil {
-		t.Fatalf("restore previous complete generation: %v", err)
+	if mode := adapter.ActiveEngineMode(); mode != "mixed" {
+		t.Fatalf("compensating rollback did not restore the previous live mode: %q", mode)
 	}
 	if err := adapter.Verify(ctx, first); err != nil || adapter.ActiveEngineMode() != "mixed" {
 		t.Fatalf("previous complete generation not restored: %v, mode=%q", err, adapter.ActiveEngineMode())

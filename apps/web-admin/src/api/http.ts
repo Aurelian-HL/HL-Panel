@@ -34,6 +34,22 @@ function errorMessage(body: unknown, fallback: string): { message: string; code:
   return { message: fallback, code: 'request_failed' }
 }
 
+function presentServiceError(status: number, detail: { message: string; code: string }): { message: string; code: string } {
+  if (detail.code === 'migration_isolated') {
+    return { code: detail.code, message: detail.message || '面板正在迁移，业务暂时隔离，请稍后重试' }
+  }
+  if (detail.code === 'panel_recovering') {
+    return { code: detail.code, message: detail.message || '面板正在恢复，请稍后重试' }
+  }
+  if (detail.code === 'temporarily_unavailable') {
+    return { code: detail.code, message: detail.message || '服务暂时不可用，请稍后重试' }
+  }
+  if ([502, 503, 504].includes(status) && detail.code === 'request_failed') {
+    return { code: 'service_unavailable', message: '无法连接控制服务，请检查 API 服务和代理配置' }
+  }
+  return detail
+}
+
 export class HttpClient {
   constructor(
     private readonly baseUrl: string,
@@ -41,7 +57,9 @@ export class HttpClient {
   ) {}
 
   async request<T>(path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
-    const { timeoutMs = !init.method || init.method === 'GET' ? 30_000 : 120_000, signal, ...options } = init
+    const method = (init.method ?? 'GET').toUpperCase()
+    const mutation = !['GET', 'HEAD', 'OPTIONS'].includes(method)
+    const { timeoutMs = mutation ? 120_000 : 30_000, signal, ...options } = init
     const controller = new AbortController()
     let timedOut = false
     const cancel = () => controller.abort(signal?.reason)
@@ -73,21 +91,32 @@ export class HttpClient {
         else throw new ApiError('服务响应未能完整读取，请刷新重试', response.status, 'invalid_response')
       }
       if (!response.ok) {
-        const detail = errorMessage(body, `请求失败 (${response.status})`)
+        const detail = presentServiceError(response.status, errorMessage(body, `请求失败 (${response.status})`))
         if (response.status === 500 && detail.code === 'internal_error') {
           throw new ApiError('面板服务暂时异常，请稍后重试；若持续失败，请检查控制服务与数据库日志', response.status, detail.code)
-        }
-        if ([502, 503, 504].includes(response.status) && detail.code === 'request_failed') {
-          throw new ApiError('无法连接控制服务，请检查 API 服务和代理配置', response.status, 'service_unavailable')
         }
         throw new ApiError(detail.message, response.status, detail.code)
       }
       return body as T
     } catch (error) {
       if (error instanceof ApiError) throw error
-      if (timedOut) throw new ApiError('请求超时，请检查网络后重试；提交操作请先核对结果', 0, 'request_timeout')
+      if (timedOut) {
+        throw new ApiError(
+          mutation
+            ? '提交结果状态未知：可能尚未提交、已提交但响应未返回，或节点尚未应用。请先刷新列表核对，再决定是否重试'
+            : '请求超时，请检查网络后重试',
+          0,
+          mutation ? 'mutation_status_unknown' : 'request_timeout',
+        )
+      }
       if (signal?.aborted) throw new ApiError('请求已取消', 0, 'request_cancelled')
-      throw new ApiError('网络连接失败，请检查面板连接后重试')
+      throw new ApiError(
+        mutation
+          ? '提交结果状态未知：可能尚未提交、已提交但响应未返回，或节点尚未应用。请先刷新列表核对，再决定是否重试'
+          : '网络连接失败，请检查面板连接后重试',
+        0,
+        mutation ? 'mutation_status_unknown' : 'network_error',
+      )
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       signal?.removeEventListener('abort', cancel)

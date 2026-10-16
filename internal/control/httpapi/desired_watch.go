@@ -10,7 +10,10 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 )
 
-const desiredWatchTimeout = 8 * time.Second
+// Keep the long-poll window short enough that a node can recover quickly when
+// a proxy or control-plane connection is recycled. Register-before-read still
+// closes the notification race; the timeout is only the idle poll interval.
+const desiredWatchTimeout = 2 * time.Second
 
 // Register before reading so a commit between the read and the wait cannot
 // lose its notification. No database transaction is held while waiting.

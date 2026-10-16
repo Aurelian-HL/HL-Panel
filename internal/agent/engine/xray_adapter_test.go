@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -188,6 +189,26 @@ func TestXrayProcessAdapterStartFailureRestoresPreviousProcessAndFile(t *testing
 	}
 	if len(runner.processes) != 2 {
 		t.Fatalf("process starts = %d, want candidate failure plus previous restart", len(runner.processes))
+	}
+}
+
+func TestXrayProcessAdapterRejectsProcessThatExitsDuringReadiness(t *testing.T) {
+	t.Parallel()
+	runner := &recordingXrayRunner{startRunning: []bool{true}, stopAfter: 25 * time.Millisecond}
+	adapter := newTestXrayAdapter(t, runner, true)
+	desired := xrayDesired(t, 1, []agentv1.ConfigurationFragment{{
+		GroupID: "short-lived", GroupRevision: 1, Engine: agentv1.EngineXray,
+		Config: json.RawMessage(`{"inbounds":[{"tag":"short-lived"}],"outbounds":[]}`),
+	}})
+	prepared, err := adapter.Prepare(context.Background(), desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Commit(context.Background(), prepared); !errors.Is(err, ErrXrayStart) {
+		t.Fatalf("Commit() error = %v, want ErrXrayStart", err)
+	}
+	if adapter.process != nil && adapter.process.Running() {
+		t.Fatal("short-lived process remained attached after readiness failure")
 	}
 }
 
@@ -397,12 +418,14 @@ func documentRaw(documentBytes []byte, key string) json.RawMessage {
 }
 
 type recordingXrayRunner struct {
-	mu          sync.Mutex
-	tests       []string
-	starts      []string
-	processes   []*recordingXrayProcess
-	testErr     error
-	startErrors []error
+	mu           sync.Mutex
+	tests        []string
+	starts       []string
+	processes    []*recordingXrayProcess
+	testErr      error
+	startErrors  []error
+	startRunning []bool
+	stopAfter    time.Duration
 }
 
 func (r *recordingXrayRunner) Test(_ context.Context, path string) error {
@@ -421,8 +444,20 @@ func (r *recordingXrayRunner) Start(_ context.Context, path string) (XrayProcess
 		r.startErrors = r.startErrors[1:]
 		return nil, err
 	}
-	process := &recordingXrayProcess{running: true}
+	running := true
+	if len(r.startRunning) > 0 {
+		running = r.startRunning[0]
+		r.startRunning = r.startRunning[1:]
+	}
+	process := &recordingXrayProcess{running: running}
 	r.processes = append(r.processes, process)
+	if r.stopAfter > 0 {
+		delay := r.stopAfter
+		go func() {
+			time.Sleep(delay)
+			process.setRunning(false)
+		}()
+	}
 	return process, nil
 }
 
@@ -444,6 +479,12 @@ func (p *recordingXrayProcess) Running() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.running
+}
+
+func (p *recordingXrayProcess) setRunning(running bool) {
+	p.mu.Lock()
+	p.running = running
+	p.mu.Unlock()
 }
 
 func newTestXrayAdapter(t *testing.T, runner XrayRunner, autoStart bool) *XrayProcessAdapter {

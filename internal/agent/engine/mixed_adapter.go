@@ -20,6 +20,7 @@ type MixedProcessAdapter struct {
 	xray       *XrayProcessAdapter
 	gost       *GOSTProcessAdapter
 	mu         sync.Mutex
+	lastGood   *PreparedConfiguration
 	expectXray bool
 	expectGOST bool
 	usageXray  bool
@@ -91,6 +92,7 @@ func (a *MixedProcessAdapter) Commit(ctx context.Context, prepared PreparedConfi
 	if err := a.Validate(ctx, prepared); err != nil {
 		return err
 	}
+	previous := a.lastGoodSnapshot()
 	a.mu.Lock()
 	a.expectXray, a.expectGOST = false, false
 	_, a.usageXray = prepared.components[agentv1.EngineXray]
@@ -98,23 +100,39 @@ func (a *MixedProcessAdapter) Commit(ctx context.Context, prepared PreparedConfi
 	a.mu.Unlock()
 	if part, ok := prepared.components[agentv1.EngineXray]; ok {
 		if err := a.xray.Commit(ctx, part); err != nil {
-			return fmt.Errorf("commit xray component: %w", err)
+			return a.compensateCommitFailure(ctx, previous, "xray", err)
 		}
 	} else if err := a.xray.Rollback(ctx, nil); err != nil {
-		return fmt.Errorf("stop obsolete xray component: %w", err)
+		return a.compensateCommitFailure(ctx, previous, "stop obsolete xray component", err)
 	}
 	if part, ok := prepared.components[agentv1.EngineGOST]; ok {
 		if err := a.gost.Commit(ctx, part); err != nil {
-			return fmt.Errorf("commit gost component: %w", err)
+			return a.compensateCommitFailure(ctx, previous, "gost", err)
 		}
 	} else if err := a.gost.Rollback(ctx, nil); err != nil {
-		return fmt.Errorf("stop obsolete gost component: %w", err)
+		return a.compensateCommitFailure(ctx, previous, "stop obsolete gost component", err)
 	}
 	a.mu.Lock()
 	_, a.expectXray = prepared.components[agentv1.EngineXray]
 	_, a.expectGOST = prepared.components[agentv1.EngineGOST]
+	a.lastGood = clonePreparedConfiguration(&prepared)
 	a.mu.Unlock()
 	return nil
+}
+
+func (a *MixedProcessAdapter) lastGoodSnapshot() *PreparedConfiguration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return clonePreparedConfiguration(a.lastGood)
+}
+
+func (a *MixedProcessAdapter) compensateCommitFailure(ctx context.Context, previous *PreparedConfiguration, component string, cause error) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), engineValidationTimeout)
+	defer cancel()
+	if err := a.Rollback(rollbackCtx, previous); err != nil {
+		return fmt.Errorf("commit %s component: %w; compensation rollback failed: %v", component, cause, err)
+	}
+	return fmt.Errorf("commit %s component: %w; previous configuration restored", component, cause)
 }
 
 func (a *MixedProcessAdapter) Verify(ctx context.Context, prepared PreparedConfiguration) error {
@@ -179,9 +197,31 @@ func (a *MixedProcessAdapter) Rollback(ctx context.Context, previous *PreparedCo
 		a.mu.Lock()
 		_, a.expectXray = previous.components[agentv1.EngineXray]
 		_, a.expectGOST = previous.components[agentv1.EngineGOST]
+		a.lastGood = clonePreparedConfiguration(previous)
+		a.mu.Unlock()
+	} else if firstErr == nil {
+		a.mu.Lock()
+		a.lastGood = nil
 		a.mu.Unlock()
 	}
 	return firstErr
+}
+
+func clonePreparedConfiguration(source *PreparedConfiguration) *PreparedConfiguration {
+	if source == nil {
+		return nil
+	}
+	clone := *source
+	clone.canonicalConfig = append([]byte(nil), source.canonicalConfig...)
+	if source.components != nil {
+		clone.components = make(map[agentv1.Engine]PreparedConfiguration, len(source.components))
+		for engine, component := range source.components {
+			componentCopy := component
+			componentCopy.canonicalConfig = append([]byte(nil), component.canonicalConfig...)
+			clone.components[engine] = componentCopy
+		}
+	}
+	return &clone
 }
 
 func (a *MixedProcessAdapter) ExpectsEngine(engine agentv1.Engine) bool {

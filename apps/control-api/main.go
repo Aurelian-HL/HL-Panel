@@ -357,16 +357,11 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 			return
 		}
 		if !fence.Allows(r) {
-			w.Header().Set("Retry-After", "15")
-			w.Header().Set("Content-Type", "application/json")
-			w.Header().Set("Cache-Control", "no-store")
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"message": "面板正在迁移，业务已隔离。请打开迁移备份查看进度；节点会保留现有规则并重试连接。"})
+			writeGuardedUnavailable(w, "migration_isolated", "面板正在迁移，业务已隔离。请打开迁移备份查看进度；节点会保留现有规则并重试连接。", "15")
 			return
 		}
 		if migrationPending.Load() {
-			w.Header().Set("Retry-After", "2")
-			http.Error(w, "面板正在恢复，请稍后重新登录", http.StatusServiceUnavailable)
+			writeGuardedUnavailable(w, "panel_recovering", "面板正在恢复，请稍后重新登录", "2")
 			return
 		}
 		if configuration.LicenseEnforce && !licenseExempt(r) {
@@ -431,6 +426,16 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 		return err
 	}
+}
+
+func writeGuardedUnavailable(w http.ResponseWriter, code, message, retryAfter string) {
+	w.Header().Set("Retry-After", retryAfter)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{"code": code, "message": message},
+	})
 }
 
 func licenseExempt(r *http.Request) bool {

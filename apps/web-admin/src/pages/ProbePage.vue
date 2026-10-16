@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
 import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
@@ -20,6 +20,9 @@ const monitoringLoading = ref(false)
 const groupsError = ref('')
 const monitoringError = ref('')
 const statusFilter = ref<StatusFilter>('all')
+const page = ref(1)
+const pageSize = ref(20)
+const pageSizeOptions = [10, 20, 50, 100, 200, 500]
 const now = ref(serverNow())
 const groupMembers = ref<DeviceGroupMember[]>([])
 const allGroupMembers = ref<Record<string, DeviceGroupMember[]>>({})
@@ -37,10 +40,13 @@ const selectedGroup = computed(() => availableGroups.value.find((group) => group
 const members = computed(() => response.value?.items ?? [])
 const upstreamStatus = computed(() => monitoringError.value && response.value ? 'unavailable' : response.value?.upstream_status ?? 'disabled')
 const hasProbeSource = computed(() => Boolean(response.value && (upstreamStatus.value === 'ok' || members.value.some((member) => member.source === 'hl'))))
+function isMemberOnline(member: ProbeMember): boolean {
+  return monitorStatus(member, upstreamStatus.value, now.value).text === '在线'
+}
 const counts = computed(() => ({
   all: members.value.length,
-  online: members.value.filter((member) => monitorStatus(member, upstreamStatus.value, now.value).text === '在线').length,
-  offline: members.value.filter((member) => monitorStatus(member, upstreamStatus.value, now.value).text === '离线').length,
+  online: members.value.filter(isMemberOnline).length,
+  offline: members.value.filter((member) => !isMemberOnline(member)).length,
 }))
 const filters: Array<{ value: StatusFilter; label: string }> = [
   { value: 'all', label: '全部' }, { value: 'online', label: '在线' },
@@ -48,18 +54,25 @@ const filters: Array<{ value: StatusFilter; label: string }> = [
 ]
 const filteredMembers = computed(() => {
   return members.value.filter((member) => {
-    const status = monitorStatus(member, upstreamStatus.value, now.value).text
-    return statusFilter.value === 'all' || status === (statusFilter.value === 'online' ? '在线' : '离线')
+    const online = isMemberOnline(member)
+    return statusFilter.value === 'all' || (statusFilter.value === 'online' ? online : !online)
   })
 })
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredMembers.value.length / pageSize.value)))
+const pagedMembers = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredMembers.value.slice(start, start + pageSize.value)
+})
+const pageStart = computed(() => filteredMembers.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
+const pageEnd = computed(() => Math.min(page.value * pageSize.value, filteredMembers.value.length))
 const groupedMembers = computed(() => availableGroups.value.map((group) => ({
   group,
   membership: allGroupMembers.value[group.id] ?? [],
-  items: filteredMembers.value.filter((item) => (allGroupMembers.value[group.id] ?? []).some((member) => member.node_id === item.node_id)),
+  items: pagedMembers.value.filter((item) => (allGroupMembers.value[group.id] ?? []).some((member) => member.node_id === item.node_id)),
 })).filter((section) => section.items.length))
 const ungroupedMembers = computed(() => {
   const assigned = new Set(Object.values(allGroupMembers.value).flat().map((member) => member.node_id))
-  return filteredMembers.value.filter((item) => !assigned.has(item.node_id))
+  return pagedMembers.value.filter((item) => !assigned.has(item.node_id))
 })
 
 function sumOnlineSpeed(items: typeof members.value, field: 'net_in_speed_bytes_per_second' | 'net_out_speed_bytes_per_second'): number | undefined {
@@ -132,11 +145,17 @@ async function loadMonitoring(clearSnapshot = false): Promise<void> {
 
 function selectGroup(): void {
   statusFilter.value = 'all'
+  page.value = 1
   editingMember.value = null
   groupMembers.value = []
   void loadGroupMembers()
   void loadMonitoring(true)
 }
+
+watch([statusFilter, selectedGroupId, pageSize], () => { page.value = 1 })
+watch(() => filteredMembers.value.length, () => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+})
 
 async function nodeDeleted(nodeId: string): Promise<void> {
   deletingNode.value = null
@@ -243,7 +262,7 @@ onUnmounted(() => {
   <div class="page-stack probe-page">
     <header class="page-heading">
       <div><h2>设备探针</h2><p>HL主机监控</p></div>
-      <div class="page-heading__actions probe-page__actions"><div class="segmented-control" role="group" aria-label="主机状态筛选"><button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button></div></div>
+      <div class="page-heading__actions probe-page__actions"></div>
     </header>
 
     <StatePanel v-if="groupsLoading && !response" state="loading" title="正在读取设备探针" />
@@ -265,7 +284,7 @@ onUnmounted(() => {
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">
-        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="filteredMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
+        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="pagedMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
         <div v-else class="probe-sections">
           <section v-for="section in groupedMembers" :key="section.group.id" class="probe-section" :aria-label="`${section.group.name}探针`">
             <header class="probe-section__heading"><span class="probe-section__name">{{ section.group.name }}</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(section.items, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(section.items, 'net_in_speed_bytes_per_second') }}</span></span></header>
@@ -277,6 +296,14 @@ onUnmounted(() => {
           </section>
         </div>
       </template>
+      <nav v-if="response && members.length" class="probe-pagination" aria-label="设备探针分页与状态筛选">
+        <div class="segmented-control probe-pagination__filters" role="group" aria-label="主机状态筛选">
+          <button v-for="filter in filters" :key="filter.value" type="button" :class="{ active: statusFilter === filter.value }" @click="statusFilter = filter.value">{{ filter.label }} {{ counts[filter.value] }}</button>
+        </div>
+        <label class="probe-pagination__size"><span>每页</span><select v-model.number="pageSize" aria-label="每页机器数量"><option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option></select><span>台</span></label>
+        <span class="probe-pagination__summary">显示 {{ pageStart }}-{{ pageEnd }}，共 {{ filteredMembers.length }} 台</span>
+        <div class="probe-pagination__buttons"><button class="button button--secondary" type="button" :disabled="page <= 1" @click="page--">上一页</button><span>第 {{ page }} / {{ totalPages }} 页</span><button class="button button--secondary" type="button" :disabled="page >= totalPages" @click="page++">下一页</button></div>
+      </nav>
     </template>
     <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :unassigned="deletingUnassigned" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null; deletingUnassigned = false" @deleted="nodeDeleted" />
     <MemberWeightDialog v-if="editingMember" :member="editingMember" :label="[members.find((item) => item.node_id === editingMember?.node_id)?.name || editingMember.node_id, members.find((item) => item.node_id === editingMember?.node_id)?.ipv4 || editingMember.dial_host].filter(Boolean).join(' · ')" @close="editingMember = null" @saved="weightSaved" />
