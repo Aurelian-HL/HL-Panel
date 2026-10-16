@@ -26,7 +26,8 @@ import (
 // Revision 1 gives the dedicated protocol probe an exact loopback permission
 // required by Xray 26.10.10 and later.
 // Revision 2 explicitly allows third-party Reality client version numbering.
-const NodeBundleCompilerRevision = 2
+// Revision 3 drops unsupported listener metadata from rejected legacy bundles.
+const NodeBundleCompilerRevision = 3
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
 	// A tombstone preserves history but must never receive fresh assignments.
@@ -61,7 +62,7 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 	if !listenerMetadata {
 		node := s.nodes[nodeID]
 		var previous agentv1.ConfigurationBundle
-		if current, ok := s.nodeConfigsByNode[nodeID][node.DesiredGeneration]; ok && json.Unmarshal(current.Config, &previous) == nil {
+		if current, ok := s.nodeConfigsByNode[nodeID][node.AppliedGeneration]; ok && node.AppliedGeneration > 0 && json.Unmarshal(current.Config, &previous) == nil {
 			for _, fragment := range previous.Fragments {
 				if fragment.Usage != nil && fragment.Usage.ListenPort > 0 {
 					listenerMetadata = true
