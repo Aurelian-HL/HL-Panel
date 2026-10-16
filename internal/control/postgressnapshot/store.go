@@ -51,9 +51,10 @@ type Store struct {
 }
 
 type heartbeatPersistence struct {
-	fingerprint [32]byte
-	persisted   time.Time
-	inFlight    bool
+	fingerprint       [32]byte
+	persisted         time.Time
+	compilerAttempted time.Time
+	inFlight          bool
 }
 
 type snapshotReadCache struct {

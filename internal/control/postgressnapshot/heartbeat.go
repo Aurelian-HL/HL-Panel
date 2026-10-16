@@ -57,17 +57,13 @@ func (s *Store) shouldPersistHeartbeat(nodeID string, value nodes.Heartbeat, now
 // snapshot write. A burst of concurrent heartbeats must not all serialize on
 // PostgreSQL row locks and amplify latency for subscriptions and config polls.
 func (s *Store) claimHeartbeatPersistence(nodeID string, value nodes.Heartbeat, now time.Time) bool {
-	return s.claimHeartbeatWrite(nodeID, value, now, false)
+	return s.claimHeartbeatWrite(nodeID, value, now)
 }
 
 // Compiler reconciliation must be durable even inside the telemetry interval.
 // It shares the single-flight gate so simultaneous polls cannot enqueue a full
 // snapshot write for each request.
 func (s *Store) claimHeartbeatCompilerReconcile(nodeID string, value nodes.Heartbeat, now time.Time) bool {
-	return s.claimHeartbeatWrite(nodeID, value, now, true)
-}
-
-func (s *Store) claimHeartbeatWrite(nodeID string, value nodes.Heartbeat, now time.Time, force bool) bool {
 	fingerprint := heartbeatFingerprint(value)
 	s.heartbeatMu.Lock()
 	defer s.heartbeatMu.Unlock()
@@ -78,7 +74,33 @@ func (s *Store) claimHeartbeatWrite(nodeID string, value nodes.Heartbeat, now ti
 	if previous.inFlight {
 		return false
 	}
-	if !force && previous.fingerprint == fingerprint && !now.Before(previous.persisted) && now.Sub(previous.persisted) < heartbeatSnapshotInterval {
+	// A failed compiler reconcile must not turn every agent heartbeat into a
+	// full snapshot decode and write. The first observation is immediate; after
+	// that, retry at the normal snapshot interval. A wall-clock rollback is
+	// treated as an immediate retry so a stale node cannot remain unreconciled.
+	if !previous.compilerAttempted.IsZero() && !now.Before(previous.compilerAttempted) &&
+		now.Sub(previous.compilerAttempted) < heartbeatSnapshotInterval {
+		return false
+	}
+	previous.fingerprint = fingerprint
+	previous.compilerAttempted = now
+	previous.inFlight = true
+	s.heartbeats[nodeID] = previous
+	return true
+}
+
+func (s *Store) claimHeartbeatWrite(nodeID string, value nodes.Heartbeat, now time.Time) bool {
+	fingerprint := heartbeatFingerprint(value)
+	s.heartbeatMu.Lock()
+	defer s.heartbeatMu.Unlock()
+	if s.heartbeats == nil {
+		s.heartbeats = make(map[string]heartbeatPersistence)
+	}
+	previous := s.heartbeats[nodeID]
+	if previous.inFlight {
+		return false
+	}
+	if previous.fingerprint == fingerprint && !now.Before(previous.persisted) && now.Sub(previous.persisted) < heartbeatSnapshotInterval {
 		return false
 	}
 	previous.inFlight = true
@@ -101,5 +123,7 @@ func (s *Store) markHeartbeatPersisted(nodeID string, value nodes.Heartbeat, now
 	if s.heartbeats == nil {
 		s.heartbeats = make(map[string]heartbeatPersistence)
 	}
-	s.heartbeats[nodeID] = heartbeatPersistence{fingerprint: heartbeatFingerprint(value), persisted: now, inFlight: false}
+	s.heartbeats[nodeID] = heartbeatPersistence{
+		fingerprint: heartbeatFingerprint(value), persisted: now, inFlight: false,
+	}
 }

@@ -89,7 +89,7 @@ func TestFailedHeartbeatPersistenceClaimCanBeRetried(t *testing.T) {
 	}
 }
 
-func TestCompilerReconcileClaimBypassesIntervalButKeepsSingleFlight(t *testing.T) {
+func TestCompilerReconcileClaimIsCooledAfterFailureButKeepsSingleFlight(t *testing.T) {
 	store := &Store{heartbeats: make(map[string]heartbeatPersistence)}
 	value := nodes.Heartbeat{Hostname: "node-a", AgentVersion: "1.0.0"}
 	now := time.Date(2026, time.October, 14, 10, 0, 0, 0, time.UTC)
@@ -98,13 +98,16 @@ func TestCompilerReconcileClaimBypassesIntervalButKeepsSingleFlight(t *testing.T
 		t.Fatal("ordinary telemetry bypassed persistence interval")
 	}
 	if !store.claimHeartbeatCompilerReconcile("node-a", value, now.Add(time.Second)) {
-		t.Fatal("compiler revision could not bypass persistence interval")
+		t.Fatal("first compiler reconciliation could not start")
 	}
 	if store.claimHeartbeatCompilerReconcile("node-a", value, now.Add(time.Second)) {
 		t.Fatal("concurrent reconciliation bypassed single-flight gate")
 	}
 	store.releaseHeartbeatPersistence("node-a")
-	if !store.claimHeartbeatCompilerReconcile("node-a", value, now.Add(time.Second)) {
-		t.Fatal("failed reconcile could not retry")
+	if store.claimHeartbeatCompilerReconcile("node-a", value, now.Add(2*time.Second)) {
+		t.Fatal("failed reconciliation retried before cooldown")
+	}
+	if !store.claimHeartbeatCompilerReconcile("node-a", value, now.Add(heartbeatSnapshotInterval+time.Second)) {
+		t.Fatal("failed reconciliation did not retry after cooldown")
 	}
 }

@@ -29,6 +29,9 @@ func (s *Service) syncRuleTraffic(ctx context.Context, id string) error {
 	if s.ruleTraffic == nil {
 		return nil
 	}
+	if run, previousErr := s.claimRuleTrafficSync(id, s.now().UTC()); !run {
+		return previousErr
+	}
 	var rule forwarding.RuleTrafficState
 	var err error
 	if reader, ok := s.ruleTraffic.(RuleTrafficStateReader); ok {
@@ -39,12 +42,45 @@ func (s *Service) syncRuleTraffic(ctx context.Context, id string) error {
 		rule = forwarding.TrafficState(full)
 	}
 	if errors.Is(err, faults.ErrNotFound) {
+		s.finishRuleTrafficSync(id, nil)
 		return nil
 	}
 	if err != nil {
+		s.finishRuleTrafficSync(id, err)
 		return err
 	}
-	return s.syncRuleTrafficProjection(ctx, rule)
+	err = s.syncRuleTrafficProjection(ctx, rule)
+	s.finishRuleTrafficSync(id, err)
+	return err
+}
+
+func (s *Service) claimRuleTrafficSync(id string, now time.Time) (bool, error) {
+	period := forwarding.TrafficQuotaPeriod(now)
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+	if s.trafficSyncs == nil {
+		s.trafficSyncs = make(map[string]trafficSyncState)
+	}
+	previous := s.trafficSyncs[id]
+	if !previous.lastAttempt.IsZero() && !now.Before(previous.lastAttempt) &&
+		now.Sub(previous.lastAttempt) < ruleTrafficSyncInterval && previous.period == period {
+		return false, previous.lastErr
+	}
+	// Record the attempt before querying. A database outage must not turn a
+	// burst of agent reports into an unbounded retry loop; the reconciler will
+	// retry independently after its bounded interval.
+	s.trafficSyncs[id] = trafficSyncState{lastAttempt: now, period: period}
+	return true, nil
+}
+
+func (s *Service) finishRuleTrafficSync(id string, err error) {
+	s.trafficMu.Lock()
+	defer s.trafficMu.Unlock()
+	state, ok := s.trafficSyncs[id]
+	if ok {
+		state.lastErr = err
+		s.trafficSyncs[id] = state
+	}
 }
 
 func (s *Service) syncRuleTrafficProjection(ctx context.Context, rule forwarding.RuleTrafficState) error {

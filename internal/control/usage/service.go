@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -27,6 +28,19 @@ type Service struct {
 	legacyRuleMetadata LegacyRuleMetadataProvider
 	ruleTraffic        RuleTrafficRepository
 	now                func() time.Time
+	trafficMu          sync.Mutex
+	trafficSyncs       map[string]trafficSyncState
+}
+
+// Usage reports are durable immediately, but rule quota projection does not
+// need one database aggregate and overlay write for every report. The periodic
+// reconciler remains the recovery and month-boundary safety net.
+const ruleTrafficSyncInterval = 5 * time.Second
+
+type trafficSyncState struct {
+	lastAttempt time.Time
+	period      string
+	lastErr     error
 }
 
 type Option func(*Service)
@@ -43,7 +57,7 @@ func NewService(repository Repository, policies CustomerPolicyProvider, now func
 	if now == nil {
 		now = time.Now
 	}
-	service := &Service{repository: repository, policies: policies, now: now}
+	service := &Service{repository: repository, policies: policies, now: now, trafficSyncs: make(map[string]trafficSyncState)}
 	for _, option := range options {
 		option(service)
 	}

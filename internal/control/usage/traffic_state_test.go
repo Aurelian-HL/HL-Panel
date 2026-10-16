@@ -30,7 +30,8 @@ func TestQuotaUsesAggregateReaderAndPropagatesFailure(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	r := &aggregateQuotaRepository{}
 	q := &quotaStore{monthly: true}
-	s := NewService(r, stubPolicies{}, func() time.Time { return now }, WithRuleTrafficRepository(q))
+	clock := now
+	s := NewService(r, stubPolicies{}, func() time.Time { return clock }, WithRuleTrafficRepository(q))
 	if err := s.syncRuleTraffic(context.Background(), "rule-one"); err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +39,7 @@ func TestQuotaUsesAggregateReaderAndPropagatesFailure(t *testing.T) {
 		t.Fatal("quota fetched detail page or lost monthly bounds")
 	}
 	r.err = errors.New("isolated aggregate failure")
+	clock = now.Add(ruleTrafficSyncInterval)
 	if err := s.syncRuleTraffic(context.Background(), "rule-one"); !errors.Is(err, r.err) || q.calls != 1 {
 		t.Fatal("failed aggregate changed quota", err)
 	}
