@@ -10,7 +10,7 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
-func completeInput(t *testing.T, engine agentv1.Engine) Input {
+func completeInput(t testing.TB, engine agentv1.Engine) Input {
 	t.Helper()
 	rule := forwarding.Rule{ID: "rule-one", EntryGroupID: "group-one", Revision: 3, Protocol: forwarding.ProtocolTCP,
 		Status: forwarding.StatusPendingActivation, RealityServerName: "example.org", RealityPublicKey: "public", RealityShortID: "abcd"}
@@ -32,7 +32,7 @@ func completeInput(t *testing.T, engine agentv1.Engine) Input {
 	return input
 }
 
-func setBundle(t *testing.T, input *Input, fragments []agentv1.ConfigurationFragment) {
+func setBundle(t testing.TB, input *Input, fragments []agentv1.ConfigurationFragment) {
 	t.Helper()
 	raw, err := json.Marshal(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: fragments})
 	if err != nil {
@@ -108,6 +108,9 @@ func TestRuleNodeDeploymentEvidenceFailsClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			input := completeInput(t, agentv1.EngineXray)
+			if !Evaluate(input).ReceiptVerified {
+				t.Fatal("initial receipt not verified")
+			}
 			tt.change(t, &input)
 			got := Evaluate(input)
 			if got.Reason != tt.want || got.ReceiptVerified != (tt.want == ReasonReceiptVerified) {

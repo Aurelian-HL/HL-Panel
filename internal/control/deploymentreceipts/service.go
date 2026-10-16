@@ -2,7 +2,6 @@ package deploymentreceipts
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/generations"
@@ -47,8 +46,8 @@ func Evaluate(input Input) Status {
 		status.Reason = ReasonConfigInvalid
 		return status
 	}
-	var bundle agentv1.ConfigurationBundle
-	if err := json.Unmarshal(config.Config, &bundle); err != nil || bundle.SchemaVersion != 1 {
+	bundle, ok := currentBundleIndexes.get(config.ConfigSHA256, config.Config)
+	if !ok {
 		status.Reason = ReasonConfigInvalid
 		return status
 	}
@@ -57,23 +56,12 @@ func Evaluate(input Input) Status {
 		status.Reason = ReasonFragmentMissing
 		return status
 	}
-	var count int
-	for _, fragment := range bundle.Fragments {
-		if fragment.GroupID != fragmentID {
-			continue
-		}
-		count++
-		if fragment.Engine != engine || int64(fragment.GroupRevision) != input.Rule.Revision ||
-			len(fragment.Config) == 0 || !json.Valid(fragment.Config) {
-			status.Reason = ReasonFragmentMismatch
-			return status
-		}
-	}
-	if count == 0 {
+	fragment, exists := bundle.fragments[fragmentID]
+	if !exists {
 		status.Reason = ReasonFragmentMissing
 		return status
 	}
-	if count != 1 {
+	if fragment.count != 1 || fragment.engine != engine || fragment.revision != input.Rule.Revision || !fragment.valid {
 		status.Reason = ReasonFragmentMismatch
 		return status
 	}
@@ -89,8 +77,8 @@ func Evaluate(input Input) Status {
 	// Old agent reports lack engine mode. They are deliberately insufficient,
 	// even if they advanced the node's applied generation in old snapshots.
 	if input.CurrentAttemptID == "" ||
-		!attestsEngine(input.ApplyResults[agentv1.ApplyPhaseCommit].EngineMode, engine, bundle) ||
-		!attestsEngine(input.ApplyResults[agentv1.ApplyPhaseVerify].EngineMode, engine, bundle) {
+		!attestsEngineSet(input.ApplyResults[agentv1.ApplyPhaseCommit].EngineMode, engine, bundle.hasXray, bundle.hasGOST) ||
+		!attestsEngineSet(input.ApplyResults[agentv1.ApplyPhaseVerify].EngineMode, engine, bundle.hasXray, bundle.hasGOST) {
 		status.Reason = ReasonEngineUnverified
 		return status
 	}
@@ -105,6 +93,10 @@ func attestsEngine(mode string, expected agentv1.Engine, bundle agentv1.Configur
 		hasXray = hasXray || fragment.Engine == agentv1.EngineXray
 		hasGOST = hasGOST || fragment.Engine == agentv1.EngineGOST
 	}
+	return attestsEngineSet(mode, expected, hasXray, hasGOST)
+}
+
+func attestsEngineSet(mode string, expected agentv1.Engine, hasXray, hasGOST bool) bool {
 	if hasXray && hasGOST {
 		return mode == "mixed" && (expected == agentv1.EngineXray || expected == agentv1.EngineGOST)
 	}
