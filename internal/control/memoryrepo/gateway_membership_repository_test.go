@@ -120,7 +120,7 @@ func TestPublishProtocolHealthRestoresLeaseAfterAddressChange(t *testing.T) {
 	}
 }
 
-func protocolPublicationFixture(t *testing.T) (*Store, gatewaymembership.ProtocolObservation) {
+func protocolPublicationFixture(t testing.TB) (*Store, gatewaymembership.ProtocolObservation) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	store := New(auth.Administrator{ID: "admin", Username: "admin", CreatedAt: now})

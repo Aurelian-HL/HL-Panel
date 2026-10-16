@@ -15,7 +15,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 )
 
-func forwardingRepositoryFixture(t *testing.T) (*Store, forwarding.Request) {
+func forwardingRepositoryFixture(t testing.TB) (*Store, forwarding.Request) {
 	t.Helper()
 	s, customer := customerRepositoryFixture(t)
 	s.customers[customer.ID] = customer

@@ -18,7 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 )
 
-func customerRepositoryFixture(t *testing.T) (*Store, customers.Customer) {
+func customerRepositoryFixture(t testing.TB) (*Store, customers.Customer) {
 	t.Helper()
 	hash, err := auth.HashPassword("customer-test-password")
 	if err != nil {

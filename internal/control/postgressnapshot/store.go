@@ -74,6 +74,7 @@ type snapshotReadCache struct {
 	payload       []byte
 	identities    *memoryrepo.IdentityReadView
 	usage         *memoryrepo.UsageReadView
+	forwarding    *memoryrepo.ForwardingReadView
 }
 
 func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store, error) {
@@ -128,6 +129,7 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
 	next.payload = raw
 	next.identities = state.IdentityReadView()
 	next.usage = state.UsageReadView()
+	next.forwarding = state.ForwardingReadView()
 	// Do not let a slower transaction publish an older snapshot over a newer
 	// committed one. Equal revisions with a different xmin are external
 	// repairs; the first reader that observes the replacement wins.
@@ -399,6 +401,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 		// again merely because this instance just recorded a heartbeat or probe.
 		committedCache.identities = state.IdentityReadView()
 		committedCache.usage = state.UsageReadView()
+		committedCache.forwarding = state.ForwardingReadView()
 		s.readMu.Lock()
 		if s.readCache.revision <= committedCache.revision {
 			s.readCache = committedCache

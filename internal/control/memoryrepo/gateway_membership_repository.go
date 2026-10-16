@@ -73,7 +73,7 @@ func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.S
 		if state.Rule.ID == "" {
 			continue
 		}
-		input, err := s.ruleNodeDeploymentInputLocked(state.Rule.ID, member.NodeID)
+		input, err := s.ruleNodeDeploymentInputBorrowedLocked(state.Rule.ID, member.NodeID)
 		if err == nil {
 			state.Deployments[member.NodeID] = gatewaymembership.DeploymentEvidence{
 				RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input),
@@ -156,7 +156,7 @@ func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.Protoc
 	if member.DialHost == "" {
 		return faults.ErrValidation
 	}
-	input, err := s.ruleNodeDeploymentInputLocked(observation.RuleID, observation.NodeID)
+	input, err := s.ruleNodeDeploymentInputBorrowedLocked(observation.RuleID, observation.NodeID)
 	if err != nil {
 		return err
 	}

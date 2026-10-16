@@ -61,6 +61,10 @@ func (s *Store) publishTelemetry(node nodes.Node, durable bool) {
 }
 
 func (s *Store) applyHeartbeatTelemetry(state *memoryrepo.Store) {
+	state.MergeHeartbeatTelemetry(s.heartbeatTelemetrySamples())
+}
+
+func (s *Store) heartbeatTelemetrySamples() []nodes.Node {
 	now := time.Now()
 	s.telemetryMu.RLock()
 	values := make([]nodes.Node, 0, len(s.telemetry))
@@ -70,7 +74,7 @@ func (s *Store) applyHeartbeatTelemetry(state *memoryrepo.Store) {
 		}
 	}
 	s.telemetryMu.RUnlock()
-	state.MergeHeartbeatTelemetry(values)
+	return values
 }
 
 func (s *Store) mergeNodeTelemetry(items []nodes.Node) {

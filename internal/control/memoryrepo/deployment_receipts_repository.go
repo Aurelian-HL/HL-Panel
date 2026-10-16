@@ -18,6 +18,17 @@ func (s *Store) RuleNodeDeploymentInput(_ context.Context, ruleID, nodeID string
 }
 
 func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deploymentreceipts.Input, error) {
+	input, err := s.ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID)
+	if err == nil && input.CurrentConfig != nil {
+		copy := cloneNodeConfig(*input.CurrentConfig)
+		input.CurrentConfig = &copy
+	}
+	return input, err
+}
+
+// Borrow configuration bytes only for synchronous evaluation under s.mu.
+// Public repository results must use ruleNodeDeploymentInputLocked instead.
+func (s *Store) ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID string) (deploymentreceipts.Input, error) {
 	rule, ruleExists := s.forwardRules[ruleID]
 	node, nodeExists := s.nodes[nodeID]
 	if !ruleExists || !nodeExists {
@@ -41,7 +52,7 @@ func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deployment
 		input.CurrentAttemptID = attempt.CurrentID
 		input.AttemptInvalidated = attempt.Invalidated
 		if config, exists := s.nodeConfigsByNode[nodeID][node.DesiredGeneration]; exists {
-			copy := cloneNodeConfig(config)
+			copy := config
 			input.CurrentConfig = &copy
 		}
 		for phase, result := range s.applyResultsByNode[nodeID][node.DesiredGeneration] {

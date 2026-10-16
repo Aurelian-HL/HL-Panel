@@ -13,13 +13,13 @@ func (s *Store) MarkActivated(ctx context.Context, ruleID string, expectedRevisi
 }
 
 func (s *Store) GatewayMembershipState(ctx context.Context, poolID string) (gatewaymembership.State, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (gatewaymembership.State, error) {
+	return readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) (gatewaymembership.State, error) {
 		return state.GatewayMembershipState(ctx, poolID)
 	})
 }
 
 func (s *Store) GatewayMembershipStates(ctx context.Context, poolIDs []string) ([]gatewaymembership.State, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]gatewaymembership.State, error) {
+	return readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) ([]gatewaymembership.State, error) {
 		return state.GatewayMembershipStates(ctx, poolIDs)
 	})
 }
@@ -45,7 +45,7 @@ func (s *Store) ConfigureProtocolProbe(ctx context.Context, ruleID string, confi
 }
 
 func (s *Store) ProtocolProbeStates(ctx context.Context) ([]gatewaymembership.ProbeState, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]gatewaymembership.ProbeState, error) {
+	return readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) ([]gatewaymembership.ProbeState, error) {
 		return state.ProtocolProbeStates(ctx)
 	})
 }

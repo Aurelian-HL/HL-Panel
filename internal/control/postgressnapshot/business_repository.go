@@ -80,11 +80,15 @@ func (s *Store) UpdateGroupNetwork(ctx context.Context, input groupconfig.Update
 }
 
 func (s *Store) ListForwardingRules(ctx context.Context) ([]forwarding.Rule, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]forwarding.Rule, error) { return state.ListForwardingRules(ctx) })
+	return readForwarding(ctx, s, func(view *memoryrepo.ForwardingReadView) ([]forwarding.Rule, error) {
+		return view.ListForwardingRules(ctx)
+	})
 }
 
 func (s *Store) ForwardingRule(ctx context.Context, id string) (forwarding.Rule, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (forwarding.Rule, error) { return state.ForwardingRule(ctx, id) })
+	return readForwarding(ctx, s, func(view *memoryrepo.ForwardingReadView) (forwarding.Rule, error) {
+		return view.ForwardingRule(ctx, id)
+	})
 }
 
 func (s *Store) CreateForwardingRule(ctx context.Context, input forwarding.CreateInput, event audit.Event) (forwarding.Rule, bool, error) {

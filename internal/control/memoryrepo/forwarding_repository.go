@@ -55,7 +55,7 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 	ready := false
 	pool := s.endpointPools[poolID]
 	for nodeID, member := range s.endpointMembers[poolID] {
-		input, err := s.ruleNodeDeploymentInputLocked(ruleID, nodeID)
+		input, err := s.ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID)
 		if err != nil {
 			continue
 		}
@@ -546,7 +546,7 @@ func (s *Store) forwardingViewLocked(item forwarding.Rule) forwarding.Rule {
 			continue
 		}
 		count++
-		input, err := s.ruleNodeDeploymentInputLocked(item.ID, nodeID)
+		input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
 		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
 			deployed = false
 			break
