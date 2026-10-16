@@ -47,32 +47,35 @@ func (api *API) saveForwardingRule(w http.ResponseWriter, r *http.Request, sessi
 		return
 	}
 	if api.vlessSetup != nil {
-		// Saving the rule must not wait through multiple database operation
-		// timeouts. Background reconciliation resumes any unfinished setup.
-		setupContext, cancelSetup := context.WithTimeout(r.Context(), 3*time.Second)
-		setupErr := api.vlessSetup.Ensure(setupContext, session.AdminID, item)
-		cancelSetup()
-		if setupErr != nil {
-			// The rule repository has already committed the operator's request.
-			// VLESS endpoint/identity setup is resumable and depends on node
-			// runtime material, so a transient setup failure must not be reported
-			// as if the rule itself was rejected. Keep the rule visible as pending
-			// and let the next reconciliation retry Ensure.
-			api.logger.Warn("vless forwarding rule remains pending activation", "rule_id", item.ID, "admin_id", session.AdminID, "error", setupErr)
-		} else {
-			refreshContext, cancelRefresh := context.WithTimeout(r.Context(), time.Second)
-			current, refreshErr := api.forwarding.GetForAdministrator(refreshContext, session.AdminID, item.ID)
-			cancelRefresh()
-			if refreshErr == nil {
-				item = current
-			} else {
-				// The committed rule is a truthful conservative result even if a
-				// post-save refresh fails. Never report a rejected write here.
-				api.logger.Warn("saved forwarding rule refresh deferred", "rule_id", item.ID, "error", refreshErr)
-			}
+		// The rule transaction is already committed. Endpoint and identity setup
+		// can involve several snapshot reads and must not hold the operator's
+		// HTTP request open. Run it in the existing reconciliation model and
+		// return the committed pending projection immediately. Ensure is
+		// idempotent, so a process restart or the 15-second reconciler can safely
+		// retry an interrupted attempt.
+		api.vlessSetupOnce.Do(func() { api.vlessSetupSlots = make(chan struct{}, 2) })
+		select {
+		case api.vlessSetupSlots <- struct{}{}:
+			go func() {
+				defer func() { <-api.vlessSetupSlots }()
+				api.reconcileSavedVLESSRule(session.AdminID, item)
+			}()
+		default:
+			// The periodic reconciler picks up excess work. Never create an
+			// unbounded goroutine backlog while the database is saturated.
 		}
 	}
 	writeBusinessResult(w, r, "rule", item, replayed)
+}
+
+func (api *API) reconcileSavedVLESSRule(administratorID string, item forwarding.Rule) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := api.vlessSetup.Ensure(ctx, administratorID, item); err != nil {
+		// The committed rule remains visible as pending activation. The periodic
+		// reconciler will retry transient database, endpoint, or node failures.
+		api.logger.Warn("vless forwarding rule remains pending activation", "rule_id", item.ID, "admin_id", administratorID, "error", err)
+	}
 }
 
 func (api *API) listGroupNetworks(w http.ResponseWriter, r *http.Request, _ auth.Session) {

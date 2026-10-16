@@ -24,12 +24,9 @@ var ErrUnhealthy = errors.New("VLESS protocol probe failed")
 // scheduler limits network workers, but without a second limit a large pool
 // can still fork enough Xray processes to starve the control plane itself.
 // Keep this guard package-wide so multiple runners cannot bypass the limit.
-// It must match the protocol scheduler's worker budget: a smaller fixed value
-// leaves workers queued inside Check and can make a large pool miss its health
-// lease renewal window even when every node is healthy.
-// Keep protocol validation bounded independently from the scheduler. Three
-// short-lived Xray processes are enough to renew the 90-second health lease
-// while avoiding the CPU spikes caused by probing many nodes at once.
+// Keep the existing three-process budget: reducing it further can expire
+// healthy targets in large pools. Cache successful static validation to
+// remove redundant forks without sacrificing network-check throughput.
 const maxConcurrentChecks = 3
 const maxPortStartAttempts = 3
 
@@ -38,6 +35,12 @@ const maxPortStartAttempts = 3
 // second Xray fork for the same unchanged target while leaving enough margin
 // before the 90-second health lease expires. Failed checks are never cached.
 const successfulProbeCacheTTL = 35 * time.Second
+
+// Xray's `run -test` validates the static config shape, but it is itself a
+// process fork. The local SOCKS port is intentionally absent from the cache
+// key, so a transient port collision can retry without repeating validation.
+// Runtime connectivity is still checked by the short-lived Xray process.
+const successfulValidationCacheTTL = 10 * time.Minute
 
 var checkSlots = make(chan struct{}, maxConcurrentChecks)
 
@@ -50,6 +53,11 @@ var successCache = struct {
 	sync.Mutex
 	entries map[[sha256.Size]byte]cachedSuccess
 }{entries: make(map[[sha256.Size]byte]cachedSuccess)}
+
+var validationCache = struct {
+	sync.Mutex
+	entries map[[sha256.Size]byte]time.Time
+}{entries: make(map[[sha256.Size]byte]time.Time)}
 
 // A refresh notification and a periodic refresh can describe the same target
 // at the same time. Share one in-flight check for an identical target so those
@@ -141,8 +149,11 @@ func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 		if err := os.WriteFile(configPath, config, 0o600); err != nil {
 			return time.Time{}, ErrUnhealthy
 		}
-		if err := validateXray(ctx, binary, configPath); err != nil {
-			return time.Time{}, ErrUnhealthy
+		if shouldValidateXray(cacheKey, time.Now().UTC()) {
+			if err := validateXray(ctx, binary, configPath); err != nil {
+				return time.Time{}, ErrUnhealthy
+			}
+			rememberXrayValidation(cacheKey, time.Now().UTC())
 		}
 		process, err := startXray(ctx, binary, configPath)
 		if err != nil {
@@ -239,9 +250,41 @@ func resetProbeCacheForTests() {
 	successCache.Lock()
 	defer successCache.Unlock()
 	successCache.entries = make(map[[sha256.Size]byte]cachedSuccess)
+	validationCache.Lock()
+	defer validationCache.Unlock()
+	validationCache.entries = make(map[[sha256.Size]byte]time.Time)
 	probeFlights.Lock()
 	defer probeFlights.Unlock()
 	probeFlights.entries = make(map[[sha256.Size]byte]*probeFlight)
+}
+
+func shouldValidateXray(key [sha256.Size]byte, now time.Time) bool {
+	validationCache.Lock()
+	defer validationCache.Unlock()
+	expiresAt, ok := validationCache.entries[key]
+	if !ok || !now.Before(expiresAt) {
+		if ok {
+			delete(validationCache.entries, key)
+		}
+		return true
+	}
+	return false
+}
+
+func rememberXrayValidation(key [sha256.Size]byte, now time.Time) {
+	validationCache.Lock()
+	defer validationCache.Unlock()
+	if len(validationCache.entries) >= 4096 {
+		for oldKey, expiresAt := range validationCache.entries {
+			if !now.Before(expiresAt) {
+				delete(validationCache.entries, oldKey)
+			}
+		}
+		if len(validationCache.entries) >= 4096 {
+			return
+		}
+	}
+	validationCache.entries[key] = now.Add(successfulValidationCacheTTL)
 }
 
 func reserveLoopbackPort() (int, error) {

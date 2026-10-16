@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
+	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -48,6 +49,15 @@ type Store struct {
 	heartbeats     map[string]heartbeatPersistence
 	telemetryMu    sync.RWMutex
 	telemetry      map[string]heartbeatTelemetry
+	projectionMu   sync.RWMutex
+	projections    projectionCache
+}
+
+type projectionCache struct {
+	ruleTrafficRevision int64
+	ruleTraffic         []memoryrepo.RuleTrafficOverlay
+	healthRevision      int64
+	health              []gatewaymembership.ProtocolObservation
 }
 
 type heartbeatPersistence struct {
@@ -77,10 +87,10 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 			return nil, err
 		}
 	}
-	if err := mergeRuleTrafficOverlays(ctx, tx, state); err != nil {
+	if err := s.mergeCachedRuleTrafficOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
-	if err := mergeProtocolHealthOverlays(ctx, tx, state); err != nil {
+	if err := s.mergeCachedProtocolHealthOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
 	s.applyHeartbeatTelemetry(state)
@@ -130,6 +140,24 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
 	}
 	s.readMu.Unlock()
 	return next, state, nil
+}
+
+func (s *Store) mergeCachedRuleTrafficOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
+	overlays, err := s.ruleTrafficOverlays(ctx, tx)
+	if err != nil {
+		return err
+	}
+	state.MergeRuleTrafficOverlays(overlays)
+	return nil
+}
+
+func (s *Store) mergeCachedProtocolHealthOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
+	overlays, err := s.protocolHealthOverlays(ctx, tx)
+	if err != nil {
+		return err
+	}
+	state.MergeProtocolHealthOverlays(overlays)
+	return nil
 }
 
 func readIdentity[T any](parent context.Context, s *Store, operation func(*memoryrepo.IdentityReadView) (T, error)) (T, error) {
@@ -248,6 +276,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	if err := initializeProtocolHealthOverlays(ctx, tx); err != nil {
 		return err
 	}
+	if err := initializeProjectionRevisionTracking(ctx, tx); err != nil {
+		return err
+	}
 	if err := initializeAuditJournal(ctx, tx); err != nil {
 		return err
 	}
@@ -263,7 +294,7 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	return nil
 }
 
-func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, error) {
+func readState(ctx context.Context, tx *sql.Tx, lock bool, stores ...*Store) (*memoryrepo.Store, error) {
 	query := `SELECT format_version, revision, payload FROM nyvp_control_snapshots WHERE singleton = true`
 	if lock {
 		query += ` FOR UPDATE`
@@ -280,9 +311,16 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool) (*memoryrepo.Store, e
 	state, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
 	if err == nil {
 		state.SetPersistenceRevision(uint64(revision))
-		err = mergeRuleTrafficOverlays(ctx, tx, state)
-		if err == nil {
-			err = mergeProtocolHealthOverlays(ctx, tx, state)
+		if len(stores) > 0 && stores[0] != nil {
+			err = stores[0].mergeCachedRuleTrafficOverlays(ctx, tx, state)
+			if err == nil {
+				err = stores[0].mergeCachedProtocolHealthOverlays(ctx, tx, state)
+			}
+		} else {
+			err = mergeRuleTrafficOverlays(ctx, tx, state)
+			if err == nil {
+				err = mergeProtocolHealthOverlays(ctx, tx, state)
+			}
 		}
 	}
 	return state, err
@@ -303,7 +341,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	defer tx.Rollback()
 	var state *memoryrepo.Store
 	if write {
-		state, err = readState(ctx, tx, true)
+		state, err = readState(ctx, tx, true, s)
 		if err == nil {
 			s.applyHeartbeatTelemetry(state)
 		}

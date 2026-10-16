@@ -188,7 +188,11 @@ func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
 		validateXray, startXray = originalValidate, originalStart
 		resetProbeCacheForTests()
 	})
-	validateXray = func(context.Context, string, string) error { return nil }
+	var validations int
+	validateXray = func(context.Context, string, string) error {
+		validations++
+		return nil
+	}
 	var attempts int
 	startXray = func(_ context.Context, _ string, configPath string) (probeProcess, error) {
 		attempts++
@@ -245,6 +249,18 @@ func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
 	second, err := Check(ctx, spec)
 	if err != nil || second.IsZero() || attempts != 2 {
 		t.Fatalf("cached Check() = (%v, %v), attempts=%d; want no new Xray process", second, err, attempts)
+	}
+	// Expiring connectivity must run a real connection again, while unchanged
+	// static configuration can reuse its separate validation result.
+	successCache.Lock()
+	clear(successCache.entries)
+	successCache.Unlock()
+	if _, err := Check(ctx, spec); err != nil || attempts != 3 || validations != 1 {
+		t.Fatalf("renewed connection: err=%v starts=%d validations=%d", err, attempts, validations)
+	}
+	spec.DialPort++
+	if _, err := Check(ctx, spec); err != nil || attempts != 4 || validations != 2 {
+		t.Fatalf("changed endpoint: err=%v starts=%d validations=%d", err, attempts, validations)
 	}
 }
 

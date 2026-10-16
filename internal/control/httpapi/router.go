@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/hongle/hl-panel/internal/control/announcements"
 	"github.com/hongle/hl-panel/internal/control/auth"
@@ -58,6 +59,8 @@ type API struct {
 	vlessIdentity      *vlessidentity.Service
 	vlessRuntime       *vlessruntime.Service
 	vlessSetup         *vlesssetup.Service
+	vlessSetupOnce     sync.Once
+	vlessSetupSlots    chan struct{}
 	platformInfo       PlatformInfo
 	panelRuntime       *panelruntime.Service
 	usage              usagehttpapi.Service

@@ -57,7 +57,7 @@ func (s *Store) ListRuleTrafficStates(ctx context.Context) ([]forwarding.RuleTra
 		if err != nil {
 			return nil, err
 		}
-		overlays, err := readRuleTrafficOverlays(ctx, tx, "")
+		overlays, err := s.ruleTrafficOverlays(ctx, tx)
 		if err != nil {
 			return nil, err
 		}

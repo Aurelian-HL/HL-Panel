@@ -55,6 +55,22 @@ beforeEach(() => {
 afterEach(() => { config.global.plugins = [] })
 
 describe('ForwardRulesPage', () => {
+  it('renders rules before dictionaries finish and waits to enable creation', async () => {
+    const rule: ForwardRule = { id: 'rule-early', name: '先显示规则', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [{ host: '192.0.2.10', port: 443 }], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active', traffic_used_bytes: 0 }
+    mocked.rules.mockResolvedValue({ items: [rule] })
+    let finish!: (value: { items: DeviceGroup[] }) => void
+    mocked.deviceGroups.mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('先显示规则')
+    const add = wrapper.findAll('button').find(button => button.text().includes('添加规则'))!
+    expect(add.attributes('disabled')).toBeDefined()
+    finish({ items: [device] })
+    await flushPromises()
+    expect(add.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('lets the admin create a rule without selecting or submitting a customer', async () => {
     const created: ForwardRule = { id: 'rule-new', name: '新规则', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [{ host: '192.0.2.10', port: 443 }], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'pending_activation' }
     mocked.saveRule.mockResolvedValue(created)
@@ -139,15 +155,16 @@ describe('ForwardRulesPage', () => {
     wrapper.unmount()
   })
 
-  it('hides old rules and disables actions while refresh is pending', async () => {
+  it('keeps old rules visible and disables actions while refresh is pending', async () => {
     const rule: ForwardRule = { id: 'rule-old', name: '旧规则', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [{ host: '192.0.2.10', port: 443 }], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'pending_activation' }
     let finish!: (value: { items: ForwardRule[] }) => void
     mocked.rules.mockResolvedValueOnce({ items: [rule] }).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
     const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
     await flushPromises()
     await wrapper.findAll('.page-heading button').find((button) => button.text().includes('刷新'))!.trigger('click')
-    expect(wrapper.text()).not.toContain('旧规则')
-    expect(wrapper.find('.rule-batch-toolbar').exists()).toBe(false)
+    expect(wrapper.text()).toContain('旧规则')
+    expect(wrapper.find('.rule-batch-toolbar').exists()).toBe(true)
+    expect(wrapper.findAll('.rule-batch-toolbar button').every((button) => (button.element as HTMLButtonElement).disabled)).toBe(true)
     expect(wrapper.findAll('.page-heading button').every((button) => (button.element as HTMLButtonElement).disabled)).toBe(true)
     finish({ items: [] })
     await flushPromises()

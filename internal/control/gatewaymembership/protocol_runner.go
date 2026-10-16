@@ -310,7 +310,9 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 				continue
 			}
 			if target != nil {
-				target.due = time.Now().Add(endpoints.DefaultHealthTTL / 3)
+				// Renew halfway through the 90-second lease. This leaves a full
+				// failure window while reducing expensive Xray forks by one third.
+				target.due = time.Now().Add(endpoints.DefaultHealthTTL / 2)
 			}
 			if result.err != nil {
 				if target != nil {
@@ -603,7 +605,7 @@ func (r *ProtocolRunner) applyRefresh(inputs []ProbeState, targets map[string]*s
 			// Pool priorities provide fairness without delaying idle workers.
 			due := now
 			if health := state.ProtocolHealth[member.NodeID]; protocolHealthy(health, state.Deployments[member.NodeID].Status, state.Rule, member, member.DialHost, now.UTC()) {
-				renew := health.VerifiedAt.Add(endpoints.DefaultHealthTTL / 3)
+				renew := health.VerifiedAt.Add(endpoints.DefaultHealthTTL / 2)
 				if renew.After(due) {
 					due = renew
 				}

@@ -22,9 +22,18 @@ func initializeProtocolHealthOverlays(ctx context.Context, tx *sql.Tx) error {
 }
 
 func mergeProtocolHealthOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
+	observations, err := readProtocolHealthOverlays(ctx, tx)
+	if err != nil {
+		return err
+	}
+	state.MergeProtocolHealthOverlays(observations)
+	return nil
+}
+
+func readProtocolHealthOverlays(ctx context.Context, tx *sql.Tx) ([]gatewaymembership.ProtocolObservation, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT payload FROM hl_panel_protocol_health ORDER BY rule_id,node_id`)
 	if err != nil {
-		return errors.New("protocol health projection read failed")
+		return nil, errors.New("protocol health projection read failed")
 	}
 	defer rows.Close()
 	var observations []gatewaymembership.ProtocolObservation
@@ -32,18 +41,17 @@ func mergeProtocolHealthOverlays(ctx context.Context, tx *sql.Tx, state *memoryr
 		var raw []byte
 		var observation gatewaymembership.ProtocolObservation
 		if err = rows.Scan(&raw); err != nil {
-			return errors.New("protocol health projection read failed")
+			return nil, errors.New("protocol health projection read failed")
 		}
 		if err = json.Unmarshal(raw, &observation); err != nil {
-			return errors.New("protocol health projection decode failed")
+			return nil, errors.New("protocol health projection decode failed")
 		}
 		observations = append(observations, observation)
 	}
 	if rows.Err() != nil {
-		return errors.New("protocol health projection iteration failed")
+		return nil, errors.New("protocol health projection iteration failed")
 	}
-	state.MergeProtocolHealthOverlays(observations)
-	return nil
+	return observations, nil
 }
 
 // Renewal is serialized by the same row lock as business edits, but writes
@@ -71,10 +79,10 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 			return nil, err
 		}
 	}
-	if err := mergeRuleTrafficOverlays(ctx, tx, state); err != nil {
+	if err := s.mergeCachedRuleTrafficOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
-	if err := mergeProtocolHealthOverlays(ctx, tx, state); err != nil {
+	if err := s.mergeCachedProtocolHealthOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
 	attachNodeConfigHistoryReader(ctx, tx, state)

@@ -24,6 +24,8 @@ const devices = ref<DeviceGroup[]>([])
 const networks = ref<GroupNetwork[]>([])
 const ruleGroups = ref<RuleGroup[]>([])
 const loading = ref(true)
+const refreshing = ref(false)
+const resourcesLoading = ref(true)
 const error = ref('')
 const resourceWarning = ref('')
 const actionError = ref('')
@@ -86,26 +88,53 @@ const selectedRules = computed(() => rules.value.filter((item) => selectedIdSet.
 const allFilteredSelected = computed(() => filtered.value.length > 0 && filtered.value.every((item) => selectedIdSet.value.has(item.id)))
 async function load(): Promise<void> {
   const version = ++loadVersion
-  loading.value = true; error.value = ''; resourceWarning.value = ''
-  rules.value = []; devices.value = []; networks.value = []; ruleGroups.value = []
-  trafficByRule.value = {}
-  selectedIds.value = []; deletionCandidates.value = []
-  page.value = 1
-  closeEditor(); transferDialog.value = false
-  const results = await Promise.allSettled([businessApi.rules(), businessApi.deviceGroups(), businessApi.groupNetworks(), businessApi.ruleGroups()])
+  const hasExistingRules = rules.value.length > 0
+  refreshing.value = hasExistingRules
+  loading.value = !hasExistingRules; error.value = ''; resourceWarning.value = ''
+  // Keep the current table during refresh. Clearing it here made a slow
+  // snapshot read look like an empty page and forced every dependent view to
+  // wait for the slowest auxiliary request.
+  if (!hasExistingRules) {
+    rules.value = []; devices.value = []; networks.value = []; ruleGroups.value = []
+    trafficByRule.value = {}
+    selectedIds.value = []; deletionCandidates.value = []
+    page.value = 1
+    closeEditor(); transferDialog.value = false
+  }
+
+  // The rules endpoint is the critical path. Auxiliary dictionaries are
+  // intentionally allowed to finish in the background so the inventory can be
+  // rendered as soon as the rules projection is available.
+  resourcesLoading.value = true
+  // Attach rejection handlers immediately, including when rules are slow or
+  // authentication fails before these requests finish.
+  const resources = Promise.allSettled([businessApi.deviceGroups(), businessApi.groupNetworks(), businessApi.ruleGroups()])
+  const ruleResult = await Promise.allSettled([businessApi.rules()])
   if (version !== loadVersion) return
-  const [r, d, n, g] = results
-  if (results.some((result) => result.status === 'rejected' && isUnauthorized(result.reason))) { invalidateSession(); return }
-  if (r.status === 'fulfilled') rules.value = r.value.items
-  else error.value = displayError(r.reason)
+  const [r] = ruleResult
+  if (r.status === 'rejected' && isUnauthorized(r.reason)) { invalidateSession(); return }
+  if (r.status === 'fulfilled') {
+    rules.value = r.value.items
+    selectedIds.value = selectedIds.value.filter((id) => rules.value.some((rule) => rule.id === id))
+    loading.value = false
+    refreshing.value = false
+    void loadVisibleTraffic(version)
+  } else {
+    error.value = displayError(r.reason)
+    loading.value = false
+    refreshing.value = false
+  }
+
+  const [d, n, g] = await resources
+  if (version !== loadVersion) return
+  resourcesLoading.value = false
+  if (d.status === 'rejected' && isUnauthorized(d.reason) || n.status === 'rejected' && isUnauthorized(n.reason) || g.status === 'rejected' && isUnauthorized(g.reason)) { invalidateSession(); return }
   if (d.status === 'fulfilled') devices.value = d.value.items
   if (n.status === 'fulfilled') networks.value = n.value.items
   if (g.status === 'fulfilled') ruleGroups.value = g.value.items
   const failedResources = ([['设备组', d], ['入口网络', n], ['规则分组', g]] as const)
     .flatMap(([name, result]) => result.status === 'rejected' ? [{ name, reason: result.reason }] : [])
   if (failedResources.length) resourceWarning.value = `${failedResources.map(({ name }) => name).join('、')}加载失败，相关选项暂不可用；请刷新重试。${displayError(failedResources[0]!.reason)}`
-  loading.value = false
-  if (r.status === 'fulfilled') void loadVisibleTraffic(version)
 }
 async function loadVisibleTraffic(version = loadVersion): Promise<void> {
   if (!active || version !== loadVersion || loading.value || error.value) return
@@ -170,14 +199,14 @@ function scheduleTrafficRefresh(): void {
 }
 function handleTrafficVisibilityChange(): void { scheduleTrafficRefresh() }
 function startCreate(): void {
-  if (!ready.value || batchBusy.value || busyId.value) return
+  if (!ready.value || resourcesLoading.value || refreshing.value || batchBusy.value || busyId.value) return
   actionError.value = ''
   selected.value = null
   copying.value = false
   editor.value = true
 }
 function openExisting(rule: ForwardRule, copy = false): void {
-  if (!ready.value || batchBusy.value || busyId.value) return
+  if (!ready.value || resourcesLoading.value || refreshing.value || batchBusy.value || busyId.value) return
   const current = rules.value.find((item) => item.id === rule.id)
   if (!current || current.revision !== rule.revision) return
   selected.value = current; copying.value = copy; editor.value = true
@@ -186,10 +215,17 @@ function closeEditor(): void { editor.value = false; selected.value = null; copy
 async function saved(rule: ForwardRule): Promise<void> {
   closeEditor(); actionError.value = ''
   toast.success('规则已保存', ruleActivationNotice(rule))
-  await load()
+  // The save response is already the authoritative rule projection. Update it
+  // immediately and let the background refresh reconcile auxiliary dictionaries
+  // and activation state without blocking the editor workflow.
+  const index = rules.value.findIndex((item) => item.id === rule.id)
+  if (index >= 0) rules.value[index] = rule
+  else rules.value = [rule, ...rules.value]
+  loading.value = false
+  void load()
 }
 async function toggle(rule: ForwardRule): Promise<void> {
-  if (!ready.value || busyId.value || batchBusy.value) return
+  if (!ready.value || refreshing.value || busyId.value || batchBusy.value) return
   const version = loadVersion
   busyId.value = rule.id; actionError.value = ''
   const input = { ...ruleInput(rule), paused: !rule.paused }
@@ -197,16 +233,16 @@ async function toggle(rule: ForwardRule): Promise<void> {
   catch (cause) { if (isUnauthorized(cause)) invalidateSession(); else if (version === loadVersion) actionError.value = displayError(cause) } finally { busyId.value = '' }
 }
 function selectRule(rule: ForwardRule, selected: boolean): void {
-  if (!ready.value || batchBusy.value || busyId.value) return
+  if (!ready.value || refreshing.value || batchBusy.value || busyId.value) return
   selectedIds.value = selected ? [...new Set([...selectedIds.value, rule.id])] : selectedIds.value.filter((id) => id !== rule.id)
 }
 function selectFiltered(selected: boolean): void {
-  if (!ready.value || batchBusy.value || busyId.value) return
+  if (!ready.value || refreshing.value || batchBusy.value || busyId.value) return
   const visible = new Set(filtered.value.map((item) => item.id))
   selectedIds.value = selected ? [...new Set([...selectedIds.value, ...visible])] : selectedIds.value.filter((id) => !visible.has(id))
 }
 async function executeBatch(operation: RuleBatchOperation, candidates: ForwardRule[]): Promise<void> {
-  if (!ready.value || batchBusy.value || busyId.value || !candidates.length) return
+  if (!ready.value || refreshing.value || batchBusy.value || busyId.value || !candidates.length) return
   if (candidates.some((candidate) => rules.value.find((rule) => rule.id === candidate.id)?.revision !== candidate.revision)) {
     deletionCandidates.value = []
     actionError.value = '规则已更新，请刷新后重试'
@@ -233,7 +269,7 @@ async function executeBatch(operation: RuleBatchOperation, candidates: ForwardRu
 async function batch(operation: RuleBatchOperation): Promise<void> { await executeBatch(operation, selectedRules.value) }
 async function confirmDelete(): Promise<void> { await executeBatch('delete', deletionCandidates.value) }
 function requestDelete(candidates: ForwardRule[]): void {
-  if (!ready.value || batchBusy.value || busyId.value) return
+  if (!ready.value || refreshing.value || batchBusy.value || busyId.value) return
   deletionCandidates.value = candidates.filter((candidate) => rules.value.some((rule) => rule.id === candidate.id && rule.revision === candidate.revision))
 }
 async function imported(count: number): Promise<void> {
@@ -278,7 +314,7 @@ onMounted(async () => {
   active = true
   document.addEventListener('visibilitychange', handleTrafficVisibilityChange)
   await load()
-  scheduleTrafficRefresh()
+  if (active) scheduleTrafficRefresh()
 })
 onUnmounted(() => {
   active = false
@@ -289,9 +325,9 @@ onUnmounted(() => {
 </script>
 <template>
   <div class="page-stack">
-    <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions"><RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink><button class="button button--secondary" :disabled="loading || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button><button class="button button--secondary" :disabled="loading || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button><button class="button button--secondary" :disabled="loading || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />刷新</button><button class="button button--primary" :disabled="loading || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button></div></header>
+    <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions"><RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button><button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading || refreshing }" />刷新</button><button class="button button--primary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button></div></header>
     <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
-    <section v-if="ready && rules.length" class="rule-batch-toolbar" aria-label="规则批量操作"><label><input type="checkbox" :checked="allFilteredSelected" :disabled="batchBusy || !!busyId" @change="selectFiltered(($event.target as HTMLInputElement).checked)" />选择当前结果</label><span>{{ selectedIds.length }} 条已选择</span><button class="button button--secondary" :disabled="!selectedIds.length || batchBusy || !!busyId" @click="batch('pause')"><Pause :size="14" />暂停</button><button class="button button--secondary" :disabled="!selectedIds.length || batchBusy || !!busyId" @click="batch('resume')"><Play :size="14" />恢复</button><label class="rule-batch-move"><select v-model="moveGroupId" :disabled="batchBusy || !!busyId"><option value="">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select><button class="button button--secondary" :disabled="!selectedIds.length || batchBusy || !!busyId" @click="batch('move_group')"><FolderInput :size="14" />移动</button></label><button class="button button--danger" :disabled="!selectedIds.length || batchBusy || !!busyId" @click="requestDelete([...selectedRules])"><Trash2 :size="14" />删除</button></section>
+    <section v-if="ready && rules.length" class="rule-batch-toolbar" aria-label="规则批量操作"><label><input type="checkbox" :checked="allFilteredSelected" :disabled="refreshing || batchBusy || !!busyId" @change="selectFiltered(($event.target as HTMLInputElement).checked)" />选择当前结果</label><span>{{ selectedIds.length }} 条已选择</span><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('pause')"><Pause :size="14" />暂停</button><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('resume')"><Play :size="14" />恢复</button><label class="rule-batch-move"><select v-model="moveGroupId" :disabled="refreshing || batchBusy || !!busyId"><option value="">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('move_group')"><FolderInput :size="14" />移动</button></label><button class="button button--danger" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="requestDelete([...selectedRules])"><Trash2 :size="14" />删除</button></section>
     <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
     <p v-if="resourceWarning && ready" class="inline-warning" role="status">{{ resourceWarning }}</p>
     <StatePanel v-if="loading" state="loading" title="正在读取转发规则" />
