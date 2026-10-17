@@ -121,6 +121,16 @@ v0.1.42 起，已有受管节点也可重新运行完整安装命令：在目标
 
 重装确认前不停止现有服务；程序更新前备份到 `/var/backups/hl-panel-node/reinstall-*`，失败自动尝试恢复旧程序。成功后输出 `rollback.sh` 路径，程序回滚不会回退已确认的组或流量。节点与规则切换会短暂断开连接，新组无规则时停止旧组监听。离线包安装同样支持该重装流程。
 
+### 节点 TCP BBR 默认值
+
+令牌新装、继续未完成注册及重装换组在成功后都会检测并尝试启用内核的 TCP BBR 默认值。仅在内核实际提供 `bbr`、允许写入且读回验证成功时显示已启用；需要时尝试加载 `tcp_bbr`，不安装或更换内核。内核不支持、容器无权限或已有后置 sysctl 配置冲突会明确警告，节点安装与注册仍保留。已使用 `bbr2` / `bbr3` 等 BBR 变体时保留现有算法。
+
+持久配置仅写 `/etc/sysctl.d/90-hl-panel-node-bbr.conf`，不覆盖 `/etc/sysctl.conf`，不运行 `sysctl --system`，不修改网卡 qdisc、防火墙、路由或引擎规则，不重启系统、网络或转发服务。原默认算法与原受管文件先备份到 `/var/backups/hl-panel-node/network-bbr-*`；失败尝试恢复两者，成功时输出独立回滚命令。重复执行已完成的设置不新增备份或重复写入。
+
+BBR 是 TCP 拥塞控制，不是 UDP 转发或 UDP 重传开关。设置默认值只影响后续按默认值创建的 TCP socket；已有连接和监听可能继承旧算法，不为切换 BBR 强制中断客户。实际 CPU、延迟和吞吐取决于内核、排队规则和线路，不能只凭设置成功承诺提升。旧节点只执行常规版本更新不会自动修改内核网络参数，可在检查后单独执行已校验包中的 `deploy/configure-node-bbr.py`。
+
+核对运行默认值：`sysctl net.ipv4.tcp_congestion_control`；核对可用算法：`sysctl net.ipv4.tcp_available_congestion_control`。如需回滚，使用成功输出的 `python3 /var/backups/hl-panel-node/network-bbr-具体目录/configure-node-bbr.py --rollback /var/backups/hl-panel-node/network-bbr-具体目录`；后续人工修改过默认算法或受管文件时会拒绝覆盖，先人工核对。
+
 ### 节点离线安装
 
 在可访问 GitHub 的机器，从 Releases 下载同版本 `hl-panel-linux-amd64.tar.gz` 和 `.sha256`，从同标签源码取得 `deploy/install-node.sh`，将三个文件放在节点同一目录。也可从已校验的正式归档提取该脚本。无需节点访问 GitHub，但节点必须能通过 HTTPS 连接面板，并预装 python3、CA 证书和 systemd。

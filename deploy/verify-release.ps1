@@ -26,6 +26,7 @@ $required = @(
     'deploy/install.sh',
     'deploy/install-node.sh',
     'deploy/reinstall-node.py',
+    'deploy/configure-node-bbr.py',
     'deploy/fetch-node-engines.py',
     'deploy/node-control-url.py',
     'deploy/update.sh',

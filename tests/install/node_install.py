@@ -223,18 +223,42 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                             '--node-address', '127.0.0.1'], env=install_env, timeout=420)
 
             expired = issue(1)
+            bbr_config = Path('/etc/sysctl.d/90-hl-panel-node-bbr.conf')
+            bbr_backups = Path('/var/backups/hl-panel-node')
+
+            def bbr_state():
+                current = run(['sysctl', '-n', 'net.ipv4.tcp_congestion_control'])
+                assert current.returncode == 0, 'Cannot read the current TCP congestion algorithm'
+                return current.stdout.strip(), bbr_config.read_bytes() if bbr_config.exists() else None
+
+            def rejected_install_preserves_bbr(token, ca=cert):
+                before = bbr_state()
+                assert install(token, ca).returncode != 0
+                assert bbr_state() == before, 'Rejected installation changed TCP BBR runtime or persistent configuration'
+
+            assert not bbr_config.exists(), 'requires an empty disposable BBR configuration'
+            original_bbr_state = bbr_state()
+            backups_before_install = set(bbr_backups.glob('network-bbr-*'))
             time.sleep(2)
             # Invalid CA fails before installing files.
-            assert install(expired, work/'missing.pem').returncode != 0
+            rejected_install_preserves_bbr(expired, work/'missing.pem')
             assert not Path('/opt/hl-panel/edge-agent').exists()
-            assert install(expired).returncode != 0
+            rejected_install_preserves_bbr(expired)
             assert not Path('/etc/hl-panel/edge-agent-enrollment.env').exists()
             assert not Path('/var/lib/hl-panel-edge/credentials.json').exists()
+            assert not bbr_config.exists(), 'failed enrollment must not change BBR settings'
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode != 0
             checks.append('expired token stops service and removes one-use secret')
             token = issue()
             fault_state['enabled'] = True
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
+            assert run(['sysctl','-n','net.ipv4.tcp_congestion_control']).stdout.strip() == 'bbr'
+            assert bbr_config.is_file()
+            installed_bbr_state = bbr_state()
+            installation_backups = set(bbr_backups.glob('network-bbr-*')) - backups_before_install
+            assert len(installation_backups) == 1, 'Fresh installation must create one recoverable BBR backup'
+            installation_bbr_backup = installation_backups.pop()
+            checks.append('successful token installation enables and persists kernel TCP BBR')
             assert fault_state['enroll_calls'] == 4 and fault_state['lost_response']
             assert len(set(fault_state['attempts'])) == 1
             # The installer receives the explicit release tag and deliberately
@@ -411,8 +435,28 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             request('POST',f"/device-groups/{switched['id']}/generations",{'engine':'gost',
                 'config':switched_config,'idempotency_key':'switch-gost'},201)
             switch_token = issue(group_id=switched['id'])
+            # Remove the successful fresh-install state through its own public
+            # rollback helper. Otherwise reinstall assertions could pass even
+            # when the installer never invokes BBR configuration on reinstall.
+            assert run([sys.executable, str(installation_bbr_backup/'configure-node-bbr.py'),
+                        '--rollback', str(installation_bbr_backup)]).returncode == 0
+            assert bbr_state() == original_bbr_state
+            assert not bbr_config.exists()
+            if original_bbr_state[0] == 'bbr':
+                # This script is already gated to a root, explicitly disposable,
+                # initially empty VM. Only change the TCP default, never qdisc,
+                # routes, networking services or existing connections.
+                available = run(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control'])
+                assert available.returncode == 0 and 'cubic' in available.stdout.split()
+                assert run(['sysctl', '-q', '-w', 'net.ipv4.tcp_congestion_control=cubic']).returncode == 0
+            assert bbr_state()[0] != 'bbr' and not bbr_config.exists()
+            backups_before_reinstall = set(bbr_backups.glob('network-bbr-*'))
             fault_state['reenroll_fault'] = True
             assert install(switch_token).returncode == 0, 'Full command did not switch existing node'
+            assert bbr_state() == installed_bbr_state, 'Reinstall did not newly enable and persist TCP BBR'
+            reinstall_backups = set(bbr_backups.glob('network-bbr-*'))
+            assert len(reinstall_backups - backups_before_reinstall) == 1
+            checks.append('successful group-switch reinstall newly enables and persists BBR after fresh-install rollback')
             assert fault_state['reenroll_calls'] == 3
             fault_state['reenroll_fault'] = False
             registered_groups = [group,second,switched]
@@ -431,11 +475,14 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             wait_for(gost_after_switch)
             assert_group(switched['id'])
             assert install(switch_token).returncode == 0
-            assert install(token).returncode != 0
+            assert bbr_state() == installed_bbr_state
+            assert set(bbr_backups.glob('network-bbr-*')) == reinstall_backups, 'Repeated reinstall changed already configured BBR'
+            rejected_install_preserves_bbr(token)
             assert_group(switched['id'])
             expired_switch = issue(1,group_id=group['id'])
             time.sleep(2)
-            assert install(expired_switch).returncode != 0
+            rejected_install_preserves_bbr(expired_switch)
+            checks.append('superseded and expired reinstall tokens preserve TCP algorithm and exact BBR configuration')
             wait_for(gost_after_switch)
             checks.append('full reinstall recovers HTTP 503 and lost confirmation, replaces GOST at the same port, retires both old groups and preserves identity')
             xray_group = request('POST','/device-groups',{'name':'reinstalled Xray','kind':'ENTRY',
@@ -455,7 +502,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 assert run(['ss','-H','-ltn','sport','=',str(gost_port)]).stdout.strip()==''
                 return True
             wait_for(xray_after_switch)
-            assert install(switch_token).returncode != 0
+            rejected_install_preserves_bbr(switch_token)
             wait_for(xray_after_switch)
             checks.append('second full reinstall activates Xray at the same port and removes old GOST listener; superseded commands cannot restore old groups')
             # Return to the original dual-engine fixture before offline restart.

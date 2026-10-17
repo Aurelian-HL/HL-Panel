@@ -1,0 +1,110 @@
+name: Node transport safety
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/configure-node-bbr.py'
+      - 'deploy/install-node.sh'
+      - 'tests/install/test_node_bbr.py'
+      - 'tests/install/node_bbr_linux.py'
+      - 'tests/install/node_install.py'
+      - 'tests/integration/gost/reliable_udp_test.py'
+      - 'deploy/fetch-node-engines.py'
+      - 'deploy/build-release.ps1'
+      - 'deploy/verify-release.ps1'
+      - '.github/workflows/node-bbr.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bbr:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify policy and installer syntax without changing network settings
+        run: |
+          python3 tests/install/test_node_bbr.py
+          python3 -m py_compile deploy/configure-node-bbr.py tests/install/node_bbr_linux.py
+          bash -n deploy/install-node.sh
+      - name: Verify real BBR, persistent config, live TCP connection and rollback on this disposable VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 tests/install/node_bbr_linux.py 2>&1 | tee node-bbr-result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-bbr-${{ matrix.os }}
+          path: node-bbr-result.log
+  token-install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web-admin/package-lock.json
+      - name: Build real web assets for the isolated candidate
+        working-directory: apps/web-admin
+        run: |
+          npm ci
+          npm run build
+      - name: Build and verify the complete candidate without publishing a tag or release
+        shell: pwsh
+        run: |
+          ./deploy/build-release.ps1 -ReleaseDirectory "$env:RUNNER_TEMP/node-candidate" -Version v0.0.0 -PythonExecutable python3
+      - name: Package the verified local candidate for the installer fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/candidate"
+          tar -C "$RUNNER_TEMP/node-candidate" -czf "$RUNNER_TEMP/candidate/hl-panel-linux-amd64.tar.gz" .
+          cd "$RUNNER_TEMP/candidate"
+          sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256
+      - name: Prepare bounded package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Verify token installation, reinstall and real client forwarding on the disposable VM
+        run: |
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/candidate" --version v0.0.0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-token-install
+          path: |
+            node-install.log
+            node-install-result.json
+  reliable-udp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify pinned engines into a temporary directory
+        run: python3 deploy/fetch-node-engines.py "$RUNNER_TEMP/hl-engines"
+      - name: Verify complete delivery over QUIC and KCP with controlled loopback packet loss
+        shell: bash
+        env:
+          HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
+          NYVP_GOST_BINARY: ${{ runner.temp }}/hl-engines/bin/gost
+        run: |
+          set -euo pipefail
+          python3 tests/integration/gost/reliable_udp_test.py 2>&1 | tee reliable-udp-result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: node-reliable-udp
+          path: reliable-udp-result.log

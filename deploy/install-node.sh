@@ -76,6 +76,12 @@ ensure_time_synchronization() {
   echo "[HL-panel 节点] 警告：$provider 尚未报告已同步；TLS、节点租约和订阅有效期可能受时钟漂移影响" >&2
 }
 
+configure_tcp_bbr() {
+  if ! python3 "$release/deploy/configure-node-bbr.py"; then
+    echo '[HL-panel 节点] 警告：节点安装已成功，但 TCP BBR 未启用；请核对上方原因，安装不会因此撤销。' >&2
+  fi
+}
+
 if [[ -z "$archive" ]]; then
   if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then
     command -v apt-get >/dev/null || { echo '请先安装 curl、python3、ca-certificates。' >&2; exit 1; }
@@ -198,7 +204,7 @@ for line in (target/'SHA256SUMS').read_text().splitlines():
     require((target/name).is_file() and digest(target/name) == expected, '文件摘要校验失败')
     verified.add(name)
 require({str(p.relative_to(target)) for p in target.rglob('*') if p.is_file()} == verified | {'SHA256SUMS'}, '存在未校验文件')
-for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/systemd/hl-panel-edge-agent.service'):
+for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr.py', 'deploy/systemd/hl-panel-edge-agent.service'):
     require(name in verified, '缺少节点安装文件：' + name)
 (target/'bin/edge-agent').chmod(0o755)
 PY
@@ -219,6 +225,7 @@ if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
   HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" python3 "$release/deploy/reinstall-node.py" \
     --release "$release" --panel-url "$origin" --node-address "$node_address" --version "$version" --ca-file "$ca_file"
   unset enrollment_token
+  configure_tcp_bbr
   echo '[HL-panel 节点] 重装完成，节点身份与流量历史保留，旧组已撤下，以本次命令的设备组为准。'
   echo '请返回面板刷新设备组成员与探针，并核对新组规则下发结果。'
   exit 0
@@ -298,6 +305,7 @@ echo '[HL-panel 节点] 自动注册并启用开机自启…'
 HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh
 unset enrollment_token
 install_ready=1
+configure_tcp_bbr
 echo '[HL-panel 节点] 服务已注册并启动。请回面板刷新设备组成员与探针，等待最多 30 秒核对在线状态。'
 echo '状态：systemctl status hl-panel-edge-agent --no-pager'
 echo '排障：journalctl -u hl-panel-edge-agent -n 50 --no-pager'
