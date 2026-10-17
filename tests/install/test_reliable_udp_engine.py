@@ -65,6 +65,27 @@ class ReleaseEngineTests(unittest.TestCase):
         self.assertFalse(any((self.recipe / item['patch']).name.endswith('.go')
                              for item in self.lock['patches']))
 
+    def test_release_build_embeds_the_accepted_identity(self):
+        arguments = engine.release_build_arguments(self.root / 'gost', self.lock)
+        self.assertEqual(arguments[arguments.index('-ldflags') + 1],
+                         '-X main.version=' + self.lock['version'].removeprefix('v'))
+        self.assertIn('-buildvcs=false', arguments)
+
+    def test_runtime_identity_rejects_upstream_other_target_and_suffixes(self):
+        accepted = 'gost ' + self.lock['version'].removeprefix('v') + ' (' + self.lock['go_version'] + ' linux/amd64)'
+        engine.verify_runtime_version(accepted + '\n', self.lock)
+        for rejected in ['gost 3.3.1 (go1.27.0 linux/amd64)',
+                         accepted.replace('linux/amd64', 'windows/amd64'),
+                         accepted.replace(self.lock['go_version'], 'go1.26.0'), accepted + '-unreviewed']:
+            with self.assertRaisesRegex(engine.EngineBuildError, 'version'):
+                engine.verify_runtime_version(rejected, self.lock)
+
+    def test_recipe_version_rejects_extra_linker_arguments(self):
+        self.lock['version'] = 'v3.3.1 -X main.other=unexpected'
+        engine.write_json(self.recipe / 'lock.json', self.lock)
+        with self.assertRaisesRegex(engine.EngineBuildError, 'unsafe engine version'):
+            engine.load_recipe(self.recipe)
+
     def test_modified_patch_is_rejected(self):
         (self.recipe / self.lock['patches'][0]['patch']).write_bytes(b'changed')
         with self.assertRaisesRegex(engine.EngineBuildError, 'patch checksum'):

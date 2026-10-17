@@ -10,7 +10,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'deploy'))
-from reliable_udp_engine import load_recipe, sha256, validate_buildinfo, verify_bundle
+from reliable_udp_engine import load_recipe, sha256, validate_buildinfo, verify_bundle, verify_runtime_version
 
 
 def module(name, path):
@@ -33,8 +33,7 @@ def main():
     binary = bundle / 'gost'
     version = subprocess.run([str(binary), '-V'], check=True, capture_output=True,
                              text=True, timeout=10).stdout.strip()
-    if manifest['version'].removeprefix('v') not in version:
-        raise RuntimeError('running engine version does not match release manifest')
+    verify_runtime_version(version, load_recipe())
     info = subprocess.run(['go', 'version', '-m', str(binary)], check=True,
                           capture_output=True, text=True, timeout=15).stdout
     validate_buildinfo(info, load_recipe())

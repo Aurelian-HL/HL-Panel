@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 import struct
 import subprocess
@@ -61,6 +62,8 @@ def tree_hash(directory):
 def load_recipe(recipe=RECIPE):
     lock = json.loads((recipe / 'lock.json').read_text(encoding='utf-8'))
     require(lock.get('schema') == 1 and lock.get('target') == 'linux/amd64', 'unsupported recipe')
+    require(isinstance(lock.get('version'), str) and
+            re.fullmatch(r'v[0-9][A-Za-z0-9.+-]*', lock['version']), 'unsafe engine version')
     for name, key in [('candidate.mod', 'candidate_mod_sha256'),
                       ('candidate.sum', 'candidate_sum_sha256')]:
         require(sha256(recipe / name) == lock[key], 'recipe module file checksum mismatch')
@@ -164,6 +167,17 @@ def verify_elf(path):
             struct.unpack_from('<H', header, 18)[0] == 62, 'engine is not Linux amd64 ELF')
 
 
+def release_build_arguments(binary, lock):
+    return ['go', 'build', '-mod=readonly', '-modfile=candidate.mod', '-trimpath',
+            '-buildvcs=false', '-ldflags', '-X main.version=' + lock['version'].removeprefix('v'),
+            '-o', str(binary), './cmd/gost']
+
+
+def verify_runtime_version(document, lock):
+    expected = 'gost ' + lock['version'].removeprefix('v') + ' (' + lock['go_version'] + ' linux/amd64)'
+    require(document.strip() == expected, 'running engine version does not match release manifest')
+
+
 def verify_bundle(bundle, manifest_sha256, recipe=RECIPE):
     require(len(manifest_sha256) == 64 and all(c in '0123456789abcdef' for c in manifest_sha256),
             'bundle manifest SHA256 required')
@@ -253,8 +267,7 @@ def build(output, recipe=RECIPE, module_proxy='https://proxy.golang.org'):
             sha256(source / 'candidate.sum') == lock['candidate_sum_sha256'], 'locked dependency graph changed')
     bundle = output / 'bundle'
     bundle.mkdir()
-    run(['go', 'build', '-mod=readonly', '-modfile=candidate.mod', '-trimpath',
-         '-buildvcs=false', '-o', str(bundle / 'gost'), './cmd/gost'], source)
+    run(release_build_arguments(bundle / 'gost', lock), source)
     info = run(['go', 'version', '-m', str(bundle / 'gost')], source)
     validate_buildinfo(info, lock)
     verify_elf(bundle / 'gost')
