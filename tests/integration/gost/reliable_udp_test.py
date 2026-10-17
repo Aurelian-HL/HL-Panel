@@ -38,7 +38,8 @@ DEADLINE_SECONDS = 45
 DIAGNOSTIC_LOG_BYTES = 32768
 DIAGNOSTIC_STAGES = frozenset(('fixture_setup', 'server_startup', 'client_startup',
                               'authenticated_readiness', 'authorization_checks',
-                              'bulk_transfer', 'transfer_validation'))
+                              'bulk_transfer', 'transfer_validation',
+                              'final_frame_close_check'))
 DIAGNOSTIC_MARKERS = (
     ('unregistered_transport_observed',
      (b'unregistered listener', b'unregistered dialer', b'unknown listener',
@@ -162,13 +163,18 @@ class TargetHandler(socketserver.BaseRequestHandler):
         try:
             deadline = time.monotonic() + DEADLINE_SECONDS
             operation = receive(stream, 1, deadline)
-            if operation == b'E':
+            if operation in (b'E', b'F'):
                 length = struct.unpack('!I', receive(stream, 4, deadline))[0]
                 require(length <= 65536, 'echo length exceeds fixture limit')
                 payload = receive(stream, length, deadline)
                 with target.lock:
                     target.records.append(payload)
                 stream.sendall(payload)
+                if operation == b'E':
+                    # Keep the stable-stream probe independent of immediate
+                    # server-close behavior. F exercises that boundary below.
+                    stream.settimeout(5)
+                    require(stream.recv(1) == b'', 'unexpected trailing echo data')
             elif operation == b'B':
                 length = struct.unpack('!I', receive(stream, 4, deadline))[0]
                 require(length == BULK_BYTES, 'bulk length differs from fixture')
@@ -187,6 +193,8 @@ class TargetHandler(socketserver.BaseRequestHandler):
                         'target could not send its independent bulk payload')
                 stream.sendall(struct.pack('!I', len(upload)) +
                                hashlib.sha256(upload).digest())
+                stream.settimeout(5)
+                require(stream.recv(1) == b'', 'unexpected trailing bulk data')
             else:
                 raise RuntimeError('unrecognized fixture operation')
         except Exception as error:
@@ -349,11 +357,27 @@ class Engine:
             self.log.close()
 
 
-def echo(port, payload, timeout=5):
+def echo(port, payload, timeout=5, operation=b'E'):
     deadline = time.monotonic() + timeout
     with socket.create_connection((HOST, port), timeout=timeout) as stream:
-        stream.sendall(b'E' + struct.pack('!I', len(payload)) + payload)
+        stream.sendall(operation + struct.pack('!I', len(payload)) + payload)
         require(receive(stream, len(payload), deadline) == payload, 'echo differs')
+
+
+def final_frame_close_check(port, attempts=20):
+    """Do not hide delivery failures when the target closes after its reply."""
+    complete = 0
+    for _ in range(attempts):
+        try:
+            echo(port, secrets.token_bytes(64), timeout=2, operation=b'F')
+            complete += 1
+        except (OSError, RuntimeError):
+            pass
+    return {'attempts': attempts, 'complete_replies': complete,
+            'failed_replies': attempts - complete,
+            'all_complete': complete == attempts,
+            'scope': 'independent immediate-target-close probes after bulk; '
+                     'outside reported CPU and UDP counter windows'}
 
 
 def ready(port, engines):
@@ -549,6 +573,9 @@ def scenario(binary, transport, lossy):
             result.update({'transport': transport,
                            'drop_every_nth_datagram': 23 if lossy else 0,
                            'missing_auth_rejected': True, 'wrong_auth_rejected': True})
+            stage[0] = 'final_frame_close_check'
+            proxy.enable_loss(0)
+            result['final_frame_close_check'] = final_frame_close_check(ports[0])
             return result
 
 
@@ -575,10 +602,15 @@ def main():
                              text=True, timeout=5).stdout
     require(pinned['version'].removeprefix('v') in version,
             'GOST version differs from the pinned fetch configuration')
+    results = []
     for transport in ('quic', 'kcp'):
         for lossy in (False, True):
             result = scenario(binary, transport, lossy)
+            results.append(result)
             print(json.dumps(result, sort_keys=True), flush=True)
+    require(all(result['final_frame_close_check']['all_complete'] for result in results),
+            'immediate-target-close lost application replies; stable-stream '
+            'results do not establish full reliable delivery')
     print('PASS: authenticated QUIC/KCP delivered bounded bidirectional payloads '
           'on loopback, including deterministic injected UDP loss', flush=True)
 
