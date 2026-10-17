@@ -19,6 +19,8 @@ from pathlib import Path
 
 from udp_abort_overlay import abort_overlay, contract_overlay
 
+EXPECTED_PACKAGE = 'github.com/go-gost/x/cleanupreview'
+
 
 def expected_tests() -> set[str]:
     expected = {
@@ -149,6 +151,8 @@ def run_contracts(output: Path, local_x: Path, parent: dict, *,
     execute(command + ['./...'], 'race-results.jsonl')
     events = [json.loads(line) for line in (output / 'race-results.jsonl').read_text(encoding='utf-8-sig').splitlines()
               if line.startswith('{')]
+    if any(event.get('Package') != EXPECTED_PACKAGE for event in events):
+        raise RuntimeError('contract test package mismatch; see race-results.jsonl')
     failed = [event for event in events if event.get('Action') in {'fail', 'skip'}]
     passed = Counter(event['Test'] for event in events
                      if event.get('Action') == 'pass' and event.get('Test'))

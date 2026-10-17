@@ -19,14 +19,15 @@ spec.loader.exec_module(runner)
 
 class ContractResultGates(unittest.TestCase):
     count = 3
+    package = runner.EXPECTED_PACKAGE
 
     def events(self):
         events = []
         for name in sorted(runner.expected_tests()):
             for _ in range(self.count):
-                events.extend([{'Action': 'run', 'Test': name},
-                               {'Action': 'pass', 'Test': name}])
-        return events + [{'Action': 'pass'}]
+                events.extend([{'Action': 'run', 'Test': name, 'Package': self.package},
+                               {'Action': 'pass', 'Test': name, 'Package': self.package}])
+        return events + [{'Action': 'pass', 'Package': self.package}]
 
     def invoke(self, output, events, *, malformed=False, failed_stage=None):
         source = output.parent / 'source'
@@ -92,6 +93,8 @@ class ContractResultGates(unittest.TestCase):
                 (e.get('Action') == 'run' and e.get('Test') == leaf)],
             'wrong_repeat_count': lambda events: events[2:],
             'explicit_failure': lambda events: events + [{'Action': 'fail', 'Test': leaf}],
+            'wrong_package': lambda events: [dict(event, Package='example.invalid/wrong')
+                                             for event in events],
             'malformed_json': lambda events: events,
         }
         for case, mutate in mutations.items():
