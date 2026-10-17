@@ -61,7 +61,7 @@ def _eof(stream, deadline):
 
 
 def target_factory(module):
-    """Return a Target subclass preserving the original E/F/B handler."""
+    """Return a Target subclass preserving the original E/F/B/P handler."""
 
     class ExtendedHandler(module.TargetHandler):
         def handle(self):
@@ -76,7 +76,7 @@ def target_factory(module):
                 stream.settimeout(module.DEADLINE_SECONDS)
                 operation = stream.recv(1, socket.MSG_PEEK)
                 if operation not in (b'H', b'S'):
-                    # MSG_PEEK leaves the exact original E/F/B byte stream.
+                    # MSG_PEEK leaves the exact original E/F/B/P byte stream.
                     return super().handle()
                 deadline = time.monotonic() + TIMEOUT_SECONDS
                 if _exact(stream, 1, deadline) != operation:
@@ -138,6 +138,9 @@ def target_factory(module):
             self.errors = []
             self.connections = set()
             self.lock = threading.Lock()
+            self.persistent_records = []
+            self.persistent_ready = threading.Event()
+            self.persistent_closed = threading.Event()
             self.ack_observations = {}
             self.worker_condition = threading.Condition()
             self.workers = set()

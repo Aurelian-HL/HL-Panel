@@ -37,6 +37,26 @@ def candidate_order(variants, *, lifecycle=False, halfclose=False, drain=False,
     return ('official', 'original', 'fixed', 'fixed', 'original'), 'fixed'
 
 
+def candidate_result_passes(item, *, lossy_close):
+    """Keep process replacement as a first-class candidate acceptance gate."""
+    restart = item.get('measurement', {}).get('engine_reconnect', {})
+    restart_identity = (
+        isinstance(restart, dict) and
+        restart.get('all_checks_passed') is True and
+        isinstance(restart.get('server_pid_before'), int) and
+        isinstance(restart.get('server_pid_after'), int) and
+        restart['server_pid_before'] != restart['server_pid_after'] and
+        isinstance(restart.get('client_pid_before'), int) and
+        isinstance(restart.get('client_pid_after'), int) and
+        restart['client_pid_before'] == restart['client_pid_after'] and
+        restart.get('client_identity_unchanged') is True)
+    return (item.get('stable_bulk_passed') is True and
+            item.get('legacy_final_frame_passed') is True and
+            item.get('extended_close_passed') is True and
+            item.get('engine_reconnect_passed') is True and restart_identity and
+            (not lossy_close or item.get('lossy_close_passed') is True))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('provenance', type=Path)
@@ -84,6 +104,7 @@ def main():
                     result['stable_bulk_passed'] = True
                     result['legacy_final_frame_passed'] = measured['final_frame_close_check']['all_complete']
                     result['extended_close_passed'] = measured['extended_close_checks']['extended_all_complete']
+                    result['engine_reconnect_passed'] = measured['engine_reconnect']['all_checks_passed']
                     if args.lossy_close:
                         result['lossy_close_passed'] = measured['lossy_close_checks']['all_checks_passed']
                 except Exception as error:
@@ -98,13 +119,9 @@ def main():
     fixed = [item for item in results if item['variant'] == candidate]
     expected_candidate_scenarios = 8  # 4 rounds x QUIC/KCP x loss/no-loss
     full = len(fixed) == expected_candidate_scenarios and all(
-        item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
-               and item.get('extended_close_passed')
-               and (not args.lossy_close or item.get('lossy_close_passed')) for item in fixed)
+        candidate_result_passes(item, lossy_close=args.lossy_close) for item in fixed)
     per_transport = {transport: len([item for item in fixed if item['transport'] == transport]) == 4 and all(
-        item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
-        and item.get('extended_close_passed')
-        and (not args.lossy_close or item.get('lossy_close_passed'))
+        candidate_result_passes(item, lossy_close=args.lossy_close)
         for item in fixed if item['transport'] == transport) for transport in ('quic', 'kcp')}
     summary = {'candidate_variant': candidate, 'candidate_all_checks_passed': full,
                'candidate_scenarios': len(fixed), 'candidate_per_transport': per_transport,

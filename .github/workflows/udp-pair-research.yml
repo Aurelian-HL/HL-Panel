@@ -17,6 +17,7 @@ on:
       - 'tests/integration/gost/dial_contracts/**'
       - 'tests/integration/gost/test_udp_command_gates.py'
       - 'tests/integration/gost/test_udp_result_gates.py'
+      - 'tests/integration/gost/test_udp_restart_gates.py'
       - 'tests/integration/gost/abort_contracts/**'
   workflow_dispatch:
 

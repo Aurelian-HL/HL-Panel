@@ -35,10 +35,12 @@ import time
 HOST = '127.0.0.1'
 BULK_BYTES = 2 * 1024 * 1024
 DEADLINE_SECONDS = 45
+ENGINE_RESTART_FAILURE_SECONDS = 15
 DIAGNOSTIC_LOG_BYTES = 32768
 DIAGNOSTIC_STAGES = frozenset(('fixture_setup', 'server_startup', 'client_startup',
+                              'client_fixture_setup',
                               'authenticated_readiness', 'authorization_checks',
-                              'bulk_transfer', 'transfer_validation',
+                              'engine_reconnect', 'bulk_transfer', 'transfer_validation',
                               'final_frame_close_check', 'lossy_close_checks'))
 DIAGNOSTIC_MARKERS = (
     ('unregistered_transport_observed',
@@ -58,6 +60,10 @@ DIAGNOSTIC_MARKERS = (
     ('connection_refused_observed', (b'connection refused',)),
     ('permission_denied_observed', (b'permission denied',)),
 )
+
+
+class FixturePortAllocationError(RuntimeError):
+    """A client fixture could not reserve its distinct loopback TCP ports."""
 
 
 def diagnose_failure(directory, stage, exc_type, _error, _traceback,
@@ -82,6 +88,9 @@ def diagnose_failure(directory, stage, exc_type, _error, _traceback,
                 categories = ['engine_log_unavailable']
             engines.append({'engine': name, 'categories': categories})
         diagnostic = {'stage': safe_stage, 'engines': engines,
+                      'failure_category': ('client_port_reservation_failed'
+                          if isinstance(_error, FixturePortAllocationError)
+                          else 'unclassified_failure'),
                       'scope': 'known markers observed in bounded log tails; '
                                'expected authorization rejections may be included'}
         if proxy is not None:
@@ -126,6 +135,25 @@ def unused_port(kind):
         return stream.getsockname()[1]
 
 
+@contextlib.contextmanager
+def reserved_tcp_ports(count):
+    """Keep distinct client ports bound until their configuration is complete."""
+    with contextlib.ExitStack() as cleanup:
+        ports = []
+        for _ in range(count):
+            try:
+                stream = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                cleanup.callback(stream.close)
+                stream.bind((HOST, 0))
+                port = stream.getsockname()[1]
+            except OSError as error:
+                raise FixturePortAllocationError() from error
+            if port in ports:
+                raise FixturePortAllocationError()
+            ports.append(port)
+        yield ports
+
+
 class Target(socketserver.ThreadingTCPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -137,6 +165,9 @@ class Target(socketserver.ThreadingTCPServer):
         self.errors = []
         self.connections = set()
         self.lock = threading.Lock()
+        self.persistent_records = []
+        self.persistent_ready = threading.Event()
+        self.persistent_closed = threading.Event()
         self.thread = threading.Thread(target=self.serve_forever, daemon=True)
         self.thread.start()
 
@@ -195,6 +226,22 @@ class TargetHandler(socketserver.BaseRequestHandler):
                                hashlib.sha256(upload).digest())
                 stream.settimeout(5)
                 require(stream.recv(1) == b'', 'unexpected trailing bulk data')
+            elif operation == b'P':
+                # Keep one application connection open while the server engine is
+                # terminated.  This is deliberately separate from E/F/B so a
+                # successful echo cannot be mistaken for a surviving tunnel.
+                length = struct.unpack('!I', receive(stream, 4, deadline))[0]
+                require(16 <= length <= 65536, 'persistent payload exceeds fixture limit')
+                payload = receive(stream, length, deadline)
+                with target.lock:
+                    target.persistent_records.append(payload)
+                stream.sendall(payload)
+                target.persistent_ready.set()
+                stream.settimeout(DEADLINE_SECONDS)
+                while True:
+                    if not stream.recv(4096):
+                        target.persistent_closed.set()
+                        break
             else:
                 raise RuntimeError('unrecognized fixture operation')
         except Exception as error:
@@ -323,17 +370,53 @@ class LossProxy:
 
 class Engine:
     def __init__(self, binary, directory, name, configuration):
+        self.binary = Path(binary)
+        self.directory = Path(directory)
+        self.name = name
         config_path = directory / (name + '.json')
+        self.config_path = config_path
         config_path.write_text(json.dumps(configuration), encoding='utf-8')
         config_path.chmod(0o600)
-        self.log = (directory / (name + '.log')).open('wb')
+        self.log_path = directory / (name + '.log')
+        self.log = None
+        self.process = None
+        self._start()
+
+    def _start(self):
+        self.log = self.log_path.open('ab')
         try:
-            self.process = subprocess.Popen([str(binary), '-C', str(config_path)],
-                                            cwd=directory, stdin=subprocess.DEVNULL,
+            self.process = subprocess.Popen([str(self.binary), '-C', str(self.config_path)],
+                                            cwd=self.directory, stdin=subprocess.DEVNULL,
                                             stdout=self.log, stderr=subprocess.STDOUT)
         except Exception:
             self.log.close()
+            self.log = None
             raise
+
+    def stop(self):
+        """Stop one real engine and wait for its process identity to end."""
+        process = self.process
+        if process is None:
+            return
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            require(process.poll() is not None, 'GOST process failed to stop')
+        finally:
+            if self.log is not None:
+                self.log.close()
+                self.log = None
+
+    def restart(self):
+        """Restart this engine from the same config, binary, and bound ports."""
+        self.stop()
+        self._start()
+        self.alive()
 
     def alive(self):
         require(self.process.poll() is None, 'test GOST process exited unexpectedly')
@@ -352,16 +435,7 @@ class Engine:
         return ticks
 
     def close(self):
-        try:
-            if self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait(timeout=5)
-        finally:
-            self.log.close()
+        self.stop()
 
 
 def echo(port, payload, timeout=5, operation=b'E'):
@@ -453,6 +527,83 @@ def bulk(port, target):
             sender.join(2)
 
 
+def restart_recovery_check(server, client, port, target):
+    """Require real server process replacement and a fresh post-restart flow."""
+    payload = secrets.token_bytes(64)
+    stream = socket.create_connection((HOST, port), timeout=5)
+    stream.settimeout(5)
+    try:
+        stream.sendall(b'P' + struct.pack('!I', len(payload)) + payload)
+        require(receive(stream, len(payload), time.monotonic() + 8) == payload,
+                'persistent pre-restart echo differs')
+        require(target.persistent_ready.wait(5),
+                'target did not observe persistent application stream')
+        old_server_pid = server.process.pid
+        client_pid = client.process.pid
+        client_identity = client.cpu_ticks()['starttime']
+        server.stop()
+        require(server.process.poll() is not None,
+                'server process did not terminate before replacement')
+        stream.settimeout(0.5)
+        old_failure = None
+        deadline = time.monotonic() + ENGINE_RESTART_FAILURE_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                part = stream.recv(4096)
+                if not part:
+                    old_failure = 'eof'
+                    break
+            except socket.timeout:
+                continue
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                old_failure = 'socket_error'
+                break
+        require(old_failure is not None,
+                'old application connection survived server process termination')
+    finally:
+        with contextlib.suppress(OSError):
+            stream.shutdown(socket.SHUT_RDWR)
+        stream.close()
+    server.restart()
+    new_server_pid = server.process.pid
+    require(new_server_pid != old_server_pid,
+            'replacement server reused the terminated process identity')
+    require(client.process.pid == client_pid,
+            'client GOST process changed during server replacement')
+    require(client.cpu_ticks()['starttime'] == client_identity,
+            'client GOST process identity changed during server replacement')
+    ready(port, (server, client))
+    replacement = bulk(port, target)
+    require(replacement['upload_bytes'] == BULK_BYTES and
+            replacement['download_bytes'] == BULK_BYTES,
+            'replacement bulk byte count differs')
+    require(len(replacement['upload_sha256']) == 64 and
+            len(replacement['download_sha256']) == 64,
+            'replacement bulk SHA256 was not recorded')
+    require(target.persistent_closed.wait(5),
+            'target did not observe closure of the pre-restart application stream')
+    return {
+        'server_pid_before': old_server_pid,
+        'server_pid_after': new_server_pid,
+        'server_stopped': True,
+        'client_pid_before': client_pid,
+        'client_pid_after': client.process.pid,
+        'client_identity_unchanged': True,
+        'old_connection_failed': True,
+        'old_connection_failure': old_failure,
+        'old_connection_failure_timeout_seconds': ENGINE_RESTART_FAILURE_SECONDS,
+        'replacement_bulk_passed': True,
+        'replacement_upload_bytes': replacement['upload_bytes'],
+        'replacement_download_bytes': replacement['download_bytes'],
+        'replacement_upload_sha256': replacement['upload_sha256'],
+        'replacement_download_sha256': replacement['download_sha256'],
+        'all_checks_passed': True,
+        'injected_datagram_loss': False,
+        'scope': 'local isolated GOST server process replacement; client process retained; '
+                 'old application stream fails and a new stream recovers; no injected loss',
+    }
+
+
 def certificates(directory):
     cert, key = directory / 'cert.pem', directory / 'key.pem'
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -508,25 +659,25 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
             stage[0] = 'server_startup'
             server = Engine(binary, directory, 'server', server_config)
             cleanup.callback(server.close)
-            chains, services, ports = [], [], []
-            for name in ('authorized', 'missing-auth', 'wrong-auth'):
-                port = unused_port(socket.SOCK_STREAM)
-                require(port not in ports, 'loopback port reservation collided; rerun test')
-                ports.append(port)
-                connector = {'type': 'relay'}
-                if name == 'authorized':
-                    connector['auth'] = auth
-                elif name == 'wrong-auth':
-                    connector['auth'] = {'username': auth['username'],
-                                         'password': secrets.token_urlsafe(32)}
-                chains.append({'name': name, 'hops': [{'name': name, 'nodes': [{
-                    'name': name, 'addr': f'{HOST}:{proxy.address[1]}',
-                    'connector': connector, 'dialer': copy.deepcopy(dialer)}]}]})
-                services.append({'name': name, 'addr': f'{HOST}:{port}',
-                                 'listener': {'type': 'tcp'},
-                                 'handler': {'type': 'tcp', 'chain': name},
-                                 'forwarder': {'nodes': [{'name': 'fixture',
-                                     'addr': f'{HOST}:{target.server_address[1]}'}]}})
+            stage[0] = 'client_fixture_setup'
+            chains, services = [], []
+            names = ('authorized', 'missing-auth', 'wrong-auth')
+            with reserved_tcp_ports(len(names)) as ports:
+                for name, port in zip(names, ports):
+                    connector = {'type': 'relay'}
+                    if name == 'authorized':
+                        connector['auth'] = auth
+                    elif name == 'wrong-auth':
+                        connector['auth'] = {'username': auth['username'],
+                                             'password': secrets.token_urlsafe(32)}
+                    chains.append({'name': name, 'hops': [{'name': name, 'nodes': [{
+                        'name': name, 'addr': f'{HOST}:{proxy.address[1]}',
+                        'connector': connector, 'dialer': copy.deepcopy(dialer)}]}]})
+                    services.append({'name': name, 'addr': f'{HOST}:{port}',
+                                     'listener': {'type': 'tcp'},
+                                     'handler': {'type': 'tcp', 'chain': name},
+                                     'forwarder': {'nodes': [{'name': 'fixture',
+                                         'addr': f'{HOST}:{target.server_address[1]}'}]}})
             stage[0] = 'client_startup'
             client = Engine(binary, directory, 'client', {'services': services,
                                                         'chains': chains})
@@ -538,6 +689,9 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
             rejected(ports[1], target)
             rejected(ports[2], target)
             echo(ports[0], b'authenticated-after-rejections')
+            stage[0] = 'engine_reconnect'
+            result = {'engine_reconnect': restart_recovery_check(server, client,
+                                                                  ports[0], target)}
             # Arm deterministic loss only after readiness and auth checks.
             clock_ticks = os.sysconf('SC_CLK_TCK')
             require(clock_ticks > 0, 'invalid Linux CPU clock tick rate')
@@ -545,7 +699,7 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
             before_cpu = {'server': server.cpu_ticks(), 'client': client.cpu_ticks()}
             proxy.enable_loss(23 if lossy else 0)
             stage[0] = 'bulk_transfer'
-            result = bulk(ports[0], target)
+            result.update(bulk(ports[0], target))
             stage[0] = 'transfer_validation'
             after_cpu = {'server': server.cpu_ticks(), 'client': client.cpu_ticks()}
             sample_seconds = time.monotonic() - sampled_at
