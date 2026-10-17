@@ -10,6 +10,9 @@ on:
       - 'deploy/fetch-node-engines.py'
       - 'tests/install/reliable_udp_release.py'
       - 'tests/install/test_reliable_udp_engine.py'
+      - 'internal/agent/engine/gost_runner*.go'
+      - 'internal/agent/engine/version*.go'
+      - 'tests/integration/gost/forwarding_test.go'
   workflow_dispatch:
 
 permissions:
