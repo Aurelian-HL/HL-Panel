@@ -502,6 +502,28 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 assert bbr_state()[0] != installed_bbr_algorithm and not any(path.exists() for path in bbr_configs.values())
             else:
                 assert bbr_state() == original_bbr_state and not any(path.exists() for path in bbr_configs.values())
+            # Exercise an actual legacy upgrade with BBR absent, rather than
+            # passing because fresh installation already enabled it. Network
+            # rollback is independent of the program/identity rollback.
+            before_upgrade_bbr = bbr_state()
+            backups_before_upgrade_bbr = bbr_backup_paths()
+            try:
+                sys.argv = ['update-node.py','--version',args.version]
+                node_updater.main()
+            finally:
+                sys.argv = saved_args
+            wait_for(real_clients)
+            assert bbr_state() == installed_bbr_state, 'Legacy upgrade did not configure the supported BBR algorithm'
+            upgrade_bbr_backups = bbr_backup_paths() - backups_before_upgrade_bbr
+            assert len(upgrade_bbr_backups) == (1 if bbr_enabled else 0)
+            if bbr_enabled:
+                network_backup = upgrade_bbr_backups.pop()
+                rollback_script = 'configure-node-' + installed_bbr_algorithm + '.py'
+                assert run([sys.executable, str(network_backup/rollback_script),
+                            '--rollback', str(network_backup)]).returncode == 0
+                assert bbr_state() == before_upgrade_bbr
+            assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+            checks.append('legacy program upgrade configures supported BBR with independent network rollback and preserves node identity')
             backups_before_reinstall = bbr_backup_paths()
             fault_state['reenroll_fault'] = True
             assert install(switch_token).returncode == 0, 'Full command did not switch existing node'

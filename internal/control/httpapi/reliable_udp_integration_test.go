@@ -64,6 +64,7 @@ func TestReliableUDPAPIThroughRealEngine(t *testing.T) {
 			_ = secondSpare.Close()
 			_ = spare.Close()
 			businessRequest(t, f, http.MethodPut, "/api/v1/group-networks/"+f.entry.ID, "loopback-entry", groupconfig.Request{ConnectHost: "127.0.0.1", PortStart: min(port, secondPort), PortEnd: max(port, secondPort), AllowDirect: true, AllowedExitGroupIDs: []string{f.exit.ID}, TrafficMultiplier: 1, Revision: 1}, http.StatusOK)
+			businessRequest(t, f, http.MethodPut, "/api/v1/group-networks/"+f.exit.ID, "loopback-exit", groupconfig.Request{AllowedEntryGroupIDs: []string{f.entry.ID}, TrafficMultiplier: 1}, http.StatusOK)
 			var issued enrollment.IssueResult
 			decodeResponse(t, requestJSON(t, f.handler, http.MethodPost, "/api/v1/enrollment-tokens", f.token, map[string]any{"name": "udp-e2e", "expires_in_seconds": 900}, 201), &issued)
 			var node agentv1.EnrollmentResponse

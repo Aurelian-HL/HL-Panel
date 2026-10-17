@@ -9,6 +9,8 @@ on:
       - 'deploy/reliable-udp-engine/**'
       - 'deploy/fetch-node-engines.py'
       - 'deploy/build-release.ps1'
+      - 'deploy/update-node.py'
+      - 'tests/install/test_node_update.py'
       - 'tests/install/node_install.py'
       - 'tests/install/test_udp_package.py'
       - 'tests/install/reliable_udp_release.py'
@@ -52,6 +54,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 tests/install/test_reliable_udp_engine.py
+          python3 tests/install/test_node_update.py
+          python3 tests/install/test_node_bbr.py
+          python3 tests/install/test_node_bbr2_policy.py
           python3 -m unittest discover -s tests/integration/gost -p 'test_udp_*_gates.py' -v
       - name: Verify panel persistence and all Go regressions
         env:

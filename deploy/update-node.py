@@ -30,6 +30,28 @@ def verify_xray_version(binary):
             'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
 
 
+def configure_tcp_bbr(release):
+    # Run only the checksum-verified release helper, after a successful update.
+    # It owns its network backup/rollback and never restarts an engine. A kernel
+    # without BBR must not undo an otherwise healthy node-program upgrade.
+    helper = release/'deploy/configure-node-bbr2.py'
+    fallback = release/'deploy/configure-node-bbr.py'
+    if not helper.is_file() or helper.is_symlink() or not fallback.is_file() or fallback.is_symlink():
+        print('[HL-panel 节点更新] 警告：发布包缺少安全的 TCP BBR 配置器，未修改网络参数。', file=sys.stderr)
+        return False
+    try:
+        result = subprocess.run([sys.executable, str(helper)], capture_output=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        print('[HL-panel 节点更新] 警告：TCP BBR 设置未完成；节点更新保留，请检查实际算法及网络备份。', file=sys.stderr)
+        return False
+    for output, stream in ((result.stdout, sys.stdout), (result.stderr, sys.stderr)):
+        if output:
+            print(output.decode('utf-8', errors='replace').rstrip(), file=stream)
+    if result.returncode != 0:
+        print('[HL-panel 节点更新] 警告：TCP BBR 设置未完成；节点更新保留，请按独立网络备份核对或回滚。', file=sys.stderr)
+    return result.returncode == 0
+
+
 def private_credentials():
     # systemd runs the agent as hl-edge; its atomically written state belongs
     # to that account, while executable files and configuration remain root-owned.
@@ -226,6 +248,7 @@ def main():
             else:
                 start_service()
             raise
+        configure_tcp_bbr(release)
         print('[HL-panel 节点更新] 程序已更新；请回面板核对在线、版本和真实转发。')
         print('备份：'+str(backup))
         print('回滚：bash '+str(backup/'rollback.sh'))
