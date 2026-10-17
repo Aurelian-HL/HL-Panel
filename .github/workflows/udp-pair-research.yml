@@ -24,7 +24,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Build identical source baseline and single-file Pipe candidate
+      - name: Build identical source baseline and separate Pipe and lifecycle candidates
         shell: bash
         run: |
           set -euo pipefail
@@ -35,7 +35,7 @@ jobs:
           HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
         run: |
           set -euo pipefail
-          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
+          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" --lifecycle-focus 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -47,3 +47,4 @@ jobs:
             ${{ runner.temp }}/udp-pair/*.txt
             ${{ runner.temp }}/udp-pair/original/build.log
             ${{ runner.temp }}/udp-pair/fixed/build.log
+            ${{ runner.temp }}/udp-pair/lifecycle/build.log

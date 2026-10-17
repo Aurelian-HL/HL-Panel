@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('provenance', type=Path)
     parser.add_argument('results', type=Path)
+    parser.add_argument('--lifecycle-focus', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'linux' or os.environ.get('HL_PANEL_ISOLATED_RELIABLE_UDP_TEST') != 'true':
         raise RuntimeError('requires explicitly isolated Linux acceptance')
@@ -28,11 +29,17 @@ def main():
     close = load_module('udp_close_checks', root / 'udp_close_checks.py')
     provenance = json.loads(args.provenance.read_text(encoding='utf-8'))
     variants = provenance['variants']
-    if set(variants) != {'official', 'original', 'fixed'}:
-        raise RuntimeError('source pair requires all three provenance entries')
+    if set(variants) not in ({'official', 'original', 'fixed'},
+                             {'official', 'original', 'fixed', 'lifecycle'}):
+        raise RuntimeError('source pair requires the complete recorded provenance entries')
     # A repeated round reverses build order; this is a correctness experiment,
     # not enough repetitions or load to claim any performance ranking.
-    order = ('official', 'original', 'fixed', 'fixed', 'original')
+    if args.lifecycle_focus:
+        if 'lifecycle' not in variants:
+            raise RuntimeError('lifecycle focus requires its separately recorded candidate')
+        order = ('fixed', 'lifecycle', 'lifecycle', 'fixed')
+    else:
+        order = ('official', 'original', 'fixed', 'fixed', 'original')
     results = []
     args.results.parent.mkdir(parents=True, exist_ok=True)
     args.results.write_text('', encoding='utf-8')
@@ -64,15 +71,21 @@ def main():
                 with args.results.open('a', encoding='utf-8') as output:
                     output.write(line + '\n')
                 print('UDP_PAIR_RESULT ' + line, flush=True)
-    fixed = [item for item in results if item['variant'] == 'fixed']
+    candidate = 'lifecycle' if args.lifecycle_focus else 'fixed'
+    fixed = [item for item in results if item['variant'] == candidate]
     full = all(item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
                and item.get('extended_close_passed') for item in fixed)
-    summary = {'fixed_all_checks_passed': full, 'fixed_scenarios': len(fixed),
+    per_transport = {transport: all(
+        item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
+        and item.get('extended_close_passed')
+        for item in fixed if item['transport'] == transport) for transport in ('quic', 'kcp')}
+    summary = {'candidate_variant': candidate, 'candidate_all_checks_passed': full,
+               'candidate_scenarios': len(fixed), 'candidate_per_transport': per_transport,
                'total_scenarios': len(results), 'source_commit': provenance['source_commit'],
                'scope': 'isolated loopback correctness experiment; not production or performance acceptance'}
     print('UDP_PAIR_SUMMARY ' + json.dumps(summary, sort_keys=True), flush=True)
     if not full:
-        raise RuntimeError('fixed candidate failed at least one original or extended delivery check')
+        raise RuntimeError(candidate + ' candidate failed at least one original or extended delivery check')
 
 
 if __name__ == '__main__':

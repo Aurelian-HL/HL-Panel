@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build an isolated, auditable GOST original/Pipe-overlay research pair.
+"""Build isolated GOST original, Pipe-only and lifecycle research candidates.
 
 Usage: python3 build_pair.py OUTPUT_DIRECTORY
 Requires Linux amd64 and Go. It never starts GOST, changes host networking,
@@ -264,6 +264,47 @@ def build_info(text: str, local_x: Path | None) -> dict:
     return {'dependencies': dependencies, 'replacements': replacements}
 
 
+def lifecycle_overlay(output: Path, local_x: Path, pipe: Path, fixed: Path) -> dict:
+    """Test one additional hypothesis without changing the Pipe-only control.
+
+    quic.Stream.Context ends when its send direction closes. The service uses
+    Conn.Context as the parent of both pipe directions. Bind this test adapter
+    to the QUIC connection context so a normal local FIN cannot cancel reverse
+    application traffic. This does not implement cancellation/abort hardening.
+    """
+    changes = (
+        ('listener/quic/conn.go', (
+            ('import (\n', 'import (\n\t"context"\n'),
+            ('\t*quic.Stream\n', '\t*quic.Stream\n\tsessionContext context.Context\n'),
+            ('func (c *quicConn) LocalAddr()',
+             'func (c *quicConn) Context() context.Context {\n'
+             '\treturn c.sessionContext\n}\n\nfunc (c *quicConn) LocalAddr()'),
+        )),
+        ('listener/quic/listener.go', (
+            ('\t\t\tStream: stream,\n',
+             '\t\t\tStream: stream,\n\t\t\tsessionContext: session.Context(),\n'),
+        )),
+    )
+    replacements = {str(pipe): str(fixed)}
+    records = []
+    for relative, edits in changes:
+        source = local_x / relative
+        before = source.read_bytes()
+        patched = before
+        for old, new in edits:
+            old, new = old.encode(), new.encode()
+            require(patched.count(old) == 1, 'lifecycle exact patch failed: ' + relative)
+            patched = patched.replace(old, new, 1)
+        destination = output / ('lifecycle-' + relative.replace('/', '-'))
+        destination.write_bytes(patched)
+        replacements[str(source)] = str(destination)
+        records.append({'path': relative, 'original_sha256': hashlib.sha256(before).hexdigest(),
+                        'candidate_sha256': digest(destination), 'exact_edits': len(edits)})
+    return {'overlay': {'Replace': replacements}, 'patches': records,
+            'hypothesis': 'normal QUIC send FIN must not cancel both forwarding directions',
+            'scope': 'isolated candidate; does not establish abort or idle resource cleanup'}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output_directory', type=Path)
@@ -290,7 +331,7 @@ def main() -> None:
                 'GOPATH': str(output / 'go'),
                 'GOMODCACHE': str(output / 'go' / 'pkg' / 'mod'),
                 'GOCACHE': str(output / 'go-build-cache')})
-    provenance = {'schema': 1, 'purpose': 'isolated original vs single-Pipe-overlay research',
+    provenance = {'schema': 1, 'purpose': 'isolated original, Pipe-only and QUIC lifecycle research',
                   'production_changes': False, 'engine_tests_run': False,
                   'tag': TAG, 'script_sha256': digest(Path(__file__).resolve()),
                   'environment': {key: env[key] for key in
@@ -359,6 +400,10 @@ def main() -> None:
         fixed_overlay = output / 'fixed-overlay.json'
         write_json(original_overlay, {'Replace': {}})
         write_json(fixed_overlay, {'Replace': {str(pipe): str(fixed)}})
+        lifecycle = lifecycle_overlay(output, local_x, pipe, fixed)
+        lifecycle_path = output / 'lifecycle-overlay.json'
+        write_json(lifecycle_path, lifecycle['overlay'])
+        provenance['lifecycle_candidate'] = lifecycle
 
         # -overlay cannot replace files in GOMODCACHE. Both builds therefore
         # share a byte-identical x copy and the same temporary -modfile replace.
@@ -381,7 +426,8 @@ def main() -> None:
                                          'identical_replace_for_both': str(local_x)}
         provenance['builds'] = {}
         provenance['variants'] = {}
-        for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay)]:
+        for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay),
+                               ('lifecycle', lifecycle_path)]:
             destination = output / label
             destination.mkdir()
             binary = destination / 'gost'
@@ -410,8 +456,8 @@ def main() -> None:
             provenance['variants'][label] = {
                 'binary': str(binary), 'sha256': record['sha256'],
                 'buildinfo': information, 'buildinfo_parsed': parsed}
-        require(provenance['builds']['original']['buildinfo'] ==
-                provenance['builds']['fixed']['buildinfo'], 'build dependency graphs differ')
+        require(all(record['buildinfo'] == provenance['builds']['original']['buildinfo']
+                    for record in provenance['builds'].values()), 'build dependency graphs differ')
         run(['go', 'mod', 'verify'], source, env, output / 'mod-verify-after.txt', 600)
         require(tree_manifest(upstream_x) == upstream_manifest, 'module cache source was modified')
 
