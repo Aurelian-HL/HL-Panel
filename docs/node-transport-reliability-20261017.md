@@ -254,17 +254,38 @@ KCP 配置加载问题已在真实 `Config.Read` 路径复现：JSON 经 Viper �
 
 UDP 代理夹具的阻塞读问题也已定位：front/upstream 原为 blocking socket，同一 selector 批次中，front 处理的 upstream send 可能消耗 pending ICMP，随后 stale upstream readiness 对应的 recv 已无数据却无限阻塞；stop Event 无法唤醒，从而出现 `proxy_close` 等待失败，并可能阻挡 replacement QUIC 握手。夹具已将两个 socket 改为 nonblocking，两条接收路径捕获 `BlockingIOError`；未改计数平衡、15 秒旧流期限、F/EOF/H/S 或 lossy-close 门禁。真实 loopback UDP socket 加刻意过期 selector readiness 的两场负控在修前均失败，修后同两场重复 10 轮共 20/20 通过、0 error。原始对照见 `work/udp-repair-20261017-v2/evidence/proxy-stale-readiness-comparison.json` 及对应 baseline/fixed 日志。这是本地可控复现，不能说已完整重现 Linux ICMP 触发链。
 
-当前 Windows 离线门禁最终实际执行 56 项，54 项通过、2 项 Linux connected-UDP ICMP 专用检查跳过；其中新增的检查覆盖 ICMP 被 send 消耗后同批 stale recv 的精确顺序，定向 `git diff --check` 通过。修复后的真实 Linux 16 场尚待执行并审核，不能把夹具局部通过解释为当前所有重启失败已解决，也不能把 dial 对照的旧流退出失败隐藏或放宽。
+Windows 离线门禁最终实际执行 56 项，54 项通过、2 项 Linux connected-UDP ICMP 专用检查跳过；随后下述真实 Linux run 的 56 项全部通过，两项 ICMP 检查实际执行并各为 `ok`，没有沿用 Windows skip。定向 `git diff --check` 通过；15 秒旧流退出及其余关闭门禁保持不变。
+
+### 修复后的准确提交与 Linux 配对验收
+
+修复提交 `63bb69d8e1148aa87916e09320cda0b4b2649efe` 已完成真实 Linux [run `39035201383`](https://github.com/Aurelian-HL/HL-Panel/actions/runs/39035201383)，job `117403499139`、attempt 1，全部步骤为 `completed/success`。已下载并核对完整 1750 行 job log、artifact `12102211537`（113 个文件）及逐场原始 JSONL；checkout 与 run head 均为上述 HL-Panel 提交，结果中的 `source_commit=e9fab9587288b82ce8a1a9b8f07326f41b155935` 仍指固定 GOST 源码。证据位于本次对话 `work/udp-repair-20261017-v2/evidence/linux-63bb69d8/`：`job-complete.log`、`reliable-udp-source-pair.zip`、`download-evidence.json`、`acceptance-audit.json` 和 `compact-acceptance-metrics.json`，原始场景为 `artifact/udp-pair/results.jsonl`。
+
+本轮 offline 56 项全部通过，包括两项真实 Linux connected-UDP ICMP 检查；stacked abort 的 129 个及 Dial 的 18 个测试通过事件合计 147 个，timeout 合约通过事件为 504 个、listener/dialer 各 252 个。已把 `-race -count=3` 实际命令、逐事件名称清单及通过数量对应核对，相关命令 exit 0、无 fail/skip。这些合约结果与下面真实引擎配对结果分别核验，不能相互替代。
+
+顺序仍为 `dial、timeout、timeout、dial`，每轮 QUIC/KCP 与两种 bulk 丢包标签共 16 场：
+
+| 版本 / ordinal | QUIC | KCP | 真实结论 |
+| --- | --- | --- | --- |
+| timeout 候选 / 1、2 | 4/4 通过 | 4/4 通过 | 合计 8/8，鉴权、稳定流双向载荷、F/EOF/H/S、实际丢包关闭、engine reconnect 与完整候选 predicate 均通过 |
+| dial 父版本对照 / 0、3 | 0/4 通过 | 0/4 通过 | 合计 8/8 在 15 秒 `old_stream_exit` 门禁失败，均为 `restart_old_stream_exit_failed` |
+
+作业 success 表示 timeout 候选通过并保留了失败的父版本对照，不能写成 16/16 全通过。8 条场景诊断均属于 dial，对照失败停在旧流退出，不能独立据此断言稳定流载荷损坏。候选 timeout 二进制 SHA256 为 `5564ca4a16eb1fe7d380fd0c89f49e8299e35075808f186b594232eb5e719a6b`，dial 为 `68b3fcdbfa5e7357ba44757677f93d18f5b0f192797fa64ad4f8d7ec126f97b2`。候选是二进制与其 timeout profile 的组合对照，不能把收益全部归于单个代码改动。
+
+候选 8 场中，QUIC 旧流退出为 8.002—9.897 秒，KCP 为 9.882—9.883 秒，均在保留的 15 秒界限内。客户端进程 PID 及 starttime 保持，服务端 PID 改变；之后新流分别完成上传、下载各 2 MiB 与 SHA256 校验。replacement readiness：QUIC 0.206—0.208 秒、KCP 0.204—0.205 秒；这是**先等待旧流退出，再启动替代服务端**后的测量，不是从停机开始的总恢复时间，不能描述为总恢复约 0.2 秒、旧流持续或客户无感。重启门禁仍为 `injected_datagram_loss=false`。
+
+8 场合计无主动丢包的 legacy F 为 160/160、F+EOF 为 40/40、客户端半关闭 H 为 24/24、服务端半关闭 S 为 24/24；`final_frame_close_check` 与 `extended_close_checks.legacy_f` 是同一组证据，不重复计为 320 次。独立实际丢包关闭检查 F+EOF 为 40/40、H 为 24/24、S 为 24/24，均使用每次 64 KiB、两秒期限、每 23 个 UDP 数据报丢一个。每组与每次均实际观察到双向 drop > 0；按组 out/back 丢弃数量范围分别为 F+EOF 16—18/15—18、H 9—11/9—10、S 9—10/9—10。计数包括协议与共享隧道控制流量，不能声称精确丢掉 FIN。
+
+候选 8 场 bulk 的两个方向均满足数据报及 UDP payload 字节 `seen = forwarded + dropped + send_failed`；bulk send_failed 与 connection_refused 合计均为 0，全部场景的 cleanup diagnostic 为 0。它证明本轮隔离样本没有记录到此前的代理清理失败，不代表所有公网 ICMP、故障清理或长期资源释放已验收。本轮未修改门禁以取得 success，旧失败记录继续保留。
 
 ## 十三、交付边界与下一步
 
 - BBR helper、令牌安装调用和原始实验代码已同步到 Git 仓库 `main` 的 `832188a5fe403e5ce583f9f9c0d01c7d64417ba2`；新增成对引擎及生命周期实验位于 `research/reliable-udp-pipe-20261017`，没有发布本轮 tag 或 Release，也没有部署到生产节点。
 - 尚未把 QUIC/KCP 接入产品的完整规则流程，未默认启用节点间可靠 UDP 隧道。
 - 本轮没有修改生产节点配置，没有把生产节点切换到 QUIC/KCP，也没有据此变更客户线路。
-- drain 候选在 run `39011820132` 的全部可靠 UDP 门禁通过，是此前提交 `f616336985ea68fcf180bfb53d7417db3892bee0` 的历史、有界隔离实验结论；它不能替代 `e9993b3`、`eb3031e` 的新增重启门禁验收，也不能覆盖最新已完成 Linux run `39031964493` 的 16 场失败结果。
-- 本轮 KCP 文件配置加载兼容与 UDP 代理非阻塞修复仍处于本地复核阶段；没有本轮修复后的 Linux 全场通过证据，不能宣称已实现生产可靠 UDP、零丢包、低 CPU 或客户无感。
+- drain 候选在 run `39011820132` 的既有可靠 UDP 门禁通过，随后 run `39028607048`、`39031964493` 的新增重启失败均保留为历史证据；修复后的准确提交 `63bb69d8` 在 run `39035201383` 已通过 timeout 候选 8/8 的完整隔离门禁，同时 dial 父版本对照 8/8 仍因旧流未按时退出而失败。不能把历史成功覆盖后续失败，也不能把本轮候选通过扩写为全部 16 场通过。
+- KCP keepalive/keepaliveTimeout 文件加载兼容与 UDP 代理非阻塞修复已获得本地合约、Linux race 合约及上述真实引擎配对证据；MTU/window 等其他 KCP JSON 数值项仍不在本轮兼容修复范围。没有完成产品集成、WAN、长期稳定性、性能或生产验收，不能宣称生产可靠 UDP、零丢包、低 CPU 或客户无感。
 
-KCP 文件加载路径及边界合约的本地普通 count=3 与实际 race 隔离运行已验收；下一步由主审核提交已冻结的 KCP、代理及证据补丁到隔离研究分支，对准确提交重跑并逐场核验 Linux 16 场；保留 dial 对照，必须完整审阅 timeout 候选的 8 场，不能只挑一个通过样本。工作流保留 timeout 结果、命令、模块图、overlay/provenance、替换代码与 parent 输入证据，排除庞大源码及编译缓存以缩短取证等待。不能放宽 15 秒界限或盲目重跑求绿；已实施的 abort/Dial 独立合约不等于完整引擎重启恢复成功。继续保留 F/EOF/H/S 和实际丢包关闭门禁，随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
+KCP 文件加载路径、边界合约和当前 timeout 候选 8 场 Linux 隔离验收已经完成；本轮准确提交无需为求绿再次重跑。下一步是产品接入设计及隔离故障恢复、长时间负载和性能验收，随后才进入已授权公网验证。继续保留 dial 对照、15 秒旧流界限、F/EOF/H/S、实际丢包关闭与严格结果 predicate；独立合约、loopback 新流恢复均不能替代旧连接连续性或生产验收。工作流保留 timeout 结果、命令、模块图、overlay/provenance、替换代码与 parent 输入证据，排除庞大源码及编译缓存以缩短取证等待。主审负责最终证据签收、定向文档提交和后续发布范围，不先默认开启生产 UDP。
 
 之后在同一故障注入方式、机器资源、版本、MTU、带宽与负载下比较 TCP+BBR、QUIC 可靠流、KCP，以及独立比较的 KCP+FEC；若要衡量 BBR 本身的收益，还需保留 TCP 原拥塞算法对照。覆盖真实 RTT、抖动、随机及突发丢包、多连接并发、持续流量与短请求，至少多次重复并随机化顺序，记录应用完整性、失败率、吞吐、冷建链、请求尾延迟和最长停顿、双端单位业务流量 CPU 秒及完整窗口字节开销，之后再开展已授权公网环境的性能验证。现有实验不足以支持性能优劣结论。
 
