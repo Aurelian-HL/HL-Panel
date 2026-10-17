@@ -77,8 +77,8 @@ ensure_time_synchronization() {
 }
 
 configure_tcp_bbr() {
-  if ! python3 "$release/deploy/configure-node-bbr.py"; then
-    echo '[HL-panel 节点] 警告：节点安装已成功，但 TCP BBR 未启用；请核对上方原因，安装不会因此撤销。' >&2
+  if ! python3 "$release/deploy/configure-node-bbr2.py"; then
+    echo '[HL-panel 节点] 警告：节点安装已成功，但 TCP BBR 自动设置未完成；请核对上方原因及实际算法，安装不会因此撤销。' >&2
   fi
 }
 
@@ -204,7 +204,7 @@ for line in (target/'SHA256SUMS').read_text().splitlines():
     require((target/name).is_file() and digest(target/name) == expected, '文件摘要校验失败')
     verified.add(name)
 require({str(p.relative_to(target)) for p in target.rglob('*') if p.is_file()} == verified | {'SHA256SUMS'}, '存在未校验文件')
-for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr.py', 'deploy/systemd/hl-panel-edge-agent.service'):
+for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr2.py', 'deploy/configure-node-bbr.py', 'deploy/systemd/hl-panel-edge-agent.service'):
     require(name in verified, '缺少节点安装文件：' + name)
 (target/'bin/edge-agent').chmod(0o755)
 PY

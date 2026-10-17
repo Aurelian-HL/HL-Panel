@@ -92,6 +92,7 @@ try {
         'install.sh',
         'install-node.sh',
         'reinstall-node.py',
+        'configure-node-bbr2.py',
         'configure-node-bbr.py',
         'fetch-node-engines.py',
         'update.sh',

@@ -2,10 +2,12 @@ name: Node transport safety
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'research/reliable-udp-pipe-20261017', 'fix/node-bbr-policy-20261018']
     paths:
       - 'deploy/configure-node-bbr.py'
+      - 'deploy/configure-node-bbr2.py'
       - 'deploy/install-node.sh'
+      - 'tests/install/test_node_bbr2_policy.py'
       - 'tests/install/test_node_bbr.py'
       - 'tests/install/node_bbr_linux.py'
       - 'tests/install/node_install.py'
@@ -32,19 +34,21 @@ jobs:
       - name: Verify policy and installer syntax without changing network settings
         run: |
           python3 tests/install/test_node_bbr.py
-          python3 -m py_compile deploy/configure-node-bbr.py tests/install/node_bbr_linux.py
+          python3 tests/install/test_node_bbr2_policy.py
+          python3 -m py_compile deploy/configure-node-bbr.py
+          python3 -m py_compile deploy/configure-node-bbr2.py tests/install/node_bbr_linux.py
           bash -n deploy/install-node.sh
-      - name: Verify real BBR, persistent config, live TCP connection and rollback on this disposable VM
+      - name: Verify BBR2 or BBR fallback, persistence, live TCP and rollback on this disposable VM
         shell: bash
         run: |
           set -euo pipefail
           sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
-            python3 tests/install/node_bbr_linux.py 2>&1 | tee node-bbr-result.log
+            python3 tests/install/node_bbr_linux.py 2>&1 | tee node-bbr2-result.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: node-bbr-${{ matrix.os }}
-          path: node-bbr-result.log
+          name: node-bbr2-${{ matrix.os }}
+          path: node-bbr2-result.log
   token-install:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

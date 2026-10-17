@@ -223,22 +223,39 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                             '--node-address', '127.0.0.1'], env=install_env, timeout=420)
 
             expired = issue(1)
-            bbr_config = Path('/etc/sysctl.d/90-hl-panel-node-bbr.conf')
+            bbr_configs = {algorithm: Path('/etc/sysctl.d/90-hl-panel-node-' + algorithm + '.conf')
+                           for algorithm in ('bbr2', 'bbr')}
             bbr_backups = Path('/var/backups/hl-panel-node')
+
+            def bbr_backup_paths():
+                return set(bbr_backups.glob('network-bbr2-*')) | set(bbr_backups.glob('network-bbr-*'))
 
             def bbr_state():
                 current = run(['sysctl', '-n', 'net.ipv4.tcp_congestion_control'])
                 assert current.returncode == 0, 'Cannot read the current TCP congestion algorithm'
-                return current.stdout.strip(), bbr_config.read_bytes() if bbr_config.exists() else None
+                return (current.stdout.strip(),
+                        {algorithm: path.read_bytes() if path.exists() else None
+                         for algorithm, path in bbr_configs.items()})
 
             def rejected_install_preserves_bbr(token, ca=cert):
                 before = bbr_state()
                 assert install(token, ca).returncode != 0
                 assert bbr_state() == before, 'Rejected installation changed TCP BBR runtime or persistent configuration'
 
-            assert not bbr_config.exists(), 'requires an empty disposable BBR configuration'
+            assert not any(path.exists() for path in bbr_configs.values()), 'requires empty disposable BBR configurations'
             original_bbr_state = bbr_state()
-            backups_before_install = set(bbr_backups.glob('network-bbr-*'))
+            # Probe support independently: an installer failure must never be
+            # accepted as an unsupported-kernel skip. Loading a module does not
+            # change the active TCP congestion-control default.
+            if shutil.which('modprobe'):
+                for module in ('tcp_bbr2', 'tcp_bbr'):
+                    run(['modprobe', module], timeout=20)
+            support = run(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control'])
+            assert support.returncode == 0, 'Cannot inspect available TCP congestion algorithms'
+            bbr_available = set(support.stdout.split())
+            expected_bbr = next((name for name in ('bbr2', 'bbr') if name in bbr_available), None)
+            preserve_variant = original_bbr_state[0].startswith('bbr') and original_bbr_state[0] not in bbr_configs
+            backups_before_install = bbr_backup_paths()
             time.sleep(2)
             # Invalid CA fails before installing files.
             rejected_install_preserves_bbr(expired, work/'missing.pem')
@@ -246,19 +263,32 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             rejected_install_preserves_bbr(expired)
             assert not Path('/etc/hl-panel/edge-agent-enrollment.env').exists()
             assert not Path('/var/lib/hl-panel-edge/credentials.json').exists()
-            assert not bbr_config.exists(), 'failed enrollment must not change BBR settings'
+            assert not any(path.exists() for path in bbr_configs.values()), 'failed enrollment must not change BBR settings'
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode != 0
             checks.append('expired token stops service and removes one-use secret')
             token = issue()
             fault_state['enabled'] = True
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
-            assert run(['sysctl','-n','net.ipv4.tcp_congestion_control']).stdout.strip() == 'bbr'
-            assert bbr_config.is_file()
             installed_bbr_state = bbr_state()
-            installation_backups = set(bbr_backups.glob('network-bbr-*')) - backups_before_install
-            assert len(installation_backups) == 1, 'Fresh installation must create one recoverable BBR backup'
-            installation_bbr_backup = installation_backups.pop()
-            checks.append('successful token installation enables and persists kernel TCP BBR')
+            installed_bbr_algorithm = installed_bbr_state[0]
+            bbr_enabled = installed_bbr_algorithm in bbr_configs
+            if expected_bbr and not preserve_variant:
+                assert installed_bbr_algorithm == expected_bbr, 'Installer failed to enable the preferred supported TCP BBR algorithm'
+            if bbr_enabled:
+                assert bbr_configs[installed_bbr_algorithm].is_file()
+                persisted = bbr_configs[installed_bbr_algorithm].read_text()
+                assert ('net.ipv4.tcp_congestion_control = ' + installed_bbr_algorithm) in persisted.splitlines()
+                assert all(not path.exists() for algorithm, path in bbr_configs.items()
+                           if algorithm != installed_bbr_algorithm)
+            else:
+                assert preserve_variant or expected_bbr is None, 'Supported BBR must not be accepted as an unsupported-kernel skip'
+                assert installed_bbr_state == original_bbr_state, 'Unsupported BBR algorithms changed runtime or persistence'
+                assert not any(path.exists() for path in bbr_configs.values())
+            installation_backups = bbr_backup_paths() - backups_before_install
+            assert len(installation_backups) == (1 if bbr_enabled else 0), 'Fresh installation backup count does not match selected BBR support'
+            installation_bbr_backup = installation_backups.pop() if installation_backups else None
+            checks.append('successful token installation enables and persists kernel TCP ' + installed_bbr_algorithm if bbr_enabled else
+                          'unsupported kernel preserves the original TCP algorithm and remains installable')
             assert fault_state['enroll_calls'] == 4 and fault_state['lost_response']
             assert len(set(fault_state['attempts'])) == 1
             # The installer receives the explicit release tag and deliberately
@@ -438,25 +468,31 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             # Remove the successful fresh-install state through its own public
             # rollback helper. Otherwise reinstall assertions could pass even
             # when the installer never invokes BBR configuration on reinstall.
-            assert run([sys.executable, str(installation_bbr_backup/'configure-node-bbr.py'),
-                        '--rollback', str(installation_bbr_backup)]).returncode == 0
-            assert bbr_state() == original_bbr_state
-            assert not bbr_config.exists()
-            if original_bbr_state[0] == 'bbr':
-                # This script is already gated to a root, explicitly disposable,
-                # initially empty VM. Only change the TCP default, never qdisc,
-                # routes, networking services or existing connections.
-                available = run(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control'])
-                assert available.returncode == 0 and 'cubic' in available.stdout.split()
-                assert run(['sysctl', '-q', '-w', 'net.ipv4.tcp_congestion_control=cubic']).returncode == 0
-            assert bbr_state()[0] != 'bbr' and not bbr_config.exists()
-            backups_before_reinstall = set(bbr_backups.glob('network-bbr-*'))
+            if bbr_enabled:
+                rollback_script = 'configure-node-' + installed_bbr_algorithm + '.py'
+                assert run([sys.executable, str(installation_bbr_backup/rollback_script),
+                            '--rollback', str(installation_bbr_backup)]).returncode == 0
+                assert bbr_state() == original_bbr_state
+                assert not any(path.exists() for path in bbr_configs.values())
+                if original_bbr_state[0] == installed_bbr_algorithm:
+                    # This script is gated to an explicitly disposable VM.
+                    # Change only the TCP default to exercise reinstall.
+                    available = run(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control'])
+                    assert available.returncode == 0 and 'cubic' in available.stdout.split()
+                    assert run(['sysctl', '-q', '-w', 'net.ipv4.tcp_congestion_control=cubic']).returncode == 0
+                assert bbr_state()[0] != installed_bbr_algorithm and not any(path.exists() for path in bbr_configs.values())
+            else:
+                assert bbr_state() == original_bbr_state and not any(path.exists() for path in bbr_configs.values())
+            backups_before_reinstall = bbr_backup_paths()
             fault_state['reenroll_fault'] = True
             assert install(switch_token).returncode == 0, 'Full command did not switch existing node'
-            assert bbr_state() == installed_bbr_state, 'Reinstall did not newly enable and persist TCP BBR'
-            reinstall_backups = set(bbr_backups.glob('network-bbr-*'))
-            assert len(reinstall_backups - backups_before_reinstall) == 1
-            checks.append('successful group-switch reinstall newly enables and persists BBR after fresh-install rollback')
+            assert bbr_state() == installed_bbr_state, 'Reinstall changed the TCP algorithm or BBR persistence unexpectedly'
+            assert {algorithm: path.is_file() for algorithm, path in bbr_configs.items()} == {
+                algorithm: bbr_enabled and algorithm == installed_bbr_algorithm for algorithm in bbr_configs}
+            reinstall_backups = bbr_backup_paths()
+            assert len(reinstall_backups - backups_before_reinstall) == (1 if bbr_enabled else 0)
+            checks.append('group-switch reinstall restores ' + installed_bbr_algorithm + ' after rollback' if bbr_enabled else
+                          'group-switch reinstall preserves unsupported-kernel TCP settings')
             assert fault_state['reenroll_calls'] == 3
             fault_state['reenroll_fault'] = False
             registered_groups = [group,second,switched]
@@ -476,7 +512,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert_group(switched['id'])
             assert install(switch_token).returncode == 0
             assert bbr_state() == installed_bbr_state
-            assert set(bbr_backups.glob('network-bbr-*')) == reinstall_backups, 'Repeated reinstall changed already configured BBR'
+            assert bbr_backup_paths() == reinstall_backups, 'Repeated reinstall changed already configured BBR'
             rejected_install_preserves_bbr(token)
             assert_group(switched['id'])
             expired_switch = issue(1,group_id=group['id'])

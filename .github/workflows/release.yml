@@ -93,8 +93,10 @@ jobs:
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
+          python3 -m py_compile deploy/configure-node-bbr2.py
           python3 -m py_compile deploy/configure-node-bbr.py
           python3 tests/install/test_node_bbr.py
+          python3 tests/install/test_node_bbr2_policy.py
           sudo python3 tests/install/test_recovery.py
           python3 tests/install/test_install_addresses.py
           python3 tests/install/test_subscription_nginx.py
@@ -138,6 +140,7 @@ jobs:
             deploy/install.sh
             deploy/install-node.sh
             deploy/reinstall-node.py
+            deploy/configure-node-bbr2.py
             deploy/configure-node-bbr.py
             deploy/fetch-node-engines.py
             deploy/update.sh

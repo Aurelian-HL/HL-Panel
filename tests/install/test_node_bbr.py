@@ -251,7 +251,7 @@ class BBRTests(unittest.TestCase):
         script = (REPO/'deploy/install-node.sh').read_text(encoding='utf-8')
         self.assertEqual(script.count('\n  configure_tcp_bbr\n'), 1)
         self.assertIn('install_ready=1\nconfigure_tcp_bbr', script)
-        self.assertIn('if ! python3 "$release/deploy/configure-node-bbr.py"; then', script)
+        self.assertIn('if ! python3 "$release/deploy/configure-node-bbr2.py"; then', script)
 
 
 class BoundaryTests(unittest.TestCase):
