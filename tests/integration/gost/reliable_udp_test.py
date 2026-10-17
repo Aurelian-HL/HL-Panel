@@ -59,7 +59,8 @@ DIAGNOSTIC_MARKERS = (
 )
 
 
-def diagnose_failure(directory, stage, exc_type, _error, _traceback):
+def diagnose_failure(directory, stage, exc_type, _error, _traceback,
+                     proxy=None, target=None):
     """Emit fixed classifications only; never expose log text or exception data."""
     if exc_type is None:
         return False
@@ -82,6 +83,13 @@ def diagnose_failure(directory, stage, exc_type, _error, _traceback):
         diagnostic = {'stage': safe_stage, 'engines': engines,
                       'scope': 'known markers observed in bounded log tails; '
                                'expected authorization rejections may be included'}
+        if proxy is not None:
+            diagnostic['udp'] = proxy.snapshot()
+            diagnostic['proxy_error_count'] = len(proxy.errors)
+        if target is not None:
+            with target.lock:
+                diagnostic['target_record_count'] = len(target.records)
+                diagnostic['target_error_count'] = len(target.errors)
     except Exception:
         diagnostic = {'stage': safe_stage, 'categories': ['diagnostic_unavailable']}
     # Even a diagnostic output failure must preserve the original exception.
@@ -430,14 +438,18 @@ def scenario(binary, transport, lossy):
         directory = Path(temporary)
         with contextlib.ExitStack() as cleanup:
             stage = ['fixture_setup']
+            observation = {'proxy': None, 'target': None}
             # Register first to diagnose after logs close, before their directory
             # is removed; callbacks never suppress the original failure.
             cleanup.push(lambda exc_type, error, traceback:
-                         diagnose_failure(directory, stage[0], exc_type, error, traceback))
+                         diagnose_failure(directory, stage[0], exc_type, error,
+                                          traceback, **observation))
             target = Target()
+            observation['target'] = target
             cleanup.callback(target.close)
             udp_port = unused_port(socket.SOCK_DGRAM)
             proxy = LossProxy(udp_port)
+            observation['proxy'] = proxy
             cleanup.callback(proxy.close)
             auth = {'username': 'isolated-test', 'password': secrets.token_urlsafe(32)}
             listener = {'type': transport}
