@@ -15,6 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import udp_timeout_overlay as helper
+import run_timeout_contracts as runner
 
 
 class TimeoutOverlayGates(unittest.TestCase):
@@ -171,6 +172,62 @@ class TimeoutOverlayGates(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.build(self.root / 'source-collision', self.source, include_tests=True)
         self.assert_unwritten(self.root / 'source-collision')
+
+
+class TimeoutRunnerEventGates(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='udp-timeout-events-')
+        self.addCleanup(self.temp.cleanup)
+        self.log = Path(self.temp.name) / 'events.jsonl'
+        self.count = 3
+        self.events = []
+        for package in runner.PACKAGES:
+            for name in sorted(runner.expected_tests()):
+                for _ in range(self.count):
+                    self.events.extend({'Action': action, 'Package': package, 'Test': name}
+                                       for action in ('run', 'pass'))
+            self.events.append({'Action': 'pass', 'Package': package})
+
+    def write_events(self, events):
+        self.log.write_text(''.join(json.dumps(event) + '\n' for event in events), encoding='utf-8')
+
+    def test_complete_exact_repeated_inventory_is_required(self):
+        self.write_events(self.events)
+        self.assertEqual(runner.validate_events(self.log, self.count),
+                         len(runner.PACKAGES) * len(runner.expected_tests()) * self.count)
+        names = runner.expected_tests()
+        for format in ('json', 'yaml'):
+            for name in ('numeric', 'absent', 'overflow_interval', 'zero_interval', 'negative_interval'):
+                self.assertIn('TestKCPTimeoutLoadedConfig/' + format + '/' + name, names)
+        self.assertIn('TestKCPTimeoutFloatIntervalRejected/int_overflow', names)
+
+    def test_missing_duplicate_unexpected_or_skipped_events_are_rejected(self):
+        for case in ('missing_run', 'missing_pass', 'duplicate_run', 'duplicate_pass',
+                     'missing_package_pass', 'duplicate_package_pass', 'unknown_test',
+                     'unknown_package', 'skip', 'fail', 'wrong_count'):
+            with self.subTest(case=case):
+                events = copy.deepcopy(self.events)
+                if case == 'missing_run':
+                    del events[0]
+                elif case == 'missing_pass':
+                    del events[1]
+                elif case == 'duplicate_run':
+                    events.append(copy.deepcopy(events[0]))
+                elif case == 'duplicate_pass':
+                    events.append(copy.deepcopy(events[1]))
+                elif case == 'missing_package_pass':
+                    events.pop()
+                elif case == 'duplicate_package_pass':
+                    events.append(copy.deepcopy(events[-1]))
+                elif case == 'unknown_test':
+                    events.append({'Action': 'run', 'Package': runner.PACKAGES[0], 'Test': 'Unexpected'})
+                elif case == 'unknown_package':
+                    events.append({'Action': 'output', 'Package': 'unexpected'})
+                elif case in ('skip', 'fail'):
+                    events.append({'Action': case, 'Package': runner.PACKAGES[0]})
+                self.write_events(events)
+                with self.assertRaises(RuntimeError):
+                    runner.validate_events(self.log, self.count + 1 if case == 'wrong_count' else self.count)
 
 
 if __name__ == '__main__':

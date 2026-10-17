@@ -23,6 +23,7 @@ on:
       - 'tests/integration/gost/test_udp_command_gates.py'
       - 'tests/integration/gost/test_udp_result_gates.py'
       - 'tests/integration/gost/test_udp_restart_gates.py'
+      - 'tests/integration/gost/test_udp_cleanup_gates.py'
       - 'tests/integration/gost/abort_contracts/**'
   workflow_dispatch:
 
@@ -121,4 +122,14 @@ jobs:
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/*.go
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.mod
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.sum
-            ${{ runner.temp }}/udp-timeout-contracts/**
+            ${{ runner.temp }}/udp-timeout-contracts/result.json
+            ${{ runner.temp }}/udp-timeout-contracts/failure.json
+            ${{ runner.temp }}/udp-timeout-contracts/commands.json
+            ${{ runner.temp }}/udp-timeout-contracts/timeout-results.jsonl
+            ${{ runner.temp }}/udp-timeout-contracts/mod-edit.log
+            ${{ runner.temp }}/udp-timeout-contracts/contracts.mod
+            ${{ runner.temp }}/udp-timeout-contracts/contracts.sum
+            ${{ runner.temp }}/udp-timeout-contracts/timeout-patch/*.json
+            ${{ runner.temp }}/udp-timeout-contracts/timeout-patch/*.go
+            ${{ runner.temp }}/udp-timeout-contracts/contracts/*.go
+            ${{ runner.temp }}/udp-timeout-contracts/parent-inputs/*.go

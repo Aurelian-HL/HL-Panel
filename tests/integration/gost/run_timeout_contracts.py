@@ -34,15 +34,31 @@ def manifest(root: Path) -> dict:
 
 def expected_tests() -> set[str]:
     expected = {'TestKCPTimeoutEffectiveConfig', 'TestKCPTimeoutInvalidRejectedByInit',
-                'TestKCPTimeoutInstanceIsolationAndReset'}
+                'TestKCPTimeoutInstanceIsolationAndReset', 'TestKCPTimeoutLoadedConfig',
+                'TestKCPTimeoutFloatIntervalRejected'}
     expected.update('TestKCPTimeoutEffectiveConfig/' + name for name in (
-        'default', 'explicit', 'integer', 'string_integer', 'equal', 'fractional',
+        'default', 'explicit', 'integer', 'float_integer', 'float_max_seconds',
+        'float_interval_max_seconds', 'string_integer', 'equal', 'fractional',
         'timeout_absent', 'negative_interval', 'zero_interval', 'upper_case'))
     expected.update('TestKCPTimeoutInvalidRejectedByInit/' + name for name in (
         'nil', 'empty', 'malformed', 'zero', 'negative', 'bool', 'float', 'int64',
+        'float_nan', 'float_pos_inf', 'float_neg_inf', 'float_zero', 'float_negative',
+        'float_seconds_overflow',
         'duration_overflow', 'seconds_overflow', 'integer_parse_overflow',
         'below_explicit_interval', 'below_default_interval', 'below_negative_fallback',
         'nonpositive_string', 'integer_seconds_overflow'))
+    expected.update('TestKCPTimeoutFloatIntervalRejected/' + name for name in (
+        'nan', 'pos_inf', 'neg_inf', 'fractional', 'zero', 'negative',
+        'int_overflow', 'duration_overflow'))
+    for format in ('json', 'yaml'):
+        prefix = 'TestKCPTimeoutLoadedConfig/' + format
+        expected.add(prefix)
+        expected.update(prefix + '/' + name for name in (
+            'absent', 'duration', 'numeric', 'string_seconds', 'timeout_absent',
+            'interval_absent', 'fractional_duration', 'equal_interval',
+            'below_interval', 'fractional_timeout', 'zero_timeout', 'negative_timeout',
+            'overflow_timeout', 'fractional_interval', 'overflow_interval',
+            'zero_interval', 'negative_interval'))
     return expected
 
 

@@ -9,7 +9,9 @@ import socket
 import struct
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -191,6 +193,7 @@ class ProxyRestartFixtureGates(unittest.TestCase):
     def test_other_send_errors_remain_fatal_with_balanced_counters(self):
         for direction, error in (('out', PermissionError('secret-permission')),
                                  ('back', ConnectionRefusedError('secret-back-refusal')),
+                                 ('out', BlockingIOError('secret-would-block')),
                                  ('out', OSError('secret-other-error'))):
             with self.subTest(direction=direction, error=type(error).__name__):
                 proxy = self.proxy()
@@ -201,6 +204,133 @@ class ProxyRestartFixtureGates(unittest.TestCase):
                 self.assertEqual(counters['datagrams_forwarded'][direction], 0)
                 self.assertEqual(counters['datagrams_dropped'][direction], 0)
                 self.assertEqual(counters['connection_refused_events']['out_send'], 0)
+
+    def test_stale_front_readiness_cannot_block_shutdown(self):
+        with mock.patch.object(threading.Thread, 'start'):
+            proxy = fixture.LossProxy(fixture.unused_port(socket.SOCK_DGRAM))
+        selected = types.SimpleNamespace(fileobj=proxy.front, data=None)
+        calls = []
+
+        def stale_select(_timeout):
+            calls.append(True)
+            if len(calls) == 1:
+                return [(selected, fixture.selectors.EVENT_READ)]
+            proxy.stop.set()
+            return []
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            with mock.patch.object(proxy.selector, 'select', side_effect=stale_select):
+                proxy.thread = threading.Thread(target=proxy.run, daemon=True)
+                proxy.thread.start()
+                self.addCleanup(proxy.close)
+                proxy.thread.join(1)
+                stopped_without_packet = not proxy.thread.is_alive()
+                if not stopped_without_packet:
+                    # Release the old blocking implementation before failing.
+                    sender.sendto(b'release-blocked-read', proxy.address)
+                    proxy.stop.set()
+                    proxy.thread.join(2)
+        proxy.close()
+        self.assertTrue(stopped_without_packet, 'stale front readiness blocked recvfrom')
+        self.assertEqual(proxy.errors, [])
+
+    def test_stale_upstream_readiness_cannot_block_shutdown(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind((fixture.HOST, 0))
+            receiver.settimeout(2)
+            proxy = fixture.LossProxy(receiver.getsockname()[1])
+            self.addCleanup(proxy.close)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                sender.bind((fixture.HOST, 0))
+                sender.sendto(b'establish-upstream', proxy.address)
+                _packet, upstream_address = receiver.recvfrom(1024)
+                deadline = time.monotonic() + 2
+                while not proxy.upstreams and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(len(proxy.upstreams), 1)
+                upstream = next(iter(proxy.upstreams.values()))
+                selected = types.SimpleNamespace(fileobj=upstream, data=sender.getsockname())
+                observed_stale_read = threading.Event()
+                real_select = proxy.selector.select
+
+                def stale_select(timeout):
+                    if not observed_stale_read.is_set():
+                        observed_stale_read.set()
+                        return [(selected, fixture.selectors.EVENT_READ)]
+                    return real_select(timeout)
+
+                with mock.patch.object(proxy.selector, 'select', side_effect=stale_select):
+                    self.assertTrue(observed_stale_read.wait(2))
+                    proxy.stop.set()
+                    proxy.thread.join(1)
+                    stopped_without_packet = not proxy.thread.is_alive()
+                    if not stopped_without_packet:
+                        receiver.sendto(b'release-blocked-read', upstream_address)
+                        proxy.thread.join(2)
+                proxy.close()
+                self.assertTrue(stopped_without_packet, 'stale upstream readiness blocked recv')
+                self.assertEqual(proxy.errors, [])
+                counters = proxy.snapshot()
+                self.assertEqual(counters['datagrams_seen']['out'], 1)
+                self.assertEqual(counters['datagrams_seen']['back'], 0)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux connected-UDP ICMP semantics')
+    def test_real_icmp_consumed_by_send_cannot_block_stale_batch_read(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as closed_target:
+            closed_target.bind((fixture.HOST, 0))
+            target_address = closed_target.getsockname()
+        with mock.patch.object(threading.Thread, 'start'):
+            proxy = fixture.LossProxy(target_address[1])
+        self.addCleanup(proxy.front.close)
+        self.addCleanup(proxy.selector.close)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            sender.bind((fixture.HOST, 0))
+            upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.addCleanup(upstream.close)
+            upstream.bind((fixture.HOST, 0))
+            upstream.connect(target_address)
+            # Match the fixture's mode while preserving a blocking baseline.
+            upstream.settimeout(proxy.front.gettimeout())
+            upstream_address = upstream.getsockname()
+            proxy.upstreams[sender.getsockname()] = upstream
+            proxy.selector.register(upstream, fixture.selectors.EVENT_READ, sender.getsockname())
+            upstream.send(b'closed-port-icmp')
+            self.assertEqual(select.select([upstream], [], [], 2)[0], [upstream])
+            sender.sendto(b'consume-pending-icmp', proxy.address)
+            ready = proxy.selector.select(2)
+            self.assertEqual({key.fileobj for key, _ in ready}, {proxy.front, upstream})
+            batch = sorted(ready, key=lambda event: event[0].fileobj is not proxy.front)
+            calls = []
+
+            def observed_batch(_timeout):
+                calls.append(True)
+                if len(calls) == 1:
+                    return batch
+                proxy.stop.set()
+                return []
+
+            with mock.patch.object(proxy.selector, 'select', side_effect=observed_batch):
+                proxy.thread = threading.Thread(target=proxy.run, daemon=True)
+                proxy.thread.start()
+                self.addCleanup(proxy.close)
+                proxy.thread.join(1)
+                stopped_without_packet = not proxy.thread.is_alive()
+                if not stopped_without_packet:
+                    # A real reply releases the baseline's stale blocking recv.
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as replacement:
+                        replacement.bind(target_address)
+                        replacement.sendto(b'release-blocked-read', upstream_address)
+                    proxy.stop.set()
+                    proxy.thread.join(2)
+            proxy.close()
+            self.assertTrue(stopped_without_packet, 'consumed ICMP left stale recv blocking')
+            self.assertEqual(proxy.errors, [])
+            counters = proxy.snapshot()
+            self.assertEqual(counters['datagrams_seen']['out'], 1)
+            self.assertEqual(counters['datagrams_seen']['back'], 0)
+            self.assertEqual(counters['connection_refused_events']['out_send'], 1)
+            self.assertEqual(counters['connection_refused_events']['upstream_receive'], 0)
+            self.assertEqual(counters['datagrams_send_failed']['out'], 1)
 
     @unittest.skipUnless(sys.platform == 'linux', 'requires Linux connected-UDP ICMP semantics')
     def test_real_closed_udp_port_send_refusal_and_same_port_recovery(self):

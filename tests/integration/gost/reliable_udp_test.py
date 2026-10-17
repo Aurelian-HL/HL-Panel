@@ -403,6 +403,7 @@ class LossProxy:
         self.target = (HOST, target_port)
         self.front = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.front.bind((HOST, 0))
+        self.front.setblocking(False)
         self.address = self.front.getsockname()
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.front, selectors.EVENT_READ, None)
@@ -476,18 +477,28 @@ class LossProxy:
             while not self.stop.is_set():
                 for key, _ in self.selector.select(0.1):
                     if key.fileobj is self.front:
-                        packet, client = self.front.recvfrom(65535)
+                        try:
+                            packet, client = self.front.recvfrom(65535)
+                        except BlockingIOError:
+                            continue
                         require(client[0] == HOST, 'non-loopback UDP sender')
                         if client not in self.upstreams:
                             upstream = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                             upstream.bind((HOST, 0))
                             upstream.connect(self.target)
+                            upstream.setblocking(False)
                             self.upstreams[client] = upstream
                             self.selector.register(upstream, selectors.EVENT_READ, client)
                         self.forward('out', packet, self.upstreams[client].send)
                     else:
                         try:
                             packet = key.fileobj.recv(65535)
+                        except BlockingIOError:
+                            # A pending ICMP error can make select report this
+                            # socket ready, then be consumed by an outbound send
+                            # earlier in the same batch. Never block shutdown on
+                            # that stale readiness notification.
+                            continue
                         except ConnectionRefusedError:
                             # The engine may be starting or deliberately stopped.
                             with self.lock:

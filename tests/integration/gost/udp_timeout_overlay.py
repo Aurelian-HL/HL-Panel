@@ -36,8 +36,20 @@ def edits(relative: str) -> list[tuple[str, str]]:
     side = 'l' if relative.startswith('listener/') else 'd'
     if relative.endswith('/metadata.go'):
         changes = [
-            ('\t"encoding/json"\n', '\t"encoding/json"\n\t"errors"\n\t"strconv"\n'),
+            ('\t"encoding/json"\n', '\t"encoding/json"\n\t"errors"\n\t"math"\n\t"strconv"\n'),
             ('type metadata struct {\n', 'type metadata struct {\n\tkeepAliveTimeout time.Duration\n'),
+            (f'\t{side}.md.config.KeepAlive = mdutil.GetInt(md, "kcp.keepalive")\n',
+             f'\t{side}.md.config.KeepAlive = mdutil.GetInt(md, "kcp.keepalive")\n'
+             '\t// Config.Read JSON preserves numbers in metadata as float64.\n'
+             '\t// Normalize this field locally without changing shared metadata helpers.\n'
+             '\tif mdutil.IsExists(md, "kcp.keepalive") {\n'
+             '\t\tif value, ok := md.Get("kcp.keepalive").(float64); ok {\n'
+             '\t\t\tif math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || math.Trunc(value) != value || value >= math.Ldexp(1, strconv.IntSize-1) || value > float64((1<<63-1)/time.Second) {\n'
+             '\t\t\t\treturn errors.New("kcp.keepalive JSON number must be a positive integer within the platform int and duration ranges")\n'
+             '\t\t\t}\n'
+             f'\t\t\t{side}.md.config.KeepAlive = int(value)\n'
+             '\t\t}\n'
+             '\t}\n'),
             (f'\t{side}.md.config.NoComp = mdutil.GetBool(md, "kcp.nocomp")\n',
              f'\t{side}.md.config.NoComp = mdutil.GetBool(md, "kcp.nocomp")\n'
              f'\n\t// Absent metadata preserves the pinned smux timeout default.\n'
@@ -48,6 +60,11 @@ def edits(relative: str) -> list[tuple[str, str]]:
              '\t\tswitch value := md.Get("kcp.keepaliveTimeout").(type) {\n'
              '\t\tcase int:\n'
              '\t\t\tif value <= 0 || uint64(value) > uint64((1<<63-1)/time.Second) {\n'
+             '\t\t\t\treturn invalid\n'
+             '\t\t\t}\n'
+             '\t\t\ttimeout = time.Duration(value) * time.Second\n'
+             '\t\tcase float64:\n'
+             '\t\t\tif math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || math.Trunc(value) != value || value > float64((1<<63-1)/time.Second) {\n'
              '\t\t\t\treturn invalid\n'
              '\t\t\t}\n'
              '\t\t\ttimeout = time.Duration(value) * time.Second\n'
