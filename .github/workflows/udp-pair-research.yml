@@ -9,6 +9,15 @@ on:
       - 'tests/integration/gost/reliable_udp_pair.py'
       - 'tests/integration/gost/udp_pair_builder.py'
       - 'tests/integration/gost/udp_close_checks.py'
+      - 'tests/integration/gost/udp_abort_overlay.py'
+      - 'tests/integration/gost/run_abort_contracts.py'
+      - 'tests/integration/gost/udp_dial_overlay.py'
+      - 'tests/integration/gost/run_dial_contracts.py'
+      - 'tests/integration/gost/test_udp_dial_gates.py'
+      - 'tests/integration/gost/dial_contracts/**'
+      - 'tests/integration/gost/test_udp_command_gates.py'
+      - 'tests/integration/gost/test_udp_result_gates.py'
+      - 'tests/integration/gost/abort_contracts/**'
   workflow_dispatch:
 
 permissions:
@@ -17,25 +26,35 @@ permissions:
 jobs:
   source-pair:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
-      - name: Build identical source baseline and separate half-close and drain candidates
+      - name: Check command and result failure gates offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests/integration/gost -p 'test_udp_*_gates.py' -v
+      - name: Build identical baselines and independent drain abort and Dial candidates
         shell: bash
         run: |
           set -euo pipefail
           python3 tests/integration/gost/udp_pair_builder.py "$RUNNER_TEMP/udp-pair"
+      - name: Check stacked abort and Dial contracts with race detector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/integration/gost/run_dial_contracts.py --source "$RUNNER_TEMP/udp-pair/x-source" --parent "$RUNNER_TEMP/udp-pair/drain-candidate.json" --output "$RUNNER_TEMP/udp-dial-contracts" --count 3
       - name: Compare real engines without modifying host networking
         shell: bash
         env:
           HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
         run: |
           set -euo pipefail
-          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" --drain-focus --lossy-close 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
+          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" --dial-focus --lossy-close 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -50,3 +69,38 @@ jobs:
             ${{ runner.temp }}/udp-pair/lifecycle/build.log
             ${{ runner.temp }}/udp-pair/halfclose/build.log
             ${{ runner.temp }}/udp-pair/drain/build.log
+            ${{ runner.temp }}/udp-pair/abort/build.log
+            ${{ runner.temp }}/udp-pair/dial/build.log
+            ${{ runner.temp }}/udp-pair/drain-candidate.json
+            ${{ runner.temp }}/udp-pair/abort-patch/provenance.json
+            ${{ runner.temp }}/udp-pair/dial-candidate.json
+            ${{ runner.temp }}/udp-pair/dial-patch/provenance.json
+            ${{ runner.temp }}/udp-pair/dial-patch/overlay.json
+            ${{ runner.temp }}/udp-pair/dial-patch/*.go
+            ${{ runner.temp }}/udp-pair/*manifest.json
+            ${{ runner.temp }}/udp-pair/*-download.json
+            ${{ runner.temp }}/udp-pair/source-go-mod.json
+            ${{ runner.temp }}/udp-pair/research.mod
+            ${{ runner.temp }}/udp-pair/research.sum
+            ${{ runner.temp }}/udp-pair/*-overlay.json
+            ${{ runner.temp }}/udp-pair/*.go
+            ${{ runner.temp }}/udp-pair/abort-patch/**/*.go
+            ${{ runner.temp }}/udp-pair/abort-patch/overlay.json
+            ${{ runner.temp }}/udp-dial-contracts/result.json
+            ${{ runner.temp }}/udp-dial-contracts/failure.json
+            ${{ runner.temp }}/udp-dial-contracts/commands.json
+            ${{ runner.temp }}/udp-dial-contracts/dial-results.jsonl
+            ${{ runner.temp }}/udp-dial-contracts/dial-contract-overlay.json
+            ${{ runner.temp }}/udp-dial-contracts/dialer_cancel_contract_test.go
+            ${{ runner.temp }}/udp-dial-contracts/dial-parent/**
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/result.json
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/commands.json
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/race-results.jsonl
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/go-mod-tidy.log
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/abort/**/*.go
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/abort/overlay.json
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contract-overlay/**/*.go
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contract-overlay/overlay.json
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/*.go
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.mod
+            ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.sum

@@ -23,6 +23,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path, PurePosixPath
 
+from udp_abort_overlay import abort_overlay
+from udp_dial_overlay import dial_overlay
+
 TAG = 'v3.3.1-nightly.20260922'
 REPOSITORY = 'go-gost/gost'
 X_MODULE = 'github.com/go-gost/x'
@@ -222,8 +225,14 @@ def tree_manifest(directory: Path) -> dict:
 
 
 def run(arguments: list[str], cwd: Path, env: dict, log: Path, timeout: int = 900) -> str:
-    completed = subprocess.run(arguments, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                               stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    try:
+        completed = subprocess.run(arguments, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as error:
+        # communicate() has already collected partial output before killing the
+        # timed-out command. Preserve it without treating the build as complete.
+        log.write_bytes(error.output or b'')
+        raise
     log.write_bytes(completed.stdout)
     require(completed.returncode == 0,
             'command failed with exit ' + str(completed.returncode) + ': ' +
@@ -547,6 +556,18 @@ def main() -> None:
         drain_path = output / 'drain-overlay.json'
         write_json(drain_path, drain['overlay'])
         provenance['drain_candidate'] = drain
+        write_json(output / 'drain-candidate.json', drain)
+        abort = abort_overlay(output / 'abort-patch', local_x, dict(drain, candidate='drain'))
+        abort_path = output / 'abort-patch' / 'overlay.json'
+        provenance['abort_candidate'] = abort
+        provenance['abort_helper_sha256'] = digest(Path(__file__).with_name('udp_abort_overlay.py'))
+        dial = dial_overlay(output / 'dial-patch', local_x, abort)
+        dial_path = output / 'dial-patch' / 'overlay.json'
+        provenance['dial_candidate'] = dial
+        provenance['dial_helper_sha256'] = digest(Path(__file__).with_name('udp_dial_overlay.py'))
+        write_json(output / 'dial-candidate.json', dial)
+        require(not any(path.endswith('_test.go') for path in dial['overlay']['Replace']),
+                'Dial binary overlay must not contain contract test mappings')
 
         # -overlay cannot replace files in GOMODCACHE. Both builds therefore
         # share a byte-identical x copy and the same temporary -modfile replace.
@@ -574,7 +595,7 @@ def main() -> None:
         provenance['variants'] = {}
         for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay),
                                ('lifecycle', lifecycle_path), ('halfclose', halfclose_path),
-                               ('drain', drain_path)]:
+                               ('drain', drain_path), ('abort', abort_path), ('dial', dial_path)]:
             destination = output / label
             destination.mkdir()
             binary = destination / 'gost'

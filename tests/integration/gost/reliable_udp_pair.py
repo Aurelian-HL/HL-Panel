@@ -16,6 +16,27 @@ def load_module(name, path):
     return module
 
 
+def candidate_order(variants, *, lifecycle=False, halfclose=False, drain=False,
+                    abort=False, dial=False):
+    base = {'official', 'original', 'fixed'}
+    stages = ('lifecycle', 'halfclose', 'drain', 'abort', 'dial')
+    allowed = [base | set(stages[:count]) for count in range(len(stages) + 1)]
+    if set(variants) not in allowed:
+        raise RuntimeError('source pair requires the complete recorded provenance entries')
+    selected = [name for name, enabled in zip(stages, (lifecycle, halfclose, drain, abort, dial))
+                if enabled]
+    if len(selected) > 1:
+        raise RuntimeError('choose exactly one candidate focus')
+    if selected:
+        candidate = selected[0]
+        if candidate not in variants:
+            raise RuntimeError(candidate + ' focus requires its separately recorded candidate')
+        previous = ('fixed',) + stages[:-1]
+        parent = previous[stages.index(candidate)]
+        return (parent, candidate, candidate, parent), candidate
+    return ('official', 'original', 'fixed', 'fixed', 'original'), 'fixed'
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('provenance', type=Path)
@@ -23,6 +44,8 @@ def main():
     parser.add_argument('--lifecycle-focus', action='store_true')
     parser.add_argument('--halfclose-focus', action='store_true')
     parser.add_argument('--drain-focus', action='store_true')
+    parser.add_argument('--abort-focus', action='store_true')
+    parser.add_argument('--dial-focus', action='store_true')
     parser.add_argument('--lossy-close', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'linux' or os.environ.get('HL_PANEL_ISOLATED_RELIABLE_UDP_TEST') != 'true':
@@ -32,29 +55,11 @@ def main():
     close = load_module('udp_close_checks', root / 'udp_close_checks.py')
     provenance = json.loads(args.provenance.read_text(encoding='utf-8'))
     variants = provenance['variants']
-    if set(variants) not in ({'official', 'original', 'fixed'},
-                             {'official', 'original', 'fixed', 'lifecycle'},
-                             {'official', 'original', 'fixed', 'lifecycle', 'halfclose'},
-                             {'official', 'original', 'fixed', 'lifecycle', 'halfclose', 'drain'}):
-        raise RuntimeError('source pair requires the complete recorded provenance entries')
     # A repeated round reverses build order; this is a correctness experiment,
     # not enough repetitions or load to claim any performance ranking.
-    if sum((args.lifecycle_focus, args.halfclose_focus, args.drain_focus)) > 1:
-        raise RuntimeError('choose exactly one candidate focus')
-    if args.drain_focus:
-        if 'drain' not in variants:
-            raise RuntimeError('drain focus requires its separately recorded candidate')
-        order = ('halfclose', 'drain', 'drain', 'halfclose')
-    elif args.halfclose_focus:
-        if 'halfclose' not in variants:
-            raise RuntimeError('half-close focus requires its separately recorded candidate')
-        order = ('lifecycle', 'halfclose', 'halfclose', 'lifecycle')
-    elif args.lifecycle_focus:
-        if 'lifecycle' not in variants:
-            raise RuntimeError('lifecycle focus requires its separately recorded candidate')
-        order = ('fixed', 'lifecycle', 'lifecycle', 'fixed')
-    else:
-        order = ('official', 'original', 'fixed', 'fixed', 'original')
+    order, candidate = candidate_order(variants, lifecycle=args.lifecycle_focus,
+        halfclose=args.halfclose_focus, drain=args.drain_focus, abort=args.abort_focus,
+        dial=args.dial_focus)
     results = []
     args.results.parent.mkdir(parents=True, exist_ok=True)
     args.results.write_text('', encoding='utf-8')
@@ -90,13 +95,13 @@ def main():
                 with args.results.open('a', encoding='utf-8') as output:
                     output.write(line + '\n')
                 print('UDP_PAIR_RESULT ' + line, flush=True)
-    candidate = ('drain' if args.drain_focus else ('halfclose' if args.halfclose_focus
-                 else ('lifecycle' if args.lifecycle_focus else 'fixed')))
     fixed = [item for item in results if item['variant'] == candidate]
-    full = all(item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
+    expected_candidate_scenarios = 8  # 4 rounds x QUIC/KCP x loss/no-loss
+    full = len(fixed) == expected_candidate_scenarios and all(
+        item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
                and item.get('extended_close_passed')
                and (not args.lossy_close or item.get('lossy_close_passed')) for item in fixed)
-    per_transport = {transport: all(
+    per_transport = {transport: len([item for item in fixed if item['transport'] == transport]) == 4 and all(
         item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
         and item.get('extended_close_passed')
         and (not args.lossy_close or item.get('lossy_close_passed'))
