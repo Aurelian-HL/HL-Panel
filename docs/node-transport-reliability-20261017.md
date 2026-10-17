@@ -200,14 +200,33 @@ KCP H 全部归类为 data_incomplete；S 剩余失败为 target_ack_not_observe
 
 Python 关闭夹具的直连与正确透传 TCP forwarder 已各对 F+EOF/H/S 重复 100 次，共 600/600 通过；吞 FIN 或提前全关的负控制均被拒绝。本轮还加入单独的 lossy_close_checks：每项 64 KiB、每 23 个 UDP 数据报丢一个，保留原两秒期限和全部无主动丢包门禁。组窗口必须实际观察到 out/back 双向 drop > 0，计数使用累计差值、不重置；逐次结果也记录丢包覆盖。UDP 计数包含复用隧道控制包，不能声称精确丢掉了 FIN。Linux 真引擎结果需另行验收，不能用这些本地测试代替。
 
-## 十一、交付边界与下一步
+## 十一、drain 候选的真实 Linux 丢包关闭验收
+
+2026-10-17 已完成 run `39011820132`，研究提交 `f616336985ea68fcf180bfb53d7417db3892bee0`。Linux 构建、网络门禁及产物上传均 success；原始 provenance、逐场景 JSONL 与日志已下载并解析到本次对话 `work/udp-pair-ci-39011820132`，另生成 `verified-summary.json`。固定 GOST 源提交仍为 `e9fab9587288b82ce8a1a9b8f07326f41b155935`。
+
+顺序 halfclose、drain、drain、halfclose，共 16 场景；源码构建使用相同依赖图、x/smux 原始副本及 replace，drain 仅额外叠加 smux stream.go。所有场景的缺失/错误鉴权拒绝和双向各 2 MiB 长度/SHA256 均通过。下面每行汇总四个场景；原关闭门禁未开启主动丢包，新增关闭门禁单独开启每 23 个 UDP 数据报丢一个，单次期限仍为 2 秒：
+
+| 版本 / 协议 | 原 F | 原 F+EOF | 原 H | 原 S | 丢包 F+EOF | 丢包 H | 丢包 S |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| halfclose / QUIC | 80/80 | 20/20 | 12/12 | 12/12 | 20/20 | 12/12 | 12/12 |
+| drain / QUIC | 80/80 | 20/20 | 12/12 | 12/12 | 20/20 | 12/12 | 12/12 |
+| halfclose / KCP | 80/80 | 20/20 | 3/12 | 3/12 | 20/20 | 6/12 | 3/12 |
+| drain / KCP | 80/80 | 20/20 | 12/12 | 12/12 | 20/20 | 12/12 | 12/12 |
+
+新增丢包关闭检查的每个操作组均实际观察到 out/back 双向 drop > 0。drain 四个 KCP 场景的 H 每组 out/back 各 9 个；S 每组 out 为 10、back 为 10、10、11、10 个。计数包含协议及复用隧道控制包，不能声称精确丢掉了 FIN 或每个应用数据报。旧 halfclose 的 KCP H 仍为 data_incomplete，S 仍为 target_ack_not_observed；这与确定性 smux 负对照相互支持。本轮证明的是指定版本、loopback 和有界样本下，drain 候选通过全部既有与新增门禁，不是任意网络下绝不丢数据。
+
+本轮 halfclose 二进制 SHA256 为 `ef1b1f13593660718ff6bfde646058e56503a7f887f6ac5c394714cb63926729`；drain 为 `fdd9b7e5a22d31888d6231e5ed2e4ee50bc6eea41d1e8b900c01fac2ab91c6da`。与上轮二进制哈希不同不能单独推断行为变化；本轮结论以相同构建环境内的配对对照及来源记录为准。
+
+smux 本地回归另新增阻塞 WriteTo 已取出缓冲时发生双 FIN 的边界：v1/v2 均完整交付且 tokens 未提前归还。最终因果契约普通 300/300 子场景、race 100/100 通过；relay 组合普通 200/200、race 60/60 通过；上游两个流测试文件普通 63/63、race 21/21 通过，无 race warning。原 module cache 未修改，独立补丁 git apply --check 通过。
+
+## 十二、交付边界与下一步
 
 - BBR helper、令牌安装调用和原始实验代码已同步到 Git 仓库 `main` 的 `832188a5fe403e5ce583f9f9c0d01c7d64417ba2`；新增成对引擎及生命周期实验位于 `research/reliable-udp-pipe-20261017`，没有发布本轮 tag 或 Release，也没有部署到生产节点。
 - 尚未把 QUIC/KCP 接入产品的完整规则流程，未默认启用节点间可靠 UDP 隧道。
 - 本轮没有修改生产节点配置，没有把生产节点切换到 QUIC/KCP，也没有据此变更客户线路。
-- 当前 Linux 可靠 UDP 作业仍失败，不能把局部稳定流通过说成四场景整体验收完成。
+- 当前 drain 候选在 run `39011820132` 的全部可靠 UDP 门禁通过；该结论仅限本轮隔离实验，异常取消、服务退出、长期负载及公网验收仍需独立完成。
 
-原/修网络对照、buildinfo、QUIC listener 上下文假说及 relay 半关闭透传的网络对照已完成；最后一项仍有 KCP 半关闭失败。本地已确定 smux 双 FIN 过早回收未读缓冲，接下来用独立 drain 候选在真实 Linux GOST 上对照，并把 QUIC 异常取消/资源清理落实为另一独立候选验证。保留现有 F/EOF/H/S 门禁，并增加实际丢包覆盖的独立关闭门禁。随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
+原/修网络对照、buildinfo、QUIC listener 上下文及 relay 半关闭透传对照已完成；仅透传 relay CloseWrite 仍有 KCP 失败，新增 smux drain 候选已在真实 Linux GOST 通过本轮完整门禁。接下来把 QUIC 异常取消/资源清理落实为另一独立候选验证，并单独检查 service 取消顺序及父上下文传递。保留现有 F/EOF/H/S 和实际丢包关闭门禁。随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
 
 之后在同一故障注入方式、机器资源、版本、MTU、带宽与负载下比较 TCP+BBR、QUIC 可靠流、KCP，以及独立比较的 KCP+FEC；若要衡量 BBR 本身的收益，还需保留 TCP 原拥塞算法对照。覆盖真实 RTT、抖动、随机及突发丢包、多连接并发、持续流量与短请求，至少多次重复并随机化顺序，记录应用完整性、失败率、吞吐、冷建链、请求尾延迟和最长停顿、双端单位业务流量 CPU 秒及完整窗口字节开销，之后再开展已授权公网环境的性能验证。现有实验不足以支持性能优劣结论。
 
