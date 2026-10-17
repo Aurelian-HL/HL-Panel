@@ -305,6 +305,54 @@ def lifecycle_overlay(output: Path, local_x: Path, pipe: Path, fixed: Path) -> d
             'scope': 'isolated candidate; does not establish abort or idle resource cleanup'}
 
 
+def halfclose_overlay(output: Path, local_x: Path, lifecycle: dict) -> dict:
+    """Expose smux half-close through both buffered relay TCP adapters.
+
+    The relay header must reach the peer before FIN, including a connection
+    closed before its first payload. Serialize that flush with normal writes.
+    Unsupported transports retain Pipe's existing full-close fallback.
+    """
+    replacements = dict(lifecycle['overlay']['Replace'])
+    records = []
+    for side in ('connector', 'handler'):
+        relative = side + '/relay/conn.go'
+        source = local_x / relative
+        before = source.read_bytes()
+        edits = [('\t"net"\n', '\t"net"\n\txio "github.com/go-gost/x/internal/io"\n')]
+        if side == 'handler':
+            edits.extend([
+                ('\t"net"\n', '\t"net"\n\t"sync"\n'),
+                ('type tcpConn struct {\n\tnet.Conn\n\twbuf bytes.Buffer\n}',
+                 'type tcpConn struct {\n\tnet.Conn\n\twbuf bytes.Buffer\n\tmu sync.Mutex\n}'),
+                ('func (c *tcpConn) Write(b []byte) (n int, err error) {\n',
+                 'func (c *tcpConn) Write(b []byte) (n int, err error) {\n'
+                 '\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n'),
+            ])
+        pending = 'c.wbuf != nil && c.wbuf.Len() > 0' if side == 'connector' else 'c.wbuf.Len() > 0'
+        method = ('func (c *tcpConn) CloseWrite() error {\n'
+                  '\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n'
+                  '\tif ' + pending + ' {\n'
+                  '\t\tif _, err := c.wbuf.WriteTo(c.Conn); err != nil {\n'
+                  '\t\t\treturn err\n\t\t}\n\t}\n'
+                  '\tif cw, ok := c.Conn.(xio.CloseWrite); ok {\n'
+                  '\t\treturn cw.CloseWrite()\n\t}\n'
+                  '\treturn xio.ErrUnsupported\n}\n\n')
+        edits.append(('type udpConn struct {', method + 'type udpConn struct {'))
+        patched = before
+        for old, new in edits:
+            require(patched.count(old.encode()) == 1, 'half-close exact patch failed: ' + relative)
+            patched = patched.replace(old.encode(), new.encode(), 1)
+        destination = output / ('halfclose-' + relative.replace('/', '-'))
+        destination.write_bytes(patched)
+        replacements[str(source)] = str(destination)
+        records.append({'path': relative, 'original_sha256': hashlib.sha256(before).hexdigest(),
+                        'candidate_sha256': digest(destination), 'exact_edits': len(edits)})
+    return {'overlay': {'Replace': replacements}, 'patches': records,
+            'parent_candidate': 'lifecycle',
+            'hypothesis': 'buffered relay TCP adapters must expose transport CloseWrite after header flush',
+            'scope': 'isolated half-close candidate; cancellation and abort hardening remain separate'}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output_directory', type=Path)
@@ -404,6 +452,10 @@ def main() -> None:
         lifecycle_path = output / 'lifecycle-overlay.json'
         write_json(lifecycle_path, lifecycle['overlay'])
         provenance['lifecycle_candidate'] = lifecycle
+        halfclose = halfclose_overlay(output, local_x, lifecycle)
+        halfclose_path = output / 'halfclose-overlay.json'
+        write_json(halfclose_path, halfclose['overlay'])
+        provenance['halfclose_candidate'] = halfclose
 
         # -overlay cannot replace files in GOMODCACHE. Both builds therefore
         # share a byte-identical x copy and the same temporary -modfile replace.
@@ -427,7 +479,7 @@ def main() -> None:
         provenance['builds'] = {}
         provenance['variants'] = {}
         for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay),
-                               ('lifecycle', lifecycle_path)]:
+                               ('lifecycle', lifecycle_path), ('halfclose', halfclose_path)]:
             destination = output / label
             destination.mkdir()
             binary = destination / 'gost'

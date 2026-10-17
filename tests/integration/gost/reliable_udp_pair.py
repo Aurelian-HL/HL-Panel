@@ -21,6 +21,7 @@ def main():
     parser.add_argument('provenance', type=Path)
     parser.add_argument('results', type=Path)
     parser.add_argument('--lifecycle-focus', action='store_true')
+    parser.add_argument('--halfclose-focus', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'linux' or os.environ.get('HL_PANEL_ISOLATED_RELIABLE_UDP_TEST') != 'true':
         raise RuntimeError('requires explicitly isolated Linux acceptance')
@@ -30,11 +31,18 @@ def main():
     provenance = json.loads(args.provenance.read_text(encoding='utf-8'))
     variants = provenance['variants']
     if set(variants) not in ({'official', 'original', 'fixed'},
-                             {'official', 'original', 'fixed', 'lifecycle'}):
+                             {'official', 'original', 'fixed', 'lifecycle'},
+                             {'official', 'original', 'fixed', 'lifecycle', 'halfclose'}):
         raise RuntimeError('source pair requires the complete recorded provenance entries')
     # A repeated round reverses build order; this is a correctness experiment,
     # not enough repetitions or load to claim any performance ranking.
-    if args.lifecycle_focus:
+    if args.lifecycle_focus and args.halfclose_focus:
+        raise RuntimeError('choose exactly one candidate focus')
+    if args.halfclose_focus:
+        if 'halfclose' not in variants:
+            raise RuntimeError('half-close focus requires its separately recorded candidate')
+        order = ('lifecycle', 'halfclose', 'halfclose', 'lifecycle')
+    elif args.lifecycle_focus:
         if 'lifecycle' not in variants:
             raise RuntimeError('lifecycle focus requires its separately recorded candidate')
         order = ('fixed', 'lifecycle', 'lifecycle', 'fixed')
@@ -71,7 +79,7 @@ def main():
                 with args.results.open('a', encoding='utf-8') as output:
                     output.write(line + '\n')
                 print('UDP_PAIR_RESULT ' + line, flush=True)
-    candidate = 'lifecycle' if args.lifecycle_focus else 'fixed'
+    candidate = 'halfclose' if args.halfclose_focus else ('lifecycle' if args.lifecycle_focus else 'fixed')
     fixed = [item for item in results if item['variant'] == candidate]
     full = all(item.get('stable_bulk_passed') and item.get('legacy_final_frame_passed')
                and item.get('extended_close_passed') for item in fixed)
