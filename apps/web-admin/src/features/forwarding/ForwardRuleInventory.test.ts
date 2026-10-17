@@ -66,7 +66,29 @@ describe('ForwardRuleInventory', () => {
     expect(wrapper.emitted('select')).toEqual([[baseRule, true], [secondRule, true]])
     await wrapper.setProps({ busyId: baseRule.id })
     expect(wrapper.findAll('input[type="checkbox"]').every((checkbox) => checkbox.attributes('disabled') !== undefined)).toBe(true)
-    expect(wrapper.findAll('button').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    expect(wrapper.findAll('.rule-actions button').every((button) => button.attributes('disabled') !== undefined)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens useful diagnostics on desktop and mobile without calling idle rules offline', async () => {
+    const rule: ForwardRule = { ...baseRule, status: 'active', connection: { status: 'error', connections: 0, reason: 'listener_missing', error_nodes: 1, sampled_nodes: 1, missing_listener_nodes: 1, sampled_at: '2026-10-17T00:00:00Z', valid_for_ms: 5000 } }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
+    for (const layout of ['.business-desktop', '.business-mobile']) {
+      const badge = wrapper.get(layout + ' .rule-connection')
+      expect(badge.text()).toContain('监听异常')
+      expect(badge.attributes('aria-expanded')).toBe('false')
+      await badge.trigger('click')
+      expect(badge.attributes('aria-expanded')).toBe('true')
+      const details = wrapper.get(layout + ' .rule-connection-detail').text()
+      expect(details).toContain('未检测到监听端口：1 台节点')
+      expect(details).toContain('节点采样时间')
+      expect(details).toContain('不等于所有节点或客户端路径都失败')
+      await badge.trigger('click')
+      expect(wrapper.find(layout + ' .rule-connection-detail').exists()).toBe(false)
+    }
+    await wrapper.setProps({ rules: [{ ...rule, connection: { status: 'offline', connections: 0, reason: 'no_connections', valid_for_ms: 5000 } }] })
+    expect(wrapper.get('.rule-connection').text()).toContain('空闲')
+    expect(wrapper.get('.rule-connection').text()).not.toContain('不在线')
     wrapper.unmount()
   })
 

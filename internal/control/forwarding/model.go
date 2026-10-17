@@ -111,8 +111,16 @@ type RuleConnection struct {
 	Status      string     `json:"status"`
 	Connections uint64     `json:"connections"`
 	SampledAt   *time.Time `json:"sampled_at,omitempty"`
-	Reason      string     `json:"reason"`
-	ErrorNodes  int        `json:"error_nodes,omitempty"`
+	// ValidForMS is the remaining lifetime at response construction, not a new
+	// lease. Polling an unchanged heartbeat must not make an old sample fresh.
+	ValidForMS           int64  `json:"valid_for_ms"`
+	Reason               string `json:"reason"`
+	ErrorNodes           int    `json:"error_nodes,omitempty"`
+	SampledNodes         int    `json:"sampled_nodes,omitempty"`
+	MissingListenerNodes int    `json:"missing_listener_nodes,omitempty"`
+	ApplyFailedNodes     int    `json:"apply_failed_nodes,omitempty"`
+	PendingNodes         int    `json:"pending_nodes,omitempty"`
+	StaleNodes           int    `json:"stale_nodes,omitempty"`
 }
 
 type Rule struct {

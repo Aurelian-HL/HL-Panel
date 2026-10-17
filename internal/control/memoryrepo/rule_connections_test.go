@@ -17,17 +17,17 @@ func TestRuleConnectionsRequireFreshVerifiedRuleListener(t *testing.T) {
 		{"idle", "offline", "no_connections", func(s *Store) {
 			s.nodes["node"].Resources["host"].(map[string]any)["tcp_listeners"] = map[string]any{"443": float64(0)}
 		}},
-		{"missing listener", "error", "listener_or_apply_failed", func(s *Store) { s.nodes["node"].Resources["host"].(map[string]any)["tcp_listeners"] = map[string]any{} }},
+		{"missing listener", "error", "listener_missing", func(s *Store) { s.nodes["node"].Resources["host"].(map[string]any)["tcp_listeners"] = map[string]any{} }},
 		{"old agent", "offline", "not_sampled", func(s *Store) { delete(s.nodes["node"].Resources["host"].(map[string]any), "tcp_listeners") }},
 		{"failed collection", "offline", "not_sampled", func(s *Store) { s.nodes["node"].Resources["host"].(map[string]any)["tcp_listeners"] = nil }},
-		{"stale", "offline", "not_sampled", func(s *Store) {
+		{"stale", "offline", "sample_expired", func(s *Store) {
 			n := s.nodes["node"]
 			at := time.Now().Add(-time.Minute)
 			n.LastHeartbeatAt = &at
 			s.nodes["node"] = n
 		}},
 		{"paused", "offline", "inactive", func(s *Store) { r := s.forwardRules["rule"]; r.Paused = true; s.forwardRules["rule"] = r }},
-		{"unverified", "offline", "not_sampled", func(s *Store) {
+		{"unverified", "offline", "deployment_pending", func(s *Store) {
 			a := s.applyAttemptsByNode["node"][1]
 			a.Invalidated = true
 			s.applyAttemptsByNode["node"][1] = a
@@ -71,5 +71,70 @@ func TestRuleConnectionsRequireFreshVerifiedRuleListener(t *testing.T) {
 				t.Fatal("read view lost live state", err)
 			}
 		})
+	}
+}
+
+func TestRuleConnectionKeepsWorkingListenerWhenNodeBundleUpdateFailed(t *testing.T) {
+	s, _ := protocolPublicationFixture(t)
+	now := time.Now().UTC()
+	node := s.nodes["node"]
+	node.LastHeartbeatAt = &now
+	node.LastApplyGeneration = node.DesiredGeneration
+	node.LastApplyStatus = "failed"
+	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(3)}}}
+	s.nodes["node"] = node
+	got := s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Status != "online" || got.Connections != 3 || got.ApplyFailedNodes != 1 || got.ErrorNodes != 1 || got.MissingListenerNodes != 0 {
+		t.Fatalf("update failure erased rule listener evidence: %+v", got)
+	}
+	node.Resources["host"].(map[string]any)["tcp_listeners"] = map[string]any{}
+	s.nodes["node"] = node
+	got = s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Status != "error" || got.Reason != "listener_missing" || got.MissingListenerNodes != 1 || got.ApplyFailedNodes != 1 || got.ErrorNodes != 1 {
+		t.Fatalf("real missing listener was hidden or node counted twice: %+v", got)
+	}
+}
+
+func TestRuleConnectionSeparatesUnappliedUpdateFromMissingListener(t *testing.T) {
+	s, _ := protocolPublicationFixture(t)
+	now := time.Now().UTC()
+	node := s.nodes["node"]
+	node.LastHeartbeatAt = &now
+	node.LastApplyGeneration = node.DesiredGeneration
+	node.LastApplyStatus = "failed"
+	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(3)}}}
+	s.nodes["node"] = node
+	attempt := s.applyAttemptsByNode["node"][1]
+	attempt.Invalidated = true
+	s.applyAttemptsByNode["node"][1] = attempt
+	got := s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Status != "error" || got.Reason != "node_apply_failed" || got.Connections != 0 || got.ApplyFailedNodes != 1 || got.PendingNodes != 1 || got.MissingListenerNodes != 0 || got.SampledAt == nil {
+		t.Fatalf("node failure incorrectly attributed to rule listener: %+v", got)
+	}
+}
+
+func TestRuleConnectionRemainingFreshnessDoesNotRenewOnRead(t *testing.T) {
+	s, _ := protocolPublicationFixture(t)
+	at := time.Now().UTC()
+	node := s.nodes["node"]
+	node.LastHeartbeatAt = &at
+	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(3)}}}
+	s.nodes["node"] = node
+	for _, age := range []time.Duration{time.Second, 4 * time.Second, ruleConnectionFreshness} {
+		got := s.ruleConnectionLocked(s.forwardRules["rule"], at.Add(age))
+		if age < ruleConnectionFreshness {
+			if got.Status != "online" || got.ValidForMS != (ruleConnectionFreshness-age).Milliseconds() || got.SampledNodes != 1 {
+				t.Fatalf("sample read renewed its freshness at %v: %+v", age, got)
+			}
+		} else if got.Reason != "sample_expired" || got.Connections != 0 || got.ValidForMS != 0 || got.StaleNodes != 1 {
+			t.Fatalf("expired heartbeat reported live connections: %+v", got)
+		}
+	}
+}
+
+func TestListenerConnectionCountRecognizesTypedMapWithZeroConnections(t *testing.T) {
+	count, listening, sampled := listenerConnectionCount(map[string]uint64{"443": 0}, "443")
+	if count != 0 || !listening || !sampled {
+		t.Fatalf("typed zero-connection listener was misclassified: count=%d listening=%v sampled=%v", count, listening, sampled)
 	}
 }

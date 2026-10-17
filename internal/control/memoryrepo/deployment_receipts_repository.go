@@ -23,6 +23,10 @@ func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deployment
 		copy := cloneNodeConfig(*input.CurrentConfig)
 		input.CurrentConfig = &copy
 	}
+	if err == nil && input.AppliedConfig != nil {
+		copy := cloneNodeConfig(*input.AppliedConfig)
+		input.AppliedConfig = &copy
+	}
 	return input, err
 }
 
@@ -57,6 +61,18 @@ func (s *Store) ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID string) (de
 		}
 		for phase, result := range s.applyResultsByNode[nodeID][node.DesiredGeneration] {
 			input.ApplyResults[agentv1.ApplyPhase(phase)] = result
+		}
+	}
+	if node.AppliedGeneration > 0 && node.AppliedGeneration != node.DesiredGeneration {
+		attempt := s.applyAttemptsByNode[nodeID][node.AppliedGeneration]
+		input.AppliedAttemptID, input.AppliedInvalidated = attempt.CurrentID, attempt.Invalidated
+		if config, exists := s.nodeConfigsByNode[nodeID][node.AppliedGeneration]; exists {
+			copy := config
+			input.AppliedConfig = &copy
+		}
+		input.AppliedResults = make(map[agentv1.ApplyPhase]generations.ApplyResult)
+		for phase, result := range s.applyResultsByNode[nodeID][node.AppliedGeneration] {
+			input.AppliedResults[agentv1.ApplyPhase(phase)] = result
 		}
 	}
 	return input, nil

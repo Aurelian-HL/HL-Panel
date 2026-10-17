@@ -27,7 +27,8 @@ const (
 )
 
 // Input is an atomic, read-only snapshot. CurrentConfig and ApplyResults must
-// come from the same node state as Node; a historical generation is not enough.
+// come from the same node state as Node. Applied evidence is allowed only
+// while the same rule fragment remains present, unchanged, in the desired bundle.
 type Input struct {
 	EntryNetwork       *groupconfig.GroupNetwork                      `json:"-"`
 	ExitNetwork        *groupconfig.GroupNetwork                      `json:"-"`
@@ -38,6 +39,10 @@ type Input struct {
 	CurrentAttemptID   string                                         `json:"-"`
 	AttemptInvalidated bool                                           `json:"-"`
 	ApplyResults       map[agentv1.ApplyPhase]generations.ApplyResult `json:"-"`
+	AppliedConfig      *generations.NodeConfigGeneration              `json:"-"`
+	AppliedAttemptID   string                                         `json:"-"`
+	AppliedInvalidated bool                                           `json:"-"`
+	AppliedResults     map[agentv1.ApplyPhase]generations.ApplyResult `json:"-"`
 }
 
 type Status struct {
@@ -46,6 +51,7 @@ type Status struct {
 	NodeConfigGeneration int64          `json:"node_config_generation"`
 	ApplyAttemptID       string         `json:"apply_attempt_id,omitempty"`
 	ConfigSHA256         string         `json:"config_sha256,omitempty"`
+	RuleConfigSHA256     string         `json:"rule_config_sha256,omitempty"`
 	Engine               agentv1.Engine `json:"engine,omitempty"`
 	FragmentEmitted      bool           `json:"fragment_emitted"`
 	ReceiptVerified      bool           `json:"receipt_verified"`

@@ -43,6 +43,7 @@ type ProtocolObservation struct {
 	RuleRevision         int64
 	NodeConfigGeneration int64
 	ConfigSHA256         string
+	RuleConfigSHA256     string
 	Protocol             forwarding.IngressProtocol
 	DialHost             string
 	VerifiedAt           time.Time
@@ -264,7 +265,7 @@ func (o ProtocolObservation) CanReplace(previous ProtocolObservation) bool {
 	previousHost, previousErr := serviceaddress.NormalizeHost(previous.DialHost)
 	host, err := serviceaddress.NormalizeHost(o.DialHost)
 	if o.RuleID != previous.RuleID || o.NodeID != previous.NodeID || o.RuleRevision != previous.RuleRevision ||
-		o.NodeConfigGeneration != previous.NodeConfigGeneration || o.ConfigSHA256 != previous.ConfigSHA256 ||
+		!sameProtocolDeployment(o, previous) ||
 		o.Protocol != previous.Protocol || err != nil || previousErr != nil || host != previousHost {
 		return true
 	}
@@ -287,7 +288,7 @@ func protocolHealthy(observation ProtocolObservation, receipt deploymentreceipts
 func protocolEvidenceMatches(observation ProtocolObservation, receipt deploymentreceipts.Status, rule forwarding.Rule, member endpoints.EndpointPoolMember, dialHost string, now time.Time) bool {
 	if observation.RuleID != rule.ID || observation.NodeID != member.NodeID ||
 		observation.RuleRevision != rule.Revision || observation.Protocol != forwarding.IngressVLESSReality ||
-		observation.NodeConfigGeneration != receipt.NodeConfigGeneration || observation.ConfigSHA256 != receipt.ConfigSHA256 ||
+		!observationMatchesReceipt(observation, receipt) ||
 		observation.VerifiedAt.IsZero() ||
 		observation.VerifiedAt.After(now) || !observation.LeaseExpiresAt.After(observation.VerifiedAt) ||
 		observation.LeaseExpiresAt.After(observation.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
@@ -299,4 +300,21 @@ func protocolEvidenceMatches(observation ProtocolObservation, receipt deployment
 	}
 	observedHost, err := serviceaddress.NormalizeHost(observation.DialHost)
 	return err == nil && observedHost == expectedHost
+}
+
+// New observations bind to a rule fragment rather than the surrounding node
+// bundle. Legacy observations retain strict generation/hash matching until a
+// real challenge publishes the fragment identity; no old lease is extended.
+func observationMatchesReceipt(observation ProtocolObservation, receipt deploymentreceipts.Status) bool {
+	if observation.RuleConfigSHA256 != "" {
+		return len(observation.RuleConfigSHA256) == 64 && observation.RuleConfigSHA256 == receipt.RuleConfigSHA256
+	}
+	return observation.NodeConfigGeneration == receipt.NodeConfigGeneration && observation.ConfigSHA256 == receipt.ConfigSHA256
+}
+
+func sameProtocolDeployment(a, b ProtocolObservation) bool {
+	if a.RuleConfigSHA256 != "" && b.RuleConfigSHA256 != "" {
+		return a.RuleConfigSHA256 == b.RuleConfigSHA256
+	}
+	return a.NodeConfigGeneration == b.NodeConfigGeneration && a.ConfigSHA256 == b.ConfigSHA256
 }

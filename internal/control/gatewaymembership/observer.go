@@ -126,7 +126,8 @@ func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeC
 	observation := ProtocolObservation{
 		RuleID: rule.ID, NodeID: nodeID, RuleRevision: rule.Revision,
 		NodeConfigGeneration: receipt.Status.NodeConfigGeneration, ConfigSHA256: receipt.Status.ConfigSHA256,
-		Protocol: forwarding.IngressVLESSReality, DialHost: host, VerifiedAt: verifiedAt,
+		RuleConfigSHA256: receipt.Status.RuleConfigSHA256,
+		Protocol:         forwarding.IngressVLESSReality, DialHost: host, VerifiedAt: verifiedAt,
 		LeaseExpiresAt: verifiedAt.Add(endpoints.DefaultHealthTTL),
 	}
 	return observation, nil

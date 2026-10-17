@@ -22,23 +22,40 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		result.Reason = "tcp_only"
 		return result
 	}
+	observe := func(at time.Time) {
+		if result.SampledAt == nil || at.Before(*result.SampledAt) {
+			result.SampledAt = &at
+			result.ValidForMS = max(0, (ruleConnectionFreshness - now.Sub(at)).Milliseconds())
+		}
+	}
 	for nodeID, member := range s.membersByGroup[rule.EntryGroupID] {
 		node, exists := s.nodes[nodeID]
-		if !exists || member.RetiredAt != nil || node.DeletedAt != nil || node.LastHeartbeatAt == nil {
+		if !exists || member.RetiredAt != nil || node.DeletedAt != nil {
+			continue
+		}
+		if node.LastHeartbeatAt == nil {
+			result.StaleNodes++
 			continue
 		}
 		age := now.Sub(*node.LastHeartbeatAt)
-		if age < 0 || age > ruleConnectionFreshness {
+		if age < 0 || age >= ruleConnectionFreshness {
+			result.StaleNodes++
 			continue
 		}
-		if node.LastApplyGeneration == node.DesiredGeneration && node.LastApplyStatus == "failed" {
+		applyFailed := node.LastApplyGeneration == node.DesiredGeneration && node.LastApplyStatus == "failed"
+		if applyFailed {
+			// A failed full-bundle update does not prove that this existing
+			// listener stopped. Keep the update diagnostic separate from the
+			// rule-scoped socket evidence; never erase a known-good count.
+			result.ApplyFailedNodes++
 			result.ErrorNodes++
-			continue
+			observe(*node.LastHeartbeatAt)
 		}
 		// A matching real-engine receipt prevents another process using the same
 		// local port from making a pending/unapplied rule appear online.
 		input, err := s.ruleNodeDeploymentInputBorrowedLocked(rule.ID, nodeID)
 		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
+			result.PendingNodes++
 			continue
 		}
 		host, ok := node.Resources["host"].(map[string]any)
@@ -49,12 +66,13 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		if !sampled {
 			continue
 		}
-		if result.SampledAt == nil || node.LastHeartbeatAt.Before(*result.SampledAt) {
-			at := *node.LastHeartbeatAt
-			result.SampledAt = &at
-		}
+		observe(*node.LastHeartbeatAt)
+		result.SampledNodes++
 		if !listening {
-			result.ErrorNodes++
+			result.MissingListenerNodes++
+			if !applyFailed {
+				result.ErrorNodes++
+			}
 			continue
 		}
 		// JSON numbers must remain exact; an unrepresentable sample is unknown.
@@ -65,10 +83,16 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 	switch {
 	case result.Connections > 0:
 		result.Status, result.Reason = "online", "established"
-	case result.ErrorNodes > 0:
-		result.Status, result.Reason = "error", "listener_or_apply_failed"
-	case result.SampledAt != nil:
+	case result.MissingListenerNodes > 0:
+		result.Status, result.Reason = "error", "listener_missing"
+	case result.ApplyFailedNodes > 0:
+		result.Status, result.Reason = "error", "node_apply_failed"
+	case result.SampledNodes > 0:
 		result.Reason = "no_connections"
+	case result.PendingNodes > 0:
+		result.Reason = "deployment_pending"
+	case result.StaleNodes > 0:
+		result.Reason = "sample_expired"
 	}
 	return result
 }
@@ -79,8 +103,9 @@ func listenerConnectionCount(value any, port string) (count uint64, listening, s
 		if listeners == nil {
 			return
 		}
-		count, listening = listeners[port]
-		return count, listening, count <= 1<<53-1
+			var exists bool
+			count, exists = listeners[port]
+			return count, exists, count <= 1<<53-1
 	case map[string]any:
 		if listeners == nil {
 			return

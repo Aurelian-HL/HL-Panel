@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 
+	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
@@ -18,6 +19,7 @@ type fragmentIndex struct {
 	revision int64
 	count    int
 	valid    bool
+	hash     string
 }
 
 type bundleIndex struct {
@@ -70,6 +72,21 @@ func (c *bundleIndexCache) get(hash string, raw []byte) (*bundleIndex, bool) {
 			item.engine = fragment.Engine
 			item.revision = int64(fragment.GroupRevision)
 			item.valid = len(fragment.Config) != 0 && json.Valid(fragment.Config)
+			if item.valid {
+				// Include runtime configuration and rule-local metadata (including
+				// identity, revision, engine, limits, and accounting ownership).
+				// A change to any part of this fragment requires fresh evidence.
+				rawFragment, err := json.Marshal(fragment)
+				if err != nil {
+					return nil, false
+				}
+				canonical, err := generations.CanonicalJSON(rawFragment)
+				if err != nil {
+					item.valid = false
+				} else {
+					item.hash = generations.SHA256Hex(canonical)
+				}
+			}
 			cost += len(fragment.GroupID) + len(fragment.Engine) + 192
 		}
 		item.count++

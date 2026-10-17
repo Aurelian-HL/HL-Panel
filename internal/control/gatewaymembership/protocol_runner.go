@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -467,8 +468,18 @@ func sameProbe(a, b probeJob) bool {
 		x.Rule.RealityPublicKey == y.Rule.RealityPublicKey &&
 		x.Rule.RealityShortID == y.Rule.RealityShortID &&
 		ex.RuleID == ey.RuleID && ex.NodeID == ey.NodeID &&
-		ex.NodeConfigGeneration == ey.NodeConfigGeneration && ex.ConfigSHA256 == ey.ConfigSHA256 &&
+		sameProbeDeployment(ex, ey) &&
 		a.input.Config == b.input.Config
+}
+
+// A new unrelated fragment does not change this challenge target or its due
+// time. Legacy receipts retain full-bundle matching until a real probe emits
+// the stable fragment identity. Do not let malformed identities compare equal.
+func sameProbeDeployment(a, b deploymentreceipts.Status) bool {
+	if a.RuleConfigSHA256 != "" || b.RuleConfigSHA256 != "" {
+		return len(a.RuleConfigSHA256) == 64 && a.RuleConfigSHA256 == b.RuleConfigSHA256
+	}
+	return a.NodeConfigGeneration == b.NodeConfigGeneration && a.ConfigSHA256 == b.ConfigSHA256
 }
 
 // Prefer a recently successful address when a bundle change makes the pool

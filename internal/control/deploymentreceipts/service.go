@@ -24,6 +24,30 @@ func (s *Service) ForRuleNode(ctx context.Context, ruleID, nodeID string) (Statu
 // node bundle and that an explicit real-engine verify receipt matched it. It
 // does not establish reachability, client authentication, or protocol health.
 func Evaluate(input Input) Status {
+	status := evaluateCurrent(input)
+	if status.ReceiptVerified || input.AttemptInvalidated || input.AppliedConfig == nil ||
+		input.Node.AppliedGeneration <= 0 || input.Node.AppliedGeneration >= input.Node.DesiredGeneration ||
+		status.RuleConfigSHA256 == "" {
+		return status
+	}
+	// A pending unrelated rule must not revoke a still-live deployment. Never
+	// infer this from generation alone: both bundles must carry the exact same
+	// rule revision and canonical runtime configuration, with a valid applied
+	// commit/verify attempt. Protocol leases retain their original expiration.
+	applied := input
+	applied.Node.DesiredGeneration = input.Node.AppliedGeneration
+	applied.CurrentConfig = input.AppliedConfig
+	applied.CurrentAttemptID = input.AppliedAttemptID
+	applied.AttemptInvalidated = input.AppliedInvalidated
+	applied.ApplyResults = input.AppliedResults
+	previous := evaluateCurrent(applied)
+	if previous.ReceiptVerified && previous.RuleConfigSHA256 == status.RuleConfigSHA256 {
+		return previous
+	}
+	return status
+}
+
+func evaluateCurrent(input Input) Status {
 	status := Status{RuleID: input.Rule.ID, NodeID: input.Node.ID, Reason: ReasonConfigMissing}
 	if input.Rule.Paused ||
 		(input.Rule.Status != forwarding.StatusPendingActivation && input.Rule.Status != forwarding.StatusActive) ||
@@ -65,6 +89,7 @@ func Evaluate(input Input) Status {
 		status.Reason = ReasonFragmentMismatch
 		return status
 	}
+	status.RuleConfigSHA256 = fragment.hash
 	status.FragmentEmitted = true
 	status.Engine = engine
 	status.ApplyAttemptID = input.CurrentAttemptID
