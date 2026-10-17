@@ -14,14 +14,16 @@ type groupMemberMutationSnapshot struct {
 	groupID string
 	nodeID  string
 
-	group        groups.DeviceGroup
-	groupExists  bool
-	member       groups.Member
-	memberExists bool
-	node         nodes.Node
-	nodeExists   bool
-	configs      map[int64]generations.NodeConfigGeneration
-	configsExist bool
+	group          groups.DeviceGroup
+	groupExists    bool
+	member         groups.Member
+	memberExists   bool
+	relatedNodes   map[string]nodes.Node
+	relatedConfigs map[string]map[int64]generations.NodeConfigGeneration
+	node           nodes.Node
+	nodeExists     bool
+	configs        map[int64]generations.NodeConfigGeneration
+	configsExist   bool
 
 	pools         map[string]endpoints.EndpointPool
 	poolMembers   map[string]map[string]endpoints.EndpointPoolMember
@@ -33,6 +35,20 @@ func (s *Store) captureGroupMemberMutationLocked(groupID, nodeID string) groupMe
 		groupID:       groupID,
 		nodeID:        nodeID,
 		auditEventLen: len(s.auditEvents),
+	}
+	snapshot.relatedNodes = make(map[string]nodes.Node)
+	snapshot.relatedConfigs = make(map[string]map[int64]generations.NodeConfigGeneration)
+	for _, id := range s.reliableUDPDependentGroupsLocked([]string{groupID}) {
+		for n := range s.membersByGroup[id] {
+			snapshot.relatedNodes[n] = cloneNode(s.nodes[n])
+			if configs := s.nodeConfigsByNode[n]; configs != nil {
+				copyConfigs := make(map[int64]generations.NodeConfigGeneration, len(configs))
+				for gen, config := range configs {
+					copyConfigs[gen] = cloneNodeConfig(config)
+				}
+				snapshot.relatedConfigs[n] = copyConfigs
+			}
+		}
 	}
 	snapshot.group, snapshot.groupExists = s.deviceGroups[groupID]
 	if members, exists := s.membersByGroup[groupID]; exists {
@@ -64,6 +80,14 @@ func (s *Store) captureGroupMemberMutationLocked(groupID, nodeID string) groupMe
 }
 
 func (s *Store) restoreGroupMemberMutationLocked(snapshot groupMemberMutationSnapshot) {
+	for id, node := range snapshot.relatedNodes {
+		s.nodes[id] = node
+		if configs := snapshot.relatedConfigs[id]; configs != nil {
+			s.nodeConfigsByNode[id] = configs
+		} else {
+			delete(s.nodeConfigsByNode, id)
+		}
+	}
 	if snapshot.groupExists {
 		s.deviceGroups[snapshot.groupID] = snapshot.group
 	} else {

@@ -78,7 +78,7 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
   const ingressProtocol = effectiveIngressProtocol(rule)
   return {
     name: rule.name, rule_group_id: rule.rule_group_id, entry_group_id: rule.entry_group_id,
-    exit_group_id: rule.exit_group_id, egress_mode: rule.egress_mode, ingress_protocol: ingressProtocol,
+    exit_group_id: rule.exit_group_id, egress_mode: rule.egress_mode, tunnel_transport: rule.tunnel_transport ?? '', ingress_protocol: ingressProtocol,
     vless_flow: ingressProtocol === 'vless_reality' ? effectiveVLESSFlow(rule) : '',
     vless_flow_explicit: ingressProtocol === 'vless_reality' && Boolean(rule.vless_flow_explicit),
     reality_server_name: ingressProtocol === 'vless_reality' ? (rule.reality_server_name || '') : '',

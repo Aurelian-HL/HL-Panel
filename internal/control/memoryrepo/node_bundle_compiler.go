@@ -27,7 +27,8 @@ import (
 // required by Xray 26.10.10 and later.
 // Revision 2 explicitly allows third-party Reality client version numbering.
 // Revision 3 drops unsupported listener metadata from rejected legacy bundles.
-const NodeBundleCompilerRevision = 3
+// Revision 4 negotiates authenticated QUIC/KCP fragments and private TLS material.
+const NodeBundleCompilerRevision = 4
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
 	// A tombstone preserves history but must never receive fresh assignments.
@@ -77,6 +78,12 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 			rule, exists := s.forwardRules[ruleID]
 			if !exists {
 				return generations.NodeConfigGeneration{}, false, fmt.Errorf("compiled usage rule is missing")
+			}
+			if rule.UsesReliableUDPTunnel() {
+				member, ok := s.membersByGroup[rule.EntryGroupID][nodeID]
+				if !ok || member.RetiredAt != nil {
+					continue
+				}
 			}
 			entry := int64(agentv1.UsageMultiplierScale)
 			exit := int64(agentv1.UsageMultiplierScale)
@@ -169,7 +176,10 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 		}
 	}
 	sort.Strings(groupIDs)
-	fragments := make([]agentv1.ConfigurationFragment, 0)
+	fragments, err := s.compileReliableUDPFragmentsLocked(nodeID)
+	if err != nil {
+		return nil, err
+	}
 	for _, groupID := range groupIDs {
 		network, configured := s.groupNetworks[groupID]
 		if !configured || network.ConnectHost == "" {
@@ -177,7 +187,7 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 		}
 		rules := make([]forwarding.Rule, 0)
 		for _, stored := range s.forwardRules {
-			if stored.EntryGroupID != groupID {
+			if stored.EntryGroupID != groupID || stored.UsesReliableUDPTunnel() {
 				continue
 			}
 			// Runtime health controls customer readiness, never desired config.
@@ -402,7 +412,7 @@ func effectiveVLESSSpeedLimit(s *Store, rule forwarding.Rule) int {
 func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time) error {
 	seenGroups := make(map[string]struct{}, len(groupIDs))
 	nodeIDs := make(map[string]struct{})
-	for _, groupID := range groupIDs {
+	for _, groupID := range s.reliableUDPDependentGroupsLocked(groupIDs) {
 		if groupID == "" {
 			continue
 		}

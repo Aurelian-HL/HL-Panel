@@ -39,11 +39,21 @@ func (s *Store) ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID string) (de
 		return deploymentreceipts.Input{}, faults.ErrNotFound
 	}
 	member, memberExists := s.membersByGroup[rule.EntryGroupID][nodeID]
+	if rule.UsesReliableUDPTunnel() && (!memberExists || member.RetiredAt != nil) {
+		member, memberExists = s.membersByGroup[rule.ExitGroupID][nodeID]
+	}
 	input := deploymentreceipts.Input{
 		Rule:         cloneForwardingRule(s.forwardingBaseViewLocked(rule)),
 		Node:         cloneNode(node),
 		ActiveMember: memberExists && member.RetiredAt == nil,
 		ApplyResults: make(map[agentv1.ApplyPhase]generations.ApplyResult),
+	}
+	if rule.UsesReliableUDPTunnel() {
+		entry, e := s.membersByGroup[rule.EntryGroupID][nodeID]
+		exit, x := s.membersByGroup[rule.ExitGroupID][nodeID]
+		input.RequireTunnelEntry = e && entry.RetiredAt == nil
+		input.RequireTunnelExit = x && exit.RetiredAt == nil
+		input.ActiveMember = input.ActiveMember && nodeSupportsReliableUDP(node)
 	}
 	if network, ok := s.groupNetworks[rule.EntryGroupID]; ok {
 		input.EntryNetwork = &network

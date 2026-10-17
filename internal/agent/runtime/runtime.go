@@ -400,7 +400,7 @@ func (a *Agent) enroll(ctx context.Context) (state.Credentials, error) {
 		Platform:         goruntime.GOOS,
 		Architecture:     goruntime.GOARCH,
 		AgentVersion:     a.cfg.AgentVersion,
-		Capabilities:     append([]string(nil), a.cfg.Capabilities...),
+		Capabilities:     a.capabilities(),
 	})
 	if err != nil {
 		return state.Credentials{}, fmt.Errorf("enroll node: %w", err)
@@ -425,7 +425,7 @@ func (a *Agent) HeartbeatOnce(ctx context.Context) error {
 		Platform:          goruntime.GOOS,
 		Architecture:      goruntime.GOARCH,
 		AgentVersion:      a.cfg.AgentVersion,
-		Capabilities:      append([]string(nil), a.cfg.Capabilities...),
+		Capabilities:      a.capabilities(),
 		EngineVersions:    a.engineVersions(),
 		Resources:         resourceSnapshot(),
 		AppliedGeneration: current.AppliedGeneration(),
@@ -827,4 +827,18 @@ func newBootID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes[:]), nil
+}
+
+// Never trust a capability supplied in a config file for an unverified engine.
+func (a *Agent) capabilities() []string {
+	out := make([]string, 0, len(a.cfg.Capabilities)+1)
+	for _, c := range a.cfg.Capabilities {
+		if c != "gost-reliable-udp-v1" {
+			out = append(out, c)
+		}
+	}
+	if a.gostAdapter != nil && a.gostAdapter.SupportsReliableUDP() {
+		out = append(out, "gost-reliable-udp-v1")
+	}
+	return out
 }

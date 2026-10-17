@@ -15,6 +15,7 @@ import (
 type Configuration struct {
 	Services []Service `json:"services"`
 	Metrics  *Metrics  `json:"metrics,omitempty"`
+	Chains   []Chain   `json:"chains,omitempty"`
 }
 
 // StatsAPIAddress is deliberately loopback-only. The edge agent reads this
@@ -34,7 +35,46 @@ type Service struct {
 	Forwarder Forwarder      `json:"forwarder"`
 }
 type EngineType struct {
-	Type string `json:"type"`
+	Type     string         `json:"type"`
+	Chain    string         `json:"chain,omitempty"`
+	Auth     *Auth          `json:"auth,omitempty"`
+	TLS      *TLS           `json:"tls,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type Auth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// PEM fields belong to the authenticated node bundle only. The agent validates
+// them and writes content-addressed private files before starting native GOST.
+// File paths supplied by a control-plane fragment are never accepted.
+type TLS struct {
+	CertPEM    string `json:"certPEM,omitempty"`
+	KeyPEM     string `json:"keyPEM,omitempty"`
+	CAPEM      string `json:"caPEM,omitempty"`
+	CertFile   string `json:"certFile,omitempty"`
+	KeyFile    string `json:"keyFile,omitempty"`
+	CAFile     string `json:"caFile,omitempty"`
+	Secure     bool   `json:"secure,omitempty"`
+	ServerName string `json:"serverName,omitempty"`
+}
+
+type Chain struct {
+	Name string `json:"name"`
+	Hops []Hop  `json:"hops"`
+}
+type Hop struct {
+	Name     string      `json:"name"`
+	Nodes    []ChainNode `json:"nodes"`
+	Selector Selector    `json:"selector"`
+}
+type ChainNode struct {
+	Name      string     `json:"name"`
+	Addr      string     `json:"addr"`
+	Connector EngineType `json:"connector"`
+	Dialer    EngineType `json:"dialer"`
 }
 type Forwarder struct {
 	Nodes    []Node   `json:"nodes"`

@@ -12,6 +12,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
@@ -146,6 +147,7 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 	removedEndpoints := make(map[string]endpoints.EndpointPool)
 	removedMembers := make(map[string]map[string]endpoints.EndpointPoolMember)
 	removedSOCKS5Upstreams := make(map[string]provisioningvless.SOCKS5Upstream)
+	removedTunnels := map[string]gostconfig.TunnelMaterial{}
 	removedAutoRealityKeys := make(map[string]string)
 	removedVLESSBindings := make(map[string]vlessidentity.CredentialRecord)
 	revokedVLESSBindings := make(map[string]vlessidentity.CredentialRecord)
@@ -172,7 +174,7 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 			return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s changed; reload before saving", faults.ErrConflict, id)
 		}
 		previous[id] = current
-		groups = append(groups, current.EntryGroupID)
+		groups = append(groups, current.EntryGroupID, current.ExitGroupID)
 		item := cloneForwardingRule(current)
 		switch request.Operation {
 		case rulegroups.BatchPause:
@@ -255,6 +257,10 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 	}
 	for _, item := range items {
 		if request.Operation == rulegroups.BatchDelete {
+			if m, ok := s.reliableUDPTunnels[item.ID]; ok {
+				removedTunnels[item.ID] = m
+			}
+			delete(s.reliableUDPTunnels, item.ID)
 			delete(s.forwardRules, item.ID)
 			if privateKey, ok := s.autoRealityKeys[item.ID]; ok {
 				removedAutoRealityKeys[item.ID] = privateKey
@@ -277,6 +283,9 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 	if err := s.recompileForwardingGroupsLocked(groups, event.CreatedAt); err != nil {
 		for id, item := range previous {
 			s.forwardRules[id] = item
+		}
+		for id, m := range removedTunnels {
+			s.reliableUDPTunnels[id] = m
 		}
 		// A failed compilation must not leave endpoint state partially removed.
 		for id, pool := range removedEndpoints {

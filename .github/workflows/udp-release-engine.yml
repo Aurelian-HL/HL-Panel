@@ -2,7 +2,7 @@ name: Locked reliable UDP release engine
 
 on:
   push:
-    branches: ['fix/reliable-udp-release-20261018']
+    branches: ['fix/reliable-udp-release-20261018', 'release/udp-bbr-v0.1.114']
     paths:
       - '.github/workflows/udp-release-engine.yml'
       - 'deploy/reliable_udp_engine.py'
@@ -16,6 +16,11 @@ on:
       - 'internal/agent/engine/gost_runner*.go'
       - 'internal/agent/engine/version*.go'
       - 'tests/integration/gost/forwarding_test.go'
+      - 'internal/control/**'
+      - 'internal/agent/**'
+      - 'apps/web-admin/**'
+      - 'tests/integration/gost/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
@@ -25,6 +30,18 @@ jobs:
   release-engine:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: nyvp_udp_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nyvp_udp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -36,6 +53,14 @@ jobs:
           set -euo pipefail
           python3 tests/install/test_reliable_udp_engine.py
           python3 -m unittest discover -s tests/integration/gost -p 'test_udp_*_gates.py' -v
+      - name: Verify panel persistence and all Go regressions
+        env:
+          NYVP_TEST_POSTGRES_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/nyvp_udp_test?sslmode=disable
+          NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
+        run: |
+          go test -count=1 -timeout=15m ./...
+          go test -race -count=1 ./internal/control/memoryrepo ./internal/control/deploymentreceipts
+          go vet ./...
       - name: Build the single pinned release candidate
         run: |
           set -euo pipefail
@@ -55,7 +80,7 @@ jobs:
           cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$RUNNER_TEMP/udp-engines/bin/gost"
           export NYVP_GOST_BINARY="$RUNNER_TEMP/udp-engines/bin/gost"
           export NYVP_XRAY_BINARY="$RUNNER_TEMP/udp-engines/bin/xray"
-          go test -count=1 -timeout=10m ./internal/agent/... ./tests/integration/gost 2>&1 | tee udp-agent-regression.log
+          go test -p 1 -v -count=1 -timeout=10m ./internal/agent/... ./internal/control/httpapi ./tests/integration/gost 2>&1 | tee udp-agent-regression.log
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -67,6 +92,8 @@ jobs:
         working-directory: apps/web-admin
         run: |
           npm ci
+          npm run typecheck
+          npm test -- --run
           npm run build
       - name: Build and verify the complete package with the accepted engine
         shell: pwsh

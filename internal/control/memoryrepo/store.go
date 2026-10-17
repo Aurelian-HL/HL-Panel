@@ -11,6 +11,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
@@ -64,6 +65,7 @@ type Store struct {
 	userGroups            map[string]customers.UserGroup
 	groupNetworks         map[string]groupconfig.GroupNetwork
 	forwardRules          map[string]forwarding.Rule
+	reliableUDPTunnels    map[string]gostconfig.TunnelMaterial
 	autoRealityKeys       map[string]string
 	// vlessSOCKS5Upstreams is confidential runtime material indexed by forwarding
 	// rule ID. It is deliberately separate from forwarding.Rule so public
@@ -109,6 +111,7 @@ func New(admin auth.Administrator) *Store {
 		userGroups:            make(map[string]customers.UserGroup),
 		groupNetworks:         make(map[string]groupconfig.GroupNetwork),
 		forwardRules:          make(map[string]forwarding.Rule),
+		reliableUDPTunnels:    make(map[string]gostconfig.TunnelMaterial),
 		autoRealityKeys:       make(map[string]string),
 		vlessSOCKS5Upstreams:  make(map[string]provisioningvless.SOCKS5Upstream),
 		ruleGroups:            make(map[string]rulegroups.RuleGroup),

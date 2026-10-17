@@ -115,6 +115,16 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+      - name: Build and accept the pinned reliable UDP engine
+        env:
+          HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
+        run: |
+          set -euo pipefail
+          python3 tests/install/test_reliable_udp_engine.py
+          python3 -m unittest discover -s tests/integration/gost -p 'test_udp_*_gates.py' -v
+          python3 deploy/reliable_udp_engine.py "$RUNNER_TEMP/udp-release" | tee udp-build.json
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 tests/install/reliable_udp_release.py --bundle "$RUNNER_TEMP/udp-release/bundle" --manifest-sha256 "$manifest_sha" --results "$RUNNER_TEMP/udp-release/results.json" 2>&1 | tee udp-runtime.log
       - name: Build release archive
         shell: bash
         env:
@@ -128,11 +138,13 @@ jobs:
           go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG -X main.platformBuildTime=$build_time" -o "$release/bin/control-api" ./apps/control-api
           go build -trimpath -o "$release/bin/usage-migrate" ./apps/usage-migrate
           go build -trimpath -ldflags "-X github.com/hongle/hl-panel/internal/agent/config.DefaultAgentVersion=$RELEASE_TAG" -o "$release/bin/edge-agent" ./apps/edge-agent
-          python3 deploy/fetch-node-engines.py "$release"
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 deploy/fetch-node-engines.py "$release" --gost-bundle "$RUNNER_TEMP/udp-release/bundle" --gost-manifest-sha256 "$manifest_sha"
+          cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$release/bin/gost"
           "$release/bin/xray" version
           "$release/bin/gost" -V
           # Real engines and loopback clients, no production services.
-          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -v ./internal/agent/runtime ./tests/integration/xray ./tests/integration/gost
+          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -p 1 -v ./internal/agent/runtime ./internal/agent/engine ./internal/control/httpapi ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md

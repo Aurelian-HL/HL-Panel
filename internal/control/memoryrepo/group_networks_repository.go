@@ -83,7 +83,18 @@ func (s *Store) UpdateGroupNetwork(_ context.Context, input groupconfig.UpdateIn
 	if err := s.recordBusinessLocked(key, input.RequestSHA256, item.GroupID, item); err != nil {
 		return groupconfig.GroupNetwork{}, false, err
 	}
+	rollback := s.captureGroupMemberMutationLocked(item.GroupID, "")
 	s.groupNetworks[item.GroupID] = cloneGroupNetwork(item)
+	var compileErr error
+	if item.TrafficMultiplier != previous.TrafficMultiplier {
+		compileErr = s.recompileForwardingGroupsLocked([]string{item.GroupID}, time.Now().UTC())
+	}
+	if compileErr != nil {
+		s.groupNetworks[item.GroupID] = previous
+		s.restoreGroupMemberMutationLocked(rollback)
+		delete(s.businessIdempotency, key)
+		return groupconfig.GroupNetwork{}, false, compileErr
+	}
 	// A bound endpoint is the customer-visible address for its forwarding rule.
 	// Keep it in lockstep with the entry group's address so an IP-to-domain
 	// change does not invalidate existing subscriptions or endpoint bindings.

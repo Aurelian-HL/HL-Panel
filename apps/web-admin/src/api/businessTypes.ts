@@ -70,6 +70,7 @@ export interface ForwardRuleInput {
   entry_group_id: string
   exit_group_id: string
   egress_mode: 'DIRECT' | 'EXIT_GROUP'
+  tunnel_transport?: '' | 'quic' | 'kcp'
   ingress_protocol?: IngressProtocol
   vless_flow_explicit?: boolean
   vless_flow?: 'xtls-rprx-vision' | string

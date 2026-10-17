@@ -30,6 +30,8 @@ const (
 // come from the same node state as Node. Applied evidence is allowed only
 // while the same rule fragment remains present, unchanged, in the desired bundle.
 type Input struct {
+	RequireTunnelEntry bool                                           `json:"-"`
+	RequireTunnelExit  bool                                           `json:"-"`
 	EntryNetwork       *groupconfig.GroupNetwork                      `json:"-"`
 	ExitNetwork        *groupconfig.GroupNetwork                      `json:"-"`
 	Rule               forwarding.Rule                                `json:"-"`

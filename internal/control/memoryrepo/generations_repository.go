@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
@@ -120,7 +121,10 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 	if _, exists := s.applyAttemptsByNode[result.NodeID]; !exists {
 		s.applyAttemptsByNode[result.NodeID] = make(map[int64]generations.ApplyAttemptState)
 	}
+	previousNode := cloneNode(node)
 	attempt := s.applyAttemptsByNode[result.NodeID][result.Generation]
+	previousAttempt, attemptExisted := s.applyAttemptsByNode[result.NodeID][result.Generation]
+	attempt.SeenIDs = maps.Clone(attempt.SeenIDs)
 	newAttempt := result.AttemptID != "" && attempt.CurrentID != result.AttemptID
 	if newAttempt && attempt.SeenIDs[result.AttemptID] {
 		return nodes.Node{}, fmt.Errorf("%w: stale apply attempt", faults.ErrConflict)
@@ -129,6 +133,8 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 		return nodes.Node{}, fmt.Errorf("%w: legacy apply result cannot replace current attempt", faults.ErrConflict)
 	}
 	phaseResults := s.applyResultsByNode[result.NodeID][result.Generation]
+	previousResults := phaseResults
+	phaseResults = maps.Clone(phaseResults)
 	if phaseResults == nil || newAttempt {
 		phaseResults = make(map[string]generations.ApplyResult)
 	}
@@ -138,7 +144,10 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 			existing.EngineMode != result.EngineMode || existing.Message != result.Message {
 			return nodes.Node{}, fmt.Errorf("%w: apply phase already recorded with different content", faults.ErrConflict)
 		}
-		return cloneNode(node), nil
+		if err := s.recompileReliableUDPAfterReceiptLocked(node.ID, result.CreatedAt); err != nil {
+			return nodes.Node{}, err
+		}
+		return cloneNode(s.nodes[node.ID]), nil
 	}
 	if result.AttemptID == "" && result.Phase == "verify" && result.Status == "succeeded" {
 		commit, committed := phaseResults["commit"]
@@ -177,8 +186,22 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 	}
 	node.UpdatedAt = result.CreatedAt
 	s.nodes[node.ID] = node
+	if err := s.recompileReliableUDPAfterReceiptLocked(node.ID, result.CreatedAt); err != nil {
+		s.nodes[node.ID] = previousNode
+		if previousResults == nil {
+			delete(s.applyResultsByNode[result.NodeID], result.Generation)
+		} else {
+			s.applyResultsByNode[result.NodeID][result.Generation] = previousResults
+		}
+		if attemptExisted {
+			s.applyAttemptsByNode[result.NodeID][result.Generation] = previousAttempt
+		} else {
+			delete(s.applyAttemptsByNode[result.NodeID], result.Generation)
+		}
+		return nodes.Node{}, err
+	}
 	s.appendAuditLocked(event)
-	return cloneNode(node), nil
+	return cloneNode(s.nodes[node.ID]), nil
 }
 
 func (s *Store) groupRevisionByIDLocked(groupID, revisionID string) generations.GroupRevision {
