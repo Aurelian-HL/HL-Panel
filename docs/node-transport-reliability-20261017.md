@@ -120,24 +120,63 @@ Linux 的 `net.ipv4.tcp_congestion_control` 控制新连接的默认选择。入
 
 这里的 CPU 数值是进程 CPU 秒，不是 CPU 占用百分比。计时短、隧道已预热、只有单轮 loopback 样本，而且没有 TCP+BBR 对照，因此不能用表格给 QUIC/KCP 排名，也不能宣称任一方案更快、CPU 更低或客户无感。UDP 字节统计只代表观测窗口，不代表完整会话费用；不能把观测字节减应用字节全部解释为重传。
 
-## 七、上游转发函数的独立风险复核
+## 七、原版与 Pipe 修补版的真实网络对照
 
 固定 GOST tag `v3.3.1-nightly.20260922` 的源码依赖检查显示：`go.mod` 引用 `github.com/go-gost/x v0.17.2`、`github.com/quic-go/quic-go v0.60.0`，未见 `replace` 覆盖。对其中 `x` 的 `Pipe` 源码复核发现两项值得独立验证的风险：读取循环先处理 `err`、后处理 `n`，可能丢弃一次合法的 `n > 0` 与 EOF 或其他错误共同返回的数据；写入路径未完整处理短写。
 
 2026-10-17 在临时目录 `work/pipe-regression-20261017-133916-5367a8` 对提取的原函数和调整版函数做了 6 例实跑对照：原函数测试退出码为 1；调整版先写入本次读取的数据，再处理读取错误，并对无错误但未写满的情况返回 `io.ErrShortWrite`，测试退出码为 0。原函数在 `data + EOF`、`data + 非 EOF 错误` 两例中均交付 `0 / 12` 字节；短写模拟 `Write` 返回 `(4, nil)` 时，原函数错误结果仍为 nil。调整版在这 6 例中均通过。
 
-这些是确定性的函数级复现，只证明对应函数代码对这些边界的处理有问题。尚未核验官方发行二进制的 Go buildinfo，未证明该二进制与所查 tag 源码、依赖组合完全一致；也没有完成使用原版及修复版引擎的成对真实 QUIC 网络测试。因此，这个函数是候选风险，不能写成第三轮 CI 的唯一已确认根因，不能宣称产品 QUIC 已修复。函数级测试通过同样不等于转发连接、半关闭或生产客户连接验收通过。
+随后已完成隔离 Linux 原/修对照：[run 39008802484](https://github.com/Aurelian-HL/HL-Panel/actions/runs/39008802484)，研究分支提交 `c54778cc7c759f7ee15c4337f1825c4eb3137138`。构建与产物上传 success；网络门禁 failure，原因是仍有半关闭检查失败。
+
+来源核验：固定 tag 是 annotated tag，tag object 为 `6ea0a0c2154c4e62718295bc047d21de84283af0`，解引用后的源码 commit 为 `e9fab9587288b82ce8a1a9b8f07326f41b155935`。官方发行二进制的实际 buildinfo 包含 x `v0.17.2`、quic-go `v0.60.0`、kcp-go `v5.6.72`、smux `v1.5.57`，无 replace；其 Go 版本为 go1.26.8。原版与修补版均使用 go1.27.0、同一源码、相同依赖图、相同临时 modfile 与 x 源码副本、相同构建参数；修补版只覆盖一个 Pipe 文件。官方二进制与源码构建的 Go 版本不同，因此因果比较以同条件的原/修构建为准，官方结果仅作为发行版复现及来源佐证，不能称三份二进制完全同源同构建。
+
+构建器检查上游模块和源码 SHA256、go.sum、Go module verify、buildinfo，以及构建前后源码未改变。官方 archive SHA256 固定为 `7ce4abf8856fc45926b86d92c770f00c8d7cfbc353d410b9e2886f8ce0a2fe0f`。原版与修补版 binary SHA256 分别为 `dfe2c996db066a8420afd8bbb5098fd508f21b92744a056344ca5b70378e26b1`、`1d8c7baa17a698b5cd2af72581f0b410e8a8fcbb66c35549864fd7c4395dff87`。完整来源记录在该次 CI artifact 的 `provenance.json`。
+
+顺序是 official、original、fixed、fixed、original。每次运行 QUIC/KCP × 无主动丢包/每 23 包丢 1 包，共 20 场景。20 场景的随机鉴权、错误及缺少鉴权拒绝、双向各 2 MiB 长度与 SHA256 均通过；主动丢包场景确实观察到双向丢弃数据报。关闭边界在 bulk 后关闭主动丢包再测，不能据此声称在丢包条件下的关闭语义也已通过。
+
+| 版本 / 协议 | F 立即关闭完整回复 | F + 收到 EOF | H 客户先 FIN，目标收到 FIN 后才回复 | S 目标先 FIN，客户收到 EOF 后的 ACK 必须到达目标应用 |
+| --- | --- | --- | --- | --- |
+| 官方发行版 QUIC | 0/20 | 0/5 | 0/3 | 0/3 |
+| 源码原版 QUIC | 0/20 | 0/5 | 0/3 | 0/3 |
+| Pipe 修补版 QUIC | 20/20 | 5/5 | 3/3 | 0/3 |
+| 上述三种构建的 KCP | 20/20 | 5/5 | 0/3 | 0/3 |
+
+表格是每个场景的计数，重复轮次及两种 bulk 丢包条件下的关闭结果一致。原版 QUIC 的扩展检查均归类为 `data_incomplete`；修补版 QUIC 的 S 为 `target_ack_not_observed`。KCP 的 H 为 `data_incomplete`，S 为 `target_ack_not_observed`。S 通过需要目标应用实际观察到完整 ACK 和客户 FIN，不能只凭客户端 sendall 成功算通过。
+
+这次真实网络对照支持：Pipe 对 `n > 0` 与 readErr 的处理顺序确实影响该实验中的 QUIC F/EOF/H 交付。它没有解决 S，不是所有失败的唯一原因，也不构成产品 QUIC/KCP 交付。额外独立执行的 legacy F 结果保存在每场景的 `extended_close_checks.legacy_f`，原有 F 门禁没有被删掉或放宽。
+
+原/修提取函数的双向 TCP、取消与错误诊断也已执行：真实 localhost TCP 的正常双向半关闭通过，但模拟 FIN-only Close 的连接在 ctx 取消后仍可能保留阻塞 Read；首个非 EOF 错误也没有主动取消另一半。函数诊断揭示清理边界，不能以测试进程最终退出替代资源释放验收。
 
 上游源码依据：[GOST 固定 tag 的 go.mod](https://github.com/go-gost/gost/blob/v3.3.1-nightly.20260922/go.mod)；[x v0.17.2 的 Pipe](https://github.com/go-gost/x/blob/v0.17.2/internal/net/pipe.go)；[quic-go v0.60.0 的 receive_stream.go](https://github.com/quic-go/quic-go/blob/v0.60.0/receive_stream.go)。后者的读取实现允许本次读取同时返回数据和 EOF；不能把这种合法的读取结果误判为对端没有发送数据。
 
-## 八、交付边界与下一步
+## 八、半关闭生命周期研究
 
-- 本轮 BBR helper、令牌安装调用和实验代码已同步到 Git 仓库 `main`；没有发布本轮 tag 或 Release，也没有部署到生产节点。
+源码检查显示 QUIC listener 的 `quicConn` 直接嵌入 `*quic.Stream`。服务把可用的 `conn.Context()` 作为 handler 的上下文，而 quic-go 文档明确 Stream.Context 在发送方向关闭时就取消。正常发送 FIN 因此可能误伤仍需继续的反向业务。
+
+本地真实 TCP 加上下文绑定模型已复现这一风险：目标先发送回复并 FIN，客户收到 EOF 后发出的反向 ACK 为 0/3 字节；原/Pipe 修补版均复现。该模型不是 live QUIC。另加的 Linux 候选保留 Pipe 修补，仅将 listener adapter 的 Context 改为 QUIC connection context，独立对照只修 Pipe 的版本。它用于验证假说，不是最终清理方案；连接级 context 不能直接代表每条 stream 的完整生命周期。
+
+该候选已完成真实 Linux 对照：[run 39009329900](https://github.com/Aurelian-HL/HL-Panel/actions/runs/39009329900)，提交 `af770d59ab806e2981151a109156b30ec9b42014`。顺序 fixed、lifecycle、lifecycle、fixed，每轮两协议、两种 bulk 丢包条件，共 16 场景。16 场景的鉴权和双向 bulk 均通过；原/修控制二进制 SHA256 与前轮完全一致，候选仅在相同 Pipe overlay 上增加 listener 的两个文件，源码、依赖图、临时模块与构建参数相同。候选 binary SHA256 为 `3fc07bb5ac70f45dcadd14b306e00d3776103118fbf1b48d7dadb3b32db90f48`。
+
+| 版本 / 协议 | F | F + EOF | H | S |
+| --- | --- | --- | --- | --- |
+| 只修 Pipe / QUIC | 20/20 | 5/5 | 3/3 | 0/3 |
+| Pipe + listener 生命周期 / QUIC | 20/20 | 5/5 | 3/3 | 3/3 |
+| 上述两种构建 / KCP | 20/20 | 5/5 | 0/3 | 0/3 |
+
+计数仍为每个场景的结果，两次重复与两种 bulk 丢包条件一致；关闭检查本身没有主动丢包。QUIC 候选四个场景的 S 合计 12/12，对照组为 0/12，支持本次条件下 listener 上下文误取消影响反向传输的判断。整体作业仍 failure，因为 KCP 半关闭未通过，门禁没有放宽。不能把 QUIC 这组有界检查全部通过扩大为取消/异常/资源回收已通过，更不能据此宣称公网性能和生产客户无感。
+
+KCP 也不能仅凭失败就归因于协议不支持半关闭。实际依赖 smux `v1.5.57` 提供 CloseWrite；但 relay connector 的 tcpConn 只嵌入 net.Conn，未暴露底层 CloseWrite。Pipe 不支持半关闭时会回退 Close，这会让 smux 的接收方向也关闭。本地 smux/net.Pipe 契约实验共 12 例：v1/v2 直接使用或转发 CloseWrite 都能在 FIN 后收到 9/9 回复字节；隐藏方法并回退 Close 的 H 模型均为 0/9。这个实验只测 smux 和封装方法集，不是 KCP 网络或完整 GOST 根因证明。S 的剩余失败也不能仅凭此模型解释完毕。
+
+源码依据：[QUIC listener conn](https://github.com/go-gost/x/blob/v0.17.2/listener/quic/conn.go)、[service Context](https://github.com/go-gost/x/blob/v0.17.2/service/service.go)、[relay connector conn](https://github.com/go-gost/x/blob/v0.17.2/connector/relay/conn.go)、[quic-go stream](https://github.com/quic-go/quic-go/blob/v0.60.0/stream.go)、[smux stream](https://github.com/xtaci/smux/blob/v1.5.57/stream.go)。
+
+## 九、交付边界与下一步
+
+- BBR helper、令牌安装调用和原始实验代码已同步到 Git 仓库 `main` 的 `832188a5fe403e5ce583f9f9c0d01c7d64417ba2`；新增成对引擎及生命周期实验位于 `research/reliable-udp-pipe-20261017`，没有发布本轮 tag 或 Release，也没有部署到生产节点。
 - 尚未把 QUIC/KCP 接入产品的完整规则流程，未默认启用节点间可靠 UDP 隧道。
 - 本轮没有修改生产节点配置，没有把生产节点切换到 QUIC/KCP，也没有据此变更客户线路。
 - 当前 Linux 可靠 UDP 作业仍失败，不能把局部稳定流通过说成四场景整体验收完成。
 
-下一步先在隔离 Linux 上，使用同一来源与参数的原版、修复版引擎做成对测试，重验鉴权、稳定流、F 立即关闭、EOF、半关闭及失败路径，并核验二进制 buildinfo。只有网络级复现与成对修复结果支持时，才能确认对应失败的具体根因。
+原/修网络对照、buildinfo 及 QUIC listener 上下文假说的网络对照已完成。接下来验证 relay 半关闭透传，以及 QUIC 候选在复用连接间的隔离、取消、超时、错误传播及资源清理，保留现有 F/EOF/H/S 门禁。局部关闭检查通过之后，仍需测试带丢包的关闭、断网与恢复、长时间负载，不能先默认开启生产 UDP。
 
 之后在同一故障注入方式、机器资源、版本、MTU、带宽与负载下比较 TCP+BBR、QUIC 可靠流、KCP，以及独立比较的 KCP+FEC；若要衡量 BBR 本身的收益，还需保留 TCP 原拥塞算法对照。覆盖真实 RTT、抖动、随机及突发丢包、多连接并发、持续流量与短请求，至少多次重复并随机化顺序，记录应用完整性、失败率、吞吐、冷建链、请求尾延迟和最长停顿、双端单位业务流量 CPU 秒及完整窗口字节开销，之后再开展已授权公网环境的性能验证。现有实验不足以支持性能优劣结论。
 
