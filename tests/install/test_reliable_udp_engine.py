@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -85,6 +86,26 @@ class ReleaseEngineTests(unittest.TestCase):
         engine.write_json(self.recipe / 'lock.json', self.lock)
         with self.assertRaisesRegex(engine.EngineBuildError, 'unsafe engine version'):
             engine.load_recipe(self.recipe)
+
+    @unittest.skipIf(os.name == 'nt', 'requires POSIX directory permissions')
+    def test_module_copy_allows_new_patch_files_without_changing_cache(self):
+        upstream = self.root / 'upstream'
+        directory = upstream / 'internal/io'
+        directory.mkdir(parents=True)
+        source = directory / 'pipe.go'
+        source.write_bytes(b'authenticated source')
+        source.chmod(0o444)
+        readonly = [directory, directory.parent, upstream]
+        for path in readonly:
+            path.chmod(0o555)
+            self.addCleanup(path.chmod, 0o755)
+        before = {path: path.stat().st_mode for path in [source, *readonly]}
+        copied = self.root / 'copied'
+        engine.copy_module_for_patching(upstream, copied)
+        (copied / 'internal/io/new_abort.go').write_bytes(b'new patch')
+        self.assertEqual(before, {path: path.stat().st_mode for path in before})
+        self.assertEqual(source.read_bytes(), b'authenticated source')
+        self.assertFalse((directory / 'new_abort.go').exists())
 
     def test_modified_patch_is_rejected(self):
         (self.recipe / self.lock['patches'][0]['patch']).write_bytes(b'changed')

@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -178,6 +179,15 @@ def verify_runtime_version(document, lock):
     require(document.strip() == expected, 'running engine version does not match release manifest')
 
 
+def copy_module_for_patching(upstream, target):
+    shutil.copytree(upstream, target)
+    # Go's authenticated module cache is read-only on Linux. Only the private
+    # copy may gain owner write permission, including directories for new files.
+    for directory in [target, *(item for item in target.rglob('*') if item.is_dir())]:
+        require(not directory.is_symlink(), 'symbolic link in module copy')
+        directory.chmod(stat.S_IMODE(directory.stat().st_mode) | stat.S_IWUSR)
+
+
 def verify_bundle(bundle, manifest_sha256, recipe=RECIPE):
     require(len(manifest_sha256) == 64 and all(c in '0123456789abcdef' for c in manifest_sha256),
             'bundle manifest SHA256 required')
@@ -249,7 +259,7 @@ def build(output, recipe=RECIPE, module_proxy='https://proxy.golang.org'):
         require(upstream.is_relative_to(output / 'go/pkg/mod') and
                 tree_hash(upstream) == module['source_tree_sha256'], 'module source tree mismatch')
         target = source / ('hl-udp-' + key)
-        shutil.copytree(upstream, target)
+        copy_module_for_patching(upstream, target)
         module_roots[key] = target
     for item in lock['patches']:
         target = module_roots[item['module']] / item['path']
