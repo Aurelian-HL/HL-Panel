@@ -109,7 +109,7 @@ func TestReliableUDPAPIThroughRealEngine(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, phase := range []agentv1.ApplyPhase{agentv1.ApplyPhaseCommit, agentv1.ApplyPhaseVerify} {
-				requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/apply-results", node.NodeCredential, agentv1.ApplyResultRequest{Generation: desired.Generation, ConfigSHA256: desired.ConfigSHA256, Phase: phase, Status: agentv1.ApplyStatusSucceeded, EngineMode: "gost"}, 204)
+				requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/apply-results", node.NodeCredential, agentv1.ApplyResultRequest{Generation: desired.Generation, AttemptID: "00000000000000000000000000000001", ConfigSHA256: desired.ConfigSHA256, Phase: phase, Status: agentv1.ApplyStatusSucceeded, EngineMode: "gost"}, 204)
 			}
 			var after agentv1.DesiredNodeConfig
 			decodeResponse(t, requestJSON(t, f.handler, http.MethodGet, "/api/v1/agent/desired", node.NodeCredential, nil, 200), &after)
@@ -167,7 +167,7 @@ func TestReliableUDPAPIThroughRealEngine(t *testing.T) {
 			exchange(newConnection)
 			_ = newConnection.Close()
 			for _, phase := range []agentv1.ApplyPhase{agentv1.ApplyPhaseCommit, agentv1.ApplyPhaseVerify} {
-				requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/apply-results", node.NodeCredential, agentv1.ApplyResultRequest{Generation: after.Generation, ConfigSHA256: after.ConfigSHA256, Phase: phase, Status: agentv1.ApplyStatusSucceeded, EngineMode: "gost"}, 204)
+				requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/apply-results", node.NodeCredential, agentv1.ApplyResultRequest{Generation: after.Generation, AttemptID: "00000000000000000000000000000002", ConfigSHA256: after.ConfigSHA256, Phase: phase, Status: agentv1.ApplyStatusSucceeded, EngineMode: "gost"}, 204)
 			}
 			current, err := forwarding.NewService(f.store, nil).Get(context.Background(), rule.ID)
 			if err != nil || !current.Deployed {
