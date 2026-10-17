@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+"""Build an isolated, auditable GOST original/Pipe-overlay research pair.
+
+Usage: python3 build_pair.py OUTPUT_DIRECTORY
+Requires Linux amd64 and Go. It never starts GOST, changes host networking,
+edits a product repository, or writes the existing Go module/build caches.
+OUTPUT_DIRECTORY must be absent or empty; failed output is kept as evidence.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+TAG = 'v3.3.1-nightly.20260922'
+REPOSITORY = 'go-gost/gost'
+X_MODULE = 'github.com/go-gost/x'
+X_VERSION = 'v0.17.2'
+QUIC_MODULE = 'github.com/quic-go/quic-go'
+QUIC_VERSION = 'v0.60.0'
+PIPE_SHA256 = '1d83f46e2699086be124b9f9db3b273b4b652f102b563e8b98fc70867590fba0'
+OFFICIAL_SHA256 = '7ce4abf8856fc45926b86d92c770f00c8d7cfbc353d410b9e2886f8ce0a2fe0f'
+OFFICIAL_URL = ('https://github.com/go-gost/gost/releases/download/' + TAG +
+                '/gost_3.3.1-nightly.20260922_linux_amd64.tar.gz')
+MAX_ARCHIVE = 96 * 1024 * 1024
+MAX_UNPACKED = 384 * 1024 * 1024
+MAX_FILE = 192 * 1024 * 1024
+MAX_MEMBERS = 30000
+
+# Exact, previously regression-tested fix; all other bytes remain unchanged.
+PIPE_OLD = '''			// 读取数据
+			nr, err := reader.Read(buf)
+			if err != nil {
+				if err != io.EOF {
+					return err
+				}
+				return nil // 正常结束
+			}
+
+			// 写入数据
+			_, err = dst.Write(buf[:nr])
+			if err != nil {
+				return err
+			}
+'''
+PIPE_NEW = '''			// 读取数据
+			nr, readErr := reader.Read(buf)
+			if nr > 0 {
+				nw, writeErr := dst.Write(buf[:nr])
+				if writeErr != nil {
+					return writeErr
+				}
+				if nw != nr {
+					return io.ErrShortWrite
+				}
+			}
+			if readErr != nil {
+				if readErr != io.EOF {
+					return readErr
+				}
+				return nil // 正常结束
+			}
+'''
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+            value.update(chunk)
+    return value.hexdigest()
+
+
+def write_json(path: Path, value: object) -> None:
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8', newline='\n')
+
+
+class SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        require(urllib.parse.urlsplit(newurl).scheme == 'https',
+                'download redirect attempted to leave HTTPS')
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            redirected.remove_header('Authorization')
+        return redirected
+
+
+def download(url: str, destination: Path, limit: int = MAX_ARCHIVE,
+             api: bool = False) -> dict:
+    require(urllib.parse.urlsplit(url).scheme == 'https', 'HTTPS is required')
+    headers = {'User-Agent': 'hl-panel-isolated-pipe-research',
+               'Accept': 'application/vnd.github+json' if api else '*/*'}
+    token = os.environ.get('GITHUB_TOKEN', '')
+    if api and token:
+        require(urllib.parse.urlsplit(url).hostname == 'api.github.com',
+                'credentials are limited to GitHub API metadata')
+        headers['Authorization'] = 'Bearer ' + token
+    opener = urllib.request.build_opener(SafeRedirect())
+    started = time.monotonic()
+    request = urllib.request.Request(url, headers=headers)
+    received = 0
+    with opener.open(request, timeout=30) as response, destination.open('xb') as handle:
+        require(response.status == 200, 'download did not return HTTP 200')
+        declared = response.headers.get('Content-Length')
+        if declared:
+            require(0 <= int(declared) <= limit, 'download Content-Length exceeds limit')
+        while True:
+            require(time.monotonic() - started < 240, 'download exceeded total time limit')
+            chunk = response.read(1024 * 1024)
+            if not chunk:
+                break
+            received += len(chunk)
+            require(received <= limit, 'download exceeded byte limit')
+            handle.write(chunk)
+    require(received > 0, 'download was empty')
+    return {'url': url, 'bytes': received, 'sha256': digest(destination)}
+
+
+def api_json(url: str, destination: Path) -> dict:
+    download(url, destination, limit=2 * 1024 * 1024, api=True)
+    value = json.loads(destination.read_text(encoding='utf-8'))
+    require(isinstance(value, dict), 'GitHub API returned non-object JSON')
+    return value
+
+
+def resolve_commit(output: Path) -> dict:
+    base = 'https://api.github.com/repos/' + REPOSITORY + '/git/'
+    value = api_json(base + 'ref/tags/' + urllib.parse.quote(TAG, safe=''),
+                     output / 'tag-ref.json')
+    require(value.get('ref') == 'refs/tags/' + TAG, 'tag reference mismatch')
+    current = value.get('object', {})
+    chain = []
+    for depth in range(6):
+        kind, sha = current.get('type'), current.get('sha')
+        require(kind in {'tag', 'commit'} and bool(re.fullmatch('[0-9a-f]{40}', sha or '')),
+                'invalid GitHub tag target')
+        chain.append({'type': kind, 'sha': sha})
+        if kind == 'commit':
+            commit = api_json(base + 'commits/' + sha, output / 'source-commit.json')
+            require(commit.get('sha') == sha, 'source commit identity mismatch')
+            return {'tag': TAG, 'chain': chain, 'commit': sha,
+                    'tree': commit.get('tree', {}).get('sha')}
+        value = api_json(base + 'tags/' + sha, output / ('tag-object-' + str(depth) + '.json'))
+        require(value.get('sha') == sha, 'annotated tag identity mismatch')
+        current = value.get('object', {})
+    raise RuntimeError('annotated tag chain exceeded six levels')
+
+
+def safe_unpack(archive: Path, destination: Path) -> list[str]:
+    destination.mkdir()
+    names = []
+    total = 0
+    with tarfile.open(archive, 'r:gz') as source:
+        seen = set()
+        for member in source:
+            require(len(seen) < MAX_MEMBERS, 'archive member count exceeds limit')
+            name = member.name
+            parts = PurePosixPath(name).parts
+            require(name and '\\' not in name and not name.startswith('/')
+                    and not PurePosixPath(name).is_absolute()
+                    and '..' not in parts and ':' not in name, 'unsafe archive path')
+            require(parts and parts[0] not in {'.', '..'}, 'unsafe archive root')
+            require(member.isdir() or member.isfile(),
+                    'archive contains a link or special file')
+            require(name not in seen, 'archive repeats a member path')
+            seen.add(name)
+            require(0 <= member.size <= MAX_FILE, 'archive member exceeds byte limit')
+            total += member.size
+            require(total <= MAX_UNPACKED, 'archive exceeds unpacked byte limit')
+            target = destination.joinpath(*parts)
+            require(target.resolve().is_relative_to(destination.resolve()),
+                    'archive escaped target directory')
+            names.append(name)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                handle = source.extractfile(member)
+                require(handle is not None, 'regular archive member could not be opened')
+                with handle, target.open('xb') as output:
+                    remaining = member.size
+                    while remaining:
+                        chunk = handle.read(min(1024 * 1024, remaining))
+                        require(bool(chunk), 'archive member was truncated')
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                target.chmod(0o755 if member.mode & 0o111 else 0o644)
+    return names
+
+
+def tree_manifest(directory: Path) -> dict:
+    files = []
+    for item in sorted(directory.rglob('*')):
+        require(not item.is_symlink(), 'source tree contains a symbolic link')
+        if item.is_file():
+            files.append({'path': item.relative_to(directory).as_posix(),
+                          'bytes': item.stat().st_size, 'sha256': digest(item)})
+        else:
+            require(item.is_dir(), 'source tree contains a special file')
+    payload = json.dumps(files, sort_keys=True, separators=(',', ':')).encode()
+    return {'sha256': hashlib.sha256(payload).hexdigest(), 'files': files}
+
+
+def run(arguments: list[str], cwd: Path, env: dict, log: Path, timeout: int = 900) -> str:
+    completed = subprocess.run(arguments, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=timeout, check=False)
+    log.write_bytes(completed.stdout)
+    require(completed.returncode == 0,
+            'command failed with exit ' + str(completed.returncode) + ': ' +
+            ' '.join(arguments[:3]) + '; see ' + str(log))
+    return completed.stdout.decode('utf-8', errors='strict')
+
+
+def check_go_mod(document: dict) -> None:
+    require(not document.get('Replace'), 'pinned source go.mod unexpectedly contains replace')
+    dependencies = {item['Path']: item['Version'] for item in document.get('Require', [])}
+    require(dependencies.get(X_MODULE) == X_VERSION, 'source x dependency does not match pin')
+    require(dependencies.get(QUIC_MODULE) == QUIC_VERSION,
+            'source quic-go dependency does not match pin')
+
+
+def build_info(text: str, local_x: Path | None) -> dict:
+    dependencies = {}
+    replacements = {}
+    current = None
+    for raw in text.splitlines():
+        fields = raw.strip().split()
+        if not fields:
+            continue
+        if fields[0] == 'dep':
+            require(len(fields) >= 3, 'malformed binary dependency info')
+            current = fields[1]
+            dependencies[current] = fields[2]
+        elif fields[0] == '=>':
+            require(current is not None and len(fields) >= 2, 'malformed replacement info')
+            replacements[current] = fields[1:]
+        elif fields[0] not in {'mod'}:
+            current = None
+    require(dependencies.get(X_MODULE) == X_VERSION, 'binary x dependency mismatch')
+    require(dependencies.get(QUIC_MODULE) == QUIC_VERSION, 'binary quic-go dependency mismatch')
+    if local_x is None:
+        require(not replacements, 'official binary unexpectedly contains module replacements')
+    else:
+        require(set(replacements) == {X_MODULE}, 'research binary contains unexpected replacements')
+        require(Path(replacements[X_MODULE][0]).resolve() == local_x.resolve(),
+                'research binary x replacement is not the pinned source copy')
+    return {'dependencies': dependencies, 'replacements': replacements}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('output_directory', type=Path)
+    args = parser.parse_args()
+    require(sys.platform == 'linux' and platform.machine().lower() in {'x86_64', 'amd64'},
+            'research build is restricted to Linux amd64')
+    require(shutil.which('go') is not None, 'Go is required')
+    output = args.output_directory.absolute()
+    require(not output.is_symlink(), 'output must not be a symbolic link')
+    require(not output.exists() or (output.is_dir() and not any(output.iterdir())),
+            'output directory must be absent or empty')
+    output.mkdir(parents=True, exist_ok=True)
+    output = output.resolve()
+    env = os.environ.copy()
+    # Isolate all Go writes; both builds use the exact same local replacement.
+    for variable in ('GOFLAGS', 'GOWORK', 'GOPATH', 'GOMODCACHE', 'GOCACHE', 'GOENV',
+                     'GOOS', 'GOARCH', 'GOEXPERIMENT', 'GOTOOLCHAIN', 'GOTMPDIR',
+                     'GONOPROXY', 'GONOSUMDB', 'GOPRIVATE', 'GOINSECURE'):
+        env.pop(variable, None)
+    env.update({'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': 'amd64',
+                'GO111MODULE': 'on', 'GOSUMDB': 'sum.golang.org',
+                'GOPROXY': 'https://proxy.golang.org,direct',
+                'GOWORK': 'off', 'GOENV': 'off', 'GOTOOLCHAIN': 'auto',
+                'GOPATH': str(output / 'go'),
+                'GOMODCACHE': str(output / 'go' / 'pkg' / 'mod'),
+                'GOCACHE': str(output / 'go-build-cache')})
+    provenance = {'schema': 1, 'purpose': 'isolated original vs single-Pipe-overlay research',
+                  'production_changes': False, 'engine_tests_run': False,
+                  'tag': TAG, 'script_sha256': digest(Path(__file__).resolve()),
+                  'environment': {key: env[key] for key in
+                                  ('CGO_ENABLED', 'GOOS', 'GOARCH', 'GOWORK', 'GOENV',
+                                   'GOTOOLCHAIN', 'GOPATH', 'GOMODCACHE', 'GOCACHE',
+                                   'GO111MODULE', 'GOSUMDB', 'GOPROXY')}}
+    try:
+        provenance['source'] = resolve_commit(output)
+        archive = output / 'gost-source.tar.gz'
+        commit = provenance['source']['commit']
+        provenance['source_commit'] = commit
+        provenance['source']['archive'] = download(
+            'https://codeload.github.com/' + REPOSITORY + '/tar.gz/' + commit, archive)
+        source_container = output / 'source'
+        safe_unpack(archive, source_container)
+        roots = list(source_container.iterdir())
+        require(len(roots) == 1 and roots[0].is_dir(), 'source archive must contain one root')
+        source = roots[0]
+        require((source / 'go.mod').is_file(), 'source archive is missing go.mod')
+        provenance['source']['directory'] = str(source)
+        provenance['go_version'] = run(['go', 'version'], source, env, output / 'go-version.txt')
+        document = json.loads(run(['go', 'mod', 'edit', '-json'], source, env,
+                                  output / 'source-go-mod.json'))
+        check_go_mod(document)
+        source_manifest = tree_manifest(source)
+        write_json(output / 'source-manifest.json', source_manifest)
+        provenance['source']['tree_sha256'] = source_manifest['sha256']
+        provenance['source']['go_mod_sha256'] = digest(source / 'go.mod')
+        provenance['source']['go_sum_sha256'] = digest(source / 'go.sum')
+
+        # Authenticate the fixed upstream module in an isolated module cache.
+        downloaded = json.loads(run(['go', 'mod', 'download', '-json', X_MODULE + '@' + X_VERSION],
+                                    source, env, output / 'x-download.json'))
+        require(downloaded.get('Path') == X_MODULE and downloaded.get('Version') == X_VERSION,
+                'downloaded x module identity mismatch')
+        require(all(downloaded.get(key) for key in ('Sum', 'GoModSum', 'Zip', 'GoMod', 'Dir')),
+                'downloaded x provenance is incomplete')
+        module_cache = Path(env['GOMODCACHE']).resolve()
+        for key in ('Zip', 'GoMod', 'Dir'):
+            require(Path(downloaded[key]).resolve().is_relative_to(module_cache),
+                    'Go downloaded outside isolated module cache')
+        provenance['x_module'] = {key: downloaded[key] for key in
+                                 ('Path', 'Version', 'Sum', 'GoModSum')}
+        provenance['x_module']['zip_sha256'] = digest(Path(downloaded['Zip']))
+        provenance['x_module']['go_mod_sha256'] = digest(Path(downloaded['GoMod']))
+        upstream_x = Path(downloaded['Dir'])
+        upstream_manifest = tree_manifest(upstream_x)
+        write_json(output / 'x-upstream-manifest.json', upstream_manifest)
+        local_x = output / 'x-source'
+        shutil.copytree(upstream_x, local_x, symlinks=False)
+        local_manifest = tree_manifest(local_x)
+        require(local_manifest == upstream_manifest, 'x source copy differs from authenticated module')
+        write_json(output / 'x-source-manifest.json', local_manifest)
+        provenance['x_module']['source_tree_sha256'] = local_manifest['sha256']
+        pipe = local_x / 'internal' / 'net' / 'pipe.go'
+        require(digest(pipe) == PIPE_SHA256, 'original Pipe SHA256 gate failed')
+        original = pipe.read_bytes()
+        old, new = PIPE_OLD.encode('utf-8'), PIPE_NEW.encode('utf-8')
+        require(original.count(old) == 1, 'exact verified Pipe patch did not match once')
+        fixed = output / 'fixed-pipe.go'
+        fixed.write_bytes(original.replace(old, new, 1))
+        provenance['pipe'] = {'original_sha256': digest(pipe), 'fixed_sha256': digest(fixed),
+                              'patch_matches': 1, 'overlay_target': str(pipe),
+                              'overlay_source': str(fixed)}
+        original_overlay = output / 'original-overlay.json'
+        fixed_overlay = output / 'fixed-overlay.json'
+        write_json(original_overlay, {'Replace': {}})
+        write_json(fixed_overlay, {'Replace': {str(pipe): str(fixed)}})
+
+        # -overlay cannot replace files in GOMODCACHE. Both builds therefore
+        # share a byte-identical x copy and the same temporary -modfile replace.
+        modfile = output / 'research.mod'
+        sumfile = output / 'research.sum'
+        shutil.copyfile(source / 'go.mod', modfile)
+        shutil.copyfile(source / 'go.sum', sumfile)
+        run(['go', 'mod', 'edit', '-modfile=' + str(modfile),
+             '-replace=' + X_MODULE + '=' + str(local_x)], source, env, output / 'mod-edit.txt')
+        run(['go', 'mod', 'download', '-modfile=' + str(modfile), 'all'],
+            source, env, output / 'mod-download-all.txt', 1200)
+        run(['go', 'mod', 'verify'], source, env, output / 'mod-verify-before.txt', 600)
+        # Resolve the complete research graph before compilation; -mod=readonly
+        # makes either build fail if its temporary module files need changing.
+        run(['go', 'list', '-mod=readonly', '-modfile=' + str(modfile), '-m', 'all'],
+            source, env, output / 'research-module-graph.txt', 600)
+        modfile_hash, sumfile_hash = digest(modfile), digest(sumfile)
+        provenance['research_module'] = {'modfile': str(modfile), 'sha256': modfile_hash,
+                                         'sumfile_sha256': sumfile_hash,
+                                         'identical_replace_for_both': str(local_x)}
+        provenance['builds'] = {}
+        provenance['variants'] = {}
+        for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay)]:
+            destination = output / label
+            destination.mkdir()
+            binary = destination / 'gost'
+            command = ['go', 'build', '-mod=readonly', '-modfile=' + str(modfile),
+                       '-trimpath', '-buildvcs=false', '-overlay=' + str(overlay),
+                       '-o', str(binary), './cmd/gost']
+            started = time.monotonic()
+            run(command, source, env, destination / 'build.log', 1800)
+            seconds = time.monotonic() - started
+            information = run(['go', 'version', '-m', str(binary)], source, env,
+                              destination / 'go-version-m.txt')
+            parsed = build_info(information, local_x)
+            require(digest(modfile) == modfile_hash and digest(sumfile) == sumfile_hash,
+                    'temporary module files changed during build')
+            require(tree_manifest(local_x) == local_manifest, 'x source changed during build')
+            require(tree_manifest(source) == source_manifest, 'GOST source changed during build')
+            record = {'label': label, 'binary': str(binary), 'sha256': digest(binary),
+                      'bytes': binary.stat().st_size, 'build_seconds': round(seconds, 3),
+                      'command': command, 'buildinfo': parsed, 'overlay': json.loads(
+                          overlay.read_text(encoding='utf-8')),
+                      'source_tree_sha256': source_manifest['sha256'],
+                      'x_source_tree_sha256': local_manifest['sha256'],
+                      'modfile_sha256': modfile_hash, 'sumfile_sha256': sumfile_hash}
+            write_json(destination / 'provenance.json', record)
+            provenance['builds'][label] = record
+            provenance['variants'][label] = {
+                'binary': str(binary), 'sha256': record['sha256'],
+                'buildinfo': information, 'buildinfo_parsed': parsed}
+        require(provenance['builds']['original']['buildinfo'] ==
+                provenance['builds']['fixed']['buildinfo'], 'build dependency graphs differ')
+        run(['go', 'mod', 'verify'], source, env, output / 'mod-verify-after.txt', 600)
+        require(tree_manifest(upstream_x) == upstream_manifest, 'module cache source was modified')
+
+        # Inspect the actual official distribution without executing its engine.
+        official_archive = output / 'gost-official.tar.gz'
+        official_download = download(OFFICIAL_URL, official_archive)
+        require(official_download['sha256'] == OFFICIAL_SHA256,
+                'official release archive SHA256 gate failed')
+        official = output / 'official'
+        safe_unpack(official_archive, official)
+        candidates = [item for item in official.rglob('gost') if item.is_file()]
+        require(len(candidates) == 1, 'official archive must contain exactly one gost executable')
+        official_binary = candidates[0]
+        info = run(['go', 'version', '-m', str(official_binary)], source, env,
+                   official / 'go-version-m.txt')
+        official_record = {'download': official_download, 'binary': str(official_binary),
+                           'sha256': digest(official_binary),
+                           'buildinfo': build_info(info, None)}
+        write_json(official / 'provenance.json', official_record)
+        provenance['official'] = official_record
+        provenance['variants']['official'] = {
+            'binary': str(official_binary), 'sha256': official_record['sha256'],
+            'buildinfo': info, 'buildinfo_parsed': official_record['buildinfo']}
+        provenance['status'] = 'complete'
+        write_json(output / 'provenance.json', provenance)
+        print(json.dumps({'status': 'complete', 'output_directory': str(output),
+                          'commit': commit, 'binaries': {key: item['binary'] for key, item in
+                          provenance['builds'].items()}, 'provenance': str(output / 'provenance.json')}))
+    except Exception as exc:
+        provenance['status'] = 'failed'
+        provenance['error_type'] = type(exc).__name__
+        # Error strings contain paths/commands only; no environment values or credentials.
+        provenance['error'] = str(exc)
+        write_json(output / 'provenance.json', provenance)
+        raise
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,49 @@
+name: Isolated reliable UDP source pair
+
+on:
+  push:
+    branches: ['research/reliable-udp-pipe-20261017']
+    paths:
+      - '.github/workflows/udp-pair-research.yml'
+      - 'tests/integration/gost/reliable_udp_test.py'
+      - 'tests/integration/gost/reliable_udp_pair.py'
+      - 'tests/integration/gost/udp_pair_builder.py'
+      - 'tests/integration/gost/udp_close_checks.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-pair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build identical source baseline and single-file Pipe candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/integration/gost/udp_pair_builder.py "$RUNNER_TEMP/udp-pair"
+      - name: Compare real engines without modifying host networking
+        shell: bash
+        env:
+          HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
+        run: |
+          set -euo pipefail
+          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reliable-udp-source-pair
+          path: |
+            ${{ runner.temp }}/udp-pair/provenance.json
+            ${{ runner.temp }}/udp-pair/results.jsonl
+            ${{ runner.temp }}/udp-pair/result.log
+            ${{ runner.temp }}/udp-pair/*.txt
+            ${{ runner.temp }}/udp-pair/original/build.log
+            ${{ runner.temp }}/udp-pair/fixed/build.log

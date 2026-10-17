@@ -458,7 +458,7 @@ def certificates(directory):
     return cert, key
 
 
-def scenario(binary, transport, lossy):
+def scenario(binary, transport, lossy, *, target_factory=None, closing_check=None):
     with tempfile.TemporaryDirectory(prefix='hl-reliable-udp-') as temporary:
         directory = Path(temporary)
         with contextlib.ExitStack() as cleanup:
@@ -469,7 +469,7 @@ def scenario(binary, transport, lossy):
             cleanup.push(lambda exc_type, error, traceback:
                          diagnose_failure(directory, stage[0], exc_type, error,
                                           traceback, **observation))
-            target = Target()
+            target = (target_factory or Target)()
             observation['target'] = target
             cleanup.callback(target.close)
             udp_port = unused_port(socket.SOCK_DGRAM)
@@ -577,6 +577,8 @@ def scenario(binary, transport, lossy):
             stage[0] = 'final_frame_close_check'
             proxy.enable_loss(0)
             result['final_frame_close_check'] = final_frame_close_check(ports[0])
+            if closing_check is not None:
+                result['extended_close_checks'] = closing_check(ports[0])
             return result
 
 
