@@ -44,11 +44,11 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 		autoRealityKeys:       maps.Clone(s.autoRealityKeys),
 		vlessBindings:         cloneViewMap(s.vlessBindings, cloneVLESSCredentialRecord),
 		vlessRuntimeMaterials: cloneViewMap(s.vlessRuntimeMaterials, cloneVLESSRuntimeMaterial),
-		nodeConfigsByNode:     desiredViewGenerations(s.nodes, s.nodeConfigsByNode, cloneNodeConfig),
-		applyResultsByNode: desiredViewGenerations(s.nodes, s.applyResultsByNode, func(results map[string]generations.ApplyResult) map[string]generations.ApplyResult {
+		nodeConfigsByNode:     hotViewGenerations(s.nodes, s.nodeConfigsByNode, cloneNodeConfig),
+		applyResultsByNode: hotViewGenerations(s.nodes, s.applyResultsByNode, func(results map[string]generations.ApplyResult) map[string]generations.ApplyResult {
 			return maps.Clone(results)
 		}),
-		applyAttemptsByNode: desiredViewGenerations(s.nodes, s.applyAttemptsByNode, func(attempt generations.ApplyAttemptState) generations.ApplyAttemptState {
+		applyAttemptsByNode: hotViewGenerations(s.nodes, s.applyAttemptsByNode, func(attempt generations.ApplyAttemptState) generations.ApplyAttemptState {
 			attempt.SeenIDs = maps.Clone(attempt.SeenIDs)
 			return attempt
 		}),
@@ -57,13 +57,24 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 	return &ForwardingReadView{state: state}
 }
 
-// Readiness only evaluates each node's desired generation. Historical payloads
-// remain in the authoritative store, not in this frequently rebuilt projection.
-func desiredViewGenerations[V any](nodesByID map[string]nodes.Node, input map[string]map[int64]V, clone func(V) V) map[string]map[int64]V {
+// Readiness evaluates the desired generation and, while a deployment is in
+// flight, the applied generation that still serves existing rules. Other
+// historical payloads remain in the authoritative store, not in this
+// frequently rebuilt projection.
+func hotViewGenerations[V any](nodesByID map[string]nodes.Node, input map[string]map[int64]V, clone func(V) V) map[string]map[int64]V {
 	result := make(map[string]map[int64]V, len(nodesByID))
 	for id, node := range nodesByID {
-		if value, ok := input[id][node.DesiredGeneration]; ok && node.DesiredGeneration > 0 {
-			result[id] = map[int64]V{node.DesiredGeneration: clone(value)}
+		generations := make(map[int64]V, 2)
+		for _, generation := range []int64{node.DesiredGeneration, node.AppliedGeneration} {
+			if generation <= 0 {
+				continue
+			}
+			if value, ok := input[id][generation]; ok {
+				generations[generation] = clone(value)
+			}
+		}
+		if len(generations) > 0 {
+			result[id] = generations
 		}
 	}
 	return result

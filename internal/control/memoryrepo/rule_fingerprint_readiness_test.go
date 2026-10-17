@@ -153,6 +153,23 @@ func TestCompiledUnchangedRuleStaysReadyDuringSameGroupAdditionAndApply(t *testi
 	assertCompiledRuleReady(t, f, true)
 }
 
+func TestForwardingReadViewKeepsAppliedRuleReadyWhileNewBundleIsPending(t *testing.T) {
+	f, _ := compiledRuleReadinessFixture(t)
+	createAdditionalCompiledRule(t, f)
+
+	// The detached view backs PostgreSQL forwarding reads. While the new bundle
+	// is pending, it must retain the old applied generation so the existing rule
+	// can still be evaluated against its last-known-good receipt.
+	view := f.store.ForwardingReadView()
+	rule, err := view.ForwardingRule(context.Background(), f.rule.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rule.Deployed || rule.Status != forwarding.StatusActive {
+		t.Fatalf("applied rule lost readiness in detached view: deployed=%v status=%s reason=%s", rule.Deployed, rule.Status, rule.ActivationReason)
+	}
+}
+
 func TestAppliedConfigCloneAndHistoryCompactionPreservePendingRuleReadiness(t *testing.T) {
 	f, _ := compiledRuleReadinessFixture(t)
 	createAdditionalCompiledRule(t, f)
