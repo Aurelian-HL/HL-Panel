@@ -23,13 +23,13 @@ def load_module(name, path):
 
 
 def candidate_order(variants, *, lifecycle=False, halfclose=False, drain=False,
-                    abort=False, dial=False):
+                    abort=False, dial=False, timeout=False):
     base = {'official', 'original', 'fixed'}
-    stages = ('lifecycle', 'halfclose', 'drain', 'abort', 'dial')
+    stages = ('lifecycle', 'halfclose', 'drain', 'abort', 'dial', 'timeout')
     allowed = [base | set(stages[:count]) for count in range(len(stages) + 1)]
     if set(variants) not in allowed:
         raise RuntimeError('source pair requires the complete recorded provenance entries')
-    selected = [name for name, enabled in zip(stages, (lifecycle, halfclose, drain, abort, dial))
+    selected = [name for name, enabled in zip(stages, (lifecycle, halfclose, drain, abort, dial, timeout))
                 if enabled]
     if len(selected) > 1:
         raise RuntimeError('choose exactly one candidate focus')
@@ -76,11 +76,37 @@ def candidate_result_passes(item, *, lossy_close):
             for key in ('replacement_upload_sha256', 'replacement_download_sha256')) and
         restart.get('injected_datagram_loss') is False and
         restart.get('scope') == RESTART_SCOPE)
-    return (item.get('stable_bulk_passed') is True and
+    profile_ok = True
+    if item.get('variant') == 'timeout':
+        profile = item.get('profile')
+        profile_ok = (isinstance(profile, dict) and profile.get('profile_name') == 'timeout' and
+                      profile.get('transport') == item.get('transport') and
+                      profile.get('comparison') == 'binary_plus_profile' and
+                      isinstance(profile.get('effective'), dict))
+    return (profile_ok and item.get('stable_bulk_passed') is True and
             item.get('legacy_final_frame_passed') is True and
             item.get('extended_close_passed') is True and
             item.get('engine_reconnect_passed') is True and restart_identity and
             (not lossy_close or item.get('lossy_close_passed') is True))
+
+
+def timeout_profile(module, transport):
+    """Require the fixture's single allowlisted profile constructor.
+
+    A timeout candidate must never silently fall back to the fixture defaults.
+    The constructor is supplied by reliable_udp_test.py after its profile
+    integration is reviewed by the parent task.
+    """
+    constructor = getattr(module, 'transport_profile', None)
+    if not callable(constructor):
+        raise RuntimeError('timeout profile fixture is not integrated')
+    profile = constructor(transport, 'timeout')
+    if not isinstance(profile, dict) or profile.get('profile_name') != 'timeout' or \
+            profile.get('transport') != transport or \
+            profile.get('comparison') != 'binary_plus_profile' or \
+            not isinstance(profile.get('effective'), dict):
+        raise RuntimeError('timeout profile fixture returned invalid safe profile')
+    return profile
 
 
 def main():
@@ -92,6 +118,7 @@ def main():
     parser.add_argument('--drain-focus', action='store_true')
     parser.add_argument('--abort-focus', action='store_true')
     parser.add_argument('--dial-focus', action='store_true')
+    parser.add_argument('--timeout-focus', action='store_true')
     parser.add_argument('--lossy-close', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'linux' or os.environ.get('HL_PANEL_ISOLATED_RELIABLE_UDP_TEST') != 'true':
@@ -105,7 +132,7 @@ def main():
     # not enough repetitions or load to claim any performance ranking.
     order, candidate = candidate_order(variants, lifecycle=args.lifecycle_focus,
         halfclose=args.halfclose_focus, drain=args.drain_focus, abort=args.abort_focus,
-        dial=args.dial_focus)
+        dial=args.dial_focus, timeout=args.timeout_focus)
     results = []
     args.results.parent.mkdir(parents=True, exist_ok=True)
     args.results.write_text('', encoding='utf-8')
@@ -121,11 +148,21 @@ def main():
                 result = {'variant': variant, 'ordinal': ordinal, 'transport': transport,
                           'lossy': lossy, 'binary_sha256': item['sha256']}
                 try:
+                    profile = None
+                    scenario_kwargs = {}
+                    if variant == 'timeout':
+                        profile = timeout_profile(module, transport)
+                        result['profile'] = {'profile_name': profile['profile_name'],
+                                             'transport': profile['transport'],
+                                             'comparison': profile['comparison'],
+                                             'effective': profile['effective']}
+                        scenario_kwargs['transport_profile'] = 'timeout'
                     measured = module.scenario(binary, transport, lossy,
                         target_factory=close.target_factory(module),
                         closing_check=lambda port: close.closing_checks(module, port),
                         lossy_closing_check=(lambda port, proxy: close.lossy_closing_checks(
-                            module, port, proxy)) if args.lossy_close else None)
+                            module, port, proxy)) if args.lossy_close else None,
+                        **scenario_kwargs)
                     result['measurement'] = measured
                     result['stable_bulk_passed'] = True
                     result['legacy_final_frame_passed'] = measured['final_frame_close_check']['all_complete']

@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 
 from udp_abort_overlay import abort_overlay
 from udp_dial_overlay import dial_overlay
+from udp_timeout_overlay import timeout_overlay
 
 TAG = 'v3.3.1-nightly.20260922'
 REPOSITORY = 'go-gost/gost'
@@ -568,6 +569,13 @@ def main() -> None:
         write_json(output / 'dial-candidate.json', dial)
         require(not any(path.endswith('_test.go') for path in dial['overlay']['Replace']),
                 'Dial binary overlay must not contain contract test mappings')
+        timeout = timeout_overlay(output / 'timeout-patch', local_x, dial)
+        timeout_path = output / 'timeout-patch' / 'overlay.json'
+        provenance['timeout_candidate'] = timeout
+        provenance['timeout_helper_sha256'] = digest(Path(__file__).with_name('udp_timeout_overlay.py'))
+        write_json(output / 'timeout-candidate.json', timeout)
+        require(not any(path.endswith('_test.go') for path in timeout['overlay']['Replace']),
+                'timeout binary overlay must not contain contract test mappings')
 
         # -overlay cannot replace files in GOMODCACHE. Both builds therefore
         # share a byte-identical x copy and the same temporary -modfile replace.
@@ -595,7 +603,8 @@ def main() -> None:
         provenance['variants'] = {}
         for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay),
                                ('lifecycle', lifecycle_path), ('halfclose', halfclose_path),
-                               ('drain', drain_path), ('abort', abort_path), ('dial', dial_path)]:
+                               ('drain', drain_path), ('abort', abort_path), ('dial', dial_path),
+                               ('timeout', timeout_path)]:
             destination = output / label
             destination.mkdir()
             binary = destination / 'gost'

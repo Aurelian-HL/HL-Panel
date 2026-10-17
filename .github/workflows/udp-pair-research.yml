@@ -12,6 +12,11 @@ on:
       - 'tests/integration/gost/udp_abort_overlay.py'
       - 'tests/integration/gost/run_abort_contracts.py'
       - 'tests/integration/gost/udp_dial_overlay.py'
+      - 'tests/integration/gost/udp_timeout_overlay.py'
+      - 'tests/integration/gost/run_timeout_contracts.py'
+      - 'tests/integration/gost/test_udp_timeout_gates.py'
+      - 'tests/integration/gost/test_udp_timeout_integration_gates.py'
+      - 'tests/integration/gost/timeout_contracts/**'
       - 'tests/integration/gost/run_dial_contracts.py'
       - 'tests/integration/gost/test_udp_dial_gates.py'
       - 'tests/integration/gost/dial_contracts/**'
@@ -49,13 +54,18 @@ jobs:
         run: |
           set -euo pipefail
           python3 tests/integration/gost/run_dial_contracts.py --source "$RUNNER_TEMP/udp-pair/x-source" --parent "$RUNNER_TEMP/udp-pair/drain-candidate.json" --output "$RUNNER_TEMP/udp-dial-contracts" --count 3
+      - name: Check opt-in KCP timeout contracts with race detector
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/integration/gost/run_timeout_contracts.py --source "$RUNNER_TEMP/udp-pair/x-source" --smux-source "$RUNNER_TEMP/udp-pair/smux-source" --parent "$RUNNER_TEMP/udp-pair/dial-candidate.json" --output "$RUNNER_TEMP/udp-timeout-contracts" --count 3
       - name: Compare real engines without modifying host networking
         shell: bash
         env:
           HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
         run: |
           set -euo pipefail
-          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" --dial-focus --lossy-close 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
+          python3 tests/integration/gost/reliable_udp_pair.py "$RUNNER_TEMP/udp-pair/provenance.json" "$RUNNER_TEMP/udp-pair/results.jsonl" --timeout-focus --lossy-close 2>&1 | tee "$RUNNER_TEMP/udp-pair/result.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -78,6 +88,12 @@ jobs:
             ${{ runner.temp }}/udp-pair/dial-patch/provenance.json
             ${{ runner.temp }}/udp-pair/dial-patch/overlay.json
             ${{ runner.temp }}/udp-pair/dial-patch/*.go
+            ${{ runner.temp }}/udp-pair/timeout/build.log
+            ${{ runner.temp }}/udp-pair/timeout/provenance.json
+            ${{ runner.temp }}/udp-pair/timeout-patch/provenance.json
+            ${{ runner.temp }}/udp-pair/timeout-patch/overlay.json
+            ${{ runner.temp }}/udp-pair/timeout-patch/*.go
+            ${{ runner.temp }}/udp-pair/timeout-candidate.json
             ${{ runner.temp }}/udp-pair/*manifest.json
             ${{ runner.temp }}/udp-pair/*-download.json
             ${{ runner.temp }}/udp-pair/source-go-mod.json
@@ -105,3 +121,4 @@ jobs:
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/*.go
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.mod
             ${{ runner.temp }}/udp-dial-contracts/stacked-abort/contracts/go.sum
+            ${{ runner.temp }}/udp-timeout-contracts/**

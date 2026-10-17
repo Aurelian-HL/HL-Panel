@@ -37,9 +37,84 @@ BULK_BYTES = 2 * 1024 * 1024
 DEADLINE_SECONDS = 45
 ENGINE_RESTART_FAILURE_SECONDS = 15
 DIAGNOSTIC_LOG_BYTES = 32768
+CLEANUP_PHASES = frozenset(('target_close', 'proxy_close', 'server_close', 'client_close'))
 RESTART_PHASES = frozenset(('pre_stop_stream', 'server_stop', 'old_stream_exit',
                             'replacement_start', 'identity', 'replacement_readiness',
                             'replacement_bulk', 'target_stream_closed'))
+TRANSPORTS = frozenset(('quic', 'kcp'))
+PROFILE_NAMES = frozenset(('default', 'timeout'))
+
+# Keep the profile surface deliberately small.  The default profile contributes
+# no metadata for QUIC (the engine's existing 10s/90s defaults remain in force)
+# and only records the existing KCP keepalive value.  The timeout profile is an
+# opt-in candidate used by reliable_udp_pair.py; it must be applied to both
+# listener and dialer so a result cannot accidentally compare one changed side
+# with one default side.
+_PROFILE_METADATA = {
+    ('quic', 'default'): {},
+    ('quic', 'timeout'): {
+        'keepAlive': True,
+        'ttl': '2s',
+        'maxIdleTimeout': '8s',
+    },
+    ('kcp', 'default'): {
+        'kcp.keepalive': 10,
+    },
+    ('kcp', 'timeout'): {
+        'kcp.keepalive': 2,
+        'kcp.keepaliveTimeout': '5s',
+    },
+}
+
+_PROFILE_EFFECTIVE = {
+    ('quic', 'default'): {
+        'keepAlive': True,
+        'ttl': '10s',
+        'maxIdleTimeout': '90s',
+    },
+    ('quic', 'timeout'): {
+        'keepAlive': True,
+        'ttl': '2s',
+        'maxIdleTimeout': '8s',
+    },
+    ('kcp', 'default'): {
+        'kcp.keepalive': 10,
+        'smux.keepAliveTimeout': '30s',
+    },
+    ('kcp', 'timeout'): {
+        'kcp.keepalive': 2,
+        'kcp.keepaliveTimeout': '5s',
+    },
+}
+
+
+def _profile_key(transport, profile):
+    if transport not in TRANSPORTS:
+        raise ValueError('unsupported reliable UDP transport profile')
+    if profile not in PROFILE_NAMES:
+        raise ValueError('unsupported reliable UDP profile')
+    return transport, profile
+
+
+def transport_profile(transport, profile='default'):
+    """Return a fixed, secret-free profile description for pair provenance.
+
+    The returned effective values are safe to record in result JSON.  Secret
+    KCP material and TLS paths are deliberately kept in the scenario-local
+    configuration and never included here.
+    """
+    key = _profile_key(transport, profile)
+    return {
+        'profile_name': profile,
+        'transport': transport,
+        'comparison': 'binary_plus_profile',
+        'effective': copy.deepcopy(_PROFILE_EFFECTIVE[key]),
+    }
+
+
+def _profile_metadata(transport, profile):
+    key = _profile_key(transport, profile)
+    return copy.deepcopy(_PROFILE_METADATA[key])
 DIAGNOSTIC_STAGES = frozenset(('fixture_setup', 'server_startup', 'client_startup',
                               'client_fixture_setup',
                               'authenticated_readiness', 'authorization_checks',
@@ -69,6 +144,30 @@ class FixturePortAllocationError(RuntimeError):
     """A client fixture could not reserve its distinct loopback TCP ports."""
 
 
+class FixtureCleanupError(RuntimeError):
+    def __init__(self, phase):
+        self.phase = phase if isinstance(phase, str) and phase in CLEANUP_PHASES else 'unknown_cleanup_phase'
+        super().__init__('fixture_cleanup_' + self.phase + '_failed')
+
+
+def register_cleanup(cleanup, phase, close, failures):
+    """Run every close without replacing a scenario's original exception."""
+    safe_phase = phase if isinstance(phase, str) and phase in CLEANUP_PHASES else 'unknown_cleanup_phase'
+
+    def finish(exc_type, _error, _traceback):
+        try:
+            close()
+        except Exception:
+            failures.append(safe_phase)
+            if exc_type is None:
+                # A successful body cannot hide failed cleanup. Keep the first
+                # safe cleanup error while subsequent callbacks still run.
+                raise FixtureCleanupError(safe_phase) from None
+        return False
+
+    cleanup.push(finish)
+
+
 class RestartRecoveryError(RuntimeError):
     def __init__(self, phase):
         self.phase = phase if phase in RESTART_PHASES else 'unknown_restart_phase'
@@ -84,13 +183,28 @@ def restart_phase(phase):
 
 
 def diagnose_failure(directory, stage, exc_type, _error, _traceback,
-                     proxy=None, target=None):
+                     proxy=None, target=None, cleanup_failures=None):
     """Emit fixed classifications only; never expose log text or exception data."""
     if exc_type is None:
         return False
+    safe_cleanup_failures = [phase if isinstance(phase, str) and phase in CLEANUP_PHASES
+                             else 'unknown_cleanup_phase'
+                             for phase in (cleanup_failures or ())]
+    if safe_cleanup_failures:
+        # This runs after every resource callback, independently of log/counter
+        # collection below, so a broken diagnostic source cannot hide cleanup.
+        with contextlib.suppress(Exception):
+            print('RELIABLE_UDP_CLEANUP_DIAGNOSTIC ' + json.dumps({
+                'failure_phases': safe_cleanup_failures,
+                'failure_count': len(safe_cleanup_failures),
+                'scenario_failure_preserved': not isinstance(_error, FixtureCleanupError),
+                'scope': 'fixture resource cleanup; fixed phase labels only',
+            }, sort_keys=True), file=sys.stderr, flush=True)
     safe_stage = stage if stage in DIAGNOSTIC_STAGES else 'unknown_stage'
     if isinstance(_error, RestartRecoveryError):
         safe_stage = 'engine_reconnect_' + _error.phase
+    elif isinstance(_error, FixtureCleanupError):
+        safe_stage = 'fixture_cleanup'
     try:
         engines = []
         for name in ('server', 'client'):
@@ -111,6 +225,8 @@ def diagnose_failure(directory, stage, exc_type, _error, _traceback,
                           if isinstance(_error, FixturePortAllocationError)
                           else 'restart_' + _error.phase + '_failed'
                           if isinstance(_error, RestartRecoveryError)
+                          else 'fixture_cleanup_' + _error.phase + '_failed'
+                          if isinstance(_error, FixtureCleanupError)
                           else 'unclassified_failure'),
                       'scope': 'known markers observed in bounded log tails; '
                                'expected authorization rejections may be included'}
@@ -123,6 +239,8 @@ def diagnose_failure(directory, stage, exc_type, _error, _traceback,
                 diagnostic['target_error_count'] = len(target.errors)
     except Exception:
         diagnostic = {'stage': safe_stage, 'categories': ['diagnostic_unavailable']}
+    if safe_cleanup_failures:
+        diagnostic['cleanup_failure_phases'] = safe_cleanup_failures
     # Even a diagnostic output failure must preserve the original exception.
     with contextlib.suppress(Exception):
         print('RELIABLE_UDP_DIAGNOSTIC ' + json.dumps(diagnostic, sort_keys=True),
@@ -694,25 +812,32 @@ def certificates(directory):
     return cert, key
 
 
-def scenario(binary, transport, lossy, *, target_factory=None, closing_check=None,
-             lossy_closing_check=None):
+def scenario(binary, transport, lossy, *, transport_profile='default',
+             target_factory=None, closing_check=None, lossy_closing_check=None):
+    # Validate the requested profile before opening any local sockets.  The
+    # profile constructor is intentionally separate from the secret-bearing
+    # fixture metadata below, so provenance can be recorded safely.
+    _profile_key(transport, transport_profile)
+    profile_metadata = _profile_metadata(transport, transport_profile)
     with tempfile.TemporaryDirectory(prefix='hl-reliable-udp-') as temporary:
         directory = Path(temporary)
         with contextlib.ExitStack() as cleanup:
             stage = ['fixture_setup']
             observation = {'proxy': None, 'target': None}
+            cleanup_failures = []
             # Register first to diagnose after logs close, before their directory
             # is removed; callbacks never suppress the original failure.
             cleanup.push(lambda exc_type, error, traceback:
                          diagnose_failure(directory, stage[0], exc_type, error,
-                                          traceback, **observation))
+                                           traceback, cleanup_failures=cleanup_failures,
+                                           **observation))
             target = (target_factory or Target)()
             observation['target'] = target
-            cleanup.callback(target.close)
+            register_cleanup(cleanup, 'target_close', target.close, cleanup_failures)
             udp_port = unused_port(socket.SOCK_DGRAM)
             proxy = LossProxy(udp_port)
             observation['proxy'] = proxy
-            cleanup.callback(proxy.close)
+            register_cleanup(cleanup, 'proxy_close', proxy.close, cleanup_failures)
             auth = {'username': 'isolated-test', 'password': secrets.token_urlsafe(32)}
             listener = {'type': transport}
             dialer = {'type': transport}
@@ -721,6 +846,9 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
                 listener['tls'] = {'certFile': str(cert), 'keyFile': str(key)}
                 dialer['tls'] = {'caFile': str(cert), 'secure': True,
                                  'serverName': 'localhost'}
+                if profile_metadata:
+                    listener['metadata'] = copy.deepcopy(profile_metadata)
+                    dialer['metadata'] = copy.deepcopy(profile_metadata)
             else:
                 # Loopback verification settings; these are not product defaults.
                 metadata = {'kcp.key': secrets.token_urlsafe(32), 'kcp.crypt': 'aes',
@@ -728,6 +856,7 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
                             'kcp.mtu': 1200, 'kcp.sndwnd': 128, 'kcp.rcvwnd': 128,
                             'kcp.smuxver': 1, 'kcp.smuxbuf': 4194304,
                             'kcp.streambuf': 2097152, 'kcp.keepalive': 10}
+                metadata.update(profile_metadata)
                 listener['metadata'] = copy.deepcopy(metadata)
                 dialer['metadata'] = copy.deepcopy(metadata)
             server_config = {'services': [{'name': 'loopback-relay',
@@ -736,7 +865,7 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
                                          'metadata': {'readTimeout': '5s'}}}]}
             stage[0] = 'server_startup'
             server = Engine(binary, directory, 'server', server_config)
-            cleanup.callback(server.close)
+            register_cleanup(cleanup, 'server_close', server.close, cleanup_failures)
             stage[0] = 'client_fixture_setup'
             chains, services = [], []
             names = ('authorized', 'missing-auth', 'wrong-auth')
@@ -759,7 +888,7 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
             stage[0] = 'client_startup'
             client = Engine(binary, directory, 'client', {'services': services,
                                                         'chains': chains})
-            cleanup.callback(client.close)
+            register_cleanup(cleanup, 'client_close', client.close, cleanup_failures)
             engines = (server, client)
             stage[0] = 'authenticated_readiness'
             ready(ports[0], engines)
