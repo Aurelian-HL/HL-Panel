@@ -18,6 +18,11 @@ import weakref
 
 
 TIMEOUT_SECONDS = 2.0
+LOSS_PAYLOAD_BYTES = 65536
+LOSS_DROP_INTERVAL = 23
+_COUNTER_FIELDS = ('datagrams_seen', 'datagrams_dropped', 'datagrams_forwarded',
+                   'udp_payload_bytes_seen', 'udp_payload_bytes_dropped',
+                   'udp_payload_bytes_forwarded')
 _TARGETS = weakref.WeakKeyDictionary()
 
 
@@ -155,15 +160,31 @@ def target_factory(module):
     return ExtendedTarget
 
 
-def _run_group(module, port, operation, attempts, target):
+def _counter_delta(before, after):
+    delta = {}
+    for field in _COUNTER_FIELDS:
+        delta[field] = {}
+        for direction in ('out', 'back'):
+            value = after[field][direction] - before[field][direction]
+            if value < 0:
+                raise _ProbeFailure('udp_counter_reset_during_probe')
+            delta[field][direction] = value
+    return delta
+
+
+def _run_group(module, port, operation, attempts, target, *, payload_bytes=64,
+               proxy=None):
     categories = {}
     latencies = []
+    attempt_results = []
     complete = 0
-    for _ in range(attempts):
+    for ordinal in range(attempts):
+        before = proxy.snapshot() if proxy is not None else None
         started = time.monotonic()
         deadline = started + TIMEOUT_SECONDS
         phase = 'connect'
-        payload = secrets.token_bytes(64)
+        failure = None
+        payload = secrets.token_bytes(payload_bytes)
         digest = hashlib.sha256(payload).digest()
         observation = threading.Event() if operation == b'S' else None
         if observation is not None:
@@ -194,25 +215,37 @@ def _run_group(module, port, operation, attempts, target):
                         raise _ProbeFailure('target_ack_not_observed')
                 complete += 1
         except _ProbeFailure as error:
-            category = error.args[0]
-            categories[category] = categories.get(category, 0) + 1
+            failure = error.args[0]
         except (TimeoutError, socket.timeout):
-            category = phase + '_timeout'
-            categories[category] = categories.get(category, 0) + 1
+            failure = phase + '_timeout'
         except ConnectionResetError:
-            categories['connection_reset'] = categories.get('connection_reset', 0) + 1
+            failure = 'connection_reset'
         except BrokenPipeError:
-            categories['broken_pipe'] = categories.get('broken_pipe', 0) + 1
+            failure = 'broken_pipe'
         except OSError:
-            categories['socket_error'] = categories.get('socket_error', 0) + 1
+            failure = 'socket_error'
         except Exception:
-            categories['internal_error'] = categories.get('internal_error', 0) + 1
+            failure = 'internal_error'
         finally:
-            latencies.append(round((time.monotonic() - started) * 1000, 3))
+            elapsed = time.monotonic() - started
+            latencies.append(round(elapsed * 1000, 3))
+            if failure is not None:
+                categories[failure] = categories.get(failure, 0) + 1
             if observation is not None:
                 with target.lock:
                     target.ack_observations.pop(digest, None)
-    return {
+            if proxy is not None:
+                delta = _counter_delta(before, proxy.snapshot())
+                attempt_results.append({
+                    'ordinal': ordinal, 'complete': failure is None,
+                    'failure_category': failure, 'last_phase': phase,
+                    'sample_window_seconds': round(elapsed, 6),
+                    'udp_counter_delta': delta,
+                    'loss_observed_both_directions': all(
+                        delta['datagrams_dropped'][direction] > 0
+                        for direction in ('out', 'back')),
+                })
+    result = {
         'attempts': attempts,
         'complete': complete,
         'failed': attempts - complete,
@@ -223,6 +256,10 @@ def _run_group(module, port, operation, attempts, target):
                        'median': round(statistics.median(latencies), 3),
                        'maximum': max(latencies)},
     }
+    if proxy is not None:
+        result['payload_bytes_per_attempt'] = payload_bytes
+        result['attempt_results'] = attempt_results
+    return result
 
 
 def closing_checks(module, port):
@@ -262,4 +299,89 @@ def closing_checks(module, port):
     result['extended_all_complete'] = all(
         result[name]['all_complete']
         for name in ('f_with_eof', 'client_half_close_h', 'server_half_close_s'))
+    return result
+
+
+def lossy_closing_checks(module, port, proxy):
+    """Add true-loss coverage without replacing any original close gate."""
+    reference = _TARGETS.get(module)
+    target = reference() if reference is not None else None
+    groups = (('f_with_eof', b'F', 5),
+              ('client_half_close_h', b'H', 3),
+              ('server_half_close_s', b'S', 3))
+    result = {
+        'drop_every_nth_datagram': LOSS_DROP_INTERVAL,
+        'payload_bytes_per_attempt': LOSS_PAYLOAD_BYTES,
+        'timeout_seconds_per_attempt': TIMEOUT_SECONDS,
+        'scope': 'separate 64 KiB application close probes over the same tunnel; '
+                 'periodic UDP loss active in each recorded window; '
+                 'outside bulk CPU and UDP counter windows',
+        'counter_scope': 'proxy cumulative counter deltas; includes protocol, '
+                         'retransmission and any residual shared-tunnel traffic; '
+                         'does not identify a FIN-carrying datagram',
+        'coverage_contract': 'every operation group must observe actual dropped '
+                             'datagrams in both directions; enabling a policy '
+                             'alone is insufficient',
+        'policy_changes_reset_counters': False,
+    }
+    try:
+        for name, operation, attempts in groups:
+            # Let the previous target handler finish before changing policy.
+            # This cannot prove that an engine has no residual control packets.
+            idle = target is not None
+            if target is not None:
+                idle_deadline = time.monotonic() + 5
+                with target.worker_condition:
+                    while target.workers:
+                        remaining = idle_deadline - time.monotonic()
+                        if remaining <= 0:
+                            idle = False
+                            break
+                        target.worker_condition.wait(remaining)
+            proxy.set_loss_policy(LOSS_DROP_INTERVAL)
+            before = proxy.snapshot()
+            started = time.monotonic()
+            try:
+                if not idle:
+                    group = {'attempts': attempts, 'complete': 0,
+                             'failed': attempts, 'all_complete': False,
+                             'failure_categories': {
+                                 'fixture_unavailable' if target is None
+                                 else 'fixture_workers_not_idle': attempts},
+                             'attempt_results': []}
+                else:
+                    group = _run_group(module, port, operation, attempts, target,
+                                       payload_bytes=LOSS_PAYLOAD_BYTES, proxy=proxy)
+            except Exception:
+                group = {'attempts': attempts, 'complete': 0, 'failed': attempts,
+                         'all_complete': False, 'attempt_results': [],
+                         'failure_categories': {'probe_internal_error': attempts}}
+            after = proxy.snapshot()
+            elapsed = time.monotonic() - started
+            delta = _counter_delta(before, after)
+            loss_coverage = all(delta['datagrams_dropped'][direction] > 0
+                                for direction in ('out', 'back'))
+            group.update({
+                'payload_bytes_per_attempt': LOSS_PAYLOAD_BYTES,
+                'timeout_seconds_per_attempt': TIMEOUT_SECONDS,
+                'udp_window': {
+                    'sample_window_seconds': round(elapsed, 6),
+                    'before': before, 'after': after, 'counter_delta': delta,
+                    'drop_every_nth_datagram': LOSS_DROP_INTERVAL,
+                },
+                'loss_observed_both_directions': loss_coverage,
+                'all_checks_passed': group['all_complete'] and loss_coverage,
+            })
+            result[name] = group
+            # Do not reset, otherwise the final suite counters and diagnostics
+            # would silently lose a completed group's observations.
+            proxy.set_loss_policy(0)
+    finally:
+        proxy.set_loss_policy(0)
+    result['delivery_all_complete'] = all(
+        result[name]['all_complete'] for name, _, _ in groups)
+    result['loss_coverage_all_complete'] = all(
+        result[name]['loss_observed_both_directions'] for name, _, _ in groups)
+    result['all_checks_passed'] = (result['delivery_all_complete'] and
+                                  result['loss_coverage_all_complete'])
     return result

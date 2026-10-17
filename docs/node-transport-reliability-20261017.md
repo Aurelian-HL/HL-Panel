@@ -169,14 +169,45 @@ KCP 也不能仅凭失败就归因于协议不支持半关闭。实际依赖 smu
 
 源码依据：[QUIC listener conn](https://github.com/go-gost/x/blob/v0.17.2/listener/quic/conn.go)、[service Context](https://github.com/go-gost/x/blob/v0.17.2/service/service.go)、[relay connector conn](https://github.com/go-gost/x/blob/v0.17.2/connector/relay/conn.go)、[quic-go stream](https://github.com/quic-go/quic-go/blob/v0.60.0/stream.go)、[smux stream](https://github.com/xtaci/smux/blob/v1.5.57/stream.go)。
 
-## 九、交付边界与下一步
+## 九、relay 半关闭透传与异常清理的新增证据
+
+2026-10-17 已完成独立 halfclose 候选的 Linux 配对运行：run `39010364861`，研究分支提交 `1051cb19a88040dca3e9c7f9529c665951db7e95`。候选继承 lifecycle，仅给 relay connector/handler 的 buffered TCP adapter 增加 CloseWrite 透传；发送 FIN 前先刷新缓存协议头，与正常 Write 共用锁。真实 Linux 构建 success，网络门禁 failure，结果产物上传并已下载核对。halfclose 二进制 SHA256 为 `4df30c82245bd8300be8c172484aa6147f185b6ba3210f366bc9e529135d40be`。
+
+顺序 lifecycle、halfclose、halfclose、lifecycle，共 16 场景。所有场景的鉴权、双向各 2 MiB 长度/SHA256、legacy F 与 F+EOF 均通过。下面汇总每个版本/协议的四个场景；关闭检查仍在关闭主动丢包后进行：
+
+| 版本 / 协议 | F | F + EOF | H | S |
+| --- | --- | --- | --- | --- |
+| lifecycle / QUIC | 80/80 | 20/20 | 12/12 | 12/12 |
+| halfclose / QUIC | 80/80 | 20/20 | 12/12 | 12/12 |
+| lifecycle / KCP | 80/80 | 20/20 | 0/12 | 0/12 |
+| halfclose / KCP | 80/80 | 20/20 | 0/12 | 2/12 |
+
+KCP H 全部归类为 data_incomplete；S 剩余失败为 target_ack_not_observed。此结果否定了“仅给两个 relay adapter 透传 CloseWrite 就足以解决完整 KCP 半关闭”的判断。仍需检查整个封装链及 smux 双 FIN 后缓冲回收，不可把局部 adapter 契约通过代替完整引擎验收，也不通过放宽期限或删除门禁改变失败结论。
+
+另在 Windows localhost 使用真实 quic-go v0.60.0 完成 10 项测试、每项 race 模式重复 3 次，共 30 次测试执行通过，无 race 报告。其中 Pipe 两阶段 abort 模型在异常/取消时先设置立即 deadline、等两个 worker 退出后再 Close，验证了阻塞 IO 收敛、正常 FIN 后延迟反向回复和同 session 兄弟流正常。它尚不是完整 GOST overlay 的验收。
+
+资源额度实验提供了明确反证：QUIC 限制 8 个 incoming stream 时，重复 deadline(now)+原生 Close 8 次后，第 9 次开流在 150ms 内超时；对保留的 stream 调用 CancelRead 后能恢复开流。逐流显式 CancelRead+CancelWrite 连续处理 24 流通过。因此 deadline+Close 只解除应用 IO，不代表 QUIC 接收方向资源已经回收。正常成功路径不可无条件 CancelWrite，它可能放弃尚未可靠交付的数据；异常终止必须限定到当前 stream，不能关闭共享 session。
+
+独立实验与原始结果保存于本次对话的 work/quic-cleanup-review；Linux 来源与逐场景结果保存于 work/udp-pair-ci-39010364861。上述样本不证明公网低 CPU、断网恢复、长时间稳定或生产客户无感。
+
+## 十、smux 双 FIN 缓冲回收的确定性复现与独立候选
+
+本地使用真实 smux v1.5.57 建立了确定性顺序：第一流发送 21000 字节并完成双 FIN，再通过同 session 的第二流 marker 确认接收循环已处理 FIN，之后才读取第一流。原版在 v1/v2、ReadAll/WriteTo 四条路径都稳定读到 0 字节。普通模式重复 30 次、race 模式重复 10 次均复现；没有 race warning 不代表语义正确。根因是 tryHalfCloseCleanup 在双 FIN 后立即调用 session.streamClosed，后者 recycleTokens 将未读 bufferRing 清空。
+
+独立 drain 候选继承 halfclose，只增加 smux 的一个 stream.go overlay：缓冲非空时延后双 FIN 清理；Read/WriteTo 消费后重试；有序远端 FIN 的排空返回 EOF。显式 Close 仍可丢弃剩余数据并归还 tokens。smux 原 stream.go 的固定 SHA256 为 d3f54098259b2fe3f47831bc93f7895a75647e81d41df6b5d62e5e0c578adccf。构建器为所有源码候选使用同一份字节不变的 smux 源码副本和相同 replace，独立 overlay 只用于 drain；检查依赖版本、来源、完整源码树和构建后未改动。它没有修改宿主 module cache。
+
+真实 smux 契约的八个子场景普通重复 30 次共 240 次通过，race 重复 10 次共 80 次通过：双 FIN 后完整读取、84 KiB 排队只读 137 字节后显式 Close、640 KiB 跨窗口反向传输、流数量收敛、tokens 精确归还、同 session 兄弟流可用均已检查。与 relay 两端 adapter 组合后，普通 200 次、race 60 次顶层测试执行通过；其中 TestExistingWriteHidesShortNil 是对既有短写缺陷的复现，不能计为该缺陷已修复。原始日志与结构化结果在本次对话 work/relay-halfclose-review。
+
+Python 关闭夹具的直连与正确透传 TCP forwarder 已各对 F+EOF/H/S 重复 100 次，共 600/600 通过；吞 FIN 或提前全关的负控制均被拒绝。本轮还加入单独的 lossy_close_checks：每项 64 KiB、每 23 个 UDP 数据报丢一个，保留原两秒期限和全部无主动丢包门禁。组窗口必须实际观察到 out/back 双向 drop > 0，计数使用累计差值、不重置；逐次结果也记录丢包覆盖。UDP 计数包含复用隧道控制包，不能声称精确丢掉了 FIN。Linux 真引擎结果需另行验收，不能用这些本地测试代替。
+
+## 十一、交付边界与下一步
 
 - BBR helper、令牌安装调用和原始实验代码已同步到 Git 仓库 `main` 的 `832188a5fe403e5ce583f9f9c0d01c7d64417ba2`；新增成对引擎及生命周期实验位于 `research/reliable-udp-pipe-20261017`，没有发布本轮 tag 或 Release，也没有部署到生产节点。
 - 尚未把 QUIC/KCP 接入产品的完整规则流程，未默认启用节点间可靠 UDP 隧道。
 - 本轮没有修改生产节点配置，没有把生产节点切换到 QUIC/KCP，也没有据此变更客户线路。
 - 当前 Linux 可靠 UDP 作业仍失败，不能把局部稳定流通过说成四场景整体验收完成。
 
-原/修网络对照、buildinfo 及 QUIC listener 上下文假说的网络对照已完成。接下来验证 relay 半关闭透传，以及 QUIC 候选在复用连接间的隔离、取消、超时、错误传播及资源清理，保留现有 F/EOF/H/S 门禁。局部关闭检查通过之后，仍需测试带丢包的关闭、断网与恢复、长时间负载，不能先默认开启生产 UDP。
+原/修网络对照、buildinfo、QUIC listener 上下文假说及 relay 半关闭透传的网络对照已完成；最后一项仍有 KCP 半关闭失败。本地已确定 smux 双 FIN 过早回收未读缓冲，接下来用独立 drain 候选在真实 Linux GOST 上对照，并把 QUIC 异常取消/资源清理落实为另一独立候选验证。保留现有 F/EOF/H/S 门禁，并增加实际丢包覆盖的独立关闭门禁。随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
 
 之后在同一故障注入方式、机器资源、版本、MTU、带宽与负载下比较 TCP+BBR、QUIC 可靠流、KCP，以及独立比较的 KCP+FEC；若要衡量 BBR 本身的收益，还需保留 TCP 原拥塞算法对照。覆盖真实 RTT、抖动、随机及突发丢包、多连接并发、持续流量与短请求，至少多次重复并随机化顺序，记录应用完整性、失败率、吞吐、冷建链、请求尾延迟和最长停顿、双端单位业务流量 CPU 秒及完整窗口字节开销，之后再开展已授权公网环境的性能验证。现有实验不足以支持性能优劣结论。
 

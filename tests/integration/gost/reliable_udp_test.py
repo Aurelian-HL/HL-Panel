@@ -39,7 +39,7 @@ DIAGNOSTIC_LOG_BYTES = 32768
 DIAGNOSTIC_STAGES = frozenset(('fixture_setup', 'server_startup', 'client_startup',
                               'authenticated_readiness', 'authorization_checks',
                               'bulk_transfer', 'transfer_validation',
-                              'final_frame_close_check'))
+                              'final_frame_close_check', 'lossy_close_checks'))
 DIAGNOSTIC_MARKERS = (
     ('unregistered_transport_observed',
      (b'unregistered listener', b'unregistered dialer', b'unknown listener',
@@ -242,6 +242,13 @@ class LossProxy:
             self.seen_bytes = {'out': 0, 'back': 0}
             self.dropped_bytes = {'out': 0, 'back': 0}
             self.forwarded_bytes = {'out': 0, 'back': 0}
+            self.drop_every = every
+
+    def set_loss_policy(self, every):
+        """Change injection without erasing any already recorded counters."""
+        require(isinstance(every, int) and every >= 0,
+                'loss policy must be a non-negative datagram interval')
+        with self.lock:
             self.drop_every = every
 
     def forward(self, direction, packet, send):
@@ -458,7 +465,8 @@ def certificates(directory):
     return cert, key
 
 
-def scenario(binary, transport, lossy, *, target_factory=None, closing_check=None):
+def scenario(binary, transport, lossy, *, target_factory=None, closing_check=None,
+             lossy_closing_check=None):
     with tempfile.TemporaryDirectory(prefix='hl-reliable-udp-') as temporary:
         directory = Path(temporary)
         with contextlib.ExitStack() as cleanup:
@@ -579,6 +587,9 @@ def scenario(binary, transport, lossy, *, target_factory=None, closing_check=Non
             result['final_frame_close_check'] = final_frame_close_check(ports[0])
             if closing_check is not None:
                 result['extended_close_checks'] = closing_check(ports[0])
+            if lossy_closing_check is not None:
+                stage[0] = 'lossy_close_checks'
+                result['lossy_close_checks'] = lossy_closing_check(ports[0], proxy)
             return result
 
 

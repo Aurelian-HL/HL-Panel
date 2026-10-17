@@ -29,6 +29,9 @@ X_MODULE = 'github.com/go-gost/x'
 X_VERSION = 'v0.17.2'
 QUIC_MODULE = 'github.com/quic-go/quic-go'
 QUIC_VERSION = 'v0.60.0'
+SMUX_MODULE = 'github.com/xtaci/smux'
+SMUX_VERSION = 'v1.5.57'
+SMUX_STREAM_SHA256 = 'd3f54098259b2fe3f47831bc93f7895a75647e81d41df6b5d62e5e0c578adccf'
 PIPE_SHA256 = '1d83f46e2699086be124b9f9db3b273b4b652f102b563e8b98fc70867590fba0'
 OFFICIAL_SHA256 = '7ce4abf8856fc45926b86d92c770f00c8d7cfbc353d410b9e2886f8ce0a2fe0f'
 OFFICIAL_URL = ('https://github.com/go-gost/gost/releases/download/' + TAG +
@@ -234,9 +237,11 @@ def check_go_mod(document: dict) -> None:
     require(dependencies.get(X_MODULE) == X_VERSION, 'source x dependency does not match pin')
     require(dependencies.get(QUIC_MODULE) == QUIC_VERSION,
             'source quic-go dependency does not match pin')
+    require(dependencies.get(SMUX_MODULE) == SMUX_VERSION,
+            'source smux dependency does not match pin')
 
 
-def build_info(text: str, local_x: Path | None) -> dict:
+def build_info(text: str, local_x: Path | None, local_smux: Path | None = None) -> dict:
     dependencies = {}
     replacements = {}
     current = None
@@ -255,12 +260,17 @@ def build_info(text: str, local_x: Path | None) -> dict:
             current = None
     require(dependencies.get(X_MODULE) == X_VERSION, 'binary x dependency mismatch')
     require(dependencies.get(QUIC_MODULE) == QUIC_VERSION, 'binary quic-go dependency mismatch')
+    require(dependencies.get(SMUX_MODULE) == SMUX_VERSION, 'binary smux dependency mismatch')
     if local_x is None:
         require(not replacements, 'official binary unexpectedly contains module replacements')
     else:
-        require(set(replacements) == {X_MODULE}, 'research binary contains unexpected replacements')
+        expected = {X_MODULE} | ({SMUX_MODULE} if local_smux is not None else set())
+        require(set(replacements) == expected, 'research binary contains unexpected replacements')
         require(Path(replacements[X_MODULE][0]).resolve() == local_x.resolve(),
                 'research binary x replacement is not the pinned source copy')
+        if local_smux is not None:
+            require(Path(replacements[SMUX_MODULE][0]).resolve() == local_smux.resolve(),
+                    'research binary smux replacement is not the pinned source copy')
     return {'dependencies': dependencies, 'replacements': replacements}
 
 
@@ -353,6 +363,60 @@ def halfclose_overlay(output: Path, local_x: Path, lifecycle: dict) -> dict:
             'scope': 'isolated half-close candidate; cancellation and abort hardening remain separate'}
 
 
+def drain_overlay(output: Path, local_smux: Path, halfclose: dict) -> dict:
+    """Retain ordered payload after both FINs until the reader drains it.
+
+    smux v1.5.57 immediately removes a doubly half-closed stream. Its session
+    removal recycles unread buffers, turning a valid ordered FIN into data loss.
+    Defer that removal while data remains; retry after successful consumption.
+    Explicit Close retains the upstream discard-and-recycle behavior.
+    """
+    source = local_smux / 'stream.go'
+    before = source.read_bytes()
+    require(digest(source) == SMUX_STREAM_SHA256, 'smux stream SHA256 gate failed')
+    edits = [
+        ('\t// return tokens to session to allow more data to be received\n'
+         '\tif n > 0 {\n\t\ts.sess.returnTokens(n)\n\t\treturn n, nil\n\t}',
+         '\t// return tokens to session to allow more data to be received\n'
+         '\tif n > 0 {\n\t\ts.sess.returnTokens(n)\n'
+         '\t\ts.tryHalfCloseCleanup()\n\t\treturn n, nil\n\t}', 1),
+        ('\t\t// send window update if necessary\n\t\tif notifyConsumed > 0 {\n'
+         '\t\t\treturn n, s.sendWindowUpdate(notifyConsumed)\n\t\t}\n\t\treturn n, nil',
+         '\t\t// send window update if necessary\n\t\tif notifyConsumed > 0 {\n'
+         '\t\t\terr = s.sendWindowUpdate(notifyConsumed)\n\t\t}\n'
+         '\t\ts.tryHalfCloseCleanup()\n\t\treturn n, err', 1),
+        ('\t\t} else if ew := s.waitRead(); ew != nil {\n\t\t\treturn n, ew\n\t\t}',
+         '\t\t\ts.tryHalfCloseCleanup()\n'
+         '\t\t} else if ew := s.waitRead(); ew != nil {\n\t\t\treturn n, ew\n\t\t}', 2),
+        ('\tcase <-s.die:\n\t\treturn io.ErrClosedPipe\n\t}\n\n}\n\n// checkWriteClosed',
+         '\tcase <-s.die:\n\t\tselect {\n\t\tcase <-s.chFinEvent:\n'
+         '\t\t\treturn io.EOF\n\t\tdefault:\n\t\t\treturn io.ErrClosedPipe\n'
+         '\t\t}\n\t}\n\n}\n\n// checkWriteClosed', 1),
+        ('\ts.dieOnce.Do(func() {\n\t\tclose(s.die)\n\t})\n'
+         '\ts.sess.streamClosed(s.id)\n}\n\n// stopTimer',
+         '\t// FIN is ordered behind payload: retain queued data until consumed.\n'
+         '\ts.bufferLock.Lock()\n\tpending := s.bufferRing.len() > 0\n'
+         '\ts.bufferLock.Unlock()\n\tif pending {\n\t\treturn\n\t}\n\n'
+         '\ts.dieOnce.Do(func() {\n\t\tclose(s.die)\n\t})\n'
+         '\ts.sess.streamClosed(s.id)\n}\n\n// stopTimer', 1),
+    ]
+    patched = before
+    for old, new, expected in edits:
+        require(patched.count(old.encode()) == expected, 'drain exact patch failed: stream.go')
+        patched = patched.replace(old.encode(), new.encode())
+    destination = output / 'drain-smux-stream.go'
+    destination.write_bytes(patched)
+    replacements = dict(halfclose['overlay']['Replace'])
+    replacements[str(source)] = str(destination)
+    return {'overlay': {'Replace': replacements}, 'parent_candidate': 'halfclose',
+            'patches': [{'module': SMUX_MODULE, 'version': SMUX_VERSION, 'path': 'stream.go',
+                         'original_sha256': hashlib.sha256(before).hexdigest(),
+                         'candidate_sha256': digest(destination),
+                         'exact_edits': sum(edit[2] for edit in edits)}],
+            'hypothesis': 'ordered FIN must not recycle unread smux payload',
+            'scope': 'isolated drain candidate; abort hardening remains separate'}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output_directory', type=Path)
@@ -434,6 +498,29 @@ def main() -> None:
         require(local_manifest == upstream_manifest, 'x source copy differs from authenticated module')
         write_json(output / 'x-source-manifest.json', local_manifest)
         provenance['x_module']['source_tree_sha256'] = local_manifest['sha256']
+        downloaded_smux = json.loads(run(
+            ['go', 'mod', 'download', '-json', SMUX_MODULE + '@' + SMUX_VERSION],
+            source, env, output / 'smux-download.json'))
+        require(downloaded_smux.get('Path') == SMUX_MODULE
+                and downloaded_smux.get('Version') == SMUX_VERSION,
+                'downloaded smux module identity mismatch')
+        require(all(downloaded_smux.get(key) for key in ('Sum', 'GoModSum', 'Zip', 'GoMod', 'Dir')),
+                'downloaded smux provenance is incomplete')
+        for key in ('Zip', 'GoMod', 'Dir'):
+            require(Path(downloaded_smux[key]).resolve().is_relative_to(module_cache),
+                    'Go downloaded smux outside isolated module cache')
+        provenance['smux_module'] = {key: downloaded_smux[key] for key in
+                                    ('Path', 'Version', 'Sum', 'GoModSum')}
+        provenance['smux_module']['zip_sha256'] = digest(Path(downloaded_smux['Zip']))
+        provenance['smux_module']['go_mod_sha256'] = digest(Path(downloaded_smux['GoMod']))
+        upstream_smux = Path(downloaded_smux['Dir'])
+        smux_manifest = tree_manifest(upstream_smux)
+        write_json(output / 'smux-upstream-manifest.json', smux_manifest)
+        local_smux = output / 'smux-source'
+        shutil.copytree(upstream_smux, local_smux, symlinks=False)
+        require(tree_manifest(local_smux) == smux_manifest,
+                'smux source copy differs from authenticated module')
+        provenance['smux_module']['source_tree_sha256'] = smux_manifest['sha256']
         pipe = local_x / 'internal' / 'net' / 'pipe.go'
         require(digest(pipe) == PIPE_SHA256, 'original Pipe SHA256 gate failed')
         original = pipe.read_bytes()
@@ -456,6 +543,10 @@ def main() -> None:
         halfclose_path = output / 'halfclose-overlay.json'
         write_json(halfclose_path, halfclose['overlay'])
         provenance['halfclose_candidate'] = halfclose
+        drain = drain_overlay(output, local_smux, halfclose)
+        drain_path = output / 'drain-overlay.json'
+        write_json(drain_path, drain['overlay'])
+        provenance['drain_candidate'] = drain
 
         # -overlay cannot replace files in GOMODCACHE. Both builds therefore
         # share a byte-identical x copy and the same temporary -modfile replace.
@@ -464,7 +555,9 @@ def main() -> None:
         shutil.copyfile(source / 'go.mod', modfile)
         shutil.copyfile(source / 'go.sum', sumfile)
         run(['go', 'mod', 'edit', '-modfile=' + str(modfile),
-             '-replace=' + X_MODULE + '=' + str(local_x)], source, env, output / 'mod-edit.txt')
+             '-replace=' + X_MODULE + '=' + str(local_x),
+             '-replace=' + SMUX_MODULE + '=' + str(local_smux)],
+            source, env, output / 'mod-edit.txt')
         run(['go', 'mod', 'download', '-modfile=' + str(modfile), 'all'],
             source, env, output / 'mod-download-all.txt', 1200)
         run(['go', 'mod', 'verify'], source, env, output / 'mod-verify-before.txt', 600)
@@ -475,11 +568,13 @@ def main() -> None:
         modfile_hash, sumfile_hash = digest(modfile), digest(sumfile)
         provenance['research_module'] = {'modfile': str(modfile), 'sha256': modfile_hash,
                                          'sumfile_sha256': sumfile_hash,
-                                         'identical_replace_for_both': str(local_x)}
+                                         'identical_replace_for_all': {X_MODULE: str(local_x),
+                                                                       SMUX_MODULE: str(local_smux)}}
         provenance['builds'] = {}
         provenance['variants'] = {}
         for label, overlay in [('original', original_overlay), ('fixed', fixed_overlay),
-                               ('lifecycle', lifecycle_path), ('halfclose', halfclose_path)]:
+                               ('lifecycle', lifecycle_path), ('halfclose', halfclose_path),
+                               ('drain', drain_path)]:
             destination = output / label
             destination.mkdir()
             binary = destination / 'gost'
@@ -491,10 +586,11 @@ def main() -> None:
             seconds = time.monotonic() - started
             information = run(['go', 'version', '-m', str(binary)], source, env,
                               destination / 'go-version-m.txt')
-            parsed = build_info(information, local_x)
+            parsed = build_info(information, local_x, local_smux)
             require(digest(modfile) == modfile_hash and digest(sumfile) == sumfile_hash,
                     'temporary module files changed during build')
             require(tree_manifest(local_x) == local_manifest, 'x source changed during build')
+            require(tree_manifest(local_smux) == smux_manifest, 'smux source changed during build')
             require(tree_manifest(source) == source_manifest, 'GOST source changed during build')
             record = {'label': label, 'binary': str(binary), 'sha256': digest(binary),
                       'bytes': binary.stat().st_size, 'build_seconds': round(seconds, 3),
@@ -502,6 +598,7 @@ def main() -> None:
                           overlay.read_text(encoding='utf-8')),
                       'source_tree_sha256': source_manifest['sha256'],
                       'x_source_tree_sha256': local_manifest['sha256'],
+                      'smux_source_tree_sha256': smux_manifest['sha256'],
                       'modfile_sha256': modfile_hash, 'sumfile_sha256': sumfile_hash}
             write_json(destination / 'provenance.json', record)
             provenance['builds'][label] = record
@@ -512,6 +609,7 @@ def main() -> None:
                     for record in provenance['builds'].values()), 'build dependency graphs differ')
         run(['go', 'mod', 'verify'], source, env, output / 'mod-verify-after.txt', 600)
         require(tree_manifest(upstream_x) == upstream_manifest, 'module cache source was modified')
+        require(tree_manifest(upstream_smux) == smux_manifest, 'smux module cache was modified')
 
         # Inspect the actual official distribution without executing its engine.
         official_archive = output / 'gost-official.tar.gz'
