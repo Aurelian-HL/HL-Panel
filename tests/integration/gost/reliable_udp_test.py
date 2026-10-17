@@ -376,7 +376,8 @@ def final_frame_close_check(port, attempts=20):
     return {'attempts': attempts, 'complete_replies': complete,
             'failed_replies': attempts - complete,
             'all_complete': complete == attempts,
-            'scope': 'independent immediate-target-close probes after bulk; '
+            'scope': 'new application TCP connections after bulk, with no injected loss; '
+                     'the underlying UDP tunnel may be reused; '
                      'outside reported CPU and UDP counter windows'}
 
 
@@ -609,7 +610,7 @@ def main():
             results.append(result)
             print(json.dumps(result, sort_keys=True), flush=True)
     require(all(result['final_frame_close_check']['all_complete'] for result in results),
-            'immediate-target-close lost application replies; stable-stream '
+            'immediate-target-close replies were incomplete or failed; stable-stream '
             'results do not establish full reliable delivery')
     print('PASS: authenticated QUIC/KCP delivered bounded bidirectional payloads '
           'on loopback, including deterministic injected UDP loss', flush=True)
