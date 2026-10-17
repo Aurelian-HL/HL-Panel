@@ -2,7 +2,6 @@ package httpapi_test
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/engine"
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
@@ -112,10 +112,9 @@ func TestReliableUDPAPIThroughRealEngine(t *testing.T) {
 				requestJSON(t, f.handler, http.MethodPost, "/api/v1/agent/apply-results", node.NodeCredential, agentv1.ApplyResultRequest{Generation: desired.Generation, AttemptID: "00000000000000000000000000000001", ConfigSHA256: desired.ConfigSHA256, Phase: phase, Status: agentv1.ApplyStatusSucceeded, EngineMode: "gost"}, 204)
 			}
 			var after agentv1.DesiredNodeConfig
-			decodeResponse(t, requestJSON(t, f.handler, http.MethodGet, "/api/v1/agent/desired", node.NodeCredential, nil, 200), &after)
-			if after.Generation != desired.Generation || after.ConfigSHA256 != desired.ConfigSHA256 {
-				t.Fatal("shared-node receipts caused a generation loop")
-			}
+			// Applied configurations are not replayed. A receipt loop would create
+			// a new pending generation and return 200 instead of 204 here.
+			requestJSON(t, f.handler, http.MethodGet, "/api/v1/agent/desired", node.NodeCredential, nil, http.StatusNoContent)
 			c, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), time.Second)
 			if err != nil {
 				t.Fatal(err)
@@ -181,9 +180,23 @@ func TestReliableUDPAPIThroughRealEngine(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			persisted, _, err := restored.DesiredNodeConfig(context.Background(), node.NodeID)
-			if err != nil || persisted.ConfigSHA256 != after.ConfigSHA256 || !json.Valid(persisted.Config) {
-				t.Fatal("verified UDP bundle did not survive persistence")
+			persistedNodes, err := restored.ListNodes(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, persisted := range persistedNodes {
+				if persisted.ID != node.NodeID {
+					continue
+				}
+				found = true
+				if persisted.DesiredGeneration != int64(after.Generation) || persisted.AppliedGeneration != int64(after.Generation) {
+					t.Fatal("verified UDP generation did not survive persistence")
+				}
+			}
+			persistedReceipt, err := restored.RuleNodeDeploymentInput(context.Background(), rule.ID, node.NodeID)
+			if !found || err != nil || !deploymentreceipts.Evaluate(persistedReceipt).ReceiptVerified {
+				t.Fatalf("verified UDP bundle did not survive persistence: %v", err)
 			}
 		})
 	}
