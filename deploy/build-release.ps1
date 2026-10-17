@@ -10,11 +10,32 @@ param(
 
     [string] $PythonExecutable = 'python',
 
-    [string] $ZipPath
+    [string] $ZipPath,
+
+    [string] $GostBundleDirectory,
+
+    [string] $GostManifestSha256
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$hasGostBundle = -not [string]::IsNullOrWhiteSpace($GostBundleDirectory)
+$hasGostManifest = -not [string]::IsNullOrWhiteSpace($GostManifestSha256)
+if ($hasGostBundle -ne $hasGostManifest) {
+    throw 'GOST bundle directory and reviewed manifest SHA256 must be supplied together'
+}
+$engineArguments = @()
+if ($hasGostBundle) {
+    if ($GostManifestSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'reviewed GOST manifest SHA256 must contain exactly 64 lowercase hexadecimal characters'
+    }
+    if (-not (Test-Path -LiteralPath $GostBundleDirectory -PathType Container)) {
+        throw "GOST bundle directory does not exist: $GostBundleDirectory"
+    }
+    $gostBundlePath = (Resolve-Path -LiteralPath $GostBundleDirectory).Path
+    $engineArguments = @('--gost-bundle', $gostBundlePath, '--gost-manifest-sha256', $GostManifestSha256)
+}
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 if ([IO.Path]::IsPathRooted($ReleaseDirectory)) {
@@ -83,7 +104,7 @@ try {
             throw "go build failed for $($target.Name) with exit code $LASTEXITCODE"
         }
     }
-    & $PythonExecutable (Join-Path $PSScriptRoot 'fetch-node-engines.py') $stagePath
+    & $PythonExecutable (Join-Path $PSScriptRoot 'fetch-node-engines.py') $stagePath @engineArguments
     if ($LASTEXITCODE -ne 0) { throw 'pinned node engine download or verification failed' }
 
     $deploymentFiles = @(

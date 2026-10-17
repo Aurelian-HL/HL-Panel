@@ -44,10 +44,21 @@ writing release files. No silent fallback to upstream occurs if the candidate
 is invalid. License/provenance files accompany the installed engine. Node
 installers still copy a packaged binary; they do not download source or compile.
 
-The existing PowerShell and GitHub release builders can call the build command
-first and replace their fetch call with the explicit bundle form after runtime
-acceptance. They must not copy this recipe or the source/build caches into the
-node package. The old standalone official fetch helper needs no recipe module.
+The PowerShell package builder accepts an explicit candidate without changing
+its default engine selection:
+
+```powershell
+./deploy/build-release.ps1 -ReleaseDirectory RELEASE -Version CANDIDATE_VERSION -GostBundleDirectory OUTPUT/bundle -GostManifestSha256 REVIEWED_MANIFEST_SHA256
+```
+
+Both candidate arguments are required together. Invalid input fails closed;
+there is no fallback to upstream. The recipe and source/build caches are not
+copied into the node package. The old standalone official fetch helper needs
+no recipe module. The isolated UDP workflow builds the real web and release
+package, installs it through the token installer, and checks that packaged and
+installed GOST binaries retain the accepted SHA256 and exact runtime identity
+through update, rollback and reinstall. This is package acceptance, not panel
+tunnel integration or production cutover.
 
 ## Required acceptance
 

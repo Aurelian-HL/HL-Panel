@@ -27,13 +27,21 @@ import urllib.request
 parser = argparse.ArgumentParser()
 parser.add_argument('--archive-directory', type=Path, required=True)
 parser.add_argument('--version', required=True)
+parser.add_argument('--gost-sha256')
+parser.add_argument('--gost-version')
 args = parser.parse_args()
+if bool(args.gost_sha256) != bool(args.gost_version):
+    parser.error('--gost-sha256 and --gost-version must be supplied together')
+if args.gost_sha256 and (len(args.gost_sha256) != 64 or
+                        any(c not in '0123456789abcdef' for c in args.gost_sha256)):
+    parser.error('--gost-sha256 must be a lowercase SHA256 digest')
 assert os.geteuid() == 0 and os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true'
 assert not Path('/opt/hl-panel').exists(), 'Requires an empty disposable node VM'
 repo = Path(__file__).resolve().parents[2]
 secrets = []
 transcript = []
 checks = []
+acceptance_status = 'failed'
 
 
 def run(command, **options):
@@ -65,6 +73,15 @@ def unused_port():
         return s.getsockname()[1]
 
 
+def verify_expected_gost(path, stage):
+    if args.gost_sha256 is None:
+        return
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == args.gost_sha256, stage + ' GOST binary differs from accepted candidate'
+    result = run([str(path), '-V'], timeout=15)
+    assert result.returncode == 0 and result.stdout.strip() == args.gost_version, stage + ' GOST identity differs from accepted candidate'
+    checks.append(stage + ' GOST matches accepted binary SHA256 and exact runtime identity')
+
+
 try:
     with tempfile.TemporaryDirectory(prefix='hl-node-acceptance-') as temporary:
         work = Path(temporary)
@@ -72,6 +89,7 @@ try:
         release.mkdir()
         with tarfile.open(args.archive_directory / 'hl-panel-linux-amd64.tar.gz') as archive:
             archive.extractall(release, filter='data')
+        verify_expected_gost(release / 'bin/gost', 'packaged')
         cert, key = work / 'ca.pem', work / 'key.pem'
         assert run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                     '-keyout', str(key), '-out', str(cert), '-days', '1',
@@ -269,6 +287,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             token = issue()
             fault_state['enabled'] = True
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
+            verify_expected_gost(Path('/opt/hl-panel/node-engines/gost'), 'installed')
             installed_bbr_state = bbr_state()
             installed_bbr_algorithm = installed_bbr_state[0]
             bbr_enabled = installed_bbr_algorithm in bbr_configs
@@ -562,6 +581,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             journal = run(['journalctl','-u','hl-panel-edge-agent','--no-pager']).stdout
             assert all(secret not in journal for secret in secrets), 'Secret leaked in node journal'
             checks.append('service journal contains no enrollment or persistent credentials')
+            verify_expected_gost(Path('/opt/hl-panel/node-engines/gost'), 'after update rollback and reinstall')
+            acceptance_status = 'passed'
         finally:
             proxy.shutdown()
             proxy.server_close()
@@ -581,5 +602,5 @@ finally:
     run(['systemctl', 'show', 'hl-panel-edge-agent', '--property=ActiveState,SubState,Result,NRestarts'])
     run(['journalctl', '-u', 'hl-panel-edge-agent', '-n', '100', '--no-pager'])
     Path('node-install.log').write_text('\n'.join(transcript))
-    Path('node-install-result.json').write_text(json.dumps({'checks':checks},indent=2)+'\n')
+    Path('node-install-result.json').write_text(json.dumps({'status':acceptance_status,'checks':checks},indent=2)+'\n')
 print(json.dumps({'status':'passed','checks':checks},indent=2))

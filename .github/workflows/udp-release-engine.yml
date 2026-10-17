@@ -8,6 +8,9 @@ on:
       - 'deploy/reliable_udp_engine.py'
       - 'deploy/reliable-udp-engine/**'
       - 'deploy/fetch-node-engines.py'
+      - 'deploy/build-release.ps1'
+      - 'tests/install/node_install.py'
+      - 'tests/install/test_udp_package.py'
       - 'tests/install/reliable_udp_release.py'
       - 'tests/install/test_reliable_udp_engine.py'
       - 'internal/agent/engine/gost_runner*.go'
@@ -21,7 +24,7 @@ permissions:
 jobs:
   release-engine:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -53,6 +56,39 @@ jobs:
           export NYVP_GOST_BINARY="$RUNNER_TEMP/udp-engines/bin/gost"
           export NYVP_XRAY_BINARY="$RUNNER_TEMP/udp-engines/bin/xray"
           go test -count=1 -timeout=10m ./internal/agent/... ./tests/integration/gost 2>&1 | tee udp-agent-regression.log
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web-admin/package-lock.json
+      - name: Verify package option failures preserve the filesystem
+        run: python3 tests/install/test_udp_package.py
+      - name: Build the real web assets for the candidate package
+        working-directory: apps/web-admin
+        run: |
+          npm ci
+          npm run build
+      - name: Build and verify the complete package with the accepted engine
+        shell: pwsh
+        run: |
+          $manifestSha = (Get-FileHash -LiteralPath "$env:RUNNER_TEMP/udp-release/bundle/manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+          ./deploy/build-release.ps1 -ReleaseDirectory "$env:RUNNER_TEMP/udp-node-candidate" -Version v0.0.0 -PythonExecutable python3 -GostBundleDirectory "$env:RUNNER_TEMP/udp-release/bundle" -GostManifestSha256 $manifestSha
+      - name: Package only the verified candidate for the installer fixture
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$RUNNER_TEMP/udp-node-candidate/bin/gost"
+          mkdir -p "$RUNNER_TEMP/udp-node-archive"
+          tar -C "$RUNNER_TEMP/udp-node-candidate" -czf "$RUNNER_TEMP/udp-node-archive/hl-panel-linux-amd64.tar.gz" .
+          cd "$RUNNER_TEMP/udp-node-archive"
+          sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256
+      - name: Prepare bounded package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Verify token installation and BBR with the exact accepted UDP engine
+        run: |
+          set -euo pipefail
+          gost_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/gost" | cut -d' ' -f1)
+          gost_version=$("$RUNNER_TEMP/udp-release/bundle/gost" -V)
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/udp-node-archive" --version v0.0.0 --gost-sha256 "$gost_sha" --gost-version "$gost_version"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -61,6 +97,10 @@ jobs:
             udp-build.json
             udp-runtime.log
             udp-agent-regression.log
+            node-install.log
+            node-install-result.json
+            ${{ runner.temp }}/udp-node-candidate/SHA256SUMS
+            ${{ runner.temp }}/udp-node-candidate/licenses/**
             ${{ runner.temp }}/udp-release/results.json
             ${{ runner.temp }}/udp-release/commands.json
             ${{ runner.temp }}/udp-release/command-*.log
