@@ -1,0 +1,115 @@
+package quic
+
+import (
+	"context"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/quic-go/quic-go"
+)
+
+type quicSession struct {
+	session *quic.Conn
+}
+
+func (session *quicSession) GetConn(ctx context.Context) (*quicConn, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	stream, err := session.session.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &quicConn{
+		Stream: stream,
+		sessionContext: session.session.Context(),
+		laddr:  session.session.LocalAddr(),
+		raddr:  session.session.RemoteAddr(),
+	}, nil
+}
+
+func (session *quicSession) IsClosed() bool {
+	select {
+	case <-session.session.Context().Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func (session *quicSession) Close() error {
+	return session.session.CloseWithError(quic.ApplicationErrorCode(0), "closed")
+}
+
+type quicConn struct {
+	*quic.Stream
+
+	sessionContext context.Context
+	writeMu sync.Mutex
+	stateMu sync.Mutex
+	writeClosed bool
+	aborted bool
+	closed bool
+	laddr net.Addr
+	raddr net.Addr
+}
+
+func (c *quicConn) LocalAddr() net.Addr {
+	return c.laddr
+}
+
+func (c *quicConn) RemoteAddr() net.Addr {
+	return c.raddr
+}
+
+// Context follows the multiplexed session, not the send side FIN of one stream.
+func (c *quicConn) Context() context.Context { return c.sessionContext }
+
+func (c *quicConn) Write(p []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.stateMu.Lock()
+	closed := c.aborted || c.closed || c.writeClosed
+	c.stateMu.Unlock()
+	if closed { return 0, net.ErrClosed }
+	return c.Stream.Write(p)
+}
+
+func (c *quicConn) CloseRead() error {
+	c.Stream.CancelRead(quic.StreamErrorCode(0x100))
+	return nil
+}
+
+func (c *quicConn) CloseWrite() error {
+	// quic-go Close must never overlap Write, or run after CancelWrite.
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.aborted || c.writeClosed { return nil }
+	c.writeClosed = true
+	return c.Stream.Close()
+}
+
+func (c *quicConn) Close() error {
+	c.stateMu.Lock()
+	if c.closed { c.stateMu.Unlock(); return nil }
+	c.closed = true
+	c.Stream.CancelRead(quic.StreamErrorCode(0x100))
+	// Wake an overlapping writer before waiting for writeMu. A deadline does
+	// not reset already accepted data; normal Close still sends a reliable FIN.
+	if !c.aborted && !c.writeClosed { _ = c.Stream.SetWriteDeadline(time.Now()) }
+	c.stateMu.Unlock()
+	return c.CloseWrite()
+}
+
+// Abort is stream scoped. It never closes the shared QUIC session.
+func (c *quicConn) Abort() error {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.aborted { return nil }
+	c.aborted, c.closed = true, true
+	c.Stream.CancelRead(quic.StreamErrorCode(0x100))
+	c.Stream.CancelWrite(quic.StreamErrorCode(0x100))
+	return nil
+}
