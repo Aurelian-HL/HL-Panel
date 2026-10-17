@@ -26,9 +26,22 @@ class CandidateOptionsTests(unittest.TestCase):
             ]
             for options, expected in cases:
                 with self.subTest(options=options):
-                    result = subprocess.run([POWERSHELL, '-NoProfile', '-NonInteractive', '-File',
-                        str(REPO / 'deploy/build-release.ps1'), '-ReleaseDirectory', str(root / 'release'),
-                        *options], capture_output=True, text=True, timeout=30)
+                    def literal(value):
+                        return "'" + str(value).replace("'", "''") + "'"
+                    parameters = {'ReleaseDirectory': str(root / 'release')}
+                    parameters.update({options[i].lstrip('-'): options[i + 1]
+                                       for i in range(0, len(options), 2)})
+                    assignments = '; '.join(key + ' = ' + literal(value)
+                                            for key, value in parameters.items())
+                    # PowerShell's default formatter wraps and colors errors on
+                    # Linux. Catch the actual exception for a stable assertion.
+                    script = (
+                        '$options = @{' + assignments + '}; try { & '
+                        + literal(REPO / 'deploy/build-release.ps1')
+                        + ' @options; exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
+                    )
+                    result = subprocess.run([POWERSHELL, '-NoProfile', '-NonInteractive',
+                        '-Command', script], capture_output=True, text=True, timeout=30)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(expected, result.stdout + result.stderr)
                     self.assertEqual(list(root.iterdir()), [bundle])
