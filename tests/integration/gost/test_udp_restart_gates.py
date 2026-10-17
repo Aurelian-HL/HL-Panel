@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import select
 import socket
 import struct
 import sys
@@ -102,6 +103,127 @@ class PersistentStreamFixtureGates(unittest.TestCase):
                         self.assertEqual(target.persistent_records, [])
                         self.assertEqual(target.errors, ['RuntimeError'])
 
+    def test_early_fin_cannot_be_counted_as_restart_failure(self):
+        for reported_closed in (False, True):
+            with self.subTest(target_reported_closed=reported_closed):
+                def early_fin(handler):
+                    stream, target = handler.request, handler.server
+                    header = fixture.receive(stream, 5, time.monotonic() + 2)
+                    length = struct.unpack('!I', header[1:])[0]
+                    payload = fixture.receive(stream, length, time.monotonic() + 2)
+                    stream.sendall(payload)
+                    stream.shutdown(socket.SHUT_WR)
+                    if reported_closed:
+                        target.persistent_closed.set()
+                    target.persistent_ready.set()
+
+                with mock.patch.object(fixture.TargetHandler, 'handle', early_fin):
+                    target = fixture.Target()
+                    self.addCleanup(target.close)
+                    server, client = mock.Mock(), mock.Mock()
+                    with self.assertRaises(RuntimeError):
+                        fixture.restart_recovery_check(server, client,
+                                                       target.server_address[1], target)
+                    server.stop.assert_not_called()
+                    server.restart.assert_not_called()
+
+    def test_live_persistent_stream_reaches_server_stop(self):
+        for name, factory in self.factories():
+            with self.subTest(target=name):
+                target = factory()
+                self.addCleanup(target.close)
+                server, client = mock.Mock(), mock.Mock()
+                server.process.pid, client.process.pid = 101, 303
+                client.cpu_ticks.return_value = {'starttime': 1234}
+                server.stop.side_effect = RuntimeError('observed-server-stop')
+                with self.assertRaisesRegex(fixture.RestartRecoveryError, '^restart_server_stop_failed$'):
+                    fixture.restart_recovery_check(server, client,
+                                                   target.server_address[1], target)
+                server.stop.assert_called_once()
+                server.restart.assert_not_called()
+
+
+class RestartDiagnosticGates(unittest.TestCase):
+    def test_each_restart_phase_has_fixed_safe_failure_diagnostic(self):
+        for phase in sorted(fixture.RESTART_PHASES) + ['secret-invalid-phase']:
+            with self.subTest(phase=phase):
+                with self.assertRaises(fixture.RestartRecoveryError) as raised:
+                    with fixture.restart_phase(phase):
+                        raise RuntimeError('secret-origin-error')
+                output = io.StringIO()
+                with tempfile.TemporaryDirectory() as directory:
+                    with contextlib.redirect_stderr(output):
+                        fixture.diagnose_failure(Path(directory), 'engine_reconnect',
+                                                 type(raised.exception), raised.exception, None)
+                text = output.getvalue()
+                self.assertNotIn('secret', text)
+                diagnostic = json.loads(text.split(' ', 1)[1])
+                safe = phase if phase in fixture.RESTART_PHASES else 'unknown_restart_phase'
+                self.assertEqual(diagnostic['stage'], 'engine_reconnect_' + safe)
+                self.assertEqual(diagnostic['failure_category'], 'restart_' + safe + '_failed')
+
+
+class ProxyRestartFixtureGates(unittest.TestCase):
+    def proxy(self):
+        proxy = fixture.LossProxy(fixture.unused_port(socket.SOCK_DGRAM))
+        self.addCleanup(proxy.close)
+        return proxy
+
+    def test_outbound_refusal_is_counted_and_next_datagram_can_forward(self):
+        proxy = self.proxy()
+        payload = b'refused-datagram'
+        send = mock.Mock(side_effect=[ConnectionRefusedError('secret-refusal'), len(payload)])
+        self.assertFalse(proxy.forward('out', payload, send))
+        self.assertTrue(proxy.forward('out', payload, send))
+        counters = proxy.snapshot()
+        self.assertEqual(counters['datagrams_seen']['out'], 2)
+        self.assertEqual(counters['datagrams_send_failed']['out'], 1)
+        self.assertEqual(counters['datagrams_forwarded']['out'], 1)
+        self.assertEqual(counters['datagrams_dropped']['out'], 0)
+        self.assertEqual(counters['connection_refused_events']['out_send'], 1)
+        self.assertEqual(counters['udp_payload_bytes_send_failed']['out'], len(payload))
+        self.assertTrue(proxy.thread.is_alive())
+        proxy.enable_loss(0)
+        counters = proxy.snapshot()
+        self.assertEqual(counters['datagrams_send_failed']['out'], 0)
+        self.assertEqual(counters['connection_refused_events']['out_send'], 0)
+
+    def test_other_send_errors_remain_fatal_with_balanced_counters(self):
+        for direction, error in (('out', PermissionError('secret-permission')),
+                                 ('back', ConnectionRefusedError('secret-back-refusal')),
+                                 ('out', OSError('secret-other-error'))):
+            with self.subTest(direction=direction, error=type(error).__name__):
+                proxy = self.proxy()
+                with self.assertRaises(type(error)):
+                    proxy.forward(direction, b'x', mock.Mock(side_effect=error))
+                counters = proxy.snapshot()
+                self.assertEqual(counters['datagrams_send_failed'][direction], 1)
+                self.assertEqual(counters['datagrams_forwarded'][direction], 0)
+                self.assertEqual(counters['datagrams_dropped'][direction], 0)
+                self.assertEqual(counters['connection_refused_events']['out_send'], 0)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'requires Linux connected-UDP ICMP semantics')
+    def test_real_closed_udp_port_send_refusal_and_same_port_recovery(self):
+        proxy = self.proxy()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind((fixture.HOST, 0))
+            address = receiver.getsockname()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as upstream:
+            upstream.connect(address)
+            self.assertTrue(proxy.forward('out', b'closed-port', upstream.send))
+            self.assertEqual(select.select([upstream], [], [], 2)[0], [upstream],
+                             'closed loopback port did not produce a pending ICMP error')
+            self.assertFalse(proxy.forward('out', b'pending-error', upstream.send))
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as replacement:
+                replacement.bind(address)
+                replacement.settimeout(2)
+                self.assertTrue(proxy.forward('out', b'replacement-ready', upstream.send))
+                self.assertEqual(replacement.recvfrom(1024)[0], b'replacement-ready')
+        counters = proxy.snapshot()
+        self.assertEqual(counters['datagrams_send_failed']['out'], 1)
+        self.assertEqual(counters['connection_refused_events']['out_send'], 1)
+        self.assertEqual(counters['datagrams_dropped']['out'], 0)
+
 
 class RestartEvidenceGates(unittest.TestCase):
     def complete(self):
@@ -116,9 +238,24 @@ class RestartEvidenceGates(unittest.TestCase):
             'all_checks_passed': True,
             'server_pid_before': 101,
             'server_pid_after': 202,
+            'server_stopped': True,
             'client_pid_before': 303,
             'client_pid_after': 303,
             'client_identity_unchanged': True,
+            'old_connection_open_before_stop': True,
+            'pre_stop_probe_elapsed_seconds': 0.1,
+            'old_connection_failed': True,
+            'old_connection_failure': 'eof',
+            'old_connection_failure_timeout_seconds': 15,
+            'old_connection_failure_elapsed_seconds': 0.2,
+            'replacement_readiness_elapsed_seconds': 0.3,
+            'replacement_bulk_passed': True,
+            'replacement_upload_bytes': 2097152,
+            'replacement_download_bytes': 2097152,
+            'replacement_upload_sha256': 'a' * 64,
+            'replacement_download_sha256': 'b' * 64,
+            'injected_datagram_loss': False,
+            'scope': pair.RESTART_SCOPE,
         }}
         return result
 
@@ -129,6 +266,55 @@ class RestartEvidenceGates(unittest.TestCase):
         result = self.complete()
         del result['engine_reconnect_passed']
         self.assertFalse(pair.candidate_result_passes(result, lossy_close=True))
+
+        for key in self.complete()['measurement']['engine_reconnect']:
+            with self.subTest(missing=key):
+                result = self.complete()
+                del result['measurement']['engine_reconnect'][key]
+                self.assertFalse(pair.candidate_result_passes(result, lossy_close=True))
+
+    def test_wrong_restart_fields_cannot_pass(self):
+        cases = {
+            'all_checks_passed': False,
+            'server_stopped': False,
+            'server_pid_before': True,
+            'server_pid_after': 0,
+            'client_pid_before': -1,
+            'client_pid_after': '303',
+            'client_identity_unchanged': False,
+            'old_connection_open_before_stop': False,
+            'old_connection_failed': False,
+            'old_connection_failure': 'timeout',
+            'old_connection_failure_timeout_seconds': 16,
+            'pre_stop_probe_elapsed_seconds': -0.1,
+            'old_connection_failure_elapsed_seconds': 15.001,
+            'replacement_readiness_elapsed_seconds': float('nan'),
+            'replacement_bulk_passed': False,
+            'replacement_upload_bytes': 2097151,
+            'replacement_download_bytes': 2097153,
+            'injected_datagram_loss': True,
+            'scope': 'production or loss-injected restart',
+        }
+        for key, value in cases.items():
+            with self.subTest(field=key, value=value):
+                result = self.complete()
+                result['measurement']['engine_reconnect'][key] = value
+                self.assertFalse(pair.candidate_result_passes(result, lossy_close=False))
+
+    def test_invalid_restart_hashes_cannot_pass(self):
+        for key in ('replacement_upload_sha256', 'replacement_download_sha256'):
+            for value in (None, 64, 'a' * 63, 'a' * 65, 'z' * 64, 'a' * 63 + '\n'):
+                with self.subTest(field=key, value=value):
+                    result = self.complete()
+                    result['measurement']['engine_reconnect'][key] = value
+                    self.assertFalse(pair.candidate_result_passes(result, lossy_close=False))
+
+    def test_malformed_measurement_cannot_pass(self):
+        for value in (None, [], 'invalid', {'engine_reconnect': None}):
+            with self.subTest(measurement=value):
+                result = self.complete()
+                result['measurement'] = value
+                self.assertFalse(pair.candidate_result_passes(result, lossy_close=False))
 
     def test_pid_identity_change_cannot_be_hidden_by_boolean(self):
         result = self.complete()

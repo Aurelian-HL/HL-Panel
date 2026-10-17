@@ -219,14 +219,32 @@ Python 关闭夹具的直连与正确透传 TCP forwarder 已各对 F+EOF/H/S �
 
 smux 本地回归另新增阻塞 WriteTo 已取出缓冲时发生双 FIN 的边界：v1/v2 均完整交付且 tokens 未提前归还。最终因果契约普通 300/300 子场景、race 100/100 通过；relay 组合普通 200/200、race 60/60 通过；上游两个流测试文件普通 63/63、race 21/21 通过，无 race warning。原 module cache 未修改，独立补丁 git apply --check 通过。
 
-## 十二、交付边界与下一步
+## 十二、当前 abort/Dial 合约与重启门禁状态
+
+### abort 与 Dial 合约证据
+
+旧的隔离 Linux run `39027350359` 中，独立的 stacked abort 与 Dial 合约步骤已完成：abort 以 `-race -count=3` 通过 129 个测试事件，Dial 以 `-race -count=3` 通过 18 个测试事件，合计 147 个通过事件。abort 覆盖已知 wrapper、listener/dialer、半关闭宽限 deadline 不覆盖立即 abort、首个错误终止另一半、Cancel 释放 stream credit 等；Dial 覆盖请求取消保持共享 session、死亡 session 重连，以及旧失败 session 不能移除替代 session。其范围是 localhost QUIC/TCP 合约和 request-local 清理，不覆盖生产传输所有权、0-RTT、WAN 或完整 GOST 对照。
+
+### 旧 run 的真实失败性质
+
+同一旧 run 的可靠 UDP pair 共启动了 16 个场景；15 个场景进入真实引擎并完成其记录的 bulk、关闭和丢包关闭子检查，唯一失败发生在 `dial` 候选、QUIC、lossy 场景的 `server_startup` 前置夹具阶段。该失败的诊断记录为：server 日志没有已知错误标记、client 日志尚不可用、UDP 计数为 0、目标服务没有收到请求；关闭检查没有开始。因此不能把它描述成 QUIC 关闭语义失败，也不能仅凭这份记录断言根因一定是临时 TCP 端口复用。当前修复保留端口 socket 到 client 启动前，并增加 `client_fixture_setup` 的固定安全失败分类；是否解决真实 Linux 场景，必须以新 CI 结果为准。
+
+### 当前提交与重启恢复门禁
+
+当前已运行验收的提交为 `e9993b3504d023b60046440510f7477a5c4b74fd`，真实 Linux workflow [run `39028607048`](https://github.com/Aurelian-HL/HL-Panel/actions/runs/39028607048) 的 build/race 步骤通过，但 pair 对照的 16 个场景全部在 `engine_reconnect` 阶段以 `RuntimeError` 失败，没有成功的 measurement/reconnect 记录。现有产物只能把失败定位到重启门禁，不能区分具体子阶段，不能据此归因为协议、认证或资源清理问题。该次 CI 不包含下面的本地诊断补丁。
+
+`engine_reconnect` 门禁保持 15 秒旧应用连接失败界限：先保持客户 GOST 进程，终止服务端 GOST，要求旧应用连接在 15 秒内 EOF/RST/套接字错误；随后以相同配置和端口启动 replacement，要求服务端 PID 改变、客户 GOST PID 及 `/proc/<pid>/stat` starttime 不变，再建立新应用连接并完成双向 2 MiB 长度和 SHA256 校验。该检查明确 `injected_datagram_loss=false`，只证明旧流终止和新流恢复，不证明旧连接跨进程延续，也不证明丢包条件下的重启恢复。15 秒是本实验的硬界限，不是已交付的用户服务承诺。
+
+本地补丁增加了停机前旧流存活检查及提前 FIN 的拒绝用例；聚合器要求全部 PID、布尔值、字节数、SHA256、计时和实验范围证据，拒绝缺失或畸形记录。固定白名单诊断把重启失败分为 `pre_stop_stream`、`server_stop`、`old_stream_exit`、`replacement_start`、`identity`、`replacement_readiness`、`replacement_bulk`、`target_stream_closed`，不输出异常正文、日志或秘密。代理夹具还把 connected UDP 的 `send()` 拒绝和正常主动丢包分开计数：仅出站 `ConnectionRefusedError` 可记录后继续，其他发送错误仍使场景失败；新增 Linux-only 的真实关闭端口负控会在下一轮隔离 CI 执行。Windows 本地离线门禁实际执行 34 项，33 项通过、Linux-only 负控跳过 1 项；三个 Python 文件语法编译及四文件定向 `git diff --check` 通过。这些结果仅验证本地夹具、分类和证据门禁，不能替代真实 Linux GOST 运行。最新诊断补丁尚未通过对应的真实 Linux CI，不能声称已解决当前 CI 的 16 场失败。
+
+## 十三、交付边界与下一步
 
 - BBR helper、令牌安装调用和原始实验代码已同步到 Git 仓库 `main` 的 `832188a5fe403e5ce583f9f9c0d01c7d64417ba2`；新增成对引擎及生命周期实验位于 `research/reliable-udp-pipe-20261017`，没有发布本轮 tag 或 Release，也没有部署到生产节点。
 - 尚未把 QUIC/KCP 接入产品的完整规则流程，未默认启用节点间可靠 UDP 隧道。
 - 本轮没有修改生产节点配置，没有把生产节点切换到 QUIC/KCP，也没有据此变更客户线路。
-- 当前 drain 候选在 run `39011820132` 的全部可靠 UDP 门禁通过；该结论仅限本轮隔离实验，异常取消、服务退出、长期负载及公网验收仍需独立完成。
+- drain 候选在 run `39011820132` 的全部可靠 UDP 门禁通过，是此前提交 `f616336985ea68fcf180bfb53d7417db3892bee0` 的历史、有界隔离实验结论；它不能替代当前提交 `e9993b3504d023b60046440510f7477a5c4b74fd` 的重启门禁验收，也不能覆盖当前 16 场重启检查失败的结果。
 
-原/修网络对照、buildinfo、QUIC listener 上下文及 relay 半关闭透传对照已完成；仅透传 relay CloseWrite 仍有 KCP 失败，新增 smux drain 候选已在真实 Linux GOST 通过本轮完整门禁。接下来把 QUIC 异常取消/资源清理落实为另一独立候选验证，并单独检查 service 取消顺序及父上下文传递。保留现有 F/EOF/H/S 和实际丢包关闭门禁。随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
+下一步先审核并提交本地诊断与证据门禁补丁，在隔离 Linux 对准确提交运行真实引擎，依据固定子阶段确定重启失败根因后修复；不能放宽 15 秒界限或盲目重跑求绿。已实施的 abort/Dial 独立合约不等于当前完整引擎重启恢复成功。继续保留 F/EOF/H/S 和实际丢包关闭门禁，随后仍需断网与恢复、长时间负载，不能先默认开启生产 UDP。
 
 之后在同一故障注入方式、机器资源、版本、MTU、带宽与负载下比较 TCP+BBR、QUIC 可靠流、KCP，以及独立比较的 KCP+FEC；若要衡量 BBR 本身的收益，还需保留 TCP 原拥塞算法对照。覆盖真实 RTT、抖动、随机及突发丢包、多连接并发、持续流量与短请求，至少多次重复并随机化顺序，记录应用完整性、失败率、吞吐、冷建链、请求尾延迟和最长停顿、双端单位业务流量 CPU 秒及完整窗口字节开销，之后再开展已授权公网环境的性能验证。现有实验不足以支持性能优劣结论。
 

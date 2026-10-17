@@ -4,9 +4,15 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
+import re
 import sys
+
+
+RESTART_SCOPE = ('local isolated GOST server process replacement; client process retained; '
+                 'old application stream fails and a new stream recovers; no injected loss')
 
 
 def load_module(name, path):
@@ -39,17 +45,37 @@ def candidate_order(variants, *, lifecycle=False, halfclose=False, drain=False,
 
 def candidate_result_passes(item, *, lossy_close):
     """Keep process replacement as a first-class candidate acceptance gate."""
-    restart = item.get('measurement', {}).get('engine_reconnect', {})
+    if not isinstance(item, dict) or not isinstance(item.get('measurement'), dict):
+        return False
+    restart = item['measurement'].get('engine_reconnect', {})
     restart_identity = (
         isinstance(restart, dict) and
         restart.get('all_checks_passed') is True and
-        isinstance(restart.get('server_pid_before'), int) and
-        isinstance(restart.get('server_pid_after'), int) and
+        restart.get('server_stopped') is True and
+        type(restart.get('server_pid_before')) is int and restart['server_pid_before'] > 0 and
+        type(restart.get('server_pid_after')) is int and restart['server_pid_after'] > 0 and
         restart['server_pid_before'] != restart['server_pid_after'] and
-        isinstance(restart.get('client_pid_before'), int) and
-        isinstance(restart.get('client_pid_after'), int) and
+        type(restart.get('client_pid_before')) is int and restart['client_pid_before'] > 0 and
+        type(restart.get('client_pid_after')) is int and restart['client_pid_after'] > 0 and
         restart['client_pid_before'] == restart['client_pid_after'] and
-        restart.get('client_identity_unchanged') is True)
+        restart.get('client_identity_unchanged') is True and
+        restart.get('old_connection_open_before_stop') is True and
+        restart.get('old_connection_failed') is True and
+        restart.get('old_connection_failure') in ('eof', 'socket_error') and
+        type(restart.get('old_connection_failure_timeout_seconds')) is int and
+        restart['old_connection_failure_timeout_seconds'] == 15 and
+        all(type(restart.get(key)) in (int, float) and math.isfinite(restart[key]) and
+            restart[key] >= 0 for key in ('pre_stop_probe_elapsed_seconds',
+                'old_connection_failure_elapsed_seconds', 'replacement_readiness_elapsed_seconds')) and
+        restart['old_connection_failure_elapsed_seconds'] <= 15 and
+        restart.get('replacement_bulk_passed') is True and
+        all(type(restart.get(key)) is int and restart[key] == 2 * 1024 * 1024
+            for key in ('replacement_upload_bytes', 'replacement_download_bytes')) and
+        all(isinstance(restart.get(key), str) and
+            re.fullmatch(r'[0-9a-f]{64}', restart[key]) is not None
+            for key in ('replacement_upload_sha256', 'replacement_download_sha256')) and
+        restart.get('injected_datagram_loss') is False and
+        restart.get('scope') == RESTART_SCOPE)
     return (item.get('stable_bulk_passed') is True and
             item.get('legacy_final_frame_passed') is True and
             item.get('extended_close_passed') is True and
@@ -111,6 +137,8 @@ def main():
                     # Error text, logs and temporary credentials are never surfaced.
                     result['stable_bulk_passed'] = False
                     result['failure_type'] = type(error).__name__
+                    if isinstance(error, module.RestartRecoveryError):
+                        result['restart_failure_category'] = 'restart_' + error.phase + '_failed'
                 results.append(result)
                 line = json.dumps(result, sort_keys=True)
                 with args.results.open('a', encoding='utf-8') as output:

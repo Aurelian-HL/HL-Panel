@@ -37,6 +37,9 @@ BULK_BYTES = 2 * 1024 * 1024
 DEADLINE_SECONDS = 45
 ENGINE_RESTART_FAILURE_SECONDS = 15
 DIAGNOSTIC_LOG_BYTES = 32768
+RESTART_PHASES = frozenset(('pre_stop_stream', 'server_stop', 'old_stream_exit',
+                            'replacement_start', 'identity', 'replacement_readiness',
+                            'replacement_bulk', 'target_stream_closed'))
 DIAGNOSTIC_STAGES = frozenset(('fixture_setup', 'server_startup', 'client_startup',
                               'client_fixture_setup',
                               'authenticated_readiness', 'authorization_checks',
@@ -66,12 +69,28 @@ class FixturePortAllocationError(RuntimeError):
     """A client fixture could not reserve its distinct loopback TCP ports."""
 
 
+class RestartRecoveryError(RuntimeError):
+    def __init__(self, phase):
+        self.phase = phase if phase in RESTART_PHASES else 'unknown_restart_phase'
+        super().__init__('restart_' + self.phase + '_failed')
+
+
+@contextlib.contextmanager
+def restart_phase(phase):
+    try:
+        yield
+    except Exception as error:
+        raise RestartRecoveryError(phase) from error
+
+
 def diagnose_failure(directory, stage, exc_type, _error, _traceback,
                      proxy=None, target=None):
     """Emit fixed classifications only; never expose log text or exception data."""
     if exc_type is None:
         return False
     safe_stage = stage if stage in DIAGNOSTIC_STAGES else 'unknown_stage'
+    if isinstance(_error, RestartRecoveryError):
+        safe_stage = 'engine_reconnect_' + _error.phase
     try:
         engines = []
         for name in ('server', 'client'):
@@ -90,6 +109,8 @@ def diagnose_failure(directory, stage, exc_type, _error, _traceback,
         diagnostic = {'stage': safe_stage, 'engines': engines,
                       'failure_category': ('client_port_reservation_failed'
                           if isinstance(_error, FixturePortAllocationError)
+                          else 'restart_' + _error.phase + '_failed'
+                          if isinstance(_error, RestartRecoveryError)
                           else 'unclassified_failure'),
                       'scope': 'known markers observed in bounded log tails; '
                                'expected authorization rejections may be included'}
@@ -274,9 +295,12 @@ class LossProxy:
         self.seen = {'out': 0, 'back': 0}
         self.dropped = {'out': 0, 'back': 0}
         self.forwarded = {'out': 0, 'back': 0}
+        self.send_failed = {'out': 0, 'back': 0}
         self.seen_bytes = {'out': 0, 'back': 0}
         self.dropped_bytes = {'out': 0, 'back': 0}
         self.forwarded_bytes = {'out': 0, 'back': 0}
+        self.send_failed_bytes = {'out': 0, 'back': 0}
+        self.refused = {'out_send': 0, 'upstream_receive': 0}
         self.errors = []
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -286,9 +310,12 @@ class LossProxy:
             self.seen = {'out': 0, 'back': 0}
             self.dropped = {'out': 0, 'back': 0}
             self.forwarded = {'out': 0, 'back': 0}
+            self.send_failed = {'out': 0, 'back': 0}
             self.seen_bytes = {'out': 0, 'back': 0}
             self.dropped_bytes = {'out': 0, 'back': 0}
             self.forwarded_bytes = {'out': 0, 'back': 0}
+            self.send_failed_bytes = {'out': 0, 'back': 0}
+            self.refused = {'out_send': 0, 'upstream_receive': 0}
             self.drop_every = every
 
     def set_loss_policy(self, every):
@@ -310,9 +337,21 @@ class LossProxy:
                 self.dropped[direction] += 1
                 self.dropped_bytes[direction] += len(packet)
                 return
-            require(send(packet) == len(packet), 'UDP payload was only partly sent')
+            try:
+                require(send(packet) == len(packet), 'UDP payload was only partly sent')
+            except Exception as error:
+                self.send_failed[direction] += 1
+                self.send_failed_bytes[direction] += len(packet)
+                if direction == 'out' and isinstance(error, ConnectionRefusedError):
+                    # A connected UDP socket can surface a pending ICMP refusal
+                    # at send as well as recv while the engine is unavailable.
+                    # Record this loss separately from intentional packet drops.
+                    self.refused['out_send'] += 1
+                    return False
+                raise
             self.forwarded[direction] += 1
             self.forwarded_bytes[direction] += len(packet)
+            return True
 
     def run(self):
         try:
@@ -332,7 +371,9 @@ class LossProxy:
                         try:
                             packet = key.fileobj.recv(65535)
                         except ConnectionRefusedError:
-                            # The engine may still be starting on its reserved port.
+                            # The engine may be starting or deliberately stopped.
+                            with self.lock:
+                                self.refused['upstream_receive'] += 1
                             continue
                         self.forward('back', packet,
                                      lambda data: self.front.sendto(data, key.data))
@@ -348,15 +389,20 @@ class LossProxy:
         with self.lock:
             for direction in ('out', 'back'):
                 require(self.seen[direction] == self.dropped[direction] +
-                        self.forwarded[direction], 'UDP datagram counters differ')
+                        self.forwarded[direction] + self.send_failed[direction],
+                        'UDP datagram counters differ')
                 require(self.seen_bytes[direction] == self.dropped_bytes[direction] +
-                        self.forwarded_bytes[direction], 'UDP payload byte counters differ')
+                        self.forwarded_bytes[direction] + self.send_failed_bytes[direction],
+                        'UDP payload byte counters differ')
             return {'datagrams_seen': dict(self.seen),
                     'datagrams_dropped': dict(self.dropped),
                     'datagrams_forwarded': dict(self.forwarded),
+                    'datagrams_send_failed': dict(self.send_failed),
                     'udp_payload_bytes_seen': dict(self.seen_bytes),
                     'udp_payload_bytes_dropped': dict(self.dropped_bytes),
                     'udp_payload_bytes_forwarded': dict(self.forwarded_bytes),
+                    'udp_payload_bytes_send_failed': dict(self.send_failed_bytes),
+                    'connection_refused_events': dict(self.refused),
                     'udp_payload_byte_scope': 'one observation at local proxy; '
                         'excludes IP/UDP headers; includes protocol overhead and retransmissions',
                     'udp_directions': {'out': 'entry to exit', 'back': 'exit to entry'}}
@@ -530,58 +576,86 @@ def bulk(port, target):
 def restart_recovery_check(server, client, port, target):
     """Require real server process replacement and a fresh post-restart flow."""
     payload = secrets.token_bytes(64)
-    stream = socket.create_connection((HOST, port), timeout=5)
-    stream.settimeout(5)
+    with restart_phase('pre_stop_stream'):
+        stream = socket.create_connection((HOST, port), timeout=5)
+        stream.settimeout(5)
     try:
-        stream.sendall(b'P' + struct.pack('!I', len(payload)) + payload)
-        require(receive(stream, len(payload), time.monotonic() + 8) == payload,
-                'persistent pre-restart echo differs')
-        require(target.persistent_ready.wait(5),
-                'target did not observe persistent application stream')
-        old_server_pid = server.process.pid
-        client_pid = client.process.pid
-        client_identity = client.cpu_ticks()['starttime']
-        server.stop()
-        require(server.process.poll() is not None,
-                'server process did not terminate before replacement')
-        stream.settimeout(0.5)
-        old_failure = None
-        deadline = time.monotonic() + ENGINE_RESTART_FAILURE_SECONDS
-        while time.monotonic() < deadline:
+        with restart_phase('pre_stop_stream'):
+            stream.sendall(b'P' + struct.pack('!I', len(payload)) + payload)
+            require(receive(stream, len(payload), time.monotonic() + 8) == payload,
+                    'persistent pre-restart echo differs')
+            require(target.persistent_ready.wait(5),
+                    'target did not observe persistent application stream')
+            require(not target.persistent_closed.is_set(),
+                    'persistent application stream closed before server stop')
+            # Echo alone cannot establish that the application flow is open.
+            pre_stop_probe_started = time.monotonic()
+            stream.settimeout(0.1)
             try:
-                part = stream.recv(4096)
-                if not part:
-                    old_failure = 'eof'
-                    break
+                stream.recv(1, socket.MSG_PEEK)
             except socket.timeout:
-                continue
-            except (ConnectionResetError, BrokenPipeError, OSError):
-                old_failure = 'socket_error'
-                break
-        require(old_failure is not None,
-                'old application connection survived server process termination')
+                pass
+            else:
+                raise RuntimeError('persistent stream was not idle and open before server stop')
+            require(not target.persistent_closed.is_set(),
+                    'persistent application stream closed during pre-stop probe')
+            pre_stop_probe_seconds = time.monotonic() - pre_stop_probe_started
+        with restart_phase('identity'):
+            old_server_pid = server.process.pid
+            client_pid = client.process.pid
+            client_identity = client.cpu_ticks()['starttime']
+        with restart_phase('server_stop'):
+            server.stop()
+            require(server.process.poll() is not None,
+                    'server process did not terminate before replacement')
+        with restart_phase('old_stream_exit'):
+            old_failure = None
+            old_failure_started = time.monotonic()
+            deadline = old_failure_started + ENGINE_RESTART_FAILURE_SECONDS
+            while time.monotonic() < deadline:
+                stream.settimeout(min(0.5, max(0.001, deadline - time.monotonic())))
+                try:
+                    part = stream.recv(4096)
+                    if not part:
+                        old_failure = 'eof'
+                        break
+                except socket.timeout:
+                    continue
+                except (ConnectionResetError, BrokenPipeError, OSError):
+                    old_failure = 'socket_error'
+                    break
+            old_failure_seconds = time.monotonic() - old_failure_started
+            require(old_failure is not None and old_failure_seconds <= ENGINE_RESTART_FAILURE_SECONDS,
+                    'old application connection survived server process termination')
     finally:
         with contextlib.suppress(OSError):
             stream.shutdown(socket.SHUT_RDWR)
         stream.close()
-    server.restart()
-    new_server_pid = server.process.pid
-    require(new_server_pid != old_server_pid,
-            'replacement server reused the terminated process identity')
-    require(client.process.pid == client_pid,
-            'client GOST process changed during server replacement')
-    require(client.cpu_ticks()['starttime'] == client_identity,
-            'client GOST process identity changed during server replacement')
-    ready(port, (server, client))
-    replacement = bulk(port, target)
-    require(replacement['upload_bytes'] == BULK_BYTES and
-            replacement['download_bytes'] == BULK_BYTES,
-            'replacement bulk byte count differs')
-    require(len(replacement['upload_sha256']) == 64 and
-            len(replacement['download_sha256']) == 64,
-            'replacement bulk SHA256 was not recorded')
-    require(target.persistent_closed.wait(5),
-            'target did not observe closure of the pre-restart application stream')
+    with restart_phase('replacement_start'):
+        server.restart()
+    with restart_phase('identity'):
+        new_server_pid = server.process.pid
+        require(new_server_pid != old_server_pid,
+                'replacement server reused the terminated process identity')
+        require(client.process.pid == client_pid,
+                'client GOST process changed during server replacement')
+        require(client.cpu_ticks()['starttime'] == client_identity,
+                'client GOST process identity changed during server replacement')
+    with restart_phase('replacement_readiness'):
+        readiness_started = time.monotonic()
+        ready(port, (server, client))
+        readiness_seconds = time.monotonic() - readiness_started
+    with restart_phase('replacement_bulk'):
+        replacement = bulk(port, target)
+        require(replacement['upload_bytes'] == BULK_BYTES and
+                replacement['download_bytes'] == BULK_BYTES,
+                'replacement bulk byte count differs')
+        require(len(replacement['upload_sha256']) == 64 and
+                len(replacement['download_sha256']) == 64,
+                'replacement bulk SHA256 was not recorded')
+    with restart_phase('target_stream_closed'):
+        require(target.persistent_closed.wait(5),
+                'target did not observe closure of the pre-restart application stream')
     return {
         'server_pid_before': old_server_pid,
         'server_pid_after': new_server_pid,
@@ -589,9 +663,13 @@ def restart_recovery_check(server, client, port, target):
         'client_pid_before': client_pid,
         'client_pid_after': client.process.pid,
         'client_identity_unchanged': True,
+        'old_connection_open_before_stop': True,
+        'pre_stop_probe_elapsed_seconds': pre_stop_probe_seconds,
         'old_connection_failed': True,
         'old_connection_failure': old_failure,
         'old_connection_failure_timeout_seconds': ENGINE_RESTART_FAILURE_SECONDS,
+        'old_connection_failure_elapsed_seconds': old_failure_seconds,
+        'replacement_readiness_elapsed_seconds': readiness_seconds,
         'replacement_bulk_passed': True,
         'replacement_upload_bytes': replacement['upload_bytes'],
         'replacement_download_bytes': replacement['download_bytes'],
