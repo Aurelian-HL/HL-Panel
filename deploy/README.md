@@ -127,9 +127,21 @@ v0.1.42 起，已有受管节点也可重新运行完整安装命令：在目标
 
 持久配置根据实际算法写 `/etc/sysctl.d/90-hl-panel-node-bbr2.conf` 或 `/etc/sysctl.d/90-hl-panel-node-bbr.conf`，不覆盖 `/etc/sysctl.conf`，不运行 `sysctl --system`，不修改网卡 qdisc、防火墙、路由或引擎规则，不重启系统、网络或转发服务。原默认算法与原受管文件先备份到 `/var/backups/hl-panel-node/network-bbr2-*` 或 `network-bbr-*`；失败尝试恢复两者，成功时输出对应 helper 的独立回滚命令。两种 helper 共用配置锁；重复执行已完成的设置不新增备份或重复写入。
 
-BBR2 是 TCP 拥塞控制，不是 UDP 转发或 UDP 重传开关。设置默认值只影响后续按默认值创建的 TCP socket；已有连接和监听可能继承旧算法，不为切换 BBR2 强制中断客户。实际 CPU、延迟和吞吐取决于内核、排队规则和线路，不能只凭设置成功承诺提升。旧节点只执行常规版本更新不会自动修改内核网络参数，可在检查后单独执行已校验包中的 `deploy/configure-node-bbr2.py`。
+BBR2 是 TCP 拥塞控制，不是 UDP 转发或 UDP 重传开关。设置默认值只影响后续按默认值创建的 TCP socket；已有连接和监听可能继承旧算法，不为切换 BBR2 强制中断客户。实际 CPU、延迟和吞吐取决于内核、排队规则和线路，不能只凭设置成功承诺提升。v0.1.114 起，受管节点版本升级成功后也会执行已校验发布包中的 `deploy/configure-node-bbr2.py`；设置失败会明确警告，不撤销已健康运行的程序升级。更早版本的升级器不会自动执行该步骤。
 
 核对运行默认值：`sysctl net.ipv4.tcp_congestion_control`；核对可用算法：`sysctl net.ipv4.tcp_available_congestion_control`。如需回滚，使用成功输出的 `python3 /var/backups/hl-panel-node/network-bbr2-具体目录/configure-node-bbr2.py --rollback /var/backups/hl-panel-node/network-bbr2-具体目录`；后续人工修改过默认算法或受管文件时会拒绝覆盖，先人工核对。
+
+### 节点间可靠 UDP 与既有节点升级
+
+v0.1.114 的正式发布流程使用固定的 `3.3.1-nightly.20260922-hl-udp.1` GOST 构建；引擎和源码锁定信息可在发布包 `licenses/node-engines.json` 核对。普通源码构建的默认上游引擎不自动取得 `gost-reliable-udp-v1` 能力，不应与通过可靠 UDP 验收的发布包混用。
+
+在规则编辑器选择 TCP 入口、出口设备组，再选择 QUIC 或 KCP。客户仍连接原 TCP 入口，UDP 用于入口与出口节点之间。两端都必须运行支持该能力的 Agent 和固定引擎，出口侧必须允许面板分配的 UDP 端口；本版本不修改防火墙。出口配置 commit 和 verify 成功后才激活入口。旧规则没有隧道选项时保留原路径，不会因升级自动变为 UDP；VLESS 与 DIRECT 不会被自动迁移。
+
+GOST 仅在旧服务、链及全局配置保持不变的纯新增规则场景尝试实时添加，并校验监听和回滚结果。该成功路径保持引擎 PID 与流量统计周期，已有连接可继续。编辑、删除、失败补偿及引擎程序升级可能重启，不能承诺无感或零丢包；跨主机性能与长期 CPU 需按实际线路另行验收。
+
+既有受管节点可执行同标签根目录 `update-node.sh --version vX.Y.Z`，无需重新注册或换令牌。升级会保留节点身份、配置、流量状态及程序备份，但当前升级器会停止 Agent 和引擎，活跃长连接会断开。应先升级面板并验收，随后在确认允许维护的节点上逐台执行，逐台核对在线、版本、desired/applied 代次与真实转发；失败即停止后续节点。没有长连接接管能力时，不把滚动更新描述为完全无感。
+
+面板机可作为经过 host key 校验的 SSH 管理通道，按上述同一命令逐台操作节点；这不等于网页已提供远程节点升级按钮。面板 `update.sh` 只更新面板。禁止为此增加任意远程 Shell 产品接口，节点登录秘密不得保存进业务快照或代码库。
 
 ### 节点离线安装
 
