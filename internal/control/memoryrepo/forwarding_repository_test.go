@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	agentconfig "github.com/hongle/hl-panel/internal/agent/config"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
@@ -220,6 +221,34 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	request.Revision = paused.Revision
 	if _, _, err := service.Update(ctx, "admin", rule.ID, request, "expired-resume"); !errors.Is(err, faults.ErrConflict) {
 		t.Fatalf("expired resume: %v", err)
+	}
+}
+
+func TestNativeUDPProjectionRequiresReceiptForLegacyDeployedState(t *testing.T) {
+	s, request := forwardingRepositoryFixture(t)
+	nodeID := "entry-node"
+	s.nodes[nodeID] = nodes.Node{ID: nodeID, Name: nodeID, CredentialHash: "entry-node-credential-hash", Capabilities: []string{agentconfig.CapabilityGOSTUDPDirect}}
+	s.membersByGroup[request.EntryGroupID][nodeID] = groups.Member{GroupID: request.EntryGroupID, NodeID: nodeID, DialHost: "entry.example.test", Weight: 1}
+	now := time.Now().UTC()
+	udp := forwarding.Rule{
+		ID: "legacy-udp", CustomerID: request.CustomerID, Name: "legacy UDP",
+		EntryGroupID: request.EntryGroupID, EgressMode: forwarding.EgressDirect,
+		IngressProtocol: forwarding.IngressUDP, Protocol: forwarding.ProtocolUDP,
+		ListenPort: 12000, Targets: []forwarding.Target{{Host: "198.51.100.10", Port: 53}},
+		SelectionPolicy: forwarding.SelectionRoundRobin, Revision: 1,
+		CreatedAt: now, UpdatedAt: now, Status: forwarding.StatusActive, Deployed: true,
+	}
+	s.forwardRules[udp.ID] = udp
+
+	view, err := s.ForwardingRule(context.Background(), udp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Deployed || view.Status != forwarding.StatusPendingActivation || view.ActivationReason == forwarding.ActivationReasonUDPUnsupported {
+		t.Fatalf("native UDP without a receipt was advertised as usable or unsupported: deployed=%v status=%s reason=%s", view.Deployed, view.Status, view.ActivationReason)
+	}
+	if stored := s.forwardRules[udp.ID]; !stored.Deployed || stored.ActivationReason != "" {
+		t.Fatalf("read projection mutated stored rule: deployed=%v reason=%s", stored.Deployed, stored.ActivationReason)
 	}
 }
 

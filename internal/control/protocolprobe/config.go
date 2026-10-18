@@ -77,6 +77,10 @@ func clientConfig(s Spec, socksPort int) ([]byte, error) {
 	if err := s.validate(); err != nil || socksPort < 1 || socksPort > 65535 {
 		return nil, ErrInvalidSpec
 	}
+	user := map[string]any{"id": s.UUID, "encryption": "none"}
+	if flow := s.EffectiveFlow(); flow != "" {
+		user["flow"] = flow
+	}
 	config := map[string]any{
 		"log": map[string]any{"loglevel": "none", "access": "none"},
 		"inbounds": []any{map[string]any{
@@ -87,7 +91,7 @@ func clientConfig(s Spec, socksPort int) ([]byte, error) {
 			"tag": "probe-vless", "protocol": "vless",
 			"settings": map[string]any{"vnext": []any{map[string]any{
 				"address": s.DialHost, "port": s.DialPort,
-				"users": []any{map[string]any{"id": s.UUID, "encryption": "none", "flow": s.EffectiveFlow()}},
+				"users": []any{user},
 			}}},
 			"streamSettings": map[string]any{"network": "tcp", "security": "reality",
 				"realitySettings": map[string]any{

@@ -130,11 +130,19 @@ describe('ForwardRuleInventory', () => {
     wrapper.unmount()
   })
 
-  it('shows VLESS Reality + Vision and its pending parameter state', () => {
+  it('shows VLESS Reality transport layers and its pending parameter state', () => {
     const vlessRule: ForwardRule = { ...baseRule, id: 'vless-rule', name: 'Reality 规则', ingress_protocol: 'vless_reality', vless_flow: 'xtls-rprx-vision', ingress_status: 'pending_reality_parameters' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [vlessRule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
-    expect(wrapper.text()).toContain('VLESS + Reality / TCP')
+    expect(wrapper.text()).toContain('VLESS + Reality · 外层 TCP · 解密后 TCP')
     expect(wrapper.text()).toContain('待补 Reality 参数')
+    wrapper.unmount()
+  })
+
+  it('labels a VLESS UDP target as decrypted UDP instead of a native UDP entry', () => {
+    const vlessRule: ForwardRule = { ...baseRule, id: 'vless-udp-rule', name: 'Reality UDP 规则', ingress_protocol: 'vless_reality', protocol: 'udp', vless_flow: '' }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [vlessRule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
+    expect(wrapper.text()).toContain('VLESS + Reality · 外层 TCP · 解密后 UDP')
+    expect(wrapper.text()).not.toContain('VLESS + Reality / UDP')
     wrapper.unmount()
   })
 

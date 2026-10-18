@@ -25,7 +25,7 @@ var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 var shortIDPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{2}){1,8}$`)
 
 func invalidLine() error {
-	return fmt.Errorf("%w: 仅支持完整的 VLESS TCP（Reality/TLS/无 TLS）或 SOCKS5 链接", faults.ErrValidation)
+	return fmt.Errorf("%w: 仅支持完整的 VLESS TCP 外层链接（Reality/TLS/无 TLS；Reality 可承载 UDP 最终目标）或 SOCKS5 链接", faults.ErrValidation)
 }
 
 // ParseProxy never fetches a URL. Unsupported transports/options are rejected

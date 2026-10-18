@@ -31,7 +31,8 @@ function networkFor(rule: ForwardRule): GroupNetwork | undefined {
   return ranges.some((range) => rule.listen_port >= range.start && rule.listen_port <= range.end) ? network : undefined
 }
 const eligibleRules = computed(() => props.rules.filter((rule) =>
-  rule.protocol === 'tcp' && (rule.ingress_protocol === 'vless_reality' || rule.ingress_protocol === 'socks5' || rule.ingress_protocol === 'tcp' || !rule.ingress_protocol) &&
+  (rule.ingress_protocol === 'vless_reality' ? rule.protocol === 'tcp' || rule.protocol === 'udp' : rule.protocol === 'tcp') &&
+  (rule.ingress_protocol === 'vless_reality' || rule.ingress_protocol === 'socks5' || rule.ingress_protocol === 'tcp' || !rule.ingress_protocol) &&
   props.groups.some((group) => group.id === rule.entry_group_id && group.kind === 'ENTRY') && networkFor(rule),
 ))
 const selectedRule = computed(() => eligibleRules.value.find((rule) => rule.id === ruleId.value))

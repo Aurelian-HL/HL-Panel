@@ -54,7 +54,7 @@ export function displayError(error: unknown): string {
     [/reality.*public|reality_public_key/i, 'Reality 公钥格式无效，请检查 Base64URL 公钥'],
     [/reality.*short|reality_short_id/i, 'Reality Short ID 格式无效，请填写偶数长度十六进制字符'],
     [/vless.*flow|xtls-rprx-vision/i, 'VLESS 流控必须使用 xtls-rprx-vision'],
-    [/vless.*(direct|tcp)|ingress.*protocol/i, 'VLESS + Reality 当前仅支持 TCP 入口直出'],
+    [/vless.*(direct|tcp|udp)|ingress.*protocol/i, 'VLESS + Reality 仅支持入口直出；Reality 外层固定 TCP，解密后目标可为 TCP 或 UDP'],
     [/duplicate target/i, '目标地址重复，请移除重复项'],
     [/invalid credentials|invalid.*password|username or password/i, '用户名或密码错误'],
     [/username.*(exists|taken)|duplicate.*username/i, '该用户名已存在'],

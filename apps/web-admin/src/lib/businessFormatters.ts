@@ -85,10 +85,8 @@ export function ruleInput(rule: ForwardRule): ForwardRuleInput {
     reality_public_key: ingressProtocol === 'vless_reality' ? (rule.reality_public_key || '') : '',
     reality_short_id: ingressProtocol === 'vless_reality' ? (rule.reality_short_id || '') : '',
     reality_destination: ingressProtocol === 'vless_reality' ? (rule.reality_destination || '') : '',
-    // VLESS rules in the compact NY-compatible workflow always use the
-    // authenticated SOCKS5 landing endpoint. Keep old DIRECT records from
-    // leaking back into the editor as an actionable option.
-    vless_outbound_mode: rule.vless_outbound_mode === 'KL_NATIVE' ? 'KL_NATIVE' : ingressProtocol === 'vless_reality' ? 'SOCKS5' : 'DIRECT',
+    vless_outbound_mode: ingressProtocol === 'vless_reality' && ['DIRECT', 'SOCKS5', 'KL_NATIVE'].includes(rule.vless_outbound_mode ?? '')
+      ? rule.vless_outbound_mode : ingressProtocol === 'vless_reality' ? 'SOCKS5' : 'DIRECT',
     vless_socks5_host: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_host || '') : '',
     vless_socks5_port: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_port || 0) : 0,
     vless_socks5_username: ingressProtocol === 'vless_reality' ? (rule.vless_socks5_username || '') : '',

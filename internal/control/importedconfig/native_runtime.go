@@ -96,10 +96,14 @@ func InspectNative(raw []byte) (NativeProfile, error) {
 type NativeOptions struct {
 	RuleID, CustomerID, EntryGroupID string
 	UUID, PrivateKey                 string
-	ListenAddress                    string
-	ListenPort                       int
-	ProbeUUID                        string
-	EchoPort                         int
+	// Protocol describes the final target network carried by the VLESS
+	// Reality/TCP listener. It must never change the imported listener's
+	// transport; empty keeps the historical TCP metadata default.
+	Protocol      string
+	ListenAddress string
+	ListenPort    int
+	ProbeUUID     string
+	EchoPort      int
 }
 
 // CompileNativeFragment creates one independently scoped HL engine fragment.
@@ -119,12 +123,25 @@ func CompileNativeFragment(raw []byte, opts NativeOptions) ([]byte, error) {
 	if (opts.ProbeUUID == "") != (opts.EchoPort == 0) || opts.ProbeUUID != "" && (!validUUID(opts.ProbeUUID) || strings.EqualFold(opts.ProbeUUID, opts.UUID) || opts.EchoPort < 1 || opts.EchoPort > 65535) {
 		return nil, invalid("原生运行材料探测无效")
 	}
+	protocol := strings.ToLower(strings.TrimSpace(opts.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" && protocol != "udp" {
+		return nil, invalid("原生运行材料协议无效")
+	}
+	// Vision is a TCP-only VLESS flow. An imported listener carrying that
+	// client flow cannot be safely relabeled as a UDP target, so keep the rule
+	// pending instead of emitting a configuration with mismatched semantics.
+	if protocol == "udp" && profile.Flow != "" {
+		return nil, invalid("原生 UDP 运行材料仍包含 TCP flow")
+	}
 	config, _ := object(raw)
 	ins, _ := list[map[string]json.RawMessage](config["inbounds"])
 	outs, _ := list[map[string]json.RawMessage](config["outbounds"])
 	routing, _ := object(config["routing"])
 	routes, _ := list[map[string]json.RawMessage](routing["rules"])
-	metadata, _ := json.Marshal(map[string]string{"rule_id": opts.RuleID, "customer_id": opts.CustomerID, "entry_group_id": opts.EntryGroupID, "exit_group_id": "", "protocol": "tcp"})
+	metadata, _ := json.Marshal(map[string]string{"rule_id": opts.RuleID, "customer_id": opts.CustomerID, "entry_group_id": opts.EntryGroupID, "exit_group_id": "", "protocol": protocol})
 	inTag := agentv1.NativeRealityStatsTagPrefix + opts.RuleID + "--" + base64.RawURLEncoding.EncodeToString(metadata)
 	tags := map[string]string{}
 	for _, out := range outs {

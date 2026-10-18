@@ -74,25 +74,28 @@ func NormalizeRequest(input Request) (Request, error) {
 			return Request{}, fmt.Errorf("%w: SOCKS5 ingress requires a TCP target protocol", faults.ErrValidation)
 		}
 	case IngressVLESSReality:
-		if input.Protocol != ProtocolTCP || input.EgressMode != EgressDirect {
-			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires a TCP DIRECT route", faults.ErrValidation)
+		if (input.Protocol != ProtocolTCP && input.Protocol != ProtocolUDP) || input.EgressMode != EgressDirect {
+			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires a TCP or UDP DIRECT route", faults.ErrValidation)
 		}
 		if input.VLESSOutboundMode == "" {
-			// VLESS rules in the operator workflow always use the single
-			// SOCKS5 landing supplied as host:port:username:password.  Keep
-			// the default explicit so an omitted legacy field cannot silently
-			// bypass the landing with Xray's DIRECT outbound.
+			// Preserve the historical default for clients that omit this field.
+			// A fixed DIRECT destination must be selected explicitly.
 			input.VLESSOutboundMode = VLESSOutboundSOCKS5
 		}
-		if input.VLESSOutboundMode != VLESSOutboundSOCKS5 && input.VLESSOutboundMode != VLESSOutboundNative {
-			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires SOCKS5 outbound", faults.ErrValidation)
+		if input.VLESSOutboundMode != VLESSOutboundDirect && input.VLESSOutboundMode != VLESSOutboundSOCKS5 && input.VLESSOutboundMode != VLESSOutboundNative {
+			return Request{}, fmt.Errorf("%w: VLESS Reality outbound must be DIRECT or SOCKS5", faults.ErrValidation)
 		}
-		if input.VLESSOutboundMode == VLESSOutboundNative {
+		switch input.VLESSOutboundMode {
+		case VLESSOutboundDirect:
+			if input.VLESSSOCKS5Host != "" || input.VLESSSOCKS5Port != 0 || input.VLESSSOCKS5Username != "" || input.VLESSSOCKS5Password != "" {
+				return Request{}, fmt.Errorf("%w: DIRECT outbound cannot include SOCKS5 parameters", faults.ErrValidation)
+			}
+		case VLESSOutboundNative:
 			if len(input.Targets) != 0 || input.VLESSSOCKS5Host != "" || input.VLESSSOCKS5Port != 0 || input.VLESSSOCKS5Username != "" || input.VLESSSOCKS5Password != "" ||
 				input.RealityServerName == "" || input.RealityPublicKey == "" || !input.VLESSFlowExplicit || input.AcceptProxyProtocol || input.SendProxyProtocol != 0 || input.IPLimit != 0 || input.ConnectionLimit != 0 {
 				return Request{}, fmt.Errorf("%w: imported runtime parameters must be preserved", faults.ErrValidation)
 			}
-		} else {
+		case VLESSOutboundSOCKS5:
 			if input.VLESSSOCKS5Host == "" {
 				return Request{}, fmt.Errorf("%w: SOCKS5 outbound host is required", faults.ErrValidation)
 			}
@@ -119,7 +122,14 @@ func NormalizeRequest(input Request) (Request, error) {
 		if input.AcceptProxyProtocol {
 			return Request{}, fmt.Errorf("%w: VLESS Reality ingress does not support receiving Proxy Protocol in this slice", faults.ErrValidation)
 		}
-		if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
+		if input.Protocol == ProtocolUDP {
+			if input.VLESSFlow != "" {
+				return Request{}, fmt.Errorf("%w: VLESS Reality UDP targets require an empty flow", faults.ErrValidation)
+			}
+			// An omitted UDP flow is intentionally empty. Mark it explicit so
+			// EffectiveVLESSFlow cannot apply the legacy TCP Vision default.
+			input.VLESSFlowExplicit = true
+		} else if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
 			input.VLESSFlow = "xtls-rprx-vision"
 		}
 		if input.VLESSFlow != "" && input.VLESSFlow != "xtls-rprx-vision" {

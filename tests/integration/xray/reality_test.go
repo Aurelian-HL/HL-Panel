@@ -147,7 +147,8 @@ func realityNativeClientFromURI(t *testing.T, uri string, port int) []byte {
 		t.Fatal("invalid generated Reality URI")
 	}
 	query := parsed.Query()
-	if query.Get("security") != "reality" || query.Get("type") != "tcp" || query.Get("flow") != "xtls-rprx-vision" || query.Get("pbk") == "" || query.Get("sid") == "" {
+	flow := query.Get("flow")
+	if query.Get("security") != "reality" || query.Get("type") != "tcp" || (flow != "" && flow != "xtls-rprx-vision") || query.Get("pbk") == "" || query.Get("sid") == "" {
 		t.Fatal("generated Reality URI is incomplete")
 	}
 	_, frontPort, err := net.SplitHostPort(parsed.Host)
@@ -157,6 +158,10 @@ func realityNativeClientFromURI(t *testing.T, uri string, port int) []byte {
 	var numericPort int
 	if _, err := fmt.Sscan(frontPort, &numericPort); err != nil {
 		t.Fatal(err)
+	}
+	client := map[string]any{"id": parsed.User.Username(), "encryption": "none"}
+	if flow != "" {
+		client["flow"] = flow
 	}
 	configuration := map[string]any{
 		"log": map[string]any{"loglevel": "warning", "access": "none"},
@@ -168,7 +173,7 @@ func realityNativeClientFromURI(t *testing.T, uri string, port int) []byte {
 			"protocol": "vless",
 			"settings": map[string]any{"vnext": []any{map[string]any{
 				"address": parsed.Hostname(), "port": numericPort,
-				"users": []any{map[string]any{"id": parsed.User.Username(), "encryption": "none", "flow": query.Get("flow")}},
+				"users": []any{client},
 			}}},
 			"streamSettings": map[string]any{
 				"network": "tcp", "security": "reality",

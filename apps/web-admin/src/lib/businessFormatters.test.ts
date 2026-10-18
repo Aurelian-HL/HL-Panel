@@ -44,6 +44,13 @@ describe('operator error messages', () => {
     expect(displayError(new Error('internal unrecognized detail'))).toBe('操作失败，请检查填写内容并重试')
   })
 
+  it('keeps VLESS transport errors clear when the decrypted target is UDP', () => {
+    const message = displayError(new Error('validation: vless udp target requires direct ingress'))
+    expect(message).toContain('Reality 外层固定 TCP')
+    expect(message).toContain('解密后目标可为 TCP 或 UDP')
+    expect(message).not.toContain('仅支持 TCP 入口')
+  })
+
   it('explains why a referenced device group cannot be deleted', () => {
     expect(displayError(new Error('conflict: device group has a network policy'))).toContain('网络策略')
     expect(displayError(new Error('conflict: device group is referenced by a user group'))).toContain('用户组授权')

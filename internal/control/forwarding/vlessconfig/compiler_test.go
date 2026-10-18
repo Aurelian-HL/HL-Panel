@@ -132,7 +132,6 @@ func TestCompileRejectsMissingSecretsAndUnsupportedShapes(t *testing.T) {
 	base := validRule()
 	for name, mutate := range map[string]func(*forwarding.Rule){
 		"tcp ingress": func(rule *forwarding.Rule) { rule.IngressProtocol = forwarding.IngressTCP },
-		"udp target":  func(rule *forwarding.Rule) { rule.Protocol = forwarding.ProtocolUDP },
 		"exit route":  func(rule *forwarding.Rule) { rule.ExitGroupID = "exit"; rule.EgressMode = forwarding.EgressExitGroup },
 		"many targets": func(rule *forwarding.Rule) {
 			rule.Targets = append(rule.Targets, forwarding.Target{Host: "second.example.test", Port: 443})
@@ -158,6 +157,55 @@ func TestCompileRejectsMissingSecretsAndUnsupportedShapes(t *testing.T) {
 	}
 	if _, err := CompileDirect(base, Identity{}, validProfile(), Listener{Address: "127.0.0.1", Port: 24443}); !errors.Is(err, ErrRuntimeMaterial) {
 		t.Fatalf("identity error = %v, want ErrRuntimeMaterial", err)
+	}
+}
+
+func TestCompileDirectUDPKeepsRealityTCPIngressAndUsesUDPFinalRule(t *testing.T) {
+	rule := validRule()
+	rule.Protocol = forwarding.ProtocolUDP
+	rule.VLESSFlowExplicit = true
+	rule.VLESSFlow = ""
+	profile := validProfile()
+	profile.Flow = ""
+	raw, err := CompileDirect(rule, validIdentity(), profile, Listener{Address: "127.0.0.1", Port: 24443})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Inbounds []struct {
+			Settings struct {
+				Clients []map[string]json.RawMessage `json:"clients"`
+			} `json:"settings"`
+			StreamSettings struct {
+				Network  string `json:"network"`
+				Security string `json:"security"`
+			} `json:"streamSettings"`
+		} `json:"inbounds"`
+		Outbounds []struct {
+			Settings struct {
+				FinalRules []struct {
+					Network string `json:"network"`
+				} `json:"finalRules"`
+			} `json:"settings"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Inbounds) != 1 || config.Inbounds[0].StreamSettings.Network != "tcp" || config.Inbounds[0].StreamSettings.Security != "reality" {
+		t.Fatalf("Reality ingress transport changed: %s", raw)
+	}
+	if _, hasFlow := config.Inbounds[0].Settings.Clients[0]["flow"]; hasFlow {
+		t.Fatalf("UDP VLESS client must omit the TCP Vision flow field: %s", raw)
+	}
+	if len(config.Outbounds) != 1 || len(config.Outbounds[0].Settings.FinalRules) != 1 || config.Outbounds[0].Settings.FinalRules[0].Network != "udp" {
+		t.Fatalf("UDP target final rule missing: %s", raw)
+	}
+	staleFlow := rule
+	staleFlow.VLESSFlow = "xtls-rprx-vision"
+	staleFlow.VLESSFlowExplicit = true
+	if _, err := CompileDirect(staleFlow, validIdentity(), validProfile(), Listener{Address: "127.0.0.1", Port: 24443}); err == nil {
+		t.Fatal("compiler accepted a stale TCP Vision flow on a VLESS UDP rule")
 	}
 }
 

@@ -23,7 +23,7 @@ import (
 )
 
 var (
-	ErrUnsupportedRoute  = errors.New("VLESS Reality compiler supports TCP DIRECT or SOCKS5 egress")
+	ErrUnsupportedRoute  = errors.New("VLESS Reality compiler supports TCP or UDP DIRECT targets and SOCKS5 egress")
 	ErrRuntimeMaterial   = errors.New("VLESS Reality runtime material is incomplete")
 	ErrInvalidRealityKey = errors.New("VLESS Reality private key is invalid")
 )
@@ -98,7 +98,9 @@ func CompileDirectWithProbeAndSOCKS5(rule forwarding.Rule, identity Identity, pr
 }
 
 func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfile, listener Listener, socks5 *SOCKS5Upstream, probe *ProbeIdentity) ([]byte, error) {
-	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect {
+	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
+		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) ||
+		rule.EgressMode != forwarding.EgressDirect {
 		return nil, ErrUnsupportedRoute
 	}
 	if socks5 == nil && rule.VLESSOutboundMode == forwarding.VLESSOutboundSOCKS5 {
@@ -129,7 +131,10 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	if !rule.SupportedVLESSFlow() || profile.Flow != rule.EffectiveVLESSFlow() {
 		return nil, errors.New("VLESS Reality profile flow must match the rule")
 	}
-	client := map[string]any{"id": identity.UUID, "flow": profile.Flow}
+	client := map[string]any{"id": identity.UUID}
+	if profile.Flow != "" {
+		client["flow"] = profile.Flow
+	}
 	inboundTag := statsTag("vless-reality-", rule)
 	clients := []any{client}
 	outboundTag := statsTag("direct-", rule)
@@ -145,7 +150,7 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 			server["users"] = []any{map[string]any{"user": socks5.Username, "pass": socks5.Password}}
 		}
 		// With no freedom.redirect, Xray's SOCKS outbound receives the
-		// destination carried by the VLESS request and issues CONNECT there.
+		// destination carried by the VLESS request for TCP or UDP delivery.
 		outbounds = append(outbounds, map[string]any{
 			"tag": socksTag, "protocol": "socks",
 			"settings": map[string]any{"servers": []any{server}},
@@ -156,7 +161,7 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		if err != nil || target.Port < 1 || target.Port > 65535 {
 			return nil, errors.New("VLESS Reality target is invalid")
 		}
-		permission := map[string]any{"action": "allow", "network": "tcp", "port": target.Port}
+		permission := map[string]any{"action": "allow", "network": string(rule.Protocol), "port": target.Port}
 		if address, err := netip.ParseAddr(host); err == nil {
 			address = address.Unmap()
 			permission["ip"] = []string{netip.PrefixFrom(address, address.BitLen()).String()}
@@ -178,7 +183,11 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	if probe != nil {
 		probeEmail := "hl-probe-" + rule.ID
 		probeTag := "probe-echo-" + rule.ID
-		clients = append(clients, map[string]any{"id": probe.UUID, "flow": profile.Flow, "email": probeEmail})
+		probeClient := map[string]any{"id": probe.UUID, "email": probeEmail}
+		if profile.Flow != "" {
+			probeClient["flow"] = profile.Flow
+		}
+		clients = append(clients, probeClient)
 		outbounds = append(outbounds, map[string]any{
 			"tag": probeTag, "protocol": "freedom",
 			"settings": map[string]any{
@@ -212,12 +221,15 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 				"network":  "tcp",
 				"security": "reality",
 				"realitySettings": map[string]any{
-					"show":        false,
-					"dest":        profile.Dest,
-					"xver":        0,
-					"serverNames": []string{profile.ServerName},
-					"privateKey":  profile.PrivateKey,
-					"shortIds":    profile.ShortIDs,
+					"show": false,
+					"dest": profile.Dest,
+					"xver": 0,
+					// Keep compatibility with current Xray Reality clients,
+					// including empty-flow UDP requests, across core upgrades.
+					"minClientVer": "0.0.0",
+					"serverNames":  []string{profile.ServerName},
+					"privateKey":   profile.PrivateKey,
+					"shortIds":     profile.ShortIDs,
 				},
 			},
 		}},
