@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -17,8 +20,9 @@ import (
 )
 
 // TestVLESSRealityUDPLoopback proves that UDP is the final target network,
-// while both customer-facing legs remain VLESS + Reality over TCP. The test
-// uses only loopback sockets and a disposable Xray process on each side.
+// while the customer-facing leg remains VLESS + Reality over TCP. Both the
+// fixed DIRECT route and the operator workflow's SOCKS5 landing are isolated
+// to loopback sockets and disposable Xray processes.
 func TestVLESSRealityUDPLoopback(t *testing.T) {
 	binaryPath := xrayBinary(t)
 	publicKey, privateKey, err := vless.GenerateRealityKeyPair(rand.Reader)
@@ -40,6 +44,10 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 			_, _ = udpTarget.WriteToUDP(buffer[:n], address)
 		}
 	}()
+	tcpTarget := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("vless-reality-tcp-loopback"))
+	}))
+	t.Cleanup(tcpTarget.Close)
 
 	decoyCert, decoyKey, _ := testCertificate(t)
 	decoyCertificate, err := tls.LoadX509KeyPair(decoyCert, decoyKey)
@@ -70,55 +78,117 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 		<-decoyDone
 	})
 
-	frontPort := freeLoopbackPort(t)
-	serverProfile := vlessconfig.RealityProfile{
-		ServerName: "localhost", Dest: decoyTLS.Addr().String(), PrivateKey: privateKey,
-		ShortIDs: []string{"01234567"}, Flow: "",
-	}
-	rule := forwarding.Rule{
-		ID: "udp-reality-loopback", CustomerID: "udp-customer", EntryGroupID: "udp-entry",
-		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolUDP,
-		EgressMode: forwarding.EgressDirect, VLESSOutboundMode: forwarding.VLESSOutboundDirect,
-		VLESSFlow: "", VLESSFlowExplicit: true,
-		Targets: []forwarding.Target{{Host: "127.0.0.1", Port: udpTarget.LocalAddr().(*net.UDPAddr).Port}},
-	}
-	serverConfig, err := vlessconfig.CompileDirect(rule, vlessconfig.Identity{UUID: "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"}, serverProfile, vlessconfig.Listener{Address: "127.0.0.1", Port: frontPort})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var serverDocument map[string]any
-	if err := json.Unmarshal(serverConfig, &serverDocument); err != nil {
-		t.Fatal(err)
-	}
-	serverConfig, err = json.Marshal(serverDocument)
-	if err != nil {
-		t.Fatal(err)
-	}
-	startXray(t, binaryPath, privateConfig(t, serverConfig), localAddress(frontPort))
+	for _, route := range []struct {
+		name          string
+		socks5Landing bool
+		badPassword   bool
+		visionFlow    bool
+	}{
+		{name: "fixed_direct"},
+		{name: "socks5_landing", socks5Landing: true},
+		{name: "socks5_vision_flow", socks5Landing: true, visionFlow: true},
+		{name: "socks5_wrong_password", socks5Landing: true, badPassword: true},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			frontPort := freeLoopbackPort(t)
+			serverProfile := vlessconfig.RealityProfile{
+				ServerName: "localhost", Dest: decoyTLS.Addr().String(), PrivateKey: privateKey,
+				ShortIDs: []string{"01234567"}, Flow: "",
+			}
+			rule := forwarding.Rule{
+				ID: "udp-reality-loopback", CustomerID: "udp-customer", EntryGroupID: "udp-entry",
+				IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolUDP,
+				EgressMode: forwarding.EgressDirect, VLESSOutboundMode: forwarding.VLESSOutboundDirect,
+				VLESSFlow: "", VLESSFlowExplicit: true,
+				Targets: []forwarding.Target{{Host: "127.0.0.1", Port: udpTarget.LocalAddr().(*net.UDPAddr).Port}},
+			}
+			if route.visionFlow {
+				rule.Protocol = forwarding.ProtocolTCP
+				rule.VLESSFlow = "xtls-rprx-vision"
+				serverProfile.Flow = rule.VLESSFlow
+			}
+			var serverConfig []byte
+			if route.socks5Landing {
+				landingPort := freeLoopbackPort(t)
+				upstream := vlessconfig.SOCKS5Upstream{Hostname: "127.0.0.1", Port: landingPort, Username: "udp-landing", Password: "disposable-integration-password"}
+				landingConfig, err := json.Marshal(map[string]any{
+					"log": map[string]any{"loglevel": "warning", "access": "none"},
+					"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": landingPort, "protocol": "socks", "settings": map[string]any{
+						"auth": "password", "accounts": []any{map[string]any{"user": upstream.Username, "pass": upstream.Password}}, "udp": true,
+					}}},
+					"outbounds": []any{map[string]any{"protocol": "freedom"}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				startXray(t, binaryPath, privateConfig(t, landingConfig), localAddress(landingPort))
+				rule.VLESSOutboundMode = forwarding.VLESSOutboundSOCKS5
+				rule.Targets = nil
+				if route.badPassword {
+					upstream.Password = "wrong-integration-password"
+				}
+				serverConfig, err = vlessconfig.CompileDirectWithSOCKS5(rule, vlessconfig.Identity{UUID: "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"}, serverProfile, vlessconfig.Listener{Address: "127.0.0.1", Port: frontPort}, upstream)
+			} else {
+				serverConfig, err = vlessconfig.CompileDirect(rule, vlessconfig.Identity{UUID: "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"}, serverProfile, vlessconfig.Listener{Address: "127.0.0.1", Port: frontPort})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			startXray(t, binaryPath, unmodifiedProductionConfig(t, serverConfig), localAddress(frontPort))
 
-	clientProfile := vless.Profile{
-		Endpoint: vless.Endpoint{Hostname: "127.0.0.1", Port: frontPort, Name: "udp-reality-loopback"},
-		Identity: vless.Identity{UUID: "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"},
-		Reality:  &vless.RealityProfile{ServerName: "localhost", PublicKey: publicKey, Destination: decoyTLS.Addr().String(), ShortID: "01234567", Fingerprint: "chrome", SpiderX: "/"},
+			clientProfile := vless.Profile{
+				Endpoint: vless.Endpoint{Hostname: "127.0.0.1", Port: frontPort, Name: "udp-reality-loopback"},
+				Identity: vless.Identity{UUID: "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"},
+				Reality:  &vless.RealityProfile{ServerName: "localhost", PublicKey: publicKey, Destination: decoyTLS.Addr().String(), ShortID: "01234567", Fingerprint: "chrome", SpiderX: "/"},
+			}
+			clientProfile.Identity.Flow = rule.VLESSFlow
+			uri, err := vless.URI(clientProfile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clientPort := freeLoopbackPort(t)
+			clientConfig := realityNativeClientFromURI(t, uri, clientPort)
+			var clientDocument map[string]any
+			if err := json.Unmarshal(clientConfig, &clientDocument); err != nil {
+				t.Fatal(err)
+			}
+			clientInbound := clientDocument["inbounds"].([]any)[0].(map[string]any)
+			clientInbound["settings"].(map[string]any)["udp"] = true
+			clientConfig, err = json.Marshal(clientDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			startXray(t, binaryPath, unmodifiedProductionConfig(t, clientConfig), localAddress(clientPort))
+			checkRealityUDP(t, clientPort, udpTarget.LocalAddr().(*net.UDPAddr).Port, !route.badPassword)
+			if route.socks5Landing && !route.badPassword {
+				checkRealityTCP(t, clientPort, tcpTarget.URL)
+			}
+		})
 	}
-	uri, err := vless.URI(clientProfile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientPort := freeLoopbackPort(t)
-	clientConfig := realityNativeClientFromURI(t, uri, clientPort)
-	var clientDocument map[string]any
-	if err := json.Unmarshal(clientConfig, &clientDocument); err != nil {
-		t.Fatal(err)
-	}
-	clientInbound := clientDocument["inbounds"].([]any)[0].(map[string]any)
-	clientInbound["settings"].(map[string]any)["udp"] = true
-	clientConfig, err = json.Marshal(clientDocument)
-	if err != nil {
-		t.Fatal(err)
-	}
-	startXray(t, binaryPath, privateConfig(t, clientConfig), localAddress(clientPort))
+}
 
+func checkRealityTCP(t *testing.T, clientPort int, targetURL string) {
+	t.Helper()
+	proxyURL, err := url.Parse("socks5://" + localAddress(clientPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL), DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	response, err := client.Get(targetURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || string(body) != "vless-reality-tcp-loopback" {
+		t.Fatalf("unexpected VLESS + SOCKS5 TCP response: status=%d error=%v", response.StatusCode, err)
+	}
+}
+
+func checkRealityUDP(t *testing.T, clientPort, targetPort int, expectResponse bool) {
+	t.Helper()
 	control, err := net.DialTimeout("tcp", localAddress(clientPort), 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
@@ -147,15 +217,25 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 	}
 	defer udpClient.Close()
 	payload := []byte("vless-reality-udp-loopback")
-	packet := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, byte(udpTarget.LocalAddr().(*net.UDPAddr).Port >> 8), byte(udpTarget.LocalAddr().(*net.UDPAddr).Port)}, payload...)
+	packet := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, byte(targetPort >> 8), byte(targetPort)}, payload...)
 	if _, err := udpClient.Write(packet); err != nil {
 		t.Fatal(err)
 	}
-	if err := udpClient.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+	deadline := 5 * time.Second
+	if !expectResponse {
+		deadline = time.Second
+	}
+	if err := udpClient.SetReadDeadline(time.Now().Add(deadline)); err != nil {
 		t.Fatal(err)
 	}
 	response := make([]byte, 2048)
 	n, err := udpClient.Read(response)
+	if !expectResponse {
+		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+			return
+		}
+		t.Fatalf("wrong SOCKS5 credentials unexpectedly delivered UDP response: bytes=%d error=%v", n, err)
+	}
 	if err != nil {
 		t.Fatal(fmt.Errorf("SOCKS5 UDP response: %w", err))
 	}

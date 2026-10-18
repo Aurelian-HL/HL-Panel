@@ -150,7 +150,7 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 			server["users"] = []any{map[string]any{"user": socks5.Username, "pass": socks5.Password}}
 		}
 		// With no freedom.redirect, Xray's SOCKS outbound receives the
-		// destination carried by the VLESS request and issues CONNECT there.
+		// destination carried by the VLESS request for TCP or UDP delivery.
 		outbounds = append(outbounds, map[string]any{
 			"tag": socksTag, "protocol": "socks",
 			"settings": map[string]any{"servers": []any{server}},

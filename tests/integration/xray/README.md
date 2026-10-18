@@ -18,6 +18,11 @@ go test ./tests/integration/xray -count=1
 客户请求其他目标仍只能到达管理员指定的固定目标，探针身份只到达对应的
 回环 Echo 端口。这覆盖新内核私网限制与生产配置的实际兼容性。
 
+`udp_reality_test.go` 还用生产编译器原样配置验证 VLESS + Reality/TCP 经认证
+SOCKS5 落地点转发 UDP。空 Flow 和 Vision Flow 两种客户 URI 都用同一条连接
+配置完成 TCP 请求与 UDP 回显；错误 SOCKS5 凭据不得回退为直连。该结果依赖
+落地点支持 UDP ASSOCIATE，不代表任意外部 SOCKS5 服务或客户客户端已验收。
+
 `vision_close_test.go` 比较直连 TLS 1.3、Vision 内层 TLS 1.2 和 Vision
 内层 TLS 1.3，对照场景各运行三次完整响应与连接收尾。
 `26.3.27` 和当前 `26.7.28` 的 Vision/TLS 1.3 场景运行八轮，要求至少一次复现 `bad record MAC` 和额外外层 alert；正常轮次必须干净 EOF，未知错误仍失败。因此旧版
