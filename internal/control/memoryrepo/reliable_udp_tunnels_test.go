@@ -203,6 +203,31 @@ func TestReliableUDPCapabilityHeartbeatReconcilesBothEnds(t *testing.T) {
 	}
 }
 
+func TestReliableUDPMissingNodeCapabilityExposesActivationReason(t *testing.T) {
+	s, svc, _, r := reliableUDPFixture(t, forwarding.TunnelQUIC)
+	acknowledgeUDPConfig(t, s, "exit-node")
+	acknowledgeUDPConfig(t, s, "entry-node")
+	active, err := svc.Get(context.Background(), r.ID)
+	if err != nil || !active.Deployed || active.ActivationReason != "" {
+		t.Fatalf("fixture did not become active: deployed=%v reason=%s err=%v", active.Deployed, active.ActivationReason, err)
+	}
+	storedBefore := s.forwardRules[r.ID]
+
+	node := s.nodes["exit-node"]
+	node.Capabilities = nil
+	s.nodes[node.ID] = node
+	view, err := svc.Get(context.Background(), r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Deployed || view.Status != forwarding.StatusPendingActivation || view.ActivationReason != forwarding.ActivationReasonUDPUnsupported {
+		t.Fatalf("missing reliable UDP capability was not surfaced: deployed=%v status=%s reason=%s", view.Deployed, view.Status, view.ActivationReason)
+	}
+	if stored := s.forwardRules[r.ID]; stored.Deployed != storedBefore.Deployed || stored.ActivationReason != storedBefore.ActivationReason {
+		t.Fatalf("readiness projection mutated stored rule: before=(%v,%s) after=(%v,%s)", storedBefore.Deployed, storedBefore.ActivationReason, stored.Deployed, stored.ActivationReason)
+	}
+}
+
 func TestReliableUDPExitRollbackWithdrawsEntryAndCanRecover(t *testing.T) {
 	s, _, _, r := reliableUDPFixture(t, forwarding.TunnelQUIC)
 	c := acknowledgeUDPConfig(t, s, "exit-node")

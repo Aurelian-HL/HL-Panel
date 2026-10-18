@@ -589,6 +589,7 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 	}
 	count := 0
 	deployed := true
+	reliableUDPCapabilityMissing := false
 	groupIDs := []string{item.EntryGroupID}
 	if item.UsesReliableUDPTunnel() {
 		groupIDs = append(groupIDs, item.ExitGroupID)
@@ -601,6 +602,9 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 			}
 			count++
 			groupCount++
+			if item.UsesReliableUDPTunnel() && !nodeSupportsReliableUDP(s.nodes[nodeID]) {
+				reliableUDPCapabilityMissing = true
+			}
 			input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
 			if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
 				deployed = false
@@ -618,6 +622,9 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 	} else {
 		item.Status = forwarding.StatusPendingActivation
 		item.ActivationReason = item.PendingActivationReason()
+		if reliableUDPCapabilityMissing {
+			item.ActivationReason = forwarding.ActivationReasonUDPUnsupported
+		}
 	}
 	return item
 }
