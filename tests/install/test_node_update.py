@@ -27,6 +27,33 @@ class CoreCompatibility(unittest.TestCase):
                     updater.verify_xray_version(Path('/candidate/xray'))
 
 
+class BBRUpgrade(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.release = Path(temporary.name)
+        deploy = self.release / 'deploy'
+        deploy.mkdir()
+        (deploy / 'configure-node-bbr2.py').write_text('# verified helper\n')
+        (deploy / 'configure-node-bbr.py').write_text('# fallback helper\n')
+
+    def test_runs_verified_bbr2_helper_after_program_update(self):
+        result = types.SimpleNamespace(returncode=0, stdout=b'BBR2 configured\n', stderr=b'')
+        with patch.object(updater.subprocess, 'run', return_value=result) as run:
+            self.assertTrue(updater.configure_tcp_bbr(self.release))
+        run.assert_called_once_with(
+            [sys.executable, str(self.release / 'deploy' / 'configure-node-bbr2.py')],
+            capture_output=True,
+            timeout=120,
+        )
+
+    def test_missing_helper_does_not_fail_program_update(self):
+        (self.release / 'deploy' / 'configure-node-bbr2.py').unlink()
+        with patch.object(updater.subprocess, 'run') as run:
+            self.assertFalse(updater.configure_tcp_bbr(self.release))
+        run.assert_not_called()
+
+
 class TelemetryConfiguration(unittest.TestCase):
     def test_atomic_config_install_and_restore_preserve_owner_permissions(self):
         with tempfile.TemporaryDirectory() as directory:

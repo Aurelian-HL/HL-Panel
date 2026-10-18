@@ -127,7 +127,7 @@ v0.1.42 起，已有受管节点也可重新运行完整安装命令：在目标
 
 持久配置根据实际算法写 `/etc/sysctl.d/90-hl-panel-node-bbr2.conf` 或 `/etc/sysctl.d/90-hl-panel-node-bbr.conf`，不覆盖 `/etc/sysctl.conf`，不运行 `sysctl --system`，不修改网卡 qdisc、防火墙、路由或引擎规则，不重启系统、网络或转发服务。原默认算法与原受管文件先备份到 `/var/backups/hl-panel-node/network-bbr2-*` 或 `network-bbr-*`；失败尝试恢复两者，成功时输出对应 helper 的独立回滚命令。两种 helper 共用配置锁；重复执行已完成的设置不新增备份或重复写入。
 
-BBR2 是 TCP 拥塞控制，不是 UDP 转发或 UDP 重传开关。设置默认值只影响后续按默认值创建的 TCP socket；已有连接和监听可能继承旧算法，不为切换 BBR2 强制中断客户。实际 CPU、延迟和吞吐取决于内核、排队规则和线路，不能只凭设置成功承诺提升。旧节点只执行常规版本更新不会自动修改内核网络参数，可在检查后单独执行已校验包中的 `deploy/configure-node-bbr2.py`。
+BBR2 是 TCP 拥塞控制，不是 UDP 转发或 UDP 重传开关。设置默认值只影响后续按默认值创建的 TCP socket；已有连接和监听可能继承旧算法，不为切换 BBR2 强制中断客户。实际 CPU、延迟和吞吐取决于内核、排队规则和线路，不能只凭设置成功承诺提升。正式节点版本更新在程序成功切换后会自动调用已校验包中的 BBR2 配置器；内核不支持或配置器失败时只输出警告，不阻断程序回滚链路，可按输出的独立备份命令人工核对或回滚。
 
 核对运行默认值：`sysctl net.ipv4.tcp_congestion_control`；核对可用算法：`sysctl net.ipv4.tcp_available_congestion_control`。如需回滚，使用成功输出的 `python3 /var/backups/hl-panel-node/network-bbr2-具体目录/configure-node-bbr2.py --rollback /var/backups/hl-panel-node/network-bbr2-具体目录`；后续人工修改过默认算法或受管文件时会拒绝覆盖，先人工核对。节点心跳只有在运行值和可用列表都确认 `bbr2` 时才上报 `tcp-bbr2` 能力。
 
