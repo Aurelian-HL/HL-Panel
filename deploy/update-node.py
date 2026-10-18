@@ -31,10 +31,9 @@ def verify_xray_version(binary):
 
 
 def configure_tcp_bbr(release):
-    # Run only the checksum-verified release helper after the node program has
-    # been replaced successfully. The helper owns its network backup and
-    # rollback. A kernel without BBR must not turn a healthy program upgrade
-    # into a failed node update.
+    # Run only the checksum-verified release helper, after a successful update.
+    # It owns its network backup/rollback and never restarts an engine. A kernel
+    # without BBR must not undo an otherwise healthy node-program upgrade.
     helper = release/'deploy/configure-node-bbr2.py'
     fallback = release/'deploy/configure-node-bbr.py'
     if not helper.is_file() or helper.is_symlink() or not fallback.is_file() or fallback.is_symlink():

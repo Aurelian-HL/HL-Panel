@@ -20,6 +20,10 @@ func NormalizeRequest(input Request) (Request, error) {
 	input.RuleGroupID = strings.TrimSpace(input.RuleGroupID)
 	input.EntryGroupID = strings.TrimSpace(input.EntryGroupID)
 	input.ExitGroupID = strings.TrimSpace(input.ExitGroupID)
+	input.TunnelTransport = TunnelTransport(strings.ToLower(strings.TrimSpace(string(input.TunnelTransport))))
+	if input.TunnelTransport != "" && (input.TunnelTransport != TunnelQUIC && input.TunnelTransport != TunnelKCP || input.EgressMode != EgressExitGroup || input.EffectiveIngressProtocol() != IngressTCP || input.Protocol != ProtocolTCP) {
+		return Request{}, fmt.Errorf("%w: reliable UDP tunnels require TCP ingress, TCP targets and an exit group; transport must be quic or kcp", faults.ErrValidation)
+	}
 	input.Description = strings.TrimSpace(input.Description)
 	input.VLESSFlow = strings.TrimSpace(input.VLESSFlow)
 	input.RealityServerName = strings.TrimSpace(input.RealityServerName)

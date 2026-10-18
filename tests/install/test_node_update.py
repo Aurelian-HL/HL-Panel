@@ -1,5 +1,7 @@
 """Private agent state uses the service account, never a shared writable file."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -27,31 +29,48 @@ class CoreCompatibility(unittest.TestCase):
                     updater.verify_xray_version(Path('/candidate/xray'))
 
 
-class BBRUpgrade(unittest.TestCase):
+class UpgradeBBR(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.release = Path(temporary.name)
-        deploy = self.release / 'deploy'
-        deploy.mkdir()
-        (deploy / 'configure-node-bbr2.py').write_text('# verified helper\n')
-        (deploy / 'configure-node-bbr.py').write_text('# fallback helper\n')
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.release = Path(self.temporary.name)
+        (self.release/'deploy').mkdir()
+        self.helper = self.release/'deploy/configure-node-bbr2.py'
+        self.fallback = self.release/'deploy/configure-node-bbr.py'
+        self.helper.write_text('# verified release helper\n')
+        self.fallback.write_text('# verified fallback\n')
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        self.stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
 
-    def test_runs_verified_bbr2_helper_after_program_update(self):
-        result = types.SimpleNamespace(returncode=0, stdout=b'BBR2 configured\n', stderr=b'')
+    def test_uses_only_verified_release_helper(self):
+        result = types.SimpleNamespace(returncode=0, stdout=b'BBR configured\n', stderr=b'')
         with patch.object(updater.subprocess, 'run', return_value=result) as run:
             self.assertTrue(updater.configure_tcp_bbr(self.release))
-        run.assert_called_once_with(
-            [sys.executable, str(self.release / 'deploy' / 'configure-node-bbr2.py')],
-            capture_output=True,
-            timeout=120,
-        )
+        run.assert_called_once_with([sys.executable, str(self.helper)], capture_output=True, timeout=120)
 
-    def test_missing_helper_does_not_fail_program_update(self):
-        (self.release / 'deploy' / 'configure-node-bbr2.py').unlink()
-        with patch.object(updater.subprocess, 'run') as run:
+    def test_missing_or_linked_helpers_do_not_run(self):
+        for path in (self.helper, self.fallback):
+            with self.subTest(path=path.name), patch.object(updater.subprocess, 'run') as run:
+                content = path.read_bytes()
+                path.unlink()
+                self.assertFalse(updater.configure_tcp_bbr(self.release))
+                target = self.release/'target.py'
+                target.write_bytes(content)
+                path.symlink_to(target)
+                self.assertFalse(updater.configure_tcp_bbr(self.release))
+                run.assert_not_called()
+                path.unlink()
+                path.write_bytes(content)
+
+    def test_failure_does_not_undo_healthy_program_update(self):
+        failures = (OSError('unavailable'), updater.subprocess.TimeoutExpired('helper', 120))
+        for error in failures:
+            with self.subTest(error=type(error).__name__), patch.object(updater.subprocess, 'run', side_effect=error):
+                self.assertFalse(updater.configure_tcp_bbr(self.release))
+        with patch.object(updater.subprocess, 'run', return_value=types.SimpleNamespace(returncode=1, stdout=b'', stderr=b'failed')):
             self.assertFalse(updater.configure_tcp_bbr(self.release))
-        run.assert_not_called()
 
 
 class TelemetryConfiguration(unittest.TestCase):

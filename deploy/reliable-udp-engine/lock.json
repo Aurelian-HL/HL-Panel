@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "name": "hl-panel-gost-reliable-udp",
+  "version": "v3.3.1-nightly.20260922-hl-udp.1",
+  "go_version": "go1.27.0",
+  "target": "linux/amd64",
+  "source": {
+    "commit": "e9fab9587288b82ce8a1a9b8f07326f41b155935",
+    "tree_sha256": "7570077f5010f3357081fd9dd8aec5293d9fe93d5666537afd6eccea9bd4db29",
+    "go_mod_sha256": "0fa6ea5bde622dd0b2f4ad35cd36bf3d6aeaf45c73584f2ab3b7d010426df77c",
+    "go_sum_sha256": "6829f9d6f055e2ad1862bc9bfa71871da9f2a9c5ba9282a8e0a773c4a1fcedc3",
+    "archive": {
+      "url": "https://codeload.github.com/go-gost/gost/tar.gz/e9fab9587288b82ce8a1a9b8f07326f41b155935",
+      "bytes": 100637,
+      "sha256": "2d83dd445c68210ec7dd9b2e31ad88a168d2bc3b71623d2d7f910b38729e042d"
+    }
+  },
+  "modules": {
+    "x": {
+      "Path": "github.com/go-gost/x",
+      "Version": "v0.17.2",
+      "Sum": "h1:w3SGNnMIETYKHsjfV0LKtB5+ogUwvoF7gmQ/3EMIRWg=",
+      "GoModSum": "h1:Ckb10HVdIQf5DRXpbdLi+kv61mRmTyMhZbYbAwsz7tc=",
+      "zip_sha256": "9aab81e4a1489a160191ea478cbcd48d274beda4282817640b6b012f52fb6c67",
+      "go_mod_sha256": "9a85b2c20a4e912e07baa6edd736909f30dc0b1ee5de57b1b3eb78c3b338c87e",
+      "source_tree_sha256": "15bcedb2b3dd5206162ab9e60b91cce46a34a153ccdce0c4183c26084b7aeb46",
+      "license_sha256": "8daa97cece759cad4410e9e0282eb80380f9736c12032a495e2c040e1a7e0651"
+    },
+    "smux": {
+      "Path": "github.com/xtaci/smux",
+      "Version": "v1.5.57",
+      "Sum": "h1:N72VbGoSYxgcm6mPOYX0QzEZNVD3UI/JlVvAtXF+WrY=",
+      "GoModSum": "h1:IGQ9QYrBphmb/4aTnLEcJby0TNr3NV+OslIOMrX825Q=",
+      "zip_sha256": "df4edcbebd7a66e4bffb95fbf2944f77b72252a9982508d13f0d971b8589ba96",
+      "go_mod_sha256": "e6a6a7063ee070e8d2c5f2b79c2afffb70e6bb4d215db4178c60a4e005da9df0",
+      "source_tree_sha256": "2a748dc7113e00c141d89e21eaaaa228e8e4a345b9623bfac5632cf6e896ac31",
+      "license_sha256": "4d853d6e64790ccada70727c25334c50529b25ce57048129aaf6f8b0f2208516"
+    }
+  },
+  "patches": [
+    {
+      "module": "x",
+      "path": "internal/net/pipe.go",
+      "source_sha256": "1d83f46e2699086be124b9f9db3b273b4b652f102b563e8b98fc70867590fba0",
+      "patch": "patches/x__internal__net__pipe.go.src",
+      "sha256": "ea795ee8cbf950b5e426126476d8be70892a38d3e336bf7bc056e398941ab526"
+    },
+    {
+      "module": "x",
+      "path": "listener/quic/conn.go",
+      "source_sha256": "4d197d0263e92dc67ad517fd5f4e630c6ff13087cac02f09b6063728e87a313e",
+      "patch": "patches/x__listener__quic__conn.go.src",
+      "sha256": "fb9ede658d5019edad6ae2d9fa750feb53dedf07602275ddbd41fb3934817194"
+    },
+    {
+      "module": "x",
+      "path": "listener/quic/listener.go",
+      "source_sha256": "87e4c67f90a33645b2cdaff6eb727f4f57637c1ae1f31e60fb1db95ccf121189",
+      "patch": "patches/x__listener__quic__listener.go.src",
+      "sha256": "d741f7e44569192a75bbdf14822b241263337486cf98e4909339411049e2e963"
+    },
+    {
+      "module": "x",
+      "path": "connector/relay/conn.go",
+      "source_sha256": "a6c26a20aad5efd2a47c30d248fa4ddd2d85a17910baa21d54a3f1ef0eabf8bf",
+      "patch": "patches/x__connector__relay__conn.go.src",
+      "sha256": "bf557e24fb293345ca1e015dbb2679584f187391a2538da82bfe30b93ad0208a"
+    },
+    {
+      "module": "x",
+      "path": "handler/relay/conn.go",
+      "source_sha256": "03e31884236af04fbb024065ca8d2bcc53dcf128be2d0ff60947e90a58f037aa",
+      "patch": "patches/x__handler__relay__conn.go.src",
+      "sha256": "fbfad829338794084dcc663c7e0f0f8184bdda130600255d21a542ebbd2c6f3f"
+    },
+    {
+      "module": "smux",
+      "path": "stream.go",
+      "source_sha256": "d3f54098259b2fe3f47831bc93f7895a75647e81d41df6b5d62e5e0c578adccf",
+      "patch": "patches/smux__stream.go.src",
+      "sha256": "09044702f1db24cfa2ff83d42b7fa6b509fa3d1e02d2c81030a0c818320735e7"
+    },
+    {
+      "module": "x",
+      "path": "dialer/quic/conn.go",
+      "source_sha256": "76d232049e5319922c63f748e05c352831ed91e98c71a54d6a8f26ae985f2ab4",
+      "patch": "patches/x__dialer__quic__conn.go.src",
+      "sha256": "fea766d3beb03960173d89bf3a87c67adbe96078e8f663dff0f51ff84d09203c"
+    },
+    {
+      "module": "x",
+      "path": "internal/io/cleanup_review_abort.go",
+      "source_sha256": null,
+      "patch": "patches/x__internal__io__cleanup_review_abort.go.src",
+      "sha256": "090bb367d5dea3b016567ceacd8de34cc35fe544269e4cb58d79cef63ae3e18b"
+    },
+    {
+      "module": "x",
+      "path": "dialer/quic/dialer.go",
+      "source_sha256": "c5da9a9c89340347deade8beb5d3c7c45c6233a0d7a255a0e2443623caf3f481",
+      "patch": "patches/x__dialer__quic__dialer.go.src",
+      "sha256": "a8588410e740f672e7b7211564e2e071abcb19a3f1321fd8a7cf7200cf30141b"
+    },
+    {
+      "module": "x",
+      "path": "listener/kcp/metadata.go",
+      "source_sha256": "ff9d9cf2386d77cca012b3efb48747cac31ae90854b2d6819f7a0f2ded59db6e",
+      "patch": "patches/x__listener__kcp__metadata.go.src",
+      "sha256": "e5b02d622473577c40974b538669abc5b3ce59903f9d0822774ff639da1ea817"
+    },
+    {
+      "module": "x",
+      "path": "listener/kcp/listener.go",
+      "source_sha256": "597a52e6a3bfd8c8cf82d40586ee03097ea128ab05fcb8b40af704199e185bdd",
+      "patch": "patches/x__listener__kcp__listener.go.src",
+      "sha256": "386bb3fe026bd19b9fe4f28b26f52796a10809694b662bf9778381944159ee8e"
+    },
+    {
+      "module": "x",
+      "path": "dialer/kcp/metadata.go",
+      "source_sha256": "2cdd5a6faf9f675b5b1d8aef73dc050eef0415d70d72f161cbdc3ebea066f353",
+      "patch": "patches/x__dialer__kcp__metadata.go.src",
+      "sha256": "6609d3627a15f1b0a401a0de4bd94c5eddadccbf3344dbc70f0a17aca978fc43"
+    },
+    {
+      "module": "x",
+      "path": "dialer/kcp/dialer.go",
+      "source_sha256": "00c2c3b62ed8c751bf1e05911dd6e50e92e4266a2a713db24f95816d336cb319",
+      "patch": "patches/x__dialer__kcp__dialer.go.src",
+      "sha256": "4e59caf87ac1afadede3ca62faa3f5de14af34c8db8ca6c10b488c1beb657dc0"
+    }
+  ],
+  "candidate_mod_sha256": "95255ad63439e7801848f1aac37b25548dd9f477327d75772ef4e4326db36fc7",
+  "candidate_sum_sha256": "4e323504b5346e90d0c06d29b964178934104aa61a43a0d4ef526303133881bc",
+  "reference_acceptance": {
+    "source_commit": "63bb69d8e1148aa87916e09320cda0b4b2649efe",
+    "run": 39035201383,
+    "binary_sha256": "5564ca4a16eb1fe7d380fd0c89f49e8299e35075808f186b594232eb5e719a6b",
+    "scope": "isolated Linux timeout candidate; release recipe requires its own real-engine acceptance"
+  }
+}

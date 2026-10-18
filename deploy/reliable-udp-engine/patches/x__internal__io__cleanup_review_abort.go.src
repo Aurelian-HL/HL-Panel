@@ -1,0 +1,33 @@
+package io
+
+import (
+    "errors"
+    "net"
+)
+
+// Abort reaches a stream cancellation method through established connection
+// wrappers. A bare embedded net.Conn without UnwrapConn remains opaque.
+func Abort(v any) error {
+	for depth := 0; depth < 64 && v != nil; depth++ {
+		if a, ok := v.(interface { Abort() error }); ok { return a.Abort() }
+		if u, ok := v.(interface { UnwrapConn() net.Conn }); ok {
+			v = u.UnwrapConn()
+			continue
+		}
+		break
+	}
+	return ErrUnsupported
+}
+
+func (rwc *readWriteCloser) Abort() error {
+	supported := true
+	var failures []error
+	for _, v := range []any{rwc.Reader, rwc.Writer, rwc.Closer} {
+		if err := Abort(v); errors.Is(err, ErrUnsupported) {
+			supported = false
+		} else if err != nil { failures = append(failures, err) }
+	}
+	if len(failures) > 0 { return errors.Join(failures...) }
+	if !supported { return ErrUnsupported }
+	return nil
+}

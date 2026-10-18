@@ -1,0 +1,140 @@
+name: Locked reliable UDP release engine
+
+on:
+  push:
+    branches: ['fix/reliable-udp-release-20261018', 'release/udp-bbr-v0.1.114']
+    paths:
+      - '.github/workflows/udp-release-engine.yml'
+      - 'deploy/reliable_udp_engine.py'
+      - 'deploy/reliable-udp-engine/**'
+      - 'deploy/fetch-node-engines.py'
+      - 'deploy/build-release.ps1'
+      - 'deploy/update-node.py'
+      - 'tests/install/test_node_update.py'
+      - 'tests/install/node_install.py'
+      - 'tests/install/test_udp_package.py'
+      - 'tests/install/reliable_udp_release.py'
+      - 'tests/install/test_reliable_udp_engine.py'
+      - 'internal/agent/engine/gost_runner*.go'
+      - 'internal/agent/engine/version*.go'
+      - 'tests/integration/gost/forwarding_test.go'
+      - 'internal/control/**'
+      - 'internal/agent/**'
+      - 'apps/web-admin/**'
+      - 'tests/integration/gost/**'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: nyvp_udp_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nyvp_udp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Verify locked recipe and existing UDP failure gates
+        run: |
+          set -euo pipefail
+          python3 tests/install/test_reliable_udp_engine.py
+          python3 tests/install/test_node_update.py
+          python3 tests/install/test_node_bbr.py
+          python3 tests/install/test_node_bbr2_policy.py
+          python3 -m unittest discover -s tests/integration/gost -p 'test_udp_*_gates.py' -v
+      - name: Verify panel persistence and all Go regressions
+        env:
+          NYVP_TEST_POSTGRES_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/nyvp_udp_test?sslmode=disable
+          NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
+        run: |
+          go test -count=1 -timeout=15m ./...
+          go test -race -count=1 ./internal/control/memoryrepo ./internal/control/deploymentreceipts
+          go vet ./...
+      - name: Build the single pinned release candidate
+        run: |
+          set -euo pipefail
+          python3 deploy/reliable_udp_engine.py "$RUNNER_TEMP/udp-release" | tee udp-build.json
+      - name: Accept the actual release binary with loss and close checks
+        env:
+          HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
+        run: |
+          set -euo pipefail
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 tests/install/reliable_udp_release.py --bundle "$RUNNER_TEMP/udp-release/bundle" --manifest-sha256 "$manifest_sha" --results "$RUNNER_TEMP/udp-release/results.json" 2>&1 | tee udp-runtime.log
+      - name: Import the accepted binary and run real agent engine regressions
+        run: |
+          set -euo pipefail
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 deploy/fetch-node-engines.py "$RUNNER_TEMP/udp-engines" --gost-bundle "$RUNNER_TEMP/udp-release/bundle" --gost-manifest-sha256 "$manifest_sha"
+          cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$RUNNER_TEMP/udp-engines/bin/gost"
+          export NYVP_GOST_BINARY="$RUNNER_TEMP/udp-engines/bin/gost"
+          export NYVP_XRAY_BINARY="$RUNNER_TEMP/udp-engines/bin/xray"
+          go test -p 1 -v -count=1 -timeout=10m ./internal/agent/... ./internal/control/httpapi ./tests/integration/gost 2>&1 | tee udp-agent-regression.log
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web-admin/package-lock.json
+      - name: Verify package option failures preserve the filesystem
+        run: python3 tests/install/test_udp_package.py
+      - name: Build the real web assets for the candidate package
+        working-directory: apps/web-admin
+        run: |
+          npm ci
+          npm run typecheck
+          npm test -- --run
+          npm run build
+      - name: Build and verify the complete package with the accepted engine
+        shell: pwsh
+        run: |
+          $manifestSha = (Get-FileHash -LiteralPath "$env:RUNNER_TEMP/udp-release/bundle/manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+          ./deploy/build-release.ps1 -ReleaseDirectory "$env:RUNNER_TEMP/udp-node-candidate" -Version v0.0.0 -PythonExecutable python3 -GostBundleDirectory "$env:RUNNER_TEMP/udp-release/bundle" -GostManifestSha256 $manifestSha
+      - name: Package only the verified candidate for the installer fixture
+        run: |
+          set -euo pipefail
+          cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$RUNNER_TEMP/udp-node-candidate/bin/gost"
+          mkdir -p "$RUNNER_TEMP/udp-node-archive"
+          tar -C "$RUNNER_TEMP/udp-node-candidate" -czf "$RUNNER_TEMP/udp-node-archive/hl-panel-linux-amd64.tar.gz" .
+          cd "$RUNNER_TEMP/udp-node-archive"
+          sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256
+      - name: Prepare bounded package downloads on the disposable VM
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+      - name: Verify token installation and BBR with the exact accepted UDP engine
+        run: |
+          set -euo pipefail
+          gost_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/gost" | cut -d' ' -f1)
+          gost_version=$("$RUNNER_TEMP/udp-release/bundle/gost" -V)
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/udp-node-archive" --version v0.0.0 --gost-sha256 "$gost_sha" --gost-version "$gost_version"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: locked-reliable-udp-release-engine
+          path: |
+            udp-build.json
+            udp-runtime.log
+            udp-agent-regression.log
+            node-install.log
+            node-install-result.json
+            ${{ runner.temp }}/udp-node-candidate/SHA256SUMS
+            ${{ runner.temp }}/udp-node-candidate/licenses/**
+            ${{ runner.temp }}/udp-release/results.json
+            ${{ runner.temp }}/udp-release/commands.json
+            ${{ runner.temp }}/udp-release/command-*.log
+            ${{ runner.temp }}/udp-release/bundle/**
+            ${{ runner.temp }}/udp-engines/licenses/**

@@ -299,6 +299,10 @@ func (s *Store) UpdateGroupMemberWeight(_ context.Context, input groups.UpdateMe
 		if created {
 			result.Assignments = append(result.Assignments, assignment)
 		}
+		if err := s.recompileForwardingGroupsLocked([]string{input.GroupID}, updated.UpdatedAt); err != nil {
+			s.restoreGroupMemberMutationLocked(mutation)
+			return groups.UpdateMemberWeightResult{}, err
+		}
 		s.syncGroupMemberToEndpointPoolsLocked(updated)
 		group := s.deviceGroups[input.GroupID]
 		group.UpdatedAt = updated.UpdatedAt
@@ -365,6 +369,14 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 		}
 	}
 	if changed {
+		if err := s.recompileForwardingGroupsLocked([]string{member.GroupID}, member.UpdatedAt); err != nil {
+			if !tolerateCompileFailure {
+				s.restoreGroupMemberMutationLocked(mutation)
+				return groups.Member{}, nil, err
+			}
+		}
+	}
+	if changed {
 		group := s.deviceGroups[member.GroupID]
 		group.UpdatedAt = member.UpdatedAt
 		s.deviceGroups[member.GroupID] = group
@@ -413,6 +425,7 @@ func (s *Store) retireGroupMemberLocked(groupID, nodeID string, retiredAt time.T
 	if previous.RetiredAt != nil {
 		return groups.RetireMemberResult{Member: cloneGroupMember(previous), Assignments: []generations.NodeConfigGeneration{}, Replayed: true}, nil
 	}
+	mutation := s.captureGroupMemberMutationLocked(groupID, nodeID)
 	retiredAt = retiredAt.UTC()
 	member := previous
 	member.RetiredAt = &retiredAt
@@ -426,6 +439,10 @@ func (s *Store) retireGroupMemberLocked(groupID, nodeID string, retiredAt time.T
 	assignments := make([]generations.NodeConfigGeneration, 0, 1)
 	if created {
 		assignments = append(assignments, assignment)
+	}
+	if err := s.recompileForwardingGroupsLocked([]string{groupID}, retiredAt); err != nil {
+		s.restoreGroupMemberMutationLocked(mutation)
+		return groups.RetireMemberResult{}, err
 	}
 	s.syncGroupMemberToEndpointPoolsLocked(member)
 	group := s.deviceGroups[groupID]

@@ -77,6 +77,9 @@ func (s *Store) validateBusinessSnapshot() error {
 			return errors.New("invalid persisted network reference")
 		}
 	}
+	if err := s.validateReliableUDPSnapshotLocked(); err != nil {
+		return err
+	}
 	bindings := make(map[string]bool)
 	nodeBindings := make(map[string]bool)
 	for id, rule := range s.forwardRules {
@@ -120,7 +123,7 @@ func (s *Store) validateBusinessSnapshot() error {
 		if _, err := forwarding.NormalizeRequest(forwarding.Request{
 			Name: rule.Name, CustomerID: rule.CustomerID, OwnerKind: rule.OwnerKind, OwnerID: rule.OwnerID, RuleGroupID: rule.RuleGroupID,
 			EntryGroupID: rule.EntryGroupID, ExitGroupID: rule.ExitGroupID,
-			EgressMode: rule.EgressMode, VLESSOutboundMode: rule.VLESSOutboundMode,
+			EgressMode: rule.EgressMode, TunnelTransport: rule.TunnelTransport, VLESSOutboundMode: rule.VLESSOutboundMode,
 			VLESSSOCKS5Host: rule.VLESSSOCKS5Host, VLESSSOCKS5Port: rule.VLESSSOCKS5Port,
 			VLESSSOCKS5Username: validatedSOCKS5Username, VLESSSOCKS5Password: validatedSOCKS5Password, IngressProtocol: rule.EffectiveIngressProtocol(),
 			VLESSFlow: rule.VLESSFlow, VLESSFlowExplicit: rule.VLESSFlowExplicit, RealityServerName: rule.RealityServerName,

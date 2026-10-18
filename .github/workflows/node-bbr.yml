@@ -2,17 +2,33 @@ name: Node transport safety
 
 on:
   push:
-    branches: [main, 'research/reliable-udp-pipe-20261017']
+    branches: [main, 'research/reliable-udp-pipe-20261017', 'fix/node-bbr-policy-20261018', 'fix/native-udp-bbr-final-20261018']
     paths:
       - 'deploy/configure-node-bbr.py'
       - 'deploy/configure-node-bbr2.py'
       - 'deploy/install-node.sh'
+      - 'deploy/update-node.py'
+      - 'internal/agent/config/**'
+      - 'internal/agent/engine/**'
+      - 'internal/agent/runtime/**'
+      - 'internal/control/forwarding/gostconfig/**'
+      - 'internal/control/memoryrepo/**'
+      - 'internal/control/deploymentreceipts/**'
+      - 'internal/control/httpapi/native_udp_integration_test.go'
+      - 'tests/integration/gost/forwarding_test.go'
+      - 'tests/install/test_node_update.py'
       - 'tests/install/test_node_bbr2_policy.py'
       - 'tests/install/test_node_bbr.py'
       - 'tests/install/node_bbr_linux.py'
       - 'tests/install/node_install.py'
       - 'tests/integration/gost/reliable_udp_test.py'
       - 'deploy/fetch-node-engines.py'
+      - 'deploy/reliable_udp_engine.py'
+      - 'deploy/reliable-udp-engine/**'
+      - 'tests/install/reliable_udp_release.py'
+      - 'tests/install/test_reliable_udp_engine.py'
+      - 'tests/integration/gost/udp_close_checks.py'
+      - 'tests/integration/gost/reliable_udp_pair.py'
       - 'deploy/build-release.ps1'
       - 'deploy/verify-release.ps1'
       - '.github/workflows/node-bbr.yml'
@@ -35,6 +51,7 @@ jobs:
         run: |
           python3 tests/install/test_node_bbr.py
           python3 tests/install/test_node_bbr2_policy.py
+          python3 tests/install/test_node_update.py
           python3 -m py_compile deploy/configure-node-bbr.py
           python3 -m py_compile deploy/configure-node-bbr2.py tests/install/node_bbr_linux.py
           bash -n deploy/install-node.sh
@@ -94,21 +111,42 @@ jobs:
             node-install-result.json
   reliable-udp:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Download and verify pinned engines into a temporary directory
-        run: python3 deploy/fetch-node-engines.py "$RUNNER_TEMP/hl-engines"
-      - name: Verify complete delivery over QUIC and KCP with controlled loopback packet loss
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify the locked release recipe
+        run: python3 tests/install/test_reliable_udp_engine.py
+      - name: Build the same pinned reliable UDP engine as the release workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 deploy/reliable_udp_engine.py "$RUNNER_TEMP/udp-release" | tee reliable-udp-build.json
+      - name: Verify native UDP DIRECT and TCP forwarding through the same release engine
+        env:
+          NYVP_GOST_BINARY: ${{ runner.temp }}/udp-release/bundle/gost
+        run: |
+          go test -count=1 -v -run TestStructuredRuleThroughRealGOST ./tests/integration/gost
+          go test -count=1 -v -run TestNativeUDPAPIThroughRealEngine ./internal/control/httpapi
+      - name: Verify the release engine with packet loss and stream close checks
         shell: bash
         env:
           HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
-          NYVP_GOST_BINARY: ${{ runner.temp }}/hl-engines/bin/gost
         run: |
           set -euo pipefail
-          python3 tests/integration/gost/reliable_udp_test.py 2>&1 | tee reliable-udp-result.log
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 tests/install/reliable_udp_release.py --bundle "$RUNNER_TEMP/udp-release/bundle" --manifest-sha256 "$manifest_sha" --results "$RUNNER_TEMP/udp-release/results.json" 2>&1 | tee reliable-udp-result.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: node-reliable-udp
-          path: reliable-udp-result.log
+          path: |
+            reliable-udp-build.json
+            reliable-udp-result.log
+            ${{ runner.temp }}/udp-release/results.json
+            ${{ runner.temp }}/udp-release/commands.json
+            ${{ runner.temp }}/udp-release/command-*.log
+            ${{ runner.temp }}/udp-release/bundle/**

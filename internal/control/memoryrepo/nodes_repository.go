@@ -140,8 +140,20 @@ func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now ti
 	// nodes without reissuing bundles for ordinary heartbeats on existing nodes.
 	if reconcile && (nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
 		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) ||
+		nodeSupportsGOSTUDPDirect(previousNode) != nodeSupportsGOSTUDPDirect(node) ||
+		nodeSupportsReliableUDP(previousNode) != nodeSupportsReliableUDP(node) ||
 		node.BundleCompilerRevision < NodeBundleCompilerRevision) {
-		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
+		groups := []string{}
+		for groupID, members := range s.membersByGroup {
+			if m, ok := members[nodeID]; ok && m.RetiredAt == nil {
+				groups = append(groups, groupID)
+			}
+		}
+		compileErr := s.recompileForwardingGroupsLocked(groups, now)
+		if compileErr == nil {
+			_, _, compileErr = s.compileNodeConfigLocked(nodeID, now)
+		}
+		if err := compileErr; err != nil {
 			if previousNode.DesiredGeneration > 0 {
 				s.nodes[nodeID] = previousNode
 				return nodes.Node{}, err

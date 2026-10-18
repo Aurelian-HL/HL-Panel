@@ -52,22 +52,30 @@ func (s *Store) validateForwardingMemberListenersLocked(member groups.Member) er
 		transport string
 		port      int
 	}
-	joining := make(map[listener]bool)
+	type reservation struct {
+		group string
+		key   listener
+	}
+	reservations := []reservation{}
 	for _, rule := range s.forwardRules {
-		if rule.EntryGroupID == member.GroupID {
-			joining[listener{forwardingListenerTransport(rule.EffectiveIngressProtocol()), rule.ListenPort}] = true
+		reservations = append(reservations, reservation{rule.EntryGroupID, listener{forwardingListenerTransport(rule.EffectiveIngressProtocol()), rule.ListenPort}})
+	}
+	for _, tunnel := range s.reliableUDPTunnels {
+		reservations = append(reservations, reservation{tunnel.ExitGroupID, listener{"udp", tunnel.Port}})
+	}
+	joining := make(map[listener]bool)
+	for _, r := range reservations {
+		if r.group == member.GroupID {
+			joining[r.key] = true
 		}
 	}
-	if len(joining) == 0 {
-		return nil
-	}
-	for _, rule := range s.forwardRules {
-		if rule.EntryGroupID == member.GroupID || !joining[listener{forwardingListenerTransport(rule.EffectiveIngressProtocol()), rule.ListenPort}] {
+	for _, r := range reservations {
+		if r.group == member.GroupID || !joining[r.key] {
 			continue
 		}
-		other, exists := s.membersByGroup[rule.EntryGroupID][member.NodeID]
+		other, exists := s.membersByGroup[r.group][member.NodeID]
 		if exists && other.RetiredAt == nil {
-			return fmt.Errorf("%w: adding this machine would conflict with a forwarding listener reserved by another entry group", faults.ErrConflict)
+			return fmt.Errorf("%w: adding this machine would conflict with a reserved forwarding or tunnel listener", faults.ErrConflict)
 		}
 	}
 	return nil

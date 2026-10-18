@@ -354,6 +354,13 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 		return fmt.Errorf("%w: listen port is outside the entry group range", faults.ErrValidation)
 	}
 	available := func(port int) bool {
+		if item.EffectiveIngressProtocol() == forwarding.IngressUDP {
+			for _, m := range s.reliableUDPTunnels {
+				if m.Port == port && s.entryGroupsShareListenerLocked(m.ExitGroupID, item.EntryGroupID) {
+					return false
+				}
+			}
+		}
 		for _, other := range rules {
 			if other.ID != item.ID && forwardingListenerTransport(other.EffectiveIngressProtocol()) == forwardingListenerTransport(item.EffectiveIngressProtocol()) && other.ListenPort == port && s.entryGroupsShareListenerLocked(other.EntryGroupID, item.EntryGroupID) {
 				return false
@@ -413,6 +420,11 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	// Persist the canonical configuration reason accepted by snapshot validation.
 	storedItem.ActivationReason = baseReason
 	previous, hadPrevious := s.forwardRules[item.ID]
+	previousTunnel, hadPreviousTunnel := s.reliableUDPTunnels[item.ID]
+	tunnel, err := s.prepareReliableUDPTunnelLocked(storedItem)
+	if err != nil {
+		return forwarding.Rule{}, false, err
+	}
 	previousUpstream, hadPreviousUpstream := s.vlessSOCKS5UpstreamLocked(item.ID)
 	// Record the allocated port in the same audit transaction as the rule.
 	event.Metadata = maps.Clone(event.Metadata)
@@ -437,15 +449,20 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	} else {
 		s.deleteVLESSSOCKS5UpstreamLocked(item.ID)
 	}
+	if storedItem.UsesReliableUDPTunnel() {
+		s.reliableUDPTunnels[item.ID] = tunnel
+	} else {
+		delete(s.reliableUDPTunnels, item.ID)
+	}
 	previousKey, hadKey := s.autoRealityKeys[item.ID]
 	if privateKey != "" {
 		s.autoRealityKeys[item.ID] = privateKey
 	} else if item.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || item.RealityPublicKey != previous.RealityPublicKey {
 		delete(s.autoRealityKeys, item.ID)
 	}
-	groups := []string{item.EntryGroupID}
+	groups := []string{item.EntryGroupID, item.ExitGroupID}
 	if hadPrevious {
-		groups = append(groups, previous.EntryGroupID)
+		groups = append(groups, previous.EntryGroupID, previous.ExitGroupID)
 	}
 	// Include the probe-only identity in the very first bundle. Deferring this
 	// until the periodic observer forces a second engine replacement.
@@ -453,6 +470,11 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 		s.protocolProbes[item.ID] = probe
 	}
 	if err := s.recompileForwardingGroupsLocked(groups, event.CreatedAt); err != nil {
+		if hadPreviousTunnel {
+			s.reliableUDPTunnels[item.ID] = previousTunnel
+		} else {
+			delete(s.reliableUDPTunnels, item.ID)
+		}
 		if hadProbe {
 			s.protocolProbes[item.ID] = previousProbe
 		} else {
@@ -570,20 +592,31 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 	count := 0
 	deployed := true
 	udpEngineMissing := false
-	for nodeID, member := range s.membersByGroup[item.EntryGroupID] {
-		if member.RetiredAt != nil {
-			continue
+	groupIDs := []string{item.EntryGroupID}
+	if item.UsesReliableUDPTunnel() {
+		groupIDs = append(groupIDs, item.ExitGroupID)
+	}
+	for _, groupID := range groupIDs {
+		groupCount := 0
+		for nodeID, member := range s.membersByGroup[groupID] {
+			if member.RetiredAt != nil {
+				continue
+			}
+			count++
+			groupCount++
+			if isUDP && !nodeSupportsGOSTUDPDirect(s.nodes[nodeID]) {
+				deployed = false
+				udpEngineMissing = true
+				break
+			}
+			input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
+			if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
+				deployed = false
+				break
+			}
 		}
-		count++
-		if isUDP && !nodeSupportsGOSTUDPDirect(s.nodes[nodeID]) {
+		if groupCount == 0 {
 			deployed = false
-			udpEngineMissing = true
-			break
-		}
-		input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
-		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
-			deployed = false
-			break
 		}
 	}
 	item.Deployed = deployed && count > 0

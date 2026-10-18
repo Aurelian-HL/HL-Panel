@@ -35,6 +35,7 @@ type GOSTProcessAdapter struct {
 	process             GOSTProcess
 	processStartedAt    time.Time
 	processConfigSHA256 [sha256.Size]byte
+	api                 *gostLocalAPI
 }
 
 func NewGOSTProcessAdapter(options GOSTAdapterOptions) (*GOSTProcessAdapter, error) {
@@ -55,7 +56,15 @@ func NewGOSTProcessAdapter(options GOSTAdapterOptions) (*GOSTProcessAdapter, err
 			return nil, err
 		}
 	}
-	return &GOSTProcessAdapter{stagingDir: stagingDir, activePath: activePath, runner: runner, autoStart: options.AutoStart}, nil
+	a := &GOSTProcessAdapter{stagingDir: stagingDir, activePath: activePath, runner: runner, autoStart: options.AutoStart}
+	if _, ok := runner.(gostAPIRunner); ok && options.AutoStart {
+		var err error
+		a.api, err = newGOSTLocalAPI()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return a, nil
 }
 
 func (a *GOSTProcessAdapter) Prepare(ctx context.Context, desired agentv1.DesiredNodeConfig) (PreparedConfiguration, error) {
@@ -66,7 +75,7 @@ func (a *GOSTProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desire
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
-	native, err := CompileGOSTBundle(prepared.Bundle)
+	native, err := a.compileNative(prepared.Bundle, true)
 	if err != nil {
 		return PreparedConfiguration{}, err
 	}
@@ -140,6 +149,11 @@ func (a *GOSTProcessAdapter) commitValidatedLocked(ctx context.Context, prepared
 		(!a.autoStart || oldRunning && a.processConfigSHA256 == sha256.Sum256(candidate)) {
 		return nil
 	}
+	if previousExists {
+		if applied, err := a.tryAddGOSTLiveLocked(ctx, previous, candidate); applied {
+			return err
+		}
+	}
 	if a.autoStart && oldRunning {
 		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop previous gost process: %w", err)
@@ -178,7 +192,7 @@ func (a *GOSTProcessAdapter) Verify(ctx context.Context, prepared PreparedConfig
 	if err != nil {
 		return fmt.Errorf("verify active gost configuration: %w", err)
 	}
-	expected, err := CompileGOSTBundle(prepared.Bundle)
+	expected, err := a.compileNative(prepared.Bundle, false)
 	if err != nil || !bytes.Equal(active, expected) {
 		return ErrConfigurationHash
 	}
@@ -248,6 +262,11 @@ func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 			a.process != nil && a.process.Running() && a.processConfigSHA256 == sha256.Sum256(data)) {
 			return nil
 		}
+		if exists {
+			if applied, err := a.tryRollbackGOSTLiveLocked(ctx, active, data); applied {
+				return err
+			}
+		}
 	}
 	if a.autoStart && a.process != nil && a.process.Running() {
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
@@ -301,7 +320,7 @@ func (a *GOSTProcessAdapter) verifyStaged(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
-	expected, err := CompileGOSTBundle(prepared.Bundle)
+	expected, err := a.compileNative(prepared.Bundle, false)
 	if err != nil {
 		return err
 	}

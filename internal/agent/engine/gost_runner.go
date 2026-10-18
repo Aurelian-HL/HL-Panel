@@ -54,16 +54,18 @@ func NewExecGOSTRunner(binaryPath string) (*ExecGOSTRunner, error) {
 	defer cancel()
 	version, err := exec.CommandContext(ctx, binaryPath, "-V").Output()
 	if err != nil || !IsSupportedGOSTVersion(string(version)) {
-		return nil, errors.New("gost binary must be version 3.3.1 or pinned v3.3.1-nightly.20260922")
+		return nil, errors.New("gost binary must match a supported pinned engine version")
 	}
 	return &ExecGOSTRunner{binaryPath: binaryPath, version: parseEngineVersion("gost", version)}, nil
 }
 
 // IsSupportedGOSTVersion accepts only versions verified with the native compiler
-// and process adapter. The pinned upstream nightly is distributed in releases.
+// and process adapter. The reliable UDP candidate is accepted only with its
+// locked toolchain and target; its bundle provenance is checked at packaging.
 func IsSupportedGOSTVersion(output string) bool {
 	return strings.HasPrefix(output, "gost 3.3.1 (") ||
-		strings.HasPrefix(output, "gost v3.3.1-nightly.20260922 (")
+		strings.HasPrefix(output, "gost v3.3.1-nightly.20260922 (") ||
+		strings.TrimSpace(output) == "gost 3.3.1-nightly.20260922-hl-udp.1 (go1.27.0 linux/amd64)"
 }
 
 func (r *ExecGOSTRunner) Test(ctx context.Context, configPath string) error {

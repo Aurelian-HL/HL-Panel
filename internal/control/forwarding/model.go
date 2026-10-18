@@ -6,6 +6,19 @@ import "time"
 
 type EgressMode string
 
+// TunnelTransport describes the private entry-to-exit hop, independently of
+// the customer's listener and target protocol. Empty preserves legacy routes.
+type TunnelTransport string
+
+const (
+	TunnelQUIC TunnelTransport = "quic"
+	TunnelKCP  TunnelTransport = "kcp"
+)
+
+func (r Rule) UsesReliableUDPTunnel() bool {
+	return r.EgressMode == EgressExitGroup && (r.TunnelTransport == TunnelQUIC || r.TunnelTransport == TunnelKCP)
+}
+
 // VLESSOutboundMode controls the server-side outbound used by a VLESS
 // Reality ingress. It is deliberately separate from EgressMode: the latter
 // selects the NY direct/exit-group authorization path, while this field only
@@ -138,6 +151,7 @@ type Rule struct {
 	EntryGroupID        string            `json:"entry_group_id"`
 	ExitGroupID         string            `json:"exit_group_id"`
 	EgressMode          EgressMode        `json:"egress_mode"`
+	TunnelTransport     TunnelTransport   `json:"tunnel_transport,omitempty"`
 	VLESSOutboundMode   VLESSOutboundMode `json:"vless_outbound_mode,omitempty"`
 	VLESSSOCKS5Host     string            `json:"vless_socks5_host,omitempty"`
 	VLESSSOCKS5Port     int               `json:"vless_socks5_port,omitempty"`
@@ -215,7 +229,7 @@ type RuleTrafficProjection struct {
 // the rule is either supported by the current compiler or is blocked by a
 // different lifecycle condition (customer, pause, quota, and so on).
 func (r Rule) PendingActivationReason() ActivationReason {
-	if r.EgressMode == EgressExitGroup {
+	if r.EgressMode == EgressExitGroup && !r.UsesReliableUDPTunnel() {
 		return ActivationReasonExitGroupUnsupported
 	}
 	// Native UDP DIRECT is compiled only for nodes that advertise the GOST UDP
@@ -254,6 +268,7 @@ type Request struct {
 	EntryGroupID        string            `json:"entry_group_id"`
 	ExitGroupID         string            `json:"exit_group_id"`
 	EgressMode          EgressMode        `json:"egress_mode"`
+	TunnelTransport     TunnelTransport   `json:"tunnel_transport,omitempty"`
 	VLESSOutboundMode   VLESSOutboundMode `json:"vless_outbound_mode,omitempty"`
 	VLESSSOCKS5Host     string            `json:"vless_socks5_host,omitempty"`
 	VLESSSOCKS5Port     int               `json:"vless_socks5_port,omitempty"`

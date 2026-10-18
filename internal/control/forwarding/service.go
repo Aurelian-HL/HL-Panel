@@ -328,7 +328,7 @@ func (s *Service) GetForAdministrator(ctx context.Context, adminID, id string) (
 
 func (r Request) rule(id string, now time.Time) Rule {
 	return Rule{ID: id, Name: r.Name, CustomerID: r.CustomerID, OwnerKind: r.OwnerKind, OwnerID: r.OwnerID, RuleGroupID: r.RuleGroupID, EntryGroupID: r.EntryGroupID, ExitGroupID: r.ExitGroupID,
-		EgressMode: r.EgressMode, VLESSOutboundMode: r.VLESSOutboundMode, VLESSSOCKS5Host: r.VLESSSOCKS5Host, VLESSSOCKS5Port: r.VLESSSOCKS5Port, VLESSSOCKS5Username: r.VLESSSOCKS5Username,
+		EgressMode: r.EgressMode, TunnelTransport: r.TunnelTransport, VLESSOutboundMode: r.VLESSOutboundMode, VLESSSOCKS5Host: r.VLESSSOCKS5Host, VLESSSOCKS5Port: r.VLESSSOCKS5Port, VLESSSOCKS5Username: r.VLESSSOCKS5Username,
 		IngressProtocol: r.IngressProtocol, VLESSFlow: r.VLESSFlow, VLESSFlowExplicit: r.VLESSFlowExplicit,
 		RealityServerName: r.RealityServerName, RealityPublicKey: r.RealityPublicKey, RealityShortID: r.RealityShortID, RealityDestination: r.RealityDestination,
 		IngressStatus: r.IngressReadiness(), Protocol: r.Protocol, ListenPort: r.ListenPort, Targets: r.Targets, SelectionPolicy: r.SelectionPolicy,
@@ -341,7 +341,8 @@ func ruleEvent(now time.Time, actorType, actorID, action string, rule Rule) (aud
 	// Targets and descriptions are deliberately absent: audit records should
 	// never become an accidental secondary store of customer credentials.
 	metadata := map[string]any{
-		"customer_id": rule.CustomerID, "rule_group_id": rule.RuleGroupID, "entry_group_id": rule.EntryGroupID, "exit_group_id": rule.ExitGroupID,
+		"tunnel_transport": rule.TunnelTransport,
+		"customer_id":      rule.CustomerID, "rule_group_id": rule.RuleGroupID, "entry_group_id": rule.EntryGroupID, "exit_group_id": rule.ExitGroupID,
 		"egress_mode": rule.EgressMode, "ingress_protocol": rule.EffectiveIngressProtocol(), "ingress_status": rule.IngressReadiness(), "protocol": rule.Protocol, "listen_port": rule.ListenPort,
 		"target_count": len(rule.Targets), "selection_policy": rule.SelectionPolicy,
 		"accept_proxy_protocol": rule.AcceptProxyProtocol, "send_proxy_protocol": rule.SendProxyProtocol,

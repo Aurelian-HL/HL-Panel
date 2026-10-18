@@ -1,0 +1,117 @@
+package kcp
+
+import (
+	"encoding/json"
+	"errors"
+	"math"
+	"strconv"
+	"time"
+
+	"github.com/xtaci/smux"
+
+	mdata "github.com/go-gost/core/metadata"
+	mdutil "github.com/go-gost/x/metadata/util"
+	kcp_util "github.com/go-gost/x/internal/util/kcp"
+)
+
+type metadata struct {
+	keepAliveTimeout time.Duration
+	handshakeTimeout time.Duration
+	config           *kcp_util.Config
+}
+
+func (d *kcpDialer) parseMetadata(md mdata.Metadata) (err error) {
+	const (
+		config           = "config"
+		configFile       = "c"
+		handshakeTimeout = "handshakeTimeout"
+	)
+
+	if file := mdutil.GetString(md, "kcp.configFile", "configFile", "c"); file != "" {
+		d.md.config, err = kcp_util.ParseFromFile(file)
+		if err != nil {
+			return
+		}
+	}
+
+	if m := mdutil.GetStringMap(md, "kcp.config", "config"); len(m) > 0 {
+		b, err := json.Marshal(m)
+		if err != nil {
+			return err
+		}
+		cfg := &kcp_util.Config{}
+		if err := json.Unmarshal(b, cfg); err != nil {
+			return err
+		}
+		d.md.config = cfg
+	}
+	if d.md.config == nil {
+		d.md.config = kcp_util.DefaultConfig
+	}
+	d.md.config.TCP = mdutil.GetBool(md, "kcp.tcp", "tcp")
+	d.md.config.Key = mdutil.GetString(md, "kcp.key")
+	d.md.config.Crypt = mdutil.GetString(md, "kcp.crypt")
+	d.md.config.Mode = mdutil.GetString(md, "kcp.mode")
+	d.md.config.KeepAlive = mdutil.GetInt(md, "kcp.keepalive")
+	// Config.Read JSON preserves numbers in metadata as float64.
+	// Normalize this field locally without changing shared metadata helpers.
+	if mdutil.IsExists(md, "kcp.keepalive") {
+		if value, ok := md.Get("kcp.keepalive").(float64); ok {
+			if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || math.Trunc(value) != value || value >= math.Ldexp(1, strconv.IntSize-1) || value > float64((1<<63-1)/time.Second) {
+				return errors.New("kcp.keepalive JSON number must be a positive integer within the platform int and duration ranges")
+			}
+			d.md.config.KeepAlive = int(value)
+		}
+	}
+	d.md.config.Interval = mdutil.GetInt(md, "kcp.interval")
+	d.md.config.MTU = mdutil.GetInt(md, "kcp.mtu")
+	d.md.config.RcvWnd = mdutil.GetInt(md, "kcp.rcvwnd")
+	d.md.config.SndWnd = mdutil.GetInt(md, "kcp.sndwnd")
+	d.md.config.SmuxVer = mdutil.GetInt(md, "kcp.smuxver")
+	d.md.config.SmuxBuf = mdutil.GetInt(md, "kcp.smuxbuf")
+	d.md.config.StreamBuf = mdutil.GetInt(md, "kcp.streambuf")
+	d.md.config.NoComp = mdutil.GetBool(md, "kcp.nocomp")
+
+	// Absent metadata preserves the pinned smux timeout default.
+	d.md.keepAliveTimeout = 0
+	if mdutil.IsExists(md, "kcp.keepaliveTimeout") {
+		invalid := errors.New("kcp.keepaliveTimeout must be a positive duration at least the effective keepalive interval")
+		var timeout time.Duration
+		switch value := md.Get("kcp.keepaliveTimeout").(type) {
+		case int:
+			if value <= 0 || uint64(value) > uint64((1<<63-1)/time.Second) {
+				return invalid
+			}
+			timeout = time.Duration(value) * time.Second
+		case float64:
+			if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || math.Trunc(value) != value || value > float64((1<<63-1)/time.Second) {
+				return invalid
+			}
+			timeout = time.Duration(value) * time.Second
+		case string:
+			var err error
+			timeout, err = time.ParseDuration(value)
+			if err != nil {
+				seconds, parseErr := strconv.ParseInt(value, 10, 64)
+				if parseErr != nil || seconds <= 0 || seconds > int64((1<<63-1)/time.Second) {
+					return invalid
+				}
+				timeout = time.Duration(seconds) * time.Second
+			}
+		default:
+			return invalid
+		}
+		interval := d.md.config.KeepAlive
+		if interval <= 0 {
+			interval = int(smux.DefaultConfig().KeepAliveInterval / time.Second)
+		}
+		// Divide the positive timeout to avoid overflowing a large interval.
+		if timeout <= 0 || timeout/time.Second < time.Duration(interval) {
+			return invalid
+		}
+		d.md.keepAliveTimeout = timeout
+	}
+
+	d.md.handshakeTimeout = mdutil.GetDuration(md, handshakeTimeout)
+	return
+}

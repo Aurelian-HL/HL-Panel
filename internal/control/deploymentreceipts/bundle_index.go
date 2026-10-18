@@ -3,6 +3,7 @@ package deploymentreceipts
 import (
 	"container/list"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/hongle/hl-panel/internal/control/generations"
@@ -15,11 +16,12 @@ import (
 var currentBundleIndexes = newBundleIndexCache(128, 16<<20)
 
 type fragmentIndex struct {
-	engine   agentv1.Engine
-	revision int64
-	count    int
-	valid    bool
-	hash     string
+	tunnelEntry, tunnelExit bool
+	engine                  agentv1.Engine
+	revision                int64
+	count                   int
+	valid                   bool
+	hash                    string
 }
 
 type bundleIndex struct {
@@ -72,6 +74,25 @@ func (c *bundleIndexCache) get(hash string, raw []byte) (*bundleIndex, bool) {
 			item.engine = fragment.Engine
 			item.revision = int64(fragment.GroupRevision)
 			item.valid = len(fragment.Config) != 0 && json.Valid(fragment.Config)
+			if item.valid && fragment.Engine == agentv1.EngineGOST {
+				var shape struct {
+					Services []struct {
+						Name     string
+						Listener struct{ Type string }
+						Handler  struct {
+							Type  string
+							Chain string
+						}
+					}
+				}
+				if json.Unmarshal(fragment.Config, &shape) == nil {
+					id := strings.TrimPrefix(fragment.GroupID, generations.ForwardingGOSTFragmentPrefix)
+					for _, service := range shape.Services {
+						item.tunnelEntry = item.tunnelEntry || service.Name == "forward-"+id && service.Listener.Type == "tcp" && service.Handler.Chain == "tunnel-"+id
+						item.tunnelExit = item.tunnelExit || service.Name == "tunnel-exit-"+id && service.Handler.Type == "relay" && (service.Listener.Type == "quic" || service.Listener.Type == "kcp")
+					}
+				}
+			}
 			if item.valid {
 				// Include runtime configuration and rule-local metadata (including
 				// identity, revision, engine, limits, and accounting ownership).

@@ -109,6 +109,34 @@ func TestCompileGOSTBundleAllowsTCPAndUDPOnSamePort(t *testing.T) {
 	}
 }
 
+func TestCompileGOSTBundleRejectsUDPAndTunnelOnSamePort(t *testing.T) {
+	var direct gostconfig.Configuration
+	if err := json.Unmarshal([]byte(gostServiceA), &direct); err != nil {
+		t.Fatal(err)
+	}
+	udp := direct.Services[0]
+	udp.Handler.Type, udp.Listener.Type = "udp", "udp"
+	tunnel := direct.Services[0]
+	tunnel.Name = "tunnel-exit-test"
+	tunnel.Handler = gostconfig.EngineType{Type: "relay", Auth: &gostconfig.Auth{
+		Username: "hl-test", Password: strings.Repeat("p", 32),
+	}, Metadata: map[string]any{"readTimeout": "5s"}}
+	tunnel.Listener = gostconfig.EngineType{Type: "kcp", Metadata: gostconfig.KCPMetadata(strings.Repeat("k", 32))}
+	// Each fragment is valid alone, but both occupy the same UDP socket.
+	for _, service := range []gostconfig.Service{udp, tunnel} {
+		if err := validateGOSTService(service); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := json.Marshal(gostconfig.Configuration{Services: []gostconfig.Service{udp, tunnel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CompileGOSTBundle(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: []agentv1.ConfigurationFragment{gostFragment("mixed", string(raw))}}); !errors.Is(err, ErrGOSTConfigConflict) {
+		t.Fatalf("native UDP / KCP port conflict accepted: %v", err)
+	}
+}
+
 func TestGOSTProcessAdapterLifecycleRollbackAndExplicitStart(t *testing.T) {
 	runner := &recordingGOSTRunner{}
 	adapter := newTestGOSTAdapter(t, runner, true)

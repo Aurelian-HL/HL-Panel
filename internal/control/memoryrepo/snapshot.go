@@ -17,6 +17,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/forwarding/gostconfig"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
@@ -30,7 +31,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 22
+const SnapshotVersion = 23
 const importedTrafficSnapshotVersion = 21
 const nativeRuntimeSnapshotVersion = 20
 const importedIdentitySnapshotVersion = 19
@@ -168,6 +169,7 @@ type snapshot struct {
 	UserGroups              map[string]customers.UserGroup
 	GroupNetworks           map[string]groupconfig.GroupNetwork
 	ForwardRules            map[string]forwarding.Rule
+	ReliableUDPTunnels      map[string]gostconfig.TunnelMaterial
 	AutoRealityKeys         map[string]string
 	VLESSSOCKS5Upstreams    map[string]storedVLESSSOCKS5Upstream
 	RuleGroups              map[string]rulegroups.RuleGroup
@@ -237,7 +239,8 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		ApplyResultsByNode: s.applyResultsByNode, ApplyAttemptsByNode: s.applyAttemptsByNode, AuditEvents: s.auditEvents,
 		Customers:  make(map[string]storedCustomer, len(s.customers)),
 		UserGroups: s.userGroups, GroupNetworks: groupNetworks,
-		ForwardRules: forwardRules, AutoRealityKeys: s.autoRealityKeys, RuleGroups: s.ruleGroups,
+		ReliableUDPTunnels: s.reliableUDPTunnels,
+		ForwardRules:       forwardRules, AutoRealityKeys: s.autoRealityKeys, RuleGroups: s.ruleGroups,
 		VLESSSOCKS5Upstreams: make(map[string]storedVLESSSOCKS5Upstream, len(s.vlessSOCKS5Upstreams)),
 		Subscriptions:        make(map[string]storedSubscription, len(s.subscriptions)),
 		SiteSettings:         s.siteSettings, Announcements: s.announcements,
@@ -421,7 +424,7 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version >= protocolProbeSnapshotVersion && state.ProtocolProbes == nil {
 			return nil, errors.New("incomplete protocol probe persistence state")
 		}
-		if (state.Version == licenseCodesSnapshotVersion || state.Version >= SnapshotVersion) && state.LicenseCodes == nil {
+		if (state.Version == licenseCodesSnapshotVersion || state.Version >= 22) && state.LicenseCodes == nil {
 			return nil, errors.New("incomplete license persistence state")
 		}
 		if state.Version >= applyAttemptsSnapshotVersion && state.ApplyAttemptsByNode == nil {
@@ -478,6 +481,15 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 			}
 		}
 		s.userGroups, s.groupNetworks, s.forwardRules, s.businessIdempotency = state.UserGroups, state.GroupNetworks, state.ForwardRules, state.BusinessIdempotency
+		if state.Version >= 23 && state.ReliableUDPTunnels == nil {
+			return nil, errors.New("incomplete reliable UDP persistence state")
+		}
+		if state.Version < 23 && len(state.ReliableUDPTunnels) > 0 {
+			return nil, errors.New("unexpected reliable UDP persistence state")
+		}
+		if state.ReliableUDPTunnels != nil {
+			s.reliableUDPTunnels = state.ReliableUDPTunnels
+		}
 		if state.AutoRealityKeys != nil {
 			s.autoRealityKeys = make(map[string]string, len(state.AutoRealityKeys))
 			for ruleID, privateKey := range state.AutoRealityKeys {

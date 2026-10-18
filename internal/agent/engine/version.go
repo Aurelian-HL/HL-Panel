@@ -14,7 +14,7 @@ import (
 const unknownEngineVersion = "unknown"
 const maxEngineVersionBytes = 4096
 
-var engineVersionNumber = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:\.[a-zA-Z0-9]+)*)?$`)
+var engineVersionNumber = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[-.][a-zA-Z0-9]+)*)?$`)
 
 // Read only the executable's fixed version command during runner initialization.
 // Heartbeats use the cached number and never spawn another process. Failure is

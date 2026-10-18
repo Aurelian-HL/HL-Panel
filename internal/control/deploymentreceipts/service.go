@@ -85,7 +85,7 @@ func evaluateCurrent(input Input) Status {
 		status.Reason = ReasonFragmentMissing
 		return status
 	}
-	if fragment.count != 1 || fragment.engine != engine || fragment.revision != input.Rule.Revision || !fragment.valid {
+	if fragment.count != 1 || fragment.engine != engine || fragment.revision != input.Rule.Revision || !fragment.valid || input.RequireTunnelEntry && !fragment.tunnelEntry || input.RequireTunnelExit && !fragment.tunnelExit {
 		status.Reason = ReasonFragmentMismatch
 		return status
 	}
@@ -144,7 +144,7 @@ func expectedFragment(rule forwarding.Rule) (string, agentv1.Engine, bool) {
 	switch rule.EffectiveIngressProtocol() {
 	case forwarding.IngressVLESSReality:
 		return generations.ForwardingFragmentID(agentv1.EngineXray, rule.ID), agentv1.EngineXray, true
-	case forwarding.IngressTCP:
+	case forwarding.IngressTCP, forwarding.IngressUDP:
 		return generations.ForwardingFragmentID(agentv1.EngineGOST, rule.ID), agentv1.EngineGOST, true
 	default:
 		return "", "", false

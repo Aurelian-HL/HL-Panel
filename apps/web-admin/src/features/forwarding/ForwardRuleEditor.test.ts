@@ -41,6 +41,39 @@ async function submit(wrapper: VueWrapper) {
 beforeEach(() => { mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValue(rule) })
 
 describe('ForwardRuleEditor', () => {
+  it('defaults a newly selected TCP exit to QUIC and saves KCP explicitly', async () => {
+    const wrapper = mountEditor()
+    await populate(wrapper)
+    await field(wrapper, '出口').get('select').setValue('exit-1')
+    expect(field(wrapper, '节点间隧道').get('select').element.value).toBe('quic')
+    await field(wrapper, '节点间隧道').get('select').setValue('kcp')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ egress_mode: 'EXIT_GROUP', tunnel_transport: 'kcp' })
+    await field(wrapper, '出口').get('select').setValue('')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ egress_mode: 'DIRECT', tunnel_transport: '' })
+    wrapper.unmount()
+  })
+
+  it.each([false, true])('preserves a saved tunnel on edit and copy (copy=%s)', async (copy) => {
+    const wrapper = mountEditor({ rule: { ...rule, egress_mode: 'EXIT_GROUP', exit_group_id: 'exit-1', tunnel_transport: 'kcp' }, copy })
+    expect(field(wrapper, '节点间隧道').get('select').element.value).toBe('kcp')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ tunnel_transport: 'kcp' })
+    wrapper.unmount()
+  })
+
+  it('requires explicit transport selection for a legacy exit rule', async () => {
+    const wrapper = mountEditor({ rule: { ...rule, egress_mode: 'EXIT_GROUP', exit_group_id: 'exit-1' } })
+    expect(field(wrapper, '节点间隧道').get('select').element.value).toBe('')
+    await submit(wrapper)
+    expect(mocked.saveRule).not.toHaveBeenCalled()
+    await field(wrapper, '节点间隧道').get('select').setValue('quic')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ tunnel_transport: 'quic' })
+    wrapper.unmount()
+  })
+
   it('edits imported metadata without rewriting connection parameters', async () => {
     const issued: ForwardRule = { ...rule, ingress_protocol: 'vless_reality', targets: [], vless_outbound_mode: 'KL_NATIVE', vless_flow: '', vless_flow_explicit: true, reality_server_name: 'example.com', reality_public_key: 'public', reality_short_id: '', reality_destination: 'example.com:443' }
     const wrapper = mountEditor({ rule: issued })
