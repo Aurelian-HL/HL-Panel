@@ -23,8 +23,9 @@ const form = reactive<ForwardRuleInput>(props.rule ? { ...ruleInput(props.rule),
   traffic_limit_bytes: 0, traffic_quota_monthly: false, paused: false, description: '', revision: 0,
 })
 const trafficLimitGB = ref((form.traffic_limit_bytes ?? 0) / BYTES_PER_GB)
-const targetsText = ref(props.rule
-  ? props.rule.ingress_protocol === 'vless_reality' && props.rule.vless_socks5_host && props.rule.vless_socks5_port
+const copyingSOCKS5 = computed(() => Boolean(props.copy && props.rule?.ingress_protocol === 'vless_reality' && props.rule.vless_outbound_mode === 'SOCKS5'))
+const targetsText = ref(copyingSOCKS5.value ? '' : props.rule
+  ? props.rule.ingress_protocol === 'vless_reality' && props.rule.vless_outbound_mode === 'SOCKS5' && props.rule.vless_socks5_host && props.rule.vless_socks5_port
     ? targetAddress(props.rule.vless_socks5_host, props.rule.vless_socks5_port)
     : props.rule.targets.map((item) => targetAddress(item.host, item.port)).join('\n')
   : '')
@@ -49,7 +50,7 @@ const exitAllowed = computed(() => Boolean(network.value && networkAllowsExitGro
 const title = computed(() => props.copy ? '复制规则' : props.rule ? '编辑规则' : '添加规则')
 const ingressProtocol = computed<IngressProtocol>(() => form.ingress_protocol ?? (form.protocol === 'udp' ? 'udp' : 'tcp'))
 const isVlessReality = computed(() => ingressProtocol.value === 'vless_reality')
-const compactVLESSSOCKS5 = computed(() => isVlessReality.value)
+const compactVLESSSOCKS5 = computed(() => isVlessReality.value && form.vless_outbound_mode === 'SOCKS5')
 const targetPlaceholder = computed(() => compactVLESSSOCKS5.value
   ? '例如 192.217.9.52:35556:用户名:密码'
   : '一行一个 host:port，例如 1.2.3.4:5678、[2001:db8::1]:443')
@@ -92,8 +93,7 @@ watch(() => form.ingress_protocol, (protocol, previousProtocol) => {
     form.vless_flow = effectiveVLESSFlow(form)
     form.accept_proxy_protocol = false
     form.send_proxy_protocol = 0
-    // The compact target is always an authenticated SOCKS5 upstream.
-    form.vless_outbound_mode = 'SOCKS5'
+    if (previousProtocol !== undefined && previousProtocol !== 'vless_reality') form.vless_outbound_mode = 'SOCKS5'
   }
   if (selectedProtocol === 'socks5') {
     // SOCKS5 has its own client handshake but uses the NY TCP transport.
@@ -115,20 +115,15 @@ watch(() => form.ingress_protocol, (protocol, previousProtocol) => {
     form.vless_socks5_password = ''
   }
 }, { immediate: true })
-watch(() => form.vless_outbound_mode, (mode) => {
-  if (isVlessReality.value && mode !== 'SOCKS5') {
-    form.vless_outbound_mode = 'SOCKS5'
-    return
-  }
+watch(() => form.vless_outbound_mode, (mode, previousMode) => {
   if (!isVlessReality.value || mode === 'DIRECT') {
     form.vless_socks5_host = ''
     form.vless_socks5_port = 0
     form.vless_socks5_username = ''
     form.vless_socks5_password = ''
   }
-  if (mode === 'SOCKS5' && isVlessReality.value) {
-    // SOCKS5 receives the final destination from the VLESS request. Do not
-    // carry a stale fixed target into the dynamic mode when switching modes.
+  if (isVlessReality.value && previousMode !== undefined && previousMode !== mode) {
+    // The fixed destination and SOCKS5 landing have different meanings.
     targetsText.value = ''
     form.targets = []
   }
@@ -163,13 +158,15 @@ async function save(): Promise<void> {
     if (form.reality_destination && !form.reality_server_name) { error.value = '填写 Reality Target 时，也需要填写对应的 SNI'; return }
     if (form.reality_server_name && !form.reality_destination) form.reality_destination = `${form.reality_server_name}:443`
     if (form.reality_public_key && !form.reality_server_name) { error.value = '已有 Reality 规则需要保留或重新填写 Target 和 SNI'; return }
-    try { compactSOCKS5 = parseVLESSSOCKS5Target(targetsText.value, Boolean(props.rule && !props.copy)) }
-    catch (cause) { error.value = displayError(cause); return }
-    form.vless_outbound_mode = 'SOCKS5'
-    form.vless_socks5_host = compactSOCKS5.host
-    form.vless_socks5_port = compactSOCKS5.port
-    form.vless_socks5_username = compactSOCKS5.username
-    form.vless_socks5_password = compactSOCKS5.password
+    if (form.vless_outbound_mode === 'SOCKS5') {
+      if (copyingSOCKS5.value && !targetsText.value.trim()) { error.value = '复制 SOCKS5 规则需重新填写上游地址、账号和密码'; return }
+      try { compactSOCKS5 = parseVLESSSOCKS5Target(targetsText.value, Boolean(props.rule && !props.copy && props.rule.vless_outbound_mode === 'SOCKS5')) }
+      catch (cause) { error.value = displayError(cause); return }
+      form.vless_socks5_host = compactSOCKS5.host
+      form.vless_socks5_port = compactSOCKS5.port
+      form.vless_socks5_username = compactSOCKS5.username
+      form.vless_socks5_password = compactSOCKS5.password
+    } else if (form.vless_outbound_mode !== 'DIRECT') { error.value = '请选择 VLESS 出站模式'; return }
   }
   // The group member list is enough to create a rule. The control plane
   // creates/updates the projected listener policy; do not force operators to
@@ -189,9 +186,8 @@ async function save(): Promise<void> {
   for (const [label, value] of [['规则限速', form.speed_limit_mbps ?? 0], ['IP 限制', form.ip_limit ?? 0], ['连接数限制', form.connection_limit ?? 0]] as const) {
     if (!Number.isInteger(value) || value < 0 || value > 1_000_000) { error.value = `${label}需为 0 至 1000000 的整数`; return }
   }
-  const dynamicTargets = selectedIngress === 'vless_reality'
-  // The compact VLESS value is an authenticated SOCKS5 landing endpoint, not
-  // a customer final target. Keep it out of the public target projection.
+  const dynamicTargets = selectedIngress === 'vless_reality' && form.vless_outbound_mode === 'SOCKS5'
+  // The SOCKS5 landing is not a customer final target. DIRECT has one fixed target.
   try { form.targets = dynamicTargets ? [] : parseTargetAddresses(targetsText.value) } catch (cause) { error.value = displayError(cause); return }
   if (selectedIngress === 'vless_reality' && !dynamicTargets && form.targets.length !== 1) { error.value = '直连 VLESS + Reality 需要一个最终目标地址'; return }
   if (dynamicTargets && form.targets.length > 1) { error.value = 'SOCKS5 出站最多保留一个兼容目标地址；最终目标由客户端提供'; return }
@@ -199,7 +195,7 @@ async function save(): Promise<void> {
   // generate it once. Keep already-issued material stable during edits;
   // clearing it would rotate the customer's URI on an unrelated change.
   const isVLESS = selectedIngress === 'vless_reality'
-  const input: ForwardRuleInput = { ...form, name: form.name.trim(), description: form.description.trim(), ingress_protocol: selectedIngress, vless_flow: isVLESS ? effectiveVLESSFlow(form) : '', vless_flow_explicit: isVLESS && Boolean(form.vless_flow_explicit), reality_server_name: isVLESS ? form.reality_server_name : '', reality_public_key: isVLESS ? form.reality_public_key : '', reality_short_id: isVLESS ? form.reality_short_id : '', reality_destination: isVLESS ? form.reality_destination : '', vless_outbound_mode: isVLESS ? 'SOCKS5' : 'DIRECT', vless_socks5_host: isVLESS ? form.vless_socks5_host?.trim() : '', vless_socks5_port: isVLESS ? form.vless_socks5_port : 0, vless_socks5_username: isVLESS ? form.vless_socks5_username?.trim() : '', vless_socks5_password: isVLESS ? (form.vless_socks5_password || '') : '', exit_group_id: form.egress_mode === 'DIRECT' ? '' : form.exit_group_id, tunnel_transport: form.egress_mode === 'EXIT_GROUP' && selectedIngress === 'tcp' ? form.tunnel_transport : '', targets: form.targets.map((item) => ({ host: item.host.trim(), port: item.port })) }
+  const input: ForwardRuleInput = { ...form, name: form.name.trim(), description: form.description.trim(), ingress_protocol: selectedIngress, vless_flow: isVLESS ? effectiveVLESSFlow(form) : '', vless_flow_explicit: isVLESS && Boolean(form.vless_flow_explicit), reality_server_name: isVLESS ? form.reality_server_name : '', reality_public_key: isVLESS ? form.reality_public_key : '', reality_short_id: isVLESS ? form.reality_short_id : '', reality_destination: isVLESS ? form.reality_destination : '', vless_outbound_mode: isVLESS ? form.vless_outbound_mode : 'DIRECT', vless_socks5_host: dynamicTargets ? form.vless_socks5_host?.trim() : '', vless_socks5_port: dynamicTargets ? form.vless_socks5_port : 0, vless_socks5_username: dynamicTargets ? form.vless_socks5_username?.trim() : '', vless_socks5_password: dynamicTargets ? (form.vless_socks5_password || '') : '', exit_group_id: form.egress_mode === 'DIRECT' ? '' : form.exit_group_id, tunnel_transport: form.egress_mode === 'EXIT_GROUP' && selectedIngress === 'tcp' ? form.tunnel_transport : '', targets: form.targets.map((item) => ({ host: item.host.trim(), port: item.port })) }
   const quotaBytes = Math.round(Number(trafficLimitGB.value) * BYTES_PER_GB)
   if (!Number.isFinite(Number(trafficLimitGB.value)) || Number(trafficLimitGB.value) < 0 || !Number.isSafeInteger(quotaBytes) || (Number(trafficLimitGB.value) > 0 && quotaBytes < 1)) { error.value = '请输入有效的流量额度'; return }
   input.traffic_limit_bytes = quotaBytes
@@ -220,9 +216,11 @@ async function save(): Promise<void> {
       <p v-if="!entries.length" class="field-help">暂无入口设备组，请先添加设备组成员。</p>
       <label class="field"><span>监听端口</span><input :value="form.listen_port || ''" type="number" min="0" max="65535" step="1" placeholder="自动分配" @input="form.listen_port = Number(($event.target as HTMLInputElement).value || 0)" /></label>
       <label class="field"><span>出口</span><select :value="form.exit_group_id" :disabled="!form.entry_group_id || isVlessReality" @change="chooseExit(($event.target as HTMLSelectElement).value)"><option v-if="directAllowed || !form.entry_group_id || isVlessReality || !network" value="">入口组直出</option><option v-else value="" disabled>请选择出口设备组</option><option v-if="form.exit_group_id && !exits.some(item => item.id === form.exit_group_id)" :value="form.exit_group_id">原出口已不可用</option><option v-for="item in exits" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
+      <label v-if="isVlessReality" class="field"><span>VLESS 出站</span><select v-model="form.vless_outbound_mode"><option value="SOCKS5">SOCKS5 动态目标</option><option value="DIRECT">DIRECT 固定目标</option></select><small class="field-help">DIRECT 只转发下方选定的 TCP 或 UDP 目标协议；切换既有规则的目标协议会影响原有业务。</small></label>
+      <label v-if="isVlessReality && form.vless_outbound_mode === 'DIRECT'" class="field"><span>目标协议</span><select v-model="form.protocol"><option value="tcp">TCP</option><option value="udp">UDP</option></select><small class="field-help">客户入口仍为 VLESS + Reality / TCP。这里限定固定目标使用的协议。</small></label>
       <label v-if="form.egress_mode === 'EXIT_GROUP' && ingressProtocol === 'tcp'" class="field"><span>节点间隧道</span><select v-model="form.tunnel_transport" required><option value="" disabled>请选择隧道协议</option><option value="quic">QUIC（可靠 UDP）</option><option value="kcp">KCP（可靠 UDP）</option></select><small class="field-help">仅改变入口与出口节点之间的传输，客户继续使用原 TCP 入口。两端节点需支持可靠 UDP，出口需放行面板分配的 UDP 端口。更改隧道会重新应用节点配置，已有连接可能重连。</small></label>
       <div v-if="form.entry_group_id && form.exit_group_id" class="rule-connection-summary">入口组 → {{ exits.find(item => item.id === form.exit_group_id)?.name || '出口组' }} → 目标地址</div>
-      <label class="field"><span>目标地址</span><textarea v-model="targetsText" required rows="4" spellcheck="false" :placeholder="targetPlaceholder" /><small v-if="isVlessReality" class="field-help">新建填写 IP:端口:账号:密码；编辑已有规则可直接保留 IP:端口，服务端沿用已保存的上游凭据。</small></label>
+      <label class="field"><span>目标地址</span><textarea v-model="targetsText" required rows="4" spellcheck="false" :placeholder="targetPlaceholder" /><small v-if="copyingSOCKS5 && compactVLESSSOCKS5" class="field-help">上游密码不可读取，复制时需重新填写 IP:端口:账号:密码。</small><small v-else-if="compactVLESSSOCKS5" class="field-help">新建填写 IP:端口:账号:密码；编辑已有规则可直接保留 IP:端口，服务端沿用已保存的上游凭据。</small><small v-else-if="isVlessReality" class="field-help">填写唯一固定目标 host:port。客户入口仍使用 VLESS + Reality。</small></label>
       <label class="field"><span>规则流量额度（GB）</span><input v-model="trafficLimitGB" type="number" min="0" max="8388607" step="any" placeholder="0 为不限量" /><small class="field-help">0 为不限量；1024 MB = 1 GB，1024 GB = 1 TB（按 1024 进制换算）。达到额度后规则自动暂停，提高或取消额度可恢复，手动暂停仍需手动恢复。</small></label>
       <label class="field field--checkbox"><input v-model="form.traffic_quota_monthly" type="checkbox" /><span>每月清零额度</span><small class="field-help">开启后按 UTC 自然月计算：每月 1 日从 0 GB 重新累计，额度上限每月重新可用；关闭后持续累计历史用量。</small></label>
       <small v-if="rule && !copy" class="field-help">已累计 {{ ((rule.traffic_used_bytes ?? 0) / BYTES_PER_GB).toFixed(3) }} GB{{ form.traffic_quota_monthly ? '（按月清零）' : '（持续累计）' }}</small>

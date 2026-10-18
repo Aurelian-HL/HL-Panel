@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +35,23 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = udpTarget.Close() })
+	unauthorizedTarget, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unauthorizedTarget.Close() })
+	var unauthorizedPackets atomic.Int64
+	go func() {
+		buffer := make([]byte, 2048)
+		for {
+			_, address, readErr := unauthorizedTarget.ReadFromUDP(buffer)
+			if readErr != nil {
+				return
+			}
+			unauthorizedPackets.Add(1)
+			_, _ = unauthorizedTarget.WriteToUDP([]byte("unauthorized-target"), address)
+		}
+	}()
 	go func() {
 		buffer := make([]byte, 2048)
 		for {
@@ -175,6 +193,14 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 			}
 			startXray(t, binaryPath, unmodifiedProductionConfig(t, clientConfig), localAddress(clientPort))
 			checkRealityUDP(t, clientPort, udpTarget.LocalAddr().(*net.UDPAddr).Port, !route.badPassword && !route.tcpOnlyDirect)
+			if !route.socks5Landing && !route.badPassword && !route.tcpOnlyDirect {
+				// A client-requested address must still resolve to DIRECT's one
+				// authorized target, regardless of the SOCKS5 UDP destination.
+				checkRealityUDP(t, clientPort, unauthorizedTarget.LocalAddr().(*net.UDPAddr).Port, true)
+				if got := unauthorizedPackets.Load(); got != 0 {
+					t.Fatalf("DIRECT UDP reached an unauthorized target %d times", got)
+				}
+			}
 			if (route.socks5Landing || route.tcpOnlyDirect) && !route.badPassword {
 				checkRealityTCP(t, clientPort, tcpTarget.URL)
 			}

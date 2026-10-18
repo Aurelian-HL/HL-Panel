@@ -129,7 +129,7 @@ func TestVLESSSOCKS5CredentialsMustBePaired(t *testing.T) {
 	}
 }
 
-func TestVLESSDefaultsToAuthenticatedSOCKS5AndRejectsDirect(t *testing.T) {
+func TestVLESSDefaultsToAuthenticatedSOCKS5AndRequiresExplicitCleanDirect(t *testing.T) {
 	request := validRequest()
 	request.IngressProtocol = IngressVLESSReality
 	request.VLESSFlow = "xtls-rprx-vision"
@@ -150,8 +150,15 @@ func TestVLESSDefaultsToAuthenticatedSOCKS5AndRejectsDirect(t *testing.T) {
 	}
 
 	request.VLESSOutboundMode = VLESSOutboundDirect
-	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) || !strings.Contains(err.Error(), "requires SOCKS5 outbound") {
-		t.Fatalf("VLESS DIRECT outbound was accepted: %v", err)
+	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) || !strings.Contains(err.Error(), "cannot include SOCKS5 parameters") {
+		t.Fatalf("VLESS DIRECT accepted SOCKS5 credentials: %v", err)
+	}
+	request.VLESSSOCKS5Host = ""
+	request.VLESSSOCKS5Port = 0
+	request.VLESSSOCKS5Username = ""
+	request.VLESSSOCKS5Password = ""
+	if normalized, err := NormalizeRequest(request); err != nil || normalized.VLESSOutboundMode != VLESSOutboundDirect {
+		t.Fatalf("explicit VLESS DIRECT was not preserved: %+v, %v", normalized, err)
 	}
 }
 
@@ -269,7 +276,7 @@ func TestRealityPublicKeyMustBeAnX25519Base64URLKey(t *testing.T) {
 	}
 }
 
-func TestVLESSRealityRejectsDirectOutbound(t *testing.T) {
+func TestVLESSRealityDirectHasOneFixedTargetAndNoSOCKS5Credentials(t *testing.T) {
 	request := validRequest()
 	request.IngressProtocol = IngressVLESSReality
 	request.VLESSOutboundMode = VLESSOutboundDirect
@@ -277,8 +284,25 @@ func TestVLESSRealityRejectsDirectOutbound(t *testing.T) {
 	request.RealityServerName = "www.example.com"
 	request.RealityPublicKey = strings.Repeat("A", 43)
 	request.RealityShortID = "0123456789abcdef"
-	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) || !strings.Contains(err.Error(), "requires SOCKS5 outbound") {
-		t.Fatalf("direct VLESS rule was not rejected: %v", err)
+	for _, protocol := range []Protocol{ProtocolTCP, ProtocolUDP} {
+		request.Protocol = protocol
+		normalized, err := NormalizeRequest(request)
+		if err != nil || normalized.VLESSOutboundMode != VLESSOutboundDirect || normalized.Protocol != protocol || normalized.VLESSFlow != request.VLESSFlow || len(normalized.Targets) != 1 {
+			t.Fatalf("VLESS DIRECT %s rejected or changed: %+v, %v", protocol, normalized, err)
+		}
+	}
+	request.Targets = nil
+	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) {
+		t.Fatalf("VLESS DIRECT accepted no target: %v", err)
+	}
+	request.Targets = []Target{{Host: "first.example.test", Port: 443}, {Host: "second.example.test", Port: 443}}
+	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) {
+		t.Fatalf("VLESS DIRECT accepted multiple targets: %v", err)
+	}
+	request.Targets = []Target{{Host: "first.example.test", Port: 443}}
+	request.VLESSSOCKS5Host = "landing.example.test"
+	if _, err := NormalizeRequest(request); !errors.Is(err, faults.ErrValidation) {
+		t.Fatalf("VLESS DIRECT accepted SOCKS5 endpoint: %v", err)
 	}
 }
 

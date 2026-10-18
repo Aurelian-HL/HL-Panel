@@ -12,7 +12,7 @@ const vlessOptions = {
 }
 const vlessRule = () => ({
   id: 'rule-vless', customer_id: 'customer-1', name: 'VLESS 规则', rule_group_id: '', entry_group_id: 'entry-1', exit_group_id: '', egress_mode: 'DIRECT',
-  ingress_protocol: 'vless_reality', protocol: 'tcp', vless_flow: 'xtls-rprx-vision', reality_server_name: 'server.example.test', reality_public_key: 'existing-public-key',
+  ingress_protocol: 'vless_reality', protocol: 'tcp', vless_flow: 'xtls-rprx-vision', vless_outbound_mode: 'DIRECT', reality_server_name: 'server.example.test', reality_public_key: 'existing-public-key',
   reality_short_id: 'aabbccdd', reality_destination: 'server.example.test:443', listen_port: 14443,
   targets: [{ host: 'target.example.test', port: 443 }], selection_policy: 'round_robin', accept_proxy_protocol: false,
   send_proxy_protocol: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0, paused: false, description: '', revision: 3,
@@ -159,7 +159,7 @@ describe('ServicesPage', () => {
     await vlessChoice.trigger('click')
     const updatedForm = wrapper.get('#customer-rule-form')
     expect(updatedForm.findAll('.rule-choice button').find((item) => item.text().includes('VLESS'))!.classes()).toContain('active')
-    expect(updatedForm.text()).toContain('Reality 密钥、Short ID 与默认 Flow 由平台生成')
+    expect(updatedForm.text()).toContain('Reality 密钥和 Short ID 由平台生成')
     expect(updatedForm.findAll('label').some((item) => item.text().includes('Reality 公钥'))).toBe(false)
     await form.get('input[maxlength="128"]').setValue('新 VLESS 规则')
     await form.get('.rule-targets textarea').setValue('target.example.test:443')
@@ -172,10 +172,10 @@ describe('ServicesPage', () => {
     wrapper.unmount()
   })
 
-  it('saves a VLESS + Reality UDP target with empty Flow and no TCP-only limits', async () => {
+  it('saves a VLESS + Reality UDP target with Vision Flow and no TCP-only limits', async () => {
     mocked.rules.mockResolvedValue([])
     mocked.ruleOptions.mockResolvedValue(vlessOptions)
-    mocked.saveRule.mockResolvedValue({ ...vlessRule(), protocol: 'udp', vless_flow: '' })
+    mocked.saveRule.mockResolvedValue({ ...vlessRule(), protocol: 'udp' })
     const wrapper = mount(ServicesPage, { global: { stubs: { Teleport: true } } })
     await flushPromises()
     await wrapper.findAll('button').find((item) => item.text().includes('添加规则'))!.trigger('click')
@@ -186,7 +186,7 @@ describe('ServicesPage', () => {
     await flushPromises()
     const targetProtocolChoice = wrapper.findAll('fieldset').find((item) => item.find('legend').text() === '解密后目标协议')
     if (!targetProtocolChoice) throw new Error('目标协议选择器缺失')
-    expect(targetProtocolChoice.text()).toContain('Reality 外层传输固定为 TCP')
+    expect(targetProtocolChoice.text()).toContain('VLESS + Reality / TCP')
     await targetProtocolChoice.findAll('button').find((item) => item.text() === 'UDP')!.trigger('click')
     await form.get('input[maxlength="128"]').setValue('VLESS UDP 规则')
     await form.get('.rule-targets textarea').setValue('udp-target.example.test:443')
@@ -194,7 +194,7 @@ describe('ServicesPage', () => {
     await flushPromises()
 
     expect(mocked.saveRule).toHaveBeenCalledWith(expect.objectContaining({
-      ingress_protocol: 'vless_reality', protocol: 'udp', vless_flow: '', egress_mode: 'DIRECT',
+      ingress_protocol: 'vless_reality', protocol: 'udp', vless_flow: 'xtls-rprx-vision', vless_outbound_mode: 'DIRECT', egress_mode: 'DIRECT',
       accept_proxy_protocol: false, send_proxy_protocol: 0, speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0,
     }), null)
     wrapper.unmount()
@@ -237,6 +237,21 @@ describe('ServicesPage', () => {
       name: 'VLESS 规则 - 副本', listen_port: 0, revision: 0, paused: true,
       reality_server_name: '', reality_public_key: '', reality_short_id: '', reality_destination: '',
     }), null)
+    wrapper.unmount()
+  })
+
+  it('blocks copying a SOCKS5-backed VLESS rule whose upstream password is write-only', async () => {
+    const rule = { ...vlessRule(), vless_outbound_mode: 'SOCKS5', targets: [], vless_socks5_host: 'landing.example.test', vless_socks5_port: 1080 }
+    mocked.rules.mockResolvedValue([rule])
+    mocked.rule.mockResolvedValue(rule)
+    mocked.ruleOptions.mockResolvedValue(vlessOptions)
+    const wrapper = mount(ServicesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    await wrapper.get('button[aria-label="复制规则"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('#customer-rule-form').exists()).toBe(false)
+    expect(wrapper.get('[role="alert"]').text()).toContain('SOCKS5 上游密码不可读取')
+    expect(mocked.saveRule).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

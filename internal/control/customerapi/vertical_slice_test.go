@@ -252,3 +252,49 @@ func TestCustomerRuleMutationsUseAuthenticatedOwner(t *testing.T) {
 		map[string]string{"Idempotency-Key": "owner-delete"}, http.StatusOK)
 	customerRequest(t, handler, http.MethodGet, path, owner.AccessToken, nil, nil, http.StatusNotFound)
 }
+
+func TestCustomerVLESSRealityDirectUDPCreateAndRenamePreservesIdentity(t *testing.T) {
+	handler, _, _, entryID := verticalFixture(t)
+	login := customerLogin(t, handler, "customer-password", http.StatusOK)
+	input := forwarding.Request{
+		Name: "VLESS UDP 直出", EntryGroupID: entryID,
+		EgressMode: forwarding.EgressDirect, VLESSOutboundMode: forwarding.VLESSOutboundDirect,
+		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolUDP,
+		VLESSFlow: "xtls-rprx-vision", VLESSFlowExplicit: true,
+		RealityServerName: "www.example.com", RealityDestination: "www.example.com:443",
+		Targets:         []forwarding.Target{{Host: "192.0.2.20", Port: 5300}},
+		SelectionPolicy: forwarding.SelectionRoundRobin,
+	}
+	var created struct {
+		Rule forwarding.Rule `json:"rule"`
+	}
+	raw := customerRequest(t, handler, http.MethodPost, "/api/v1/customer/rules", login.AccessToken, input,
+		map[string]string{"Idempotency-Key": "customer-vless-udp-create"}, http.StatusCreated)
+	if err := json.Unmarshal(raw, &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Rule.CustomerID != login.User.ID || created.Rule.VLESSOutboundMode != forwarding.VLESSOutboundDirect ||
+		created.Rule.Protocol != forwarding.ProtocolUDP || created.Rule.VLESSFlow != "xtls-rprx-vision" ||
+		created.Rule.RealityPublicKey == "" || created.Rule.RealityShortID == "" || created.Rule.ListenPort == 0 {
+		t.Fatalf("customer VLESS UDP DIRECT rule was not persisted correctly: %+v", created.Rule)
+	}
+	input.Name = "仅更改名称"
+	input.Revision = created.Rule.Revision
+	input.ListenPort = created.Rule.ListenPort
+	input.RealityPublicKey = created.Rule.RealityPublicKey
+	input.RealityShortID = created.Rule.RealityShortID
+	var updated struct {
+		Rule forwarding.Rule `json:"rule"`
+	}
+	raw = customerRequest(t, handler, http.MethodPut, "/api/v1/customer/rules/"+created.Rule.ID, login.AccessToken, input,
+		map[string]string{"Idempotency-Key": "customer-vless-udp-rename"}, http.StatusOK)
+	if err := json.Unmarshal(raw, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Rule.Name != input.Name || updated.Rule.Revision != created.Rule.Revision+1 ||
+		updated.Rule.Protocol != created.Rule.Protocol || updated.Rule.VLESSFlow != created.Rule.VLESSFlow ||
+		updated.Rule.RealityPublicKey != created.Rule.RealityPublicKey || updated.Rule.RealityShortID != created.Rule.RealityShortID ||
+		updated.Rule.RealityServerName != created.Rule.RealityServerName || updated.Rule.RealityDestination != created.Rule.RealityDestination {
+		t.Fatalf("rename changed customer VLESS UDP connection identity: before=%+v after=%+v", created.Rule, updated.Rule)
+	}
+}

@@ -44,6 +44,10 @@ async function openEditor(rule: CustomerRule | null, copy = false): Promise<void
   actionBusy.value = true; actionError.value = ''
   try {
     const [available, detail] = await Promise.all([customerApi.ruleOptions(), rule ? customerApi.rule(rule.id) : Promise.resolve(null)])
+    if (copy && detail?.ingress_protocol === 'vless_reality' && detail.vless_outbound_mode === 'SOCKS5') {
+      actionError.value = '该规则的 SOCKS5 上游密码不可读取，无法复制；请联系管理员新建规则。'
+      return
+    }
     options.value = available; editorRule.value = detail; copying.value = copy; editorOpen.value = true
   } catch (cause) { actionError.value = cause instanceof Error ? cause.message : '无法打开规则编辑器' }
   finally { actionBusy.value = false }

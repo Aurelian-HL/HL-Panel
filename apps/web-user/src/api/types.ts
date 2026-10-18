@@ -70,6 +70,12 @@ export interface CustomerRuleInput {
   ingress_protocol: 'tcp' | 'udp' | 'socks5' | 'vless_reality'
   protocol: 'tcp' | 'udp'
   vless_flow: string
+  vless_flow_explicit?: boolean
+  vless_outbound_mode?: 'DIRECT' | 'SOCKS5' | 'KL_NATIVE'
+  vless_socks5_host?: string
+  vless_socks5_port?: number
+  vless_socks5_username?: string
+  vless_socks5_password?: string
   reality_server_name: string
   reality_public_key: string
   reality_short_id: string

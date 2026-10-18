@@ -192,6 +192,71 @@ describe('ForwardRuleEditor', () => {
     wrapper.unmount()
   })
 
+  it.each(['tcp', 'udp'] as const)('creates VLESS Reality DIRECT with a fixed %s target', async (protocol) => {
+    const wrapper = mountEditor()
+    await field(wrapper, '名称').get('input').setValue(`固定 ${protocol}`)
+    await field(wrapper, '入口').get('select').setValue('entry-1')
+    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+    await field(wrapper, 'VLESS 出站').get('select').setValue('DIRECT')
+    await field(wrapper, '目标协议').get('select').setValue(protocol)
+    await field(wrapper, '目标地址').get('textarea').setValue('192.0.2.50:5300')
+    await submit(wrapper)
+    expect(mocked.saveRule).toHaveBeenCalledOnce()
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
+      ingress_protocol: 'vless_reality', protocol, egress_mode: 'DIRECT',
+      vless_outbound_mode: 'DIRECT', vless_flow: 'xtls-rprx-vision',
+      targets: [{ host: '192.0.2.50', port: 5300 }],
+      vless_socks5_host: '', vless_socks5_port: 0,
+      vless_socks5_username: '', vless_socks5_password: '',
+    })
+    wrapper.unmount()
+  })
+
+  it.each([false, true])('preserves an issued DIRECT URI and mode on edit or copy (copy=%s)', async (copy) => {
+    const issued: ForwardRule = {
+      ...rule, ingress_protocol: 'vless_reality', protocol: 'udp',
+      vless_outbound_mode: 'DIRECT', vless_flow: '', vless_flow_explicit: true,
+      reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443',
+      reality_public_key: 'public-key', reality_short_id: '0123456789abcdef',
+    }
+    const wrapper = mountEditor({ rule: issued, copy })
+    expect(field(wrapper, 'VLESS 出站').get('select').element.value).toBe('DIRECT')
+    expect(field(wrapper, '目标协议').get('select').element.value).toBe('udp')
+    expect(field(wrapper, '目标地址').get('textarea').element.value).toBe('192.0.2.10:443')
+    if (!copy) await field(wrapper, '名称').get('input').setValue('仅改名称')
+    await submit(wrapper)
+    expect(mocked.saveRule).toHaveBeenCalledOnce()
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
+      vless_outbound_mode: 'DIRECT', protocol: 'udp', vless_flow: '', vless_flow_explicit: true,
+      targets: issued.targets, reality_server_name: issued.reality_server_name,
+      reality_destination: issued.reality_destination,
+      reality_public_key: copy ? '' : issued.reality_public_key,
+      reality_short_id: copy ? '' : issued.reality_short_id,
+    })
+    wrapper.unmount()
+  })
+
+  it('does not carry SOCKS5 landing credentials into DIRECT mode', async () => {
+    const issued: ForwardRule = {
+      ...rule, ingress_protocol: 'vless_reality', vless_outbound_mode: 'SOCKS5', targets: [],
+      vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019,
+      vless_socks5_username: 'landing-user',
+      reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443',
+      reality_public_key: 'public-key', reality_short_id: '0123456789abcdef',
+    }
+    const wrapper = mountEditor({ rule: issued })
+    await field(wrapper, 'VLESS 出站').get('select').setValue('DIRECT')
+    expect(field(wrapper, '目标地址').get('textarea').element.value).toBe('')
+    await field(wrapper, '目标地址').get('textarea').setValue('192.0.2.10:443')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
+      vless_outbound_mode: 'DIRECT', vless_socks5_host: '', vless_socks5_port: 0,
+      vless_socks5_username: '', vless_socks5_password: '',
+      targets: [{ host: '192.0.2.10', port: 443 }],
+    })
+    wrapper.unmount()
+  })
+
   it('keeps the URI flow of a legacy UDP rule during an unrelated edit', async () => {
     const legacy = { ...rule, ingress_protocol: 'vless_reality' as const, protocol: 'udp' as const, vless_flow: '', vless_flow_explicit: false, vless_outbound_mode: 'SOCKS5' as const, vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019 }
     const wrapper = mountEditor({ rule: legacy })
@@ -225,6 +290,30 @@ describe('ForwardRuleEditor', () => {
     expect(mocked.saveRule).toHaveBeenCalledOnce()
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ vless_socks5_username: 'landing-user', vless_socks5_password: 'landing-secret', targets: [] })
     edit.unmount()
+  })
+
+  it('requires fresh SOCKS5 credentials when copying a VLESS rule', async () => {
+    const issued: ForwardRule = {
+      ...rule, ingress_protocol: 'vless_reality', vless_outbound_mode: 'SOCKS5', targets: [],
+      vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019,
+      vless_socks5_username: 'landing-user', reality_server_name: 'www.example.com',
+      reality_public_key: 'public-key', reality_short_id: '0123456789abcdef',
+      reality_destination: 'www.example.com:443',
+    }
+    const copy = mountEditor({ rule: issued, copy: true })
+    expect(fieldStartingWith(copy, '目标地址').get('textarea').element.value).toBe('')
+    expect(copy.text()).toContain('上游密码不可读取')
+    await submit(copy)
+    expect(mocked.saveRule).not.toHaveBeenCalled()
+    expect(copy.get('[role="alert"]').text()).toContain('重新填写上游地址、账号和密码')
+    await fieldStartingWith(copy, '目标地址').get('textarea').setValue('198.51.100.20:6019:landing-user:fresh-secret')
+    await submit(copy)
+    expect(mocked.saveRule).toHaveBeenCalledOnce()
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
+      vless_outbound_mode: 'SOCKS5', vless_socks5_password: 'fresh-secret',
+      reality_public_key: '', reality_short_id: '', revision: 0, listen_port: 0,
+    })
+    copy.unmount()
   })
 
   it('saves a custom Reality target while leaving key generation automatic', async () => {
