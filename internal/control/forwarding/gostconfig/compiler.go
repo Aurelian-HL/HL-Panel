@@ -155,8 +155,20 @@ func compileDirect(rules []forwarding.Rule, bindIP string, ingress forwarding.In
 		default:
 			return nil, fmt.Errorf("%w: unsupported target selection policy", faults.ErrValidation)
 		}
+		metadata := map[string]any{"enableStats": true}
+		listenerMetadata := map[string]any(nil)
+		if engineType == "udp" {
+			// Keep the per-client UDP session alive across datagrams. GOST's
+			// default keepalive=false closes the demultiplexed session after the
+			// first response, which creates a race when the same client socket
+			// immediately sends its next datagram. The listener TTL still bounds
+			// idle session lifetime.
+			// This is listener metadata: GOST does not read UDP listener options
+			// from the service-level metadata map.
+			listenerMetadata = map[string]any{"keepalive": true}
+		}
 		service := Service{Name: "forward-" + rule.ID, Addr: net.JoinHostPort(ip.String(), strconv.Itoa(rule.ListenPort)),
-			Handler: EngineType{Type: engineType}, Listener: EngineType{Type: engineType}, Metadata: map[string]any{"enableStats": true}, Forwarder: Forwarder{Nodes: make([]Node, 0, len(request.Targets)), Selector: Selector{Strategy: strategy, MaxFails: 1, FailTimeout: 30_000_000_000}}}
+			Handler: EngineType{Type: engineType}, Listener: EngineType{Type: engineType, Metadata: listenerMetadata}, Metadata: metadata, Forwarder: Forwarder{Nodes: make([]Node, 0, len(request.Targets)), Selector: Selector{Strategy: strategy, MaxFails: 1, FailTimeout: 30_000_000_000}}}
 		for index, target := range request.Targets {
 			service.Forwarder.Nodes = append(service.Forwarder.Nodes, Node{Name: fmt.Sprintf("target-%d", index+1), Addr: net.JoinHostPort(target.Host, strconv.Itoa(target.Port))})
 		}

@@ -41,7 +41,11 @@ func TestCompileDirectUDPUsesPairedUDPHandlerAndListener(t *testing.T) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Services) != 1 || config.Services[0].Handler.Type != "udp" || config.Services[0].Listener.Type != "udp" || config.Services[0].Addr != "0.0.0.0:12346" {
+	if len(config.Services) != 1 {
+		t.Fatalf("invalid UDP configuration: %s", raw)
+	}
+	service := config.Services[0]
+	if service.Handler.Type != "udp" || service.Listener.Type != "udp" || service.Addr != "0.0.0.0:12346" || service.Metadata["enableStats"] != true || service.Listener.Metadata["keepalive"] != true {
 		t.Fatalf("invalid UDP configuration: %s", raw)
 	}
 }

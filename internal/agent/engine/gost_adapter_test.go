@@ -95,6 +95,7 @@ func TestCompileGOSTBundlePreservesLoopbackStatsAPI(t *testing.T) {
 
 func TestCompileGOSTBundleAllowsTCPAndUDPOnSamePort(t *testing.T) {
 	udp := strings.ReplaceAll(strings.ReplaceAll(gostServiceA, `"forward-a"`, `"forward-udp"`), `"tcp"`, `"udp"`)
+	udp = strings.Replace(udp, `"listener":{"type":"udp"}`, `"listener":{"type":"udp","metadata":{"keepalive":true}}`, 1)
 	compiled, err := CompileGOSTBundle(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: []agentv1.ConfigurationFragment{
 		gostFragment("tcp", gostServiceA), gostFragment("udp", udp),
 	}})
@@ -116,6 +117,7 @@ func TestCompileGOSTBundleRejectsUDPAndTunnelOnSamePort(t *testing.T) {
 	}
 	udp := direct.Services[0]
 	udp.Handler.Type, udp.Listener.Type = "udp", "udp"
+	udp.Listener.Metadata = map[string]any{"keepalive": true}
 	tunnel := direct.Services[0]
 	tunnel.Name = "tunnel-exit-test"
 	tunnel.Handler = gostconfig.EngineType{Type: "relay", Auth: &gostconfig.Auth{

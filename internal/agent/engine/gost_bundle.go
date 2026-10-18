@@ -111,8 +111,14 @@ func validateGOSTService(service gostconfig.Service) error {
 		return errors.New("service name is required")
 	}
 	if service.Listener.Type == "tcp" || service.Listener.Type == "udp" {
-		if service.Handler.Type != service.Listener.Type || service.Handler.Auth != nil || service.Handler.TLS != nil || len(service.Handler.Metadata) != 0 || service.Listener.Chain != "" || service.Listener.Auth != nil || service.Listener.TLS != nil || len(service.Listener.Metadata) != 0 {
+		if service.Handler.Type != service.Listener.Type || service.Handler.Auth != nil || service.Handler.TLS != nil || len(service.Handler.Metadata) != 0 || service.Listener.Chain != "" || service.Listener.Auth != nil || service.Listener.TLS != nil {
 			return errors.New("unsupported DIRECT handler/listener options")
+		}
+		if service.Listener.Type == "tcp" && len(service.Listener.Metadata) != 0 {
+			return errors.New("unsupported TCP listener metadata")
+		}
+		if service.Listener.Type == "udp" && !sameGOSTMetadata(service.Listener.Metadata, map[string]any{"keepalive": true}) {
+			return errors.New("UDP listener keepalive must be enabled")
 		}
 	} else {
 		if !strings.HasPrefix(service.Name, "tunnel-exit-") || service.Handler.Type != "relay" || !validTunnelAuth(service.Handler.Auth) || service.Handler.Chain != "" || service.Handler.TLS != nil || !sameGOSTMetadata(service.Handler.Metadata, map[string]any{"readTimeout": "5s"}) {

@@ -167,6 +167,7 @@ func udpEchoTarget(t *testing.T) forwarding.Target {
 				return
 			}
 			if _, err := listener.WriteToUDP(buffer[:n], address); err != nil {
+				t.Logf("UDP target write failed: %v", err)
 				return
 			}
 		}
@@ -234,6 +235,7 @@ func startGOST(t *testing.T, binary string, configuration []byte, address string
 			}
 		}
 		if t.Failed() {
+			t.Logf("GOST diagnostics:\n%s", diagnostic.String())
 			for _, marker := range []string{"unmarshal", "invalid", "error", "refused", "timeout"} {
 				if strings.Contains(diagnostic.String(), marker) {
 					t.Logf("GOST diagnostic marker: %s", marker)
