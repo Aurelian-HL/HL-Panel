@@ -2,14 +2,26 @@ package engine
 
 import (
 	"context"
+	"crypto/rand"
+	stdbinary "encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/forwarding/vlessconfig"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
+	"github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
 func liveAddFragment(extra bool) json.RawMessage {
@@ -45,11 +57,10 @@ func TestXrayAdditionsRejectChangesToExistingTraffic(t *testing.T) {
 		t.Fatal("disjoint addition rejected")
 	}
 	cases := map[string]func(map[string]any){
-		"edit inbound":     func(m map[string]any) { m["inbounds"].([]any)[0].(map[string]any)["port"] = 19000 },
-		"remove inbound":   func(m map[string]any) { m["inbounds"] = m["inbounds"].([]any)[1:] },
-		"edit outbound":    func(m map[string]any) { m["outbounds"].([]any)[0].(map[string]any)["protocol"] = "blackhole" },
-		"default outbound": func(m map[string]any) { v := m["outbounds"].([]any); v[0], v[1] = v[1], v[0] },
-		"duplicate tag":    func(m map[string]any) { m["inbounds"].([]any)[1].(map[string]any)["tag"] = "old-in" },
+		"edit inbound":   func(m map[string]any) { m["inbounds"].([]any)[0].(map[string]any)["port"] = 19000 },
+		"remove inbound": func(m map[string]any) { m["inbounds"] = m["inbounds"].([]any)[1:] },
+		"edit outbound":  func(m map[string]any) { m["outbounds"].([]any)[0].(map[string]any)["protocol"] = "blackhole" },
+		"duplicate tag":  func(m map[string]any) { m["inbounds"].([]any)[1].(map[string]any)["tag"] = "old-in" },
 		"catch all route": func(m map[string]any) {
 			delete(m["routing"].(map[string]any)["rules"].([]any)[2].(map[string]any), "inboundTag")
 		},
@@ -78,6 +89,362 @@ func TestXrayAdditionsRejectChangesToExistingTraffic(t *testing.T) {
 	if _, ok := planXrayAdditions(legacy, after); ok {
 		t.Fatal("legacy process lacks required API")
 	}
+}
+
+func orderedLiveRule(id, inbound, outbound string, port int) agentv1.ConfigurationFragment {
+	config, _ := json.Marshal(map[string]any{
+		"inbounds":  []any{map[string]any{"tag": inbound, "protocol": "socks", "port": port}},
+		"outbounds": []any{map[string]any{"tag": outbound, "protocol": "freedom"}},
+		"routing": map[string]any{"rules": []any{
+			map[string]any{"type": "field", "inboundTag": []string{inbound}, "outboundTag": outbound},
+		}},
+	})
+	return agentv1.ConfigurationFragment{GroupID: id, GroupRevision: 1, Engine: agentv1.EngineXray, Config: config}
+}
+
+func orderedLivePrepared(t *testing.T, a *XrayProcessAdapter, generation agentv1.NodeConfigGeneration, fragments ...agentv1.ConfigurationFragment) PreparedConfiguration {
+	t.Helper()
+	prepared, err := a.Prepare(context.Background(), xrayDesired(t, generation, fragments))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prepared
+}
+
+func TestXrayLeadingOutboundAdditionRequiresFallbackForEveryInbound(t *testing.T) {
+	a := newTestXrayAdapter(t, &recordingXrayRunner{}, false)
+	old := orderedLiveRule("z-old", "old-in", "old-out", 18080)
+	newRule := orderedLiveRule("a-new", "new-in", "new-out", 18081)
+	before, _ := os.ReadFile(orderedLivePrepared(t, a, 1, old).adapterPath)
+	after, _ := os.ReadFile(orderedLivePrepared(t, a, 2, newRule, old).adapterPath)
+	if _, ok := planXrayAdditions(before, after); !ok {
+		t.Fatal("new leading rule with explicit fallback routes should be eligible")
+	}
+	removeFallback := func(data []byte, tag string) []byte {
+		t.Helper()
+		var doc map[string]any
+		if err := json.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		routing := doc["routing"].(map[string]any)
+		rules := routing["rules"].([]any)
+		kept := make([]any, 0, len(rules))
+		for _, entry := range rules {
+			rule := entry.(map[string]any)
+			inboundTags := rule["inboundTag"].([]any)
+			if len(inboundTags) == 1 && inboundTags[0] == tag {
+				continue
+			}
+			kept = append(kept, entry)
+		}
+		routing["rules"] = kept
+		encoded, _ := json.Marshal(doc)
+		return encoded
+	}
+	for _, tag := range []string{"old-in", "hl-stats-api-in"} {
+		if _, ok := planXrayAdditions(removeFallback(before, tag), removeFallback(after, tag)); ok {
+			t.Fatalf("accepted changed default without fallback for %s", tag)
+		}
+	}
+	if _, ok := planXrayAdditions(before, removeFallback(after, "new-in")); ok {
+		t.Fatal("accepted changed default without fallback for new inbound")
+	}
+	var conditional map[string]any
+	_ = json.Unmarshal(after, &conditional)
+	conditional["routing"].(map[string]any)["rules"].([]any)[1].(map[string]any)["domain"] = []string{"example.com"}
+	encoded, _ := json.Marshal(conditional)
+	if _, ok := planXrayAdditions(before, encoded); ok {
+		t.Fatal("accepted conditional route as an unconditional fallback")
+	}
+}
+
+func TestXrayRepeatedLeadingRuleAdditionAndRollbackKeepProcess(t *testing.T) {
+	r := &liveAPITestRunner{tags: map[string]bool{"old-in": true}}
+	a := newTestXrayAdapter(t, r, true)
+	old := orderedLiveRule("z-old", "old-in", "old-out", 18080)
+	second := orderedLiveRule("m-second", "second-in", "second-out", 18081)
+	third := orderedLiveRule("a-third", "third-in", "third-out", 18082)
+	firstConfig := orderedLivePrepared(t, a, 1, old)
+	secondConfig := orderedLivePrepared(t, a, 2, second, old)
+	thirdConfig := orderedLivePrepared(t, a, 3, third, second, old)
+	if err := a.Commit(context.Background(), firstConfig); err != nil {
+		t.Fatal(err)
+	}
+	epoch := a.CounterEpoch()
+	for _, config := range []PreparedConfiguration{secondConfig, thirdConfig} {
+		if err := a.Commit(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Verify(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, config := range []PreparedConfiguration{secondConfig, firstConfig} {
+		if err := a.Rollback(context.Background(), &config); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Verify(context.Background(), config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(r.starts) != 1 || r.processes[0].stopCount != 0 || a.CounterEpoch() != epoch {
+		t.Fatal("repeated leading additions or rollback restarted the process")
+	}
+	if !r.tags["old-in"] || r.tags["second-in"] || r.tags["third-in"] {
+		t.Fatal("rollback did not restore only the original listener")
+	}
+}
+
+func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
+	binary := os.Getenv("NYVP_XRAY_BINARY")
+	if binary == "" {
+		t.Skip("set NYVP_XRAY_BINARY for isolated loopback Xray integration test")
+	}
+	publicKey, privateKey, err := vless.GenerateRealityKeyPair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoy := httptest.NewTLSServer(http.NotFoundHandler())
+	defer decoy.Close()
+	decoyURL, err := url.Parse(decoy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpEcho, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buffer := make([]byte, 2048)
+		for {
+			n, address, err := udpEcho.ReadFromUDP(buffer)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buffer[:n], address)
+		}
+	}()
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echo.Close()
+	go func() {
+		for {
+			conn, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	freePort := func() int {
+		t.Helper()
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		_ = listener.Close()
+		return port
+	}
+	oldPort, newPort, apiPort, clientPort := freePort(), freePort(), freePort(), freePort()
+	root := t.TempDir()
+	a, err := NewXrayProcessAdapter(XrayAdapterOptions{
+		StagingDir:      filepath.Join(root, "staging"),
+		ActivePath:      filepath.Join(root, "active", "config.json"),
+		BinaryPath:      binary,
+		AutoStart:       true,
+		StatsAPIAddress: net.JoinHostPort("127.0.0.1", fmt.Sprint(apiPort)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = a.Close(context.Background()) }()
+	fragment := func(id, inbound, outbound string, port int) agentv1.ConfigurationFragment {
+		config, _ := json.Marshal(map[string]any{
+			"log":   map[string]any{"loglevel": "warning", "access": "none"},
+			"api":   map[string]any{"tag": "hl-stats-api", "services": []string{"StatsService"}},
+			"stats": map[string]any{},
+			"inbounds": []any{map[string]any{
+				"tag": inbound, "listen": "127.0.0.1", "port": port,
+				"protocol": "dokodemo-door", "settings": map[string]any{
+					"address": "127.0.0.1", "port": echo.Addr().(*net.TCPAddr).Port, "network": "tcp",
+				},
+			}},
+			"outbounds": []any{map[string]any{"tag": outbound, "protocol": "freedom"}},
+			"routing": map[string]any{"rules": []any{
+				map[string]any{"type": "field", "inboundTag": []string{inbound}, "outboundTag": outbound},
+			}},
+		})
+		return agentv1.ConfigurationFragment{GroupID: id, GroupRevision: 1, Engine: agentv1.EngineXray, Config: config}
+	}
+	old := fragment("z-old", "old-in", "old-out", oldPort)
+	const userID = "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"
+	newConfig, err := vlessconfig.CompileDirect(forwarding.Rule{
+		ID: "new-udp", CustomerID: "test-customer", EntryGroupID: "test-entry",
+		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolUDP,
+		EgressMode: forwarding.EgressDirect, VLESSOutboundMode: forwarding.VLESSOutboundDirect,
+		VLESSFlow: "", VLESSFlowExplicit: true,
+		Targets: []forwarding.Target{{Host: "127.0.0.1", Port: udpEcho.LocalAddr().(*net.UDPAddr).Port}},
+	}, vlessconfig.Identity{UUID: userID}, vlessconfig.RealityProfile{
+		ServerName: "localhost", Dest: decoyURL.Host, PrivateKey: privateKey, ShortIDs: []string{"01234567"},
+	}, vlessconfig.Listener{Address: "127.0.0.1", Port: newPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRule := agentv1.ConfigurationFragment{GroupID: "a-new", GroupRevision: 1, Engine: agentv1.EngineXray, Config: newConfig}
+	first := orderedLivePrepared(t, a, 1, old)
+	second := orderedLivePrepared(t, a, 2, newRule, old)
+	before, err := os.ReadFile(first.adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(second.adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := planXrayAdditions(before, after); !ok {
+		t.Fatal("leading VLESS Reality UDP rule should be eligible for live addition")
+	}
+	for _, config := range []PreparedConfiguration{first, second} {
+		if err := a.Validate(context.Background(), config); err != nil {
+			t.Fatalf("native Xray validation: %v", err)
+		}
+	}
+	if err := a.CommitValidated(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	pid := a.process.(*execXrayProcess).PID()
+	epoch := a.CounterEpoch()
+	dial := func(port int) net.Conn {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), 200*time.Millisecond)
+			if err == nil {
+				return conn
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("listener %d unavailable: %v", port, err)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+	}
+	exchange := func(conn net.Conn, payload string) {
+		t.Helper()
+		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		response := make([]byte, len(payload))
+		if _, err := io.ReadFull(conn, response); err != nil {
+			t.Fatal(err)
+		}
+		if string(response) != payload {
+			t.Fatalf("echo = %q, want %q", response, payload)
+		}
+	}
+	oldConn := dial(oldPort)
+	defer oldConn.Close()
+	exchange(oldConn, "before")
+	if err := a.CommitValidated(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if a.process.(*execXrayProcess).PID() != pid || a.CounterEpoch() != epoch {
+		t.Fatal("new leading rule restarted Xray")
+	}
+	exchange(oldConn, "after")
+	clientConfig, err := json.Marshal(map[string]any{
+		"log": map[string]any{"loglevel": "warning", "access": "none"},
+		"inbounds": []any{map[string]any{
+			"listen": "127.0.0.1", "port": clientPort, "protocol": "socks",
+			"settings": map[string]any{"auth": "noauth", "udp": true},
+		}},
+		"outbounds": []any{map[string]any{
+			"protocol": "vless",
+			"settings": map[string]any{"vnext": []any{map[string]any{
+				"address": "127.0.0.1", "port": newPort,
+				"users": []any{map[string]any{"id": userID, "encryption": "none"}},
+			}}},
+			"streamSettings": map[string]any{
+				"network": "tcp", "security": "reality",
+				"realitySettings": map[string]any{
+					"serverName": "localhost", "publicKey": publicKey,
+					"shortId": "01234567", "fingerprint": "chrome", "spiderX": "/",
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPath := filepath.Join(root, "client.json")
+	if err := os.WriteFile(clientPath, clientConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clientRunner, err := NewExecXrayRunner(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientRunner.Test(context.Background(), clientPath); err != nil {
+		t.Fatal(err)
+	}
+	clientProcess, err := clientRunner.Start(context.Background(), clientPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = clientProcess.Stop(context.Background()) }()
+	control := dial(clientPort)
+	defer control.Close()
+	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := control.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatal(err)
+	}
+	method := make([]byte, 2)
+	if _, err := io.ReadFull(control, method); err != nil || method[0] != 5 || method[1] != 0 {
+		t.Fatalf("SOCKS5 greeting failed: %v", err)
+	}
+	if _, err := control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 10)
+	if _, err := io.ReadFull(control, response); err != nil || response[0] != 5 || response[1] != 0 || response[3] != 1 {
+		t.Fatalf("SOCKS5 UDP associate failed: %v", err)
+	}
+	relayIP := net.IP(response[4:8])
+	if relayIP.IsUnspecified() {
+		relayIP = net.ParseIP("127.0.0.1")
+	}
+	udpClient, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: relayIP, Port: int(stdbinary.BigEndian.Uint16(response[8:10]))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpClient.Close()
+	targetPort := udpEcho.LocalAddr().(*net.UDPAddr).Port
+	payload := []byte("vless-reality-direct-udp")
+	packet := append([]byte{0, 0, 0, 1, 127, 0, 0, 1, byte(targetPort >> 8), byte(targetPort)}, payload...)
+	if _, err := udpClient.Write(packet); err != nil {
+		t.Fatal(err)
+	}
+	_ = udpClient.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buffer := make([]byte, 2048)
+	n, err := udpClient.Read(buffer)
+	if err != nil || n < 10 || string(buffer[10:n]) != string(payload) {
+		t.Fatalf("VLESS Reality UDP echo failed: bytes=%d error=%v", n, err)
+	}
+	exchange(oldConn, "udp-active")
+	if err := a.Rollback(context.Background(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if a.process.(*execXrayProcess).PID() != pid || a.CounterEpoch() != epoch {
+		t.Fatal("rollback restarted Xray")
+	}
+	exchange(oldConn, "rollback")
 }
 
 type liveAPITestRunner struct {

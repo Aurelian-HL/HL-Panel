@@ -28,10 +28,11 @@ type xrayAdditions struct {
 	previousRouting, candidateRouting json.RawMessage
 }
 
-// Plan only disjoint additions. Edits, deletions, global settings, default
-// outbound changes and reordered existing rules retain the full apply path.
+// Plan only disjoint additions. Edits, deletions, global settings and
+// reordered existing rules retain the full apply path.
 // Every added route must be restricted to newly added inbound tags, so it
-// cannot change dispatch for any existing listener.
+// cannot change dispatch for any existing listener. A changed first outbound
+// is safe only when every listener has an explicit unconditional route.
 func planXrayAdditions(previous, candidate []byte) (xrayAdditions, bool) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(previous, &before) != nil || json.Unmarshal(candidate, &after) != nil {
@@ -59,11 +60,9 @@ func planXrayAdditions(previous, candidate []byte) (xrayAdditions, bool) {
 	if !ok {
 		return xrayAdditions{}, false
 	}
-	// Xray chooses the first outbound for unmatched traffic. The API appends
-	// handlers and cannot change that default without affecting old traffic.
 	var oldOut, nextOut []json.RawMessage
 	if json.Unmarshal(before["outbounds"], &oldOut) != nil || json.Unmarshal(after["outbounds"], &nextOut) != nil ||
-		len(oldOut) == 0 || len(nextOut) == 0 || !sameXrayJSON(oldOut[0], nextOut[0]) {
+		len(oldOut) == 0 || len(nextOut) == 0 {
 		return xrayAdditions{}, false
 	}
 	addedTags := map[string]bool{}
@@ -76,6 +75,12 @@ func planXrayAdditions(previous, candidate []byte) (xrayAdditions, bool) {
 	}
 	var oldRules, newRules []json.RawMessage
 	if json.Unmarshal(oldRouting["rules"], &oldRules) != nil || json.Unmarshal(newRouting["rules"], &newRules) != nil {
+		return xrayAdditions{}, false
+	}
+	// Xray's AddOutbound appends handlers. If a newly sorted rule becomes the
+	// first outbound in the file, the running process keeps its old default.
+	// This is equivalent only when no inbound can ever use that default.
+	if !sameXrayJSON(oldOut[0], nextOut[0]) && !xrayInboundsHaveFallbacks(after["inbounds"], nextOut, newRules) {
 		return xrayAdditions{}, false
 	}
 	index := 0
@@ -117,6 +122,46 @@ func planXrayAdditions(previous, candidate []byte) (xrayAdditions, bool) {
 	}
 	delta.inbounds, delta.outbounds = newIn, newOut
 	return delta, true
+}
+
+func xrayInboundsHaveFallbacks(inbounds json.RawMessage, outbounds, rules []json.RawMessage) bool {
+	var entries []json.RawMessage
+	if json.Unmarshal(inbounds, &entries) != nil || len(entries) == 0 {
+		return false
+	}
+	missing := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		tag := xrayEntryTag(entry)
+		if tag == "" {
+			return false
+		}
+		missing[tag] = true
+	}
+	outTags := make(map[string]bool, len(outbounds))
+	for _, entry := range outbounds {
+		tag := xrayEntryTag(entry)
+		if tag == "" {
+			return false
+		}
+		outTags[tag] = true
+	}
+	for _, raw := range rules {
+		var rule map[string]json.RawMessage
+		if json.Unmarshal(raw, &rule) != nil || len(rule) != 3 {
+			continue
+		}
+		var kind, outbound string
+		var inboundTags []string
+		if json.Unmarshal(rule["type"], &kind) != nil || kind != "field" ||
+			json.Unmarshal(rule["outboundTag"], &outbound) != nil || !outTags[outbound] ||
+			json.Unmarshal(rule["inboundTag"], &inboundTags) != nil || len(inboundTags) == 0 {
+			continue
+		}
+		for _, tag := range inboundTags {
+			delete(missing, tag)
+		}
+	}
+	return len(missing) == 0
 }
 
 func xrayAddedEntries(previous, candidate json.RawMessage) ([]json.RawMessage, []json.RawMessage, bool) {
