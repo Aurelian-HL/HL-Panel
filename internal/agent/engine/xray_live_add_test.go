@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -204,7 +205,9 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoy := httptest.NewTLSServer(http.NotFoundHandler())
+	decoy := httptest.NewUnstartedServer(http.NotFoundHandler())
+	decoy.Config.ErrorLog = log.New(io.Discard, "", 0)
+	decoy.StartTLS()
 	defer decoy.Close()
 	decoyURL, err := url.Parse(decoy.URL)
 	if err != nil {
@@ -252,7 +255,7 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 		_ = listener.Close()
 		return port
 	}
-	oldPort, newPort, apiPort, clientPort := freePort(), freePort(), freePort(), freePort()
+	oldPort, newPort, apiPort, oldClientPort, udpClientPort := freePort(), freePort(), freePort(), freePort(), freePort()
 	root := t.TempDir()
 	a, err := NewXrayProcessAdapter(XrayAdapterOptions{
 		StagingDir:      filepath.Join(root, "staging"),
@@ -265,26 +268,21 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = a.Close(context.Background()) }()
-	fragment := func(id, inbound, outbound string, port int) agentv1.ConfigurationFragment {
-		config, _ := json.Marshal(map[string]any{
-			"log":   map[string]any{"loglevel": "warning", "access": "none"},
-			"api":   map[string]any{"tag": "hl-stats-api", "services": []string{"StatsService"}},
-			"stats": map[string]any{},
-			"inbounds": []any{map[string]any{
-				"tag": inbound, "listen": "127.0.0.1", "port": port,
-				"protocol": "dokodemo-door", "settings": map[string]any{
-					"address": "127.0.0.1", "port": echo.Addr().(*net.TCPAddr).Port, "network": "tcp",
-				},
-			}},
-			"outbounds": []any{map[string]any{"tag": outbound, "protocol": "freedom"}},
-			"routing": map[string]any{"rules": []any{
-				map[string]any{"type": "field", "inboundTag": []string{inbound}, "outboundTag": outbound},
-			}},
-		})
-		return agentv1.ConfigurationFragment{GroupID: id, GroupRevision: 1, Engine: agentv1.EngineXray, Config: config}
-	}
-	old := fragment("z-old", "old-in", "old-out", oldPort)
 	const userID = "04f78a4e-bb88-4a65-86f0-9b7c53f11e0d"
+	oldConfig, err := vlessconfig.CompileDirect(forwarding.Rule{
+		ID: "old-tcp", CustomerID: "test-customer", EntryGroupID: "test-entry",
+		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolTCP,
+		EgressMode: forwarding.EgressDirect, VLESSOutboundMode: forwarding.VLESSOutboundDirect,
+		VLESSFlow: "xtls-rprx-vision", VLESSFlowExplicit: true,
+		Targets: []forwarding.Target{{Host: "127.0.0.1", Port: echo.Addr().(*net.TCPAddr).Port}},
+	}, vlessconfig.Identity{UUID: userID}, vlessconfig.RealityProfile{
+		ServerName: "localhost", Dest: decoyURL.Host, PrivateKey: privateKey,
+		ShortIDs: []string{"01234567"}, Flow: "xtls-rprx-vision",
+	}, vlessconfig.Listener{Address: "127.0.0.1", Port: oldPort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := agentv1.ConfigurationFragment{GroupID: "z-old", GroupRevision: 1, Engine: agentv1.EngineXray, Config: oldConfig}
 	newConfig, err := vlessconfig.CompileDirect(forwarding.Rule{
 		ID: "new-udp", CustomerID: "test-customer", EntryGroupID: "test-entry",
 		IngressProtocol: forwarding.IngressVLESSReality, Protocol: forwarding.ProtocolUDP,
@@ -349,7 +347,80 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 			t.Fatalf("echo = %q, want %q", response, payload)
 		}
 	}
-	oldConn := dial(oldPort)
+	clientRunner, err := NewExecXrayRunner(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startClient := func(localPort, serverPort int, flow string, udp bool) {
+		t.Helper()
+		user := map[string]any{"id": userID, "encryption": "none"}
+		if flow != "" {
+			user["flow"] = flow
+		}
+		clientConfig, err := json.Marshal(map[string]any{
+			"log": map[string]any{"loglevel": "warning", "access": "none"},
+			"inbounds": []any{map[string]any{
+				"listen": "127.0.0.1", "port": localPort, "protocol": "socks",
+				"settings": map[string]any{"auth": "noauth", "udp": udp},
+			}},
+			"outbounds": []any{map[string]any{
+				"protocol": "vless",
+				"settings": map[string]any{"vnext": []any{map[string]any{
+					"address": "127.0.0.1", "port": serverPort, "users": []any{user},
+				}}},
+				"streamSettings": map[string]any{
+					"network": "tcp", "security": "reality",
+					"realitySettings": map[string]any{
+						"serverName": "localhost", "publicKey": publicKey,
+						"shortId": "01234567", "fingerprint": "chrome", "spiderX": "/",
+					},
+				},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clientPath := filepath.Join(root, fmt.Sprintf("client-%d.json", localPort))
+		if err := os.WriteFile(clientPath, clientConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := clientRunner.Test(context.Background(), clientPath); err != nil {
+			t.Fatal(err)
+		}
+		clientProcess, err := clientRunner.Start(context.Background(), clientPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = clientProcess.Stop(context.Background()) })
+	}
+	socksRequest := func(localPort int, command byte, targetPort int) (net.Conn, []byte) {
+		t.Helper()
+		control := dial(localPort)
+		_ = control.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := control.Write([]byte{5, 1, 0}); err != nil {
+			t.Fatal(err)
+		}
+		method := make([]byte, 2)
+		if _, err := io.ReadFull(control, method); err != nil || method[0] != 5 || method[1] != 0 {
+			t.Fatalf("SOCKS5 greeting failed: %v", err)
+		}
+		address := []byte{0, 0, 0, 0}
+		if command == 1 {
+			address = []byte{127, 0, 0, 1}
+		}
+		request := append([]byte{5, command, 0, 1}, address...)
+		request = append(request, byte(targetPort>>8), byte(targetPort))
+		if _, err := control.Write(request); err != nil {
+			t.Fatal(err)
+		}
+		response := make([]byte, 10)
+		if _, err := io.ReadFull(control, response); err != nil || response[0] != 5 || response[1] != 0 || response[3] != 1 {
+			t.Fatalf("SOCKS5 command %d failed: %v", command, err)
+		}
+		return control, response
+	}
+	startClient(oldClientPort, oldPort, "xtls-rprx-vision", false)
+	oldConn, _ := socksRequest(oldClientPort, 1, echo.Addr().(*net.TCPAddr).Port)
 	defer oldConn.Close()
 	exchange(oldConn, "before")
 	if err := a.CommitValidated(context.Background(), second); err != nil {
@@ -359,63 +430,9 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 		t.Fatal("new leading rule restarted Xray")
 	}
 	exchange(oldConn, "after")
-	clientConfig, err := json.Marshal(map[string]any{
-		"log": map[string]any{"loglevel": "warning", "access": "none"},
-		"inbounds": []any{map[string]any{
-			"listen": "127.0.0.1", "port": clientPort, "protocol": "socks",
-			"settings": map[string]any{"auth": "noauth", "udp": true},
-		}},
-		"outbounds": []any{map[string]any{
-			"protocol": "vless",
-			"settings": map[string]any{"vnext": []any{map[string]any{
-				"address": "127.0.0.1", "port": newPort,
-				"users": []any{map[string]any{"id": userID, "encryption": "none"}},
-			}}},
-			"streamSettings": map[string]any{
-				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]any{
-					"serverName": "localhost", "publicKey": publicKey,
-					"shortId": "01234567", "fingerprint": "chrome", "spiderX": "/",
-				},
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	clientPath := filepath.Join(root, "client.json")
-	if err := os.WriteFile(clientPath, clientConfig, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	clientRunner, err := NewExecXrayRunner(binary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := clientRunner.Test(context.Background(), clientPath); err != nil {
-		t.Fatal(err)
-	}
-	clientProcess, err := clientRunner.Start(context.Background(), clientPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = clientProcess.Stop(context.Background()) }()
-	control := dial(clientPort)
+	startClient(udpClientPort, newPort, "", true)
+	control, response := socksRequest(udpClientPort, 3, 0)
 	defer control.Close()
-	_ = control.SetDeadline(time.Now().Add(5 * time.Second))
-	if _, err := control.Write([]byte{5, 1, 0}); err != nil {
-		t.Fatal(err)
-	}
-	method := make([]byte, 2)
-	if _, err := io.ReadFull(control, method); err != nil || method[0] != 5 || method[1] != 0 {
-		t.Fatalf("SOCKS5 greeting failed: %v", err)
-	}
-	if _, err := control.Write([]byte{5, 3, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
-		t.Fatal(err)
-	}
-	response := make([]byte, 10)
-	if _, err := io.ReadFull(control, response); err != nil || response[0] != 5 || response[1] != 0 || response[3] != 1 {
-		t.Fatalf("SOCKS5 UDP associate failed: %v", err)
-	}
 	relayIP := net.IP(response[4:8])
 	if relayIP.IsUnspecified() {
 		relayIP = net.ParseIP("127.0.0.1")
