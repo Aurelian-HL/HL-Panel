@@ -48,6 +48,11 @@ func TestCompileGOSTBundleRejectsMixedAndConflictingFragments(t *testing.T) {
 		{"unknown field", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[],"api":"127.0.0.1:1234"}`)}, ErrInvalidConfiguration},
 		{"incomplete service", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[{"name":"bad"}]}`)}, ErrInvalidConfiguration},
 		{"mixed TCP UDP pair", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(gostServiceA, `"listener":{"type":"tcp"}`, `"listener":{"type":"udp"}`, 1))}, ErrInvalidConfiguration},
+		{"TCP listener metadata", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(gostServiceA, `"listener":{"type":"tcp"}`, `"listener":{"type":"tcp","metadata":{"keepalive":true}}`, 1))}, ErrInvalidConfiguration},
+		{"UDP listener metadata missing", []agentv1.ConfigurationFragment{gostFragment("a", strings.ReplaceAll(gostServiceA, `"tcp"`, `"udp"`))}, ErrInvalidConfiguration},
+		{"UDP listener keepalive false", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(strings.ReplaceAll(gostServiceA, `"tcp"`, `"udp"`), `"listener":{"type":"udp"}`, `"listener":{"type":"udp","metadata":{"keepalive":false}}`, 1))}, ErrInvalidConfiguration},
+		{"UDP listener metadata extra key", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(strings.ReplaceAll(gostServiceA, `"tcp"`, `"udp"`), `"listener":{"type":"udp"}`, `"listener":{"type":"udp","metadata":{"keepalive":true,"extra":true}}`, 1))}, ErrInvalidConfiguration},
+		{"service metadata keepalive", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(gostServiceA, `"metadata":{"enableStats":true}`, `"metadata":{"enableStats":true,"keepalive":true}`, 1))}, ErrInvalidConfiguration},
 		{"trailing value", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[]} {"services":[]}`)}, ErrInvalidConfiguration},
 	}
 	for _, tt := range tests {
