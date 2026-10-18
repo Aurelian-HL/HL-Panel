@@ -18,7 +18,7 @@ export function target(host: string, port: number): string {
 }
 
 export function ingressProtocolLabel(protocol: CustomerIngressProtocol | undefined, transport: string): string {
-  if (protocol === 'vless_reality') return 'VLESS + Reality + Vision'
+  if (protocol === 'vless_reality') return 'VLESS + Reality'
   if (protocol === 'socks5') return 'NY SOCKS5'
   if (protocol === 'udp' || transport.toLowerCase() === 'udp') return 'NY UDP'
   return 'NY TCP'

@@ -36,6 +36,11 @@ const identity: VlessIdentity = {
   id: 'binding-1', customer_id: customer.id, forwarding_rule_id: rule.id, endpoint_pool_id: pool.id, state: 'active', revision: 1,
   created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
 }
+const udpRule: ForwardRule = {
+  ...rule,
+  id: 'rule-vless-udp', name: 'Reality UDP 入口', protocol: 'udp', vless_flow: '', vless_flow_explicit: false,
+}
+const udpPool: EndpointPool = { ...pool, id: 'pool-vless-udp', rule_id: udpRule.id }
 
 beforeEach(() => {
   for (const method of Object.values(mockedBusiness)) method.mockReset()
@@ -85,6 +90,25 @@ describe('SubscriptionsPage', () => {
     await wrapper.get('button[title="撤销VLESS 凭据"]').trigger('click')
     await flushPromises()
     expect(mockedBusiness.revokeVlessIdentity).toHaveBeenCalledWith(identity.id, identity.revision, expect.any(String))
+    wrapper.unmount()
+  })
+
+  it('offers deployed VLESS UDP rules for credentials without changing the endpoint protocol', async () => {
+    mockedBusiness.rules.mockResolvedValue({ items: [udpRule] })
+    mockedAdminApi.getEndpointPools.mockResolvedValue({ items: [udpPool] })
+    mockedBusiness.provisionVlessIdentity.mockResolvedValue({ identity: { ...identity, forwarding_rule_id: udpRule.id, endpoint_pool_id: udpPool.id }, replayed: false })
+    const wrapper = mount(SubscriptionsPage)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('创建VLESS 凭据'))!.trigger('click')
+    const selects = wrapper.findAll('select')
+    expect(selects[0]!.findAll('option').some((option) => option.text().includes('Reality UDP 入口'))).toBe(true)
+    await selects[0]!.setValue(udpRule.id)
+    await selects[1]!.setValue(udpPool.id)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(mockedBusiness.provisionVlessIdentity).toHaveBeenCalledWith(expect.objectContaining({ forwarding_rule_id: udpRule.id, endpoint_pool_id: udpPool.id }), expect.any(String))
     wrapper.unmount()
   })
 

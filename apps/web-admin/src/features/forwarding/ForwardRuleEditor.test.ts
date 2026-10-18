@@ -175,6 +175,23 @@ describe('ForwardRuleEditor', () => {
     wrapper.unmount()
   })
 
+  it('keeps VLESS + Reality as the customer protocol while allowing a UDP decrypted target', async () => {
+    const wrapper = mountEditor()
+    await populate(wrapper)
+    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+    await field(wrapper, '目标协议').get('select').setValue('udp')
+    await fieldStartingWith(wrapper, '目标地址').get('textarea').setValue('192.0.2.10:443:landing-user:landing-secret')
+    await submit(wrapper)
+
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
+      ingress_protocol: 'vless_reality', protocol: 'udp', egress_mode: 'DIRECT',
+      vless_flow: '', vless_flow_explicit: false, accept_proxy_protocol: false, send_proxy_protocol: 0,
+      speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0,
+    })
+    expect(wrapper.text()).toContain('Reality 外层传输固定为 TCP')
+    wrapper.unmount()
+  })
+
   it('preserves VLESS identity on edit and clears it on copy', async () => {
     const issued = { ...rule, ingress_protocol: 'vless_reality' as const, reality_server_name: 'www.example.com', reality_public_key: 'public-key', reality_short_id: '0123456789abcdef', reality_destination: 'www.example.com:443' }
     const edit = mountEditor({ rule: issued })

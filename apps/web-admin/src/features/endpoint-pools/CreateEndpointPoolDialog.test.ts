@@ -75,4 +75,16 @@ describe('CreateEndpointPoolDialog', () => {
     await wrapper.get('form').trigger('submit')
     expect(apiMocks.createEndpointPool).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'socks5', rule_id: 'socks5-rule' }))
   })
+
+  it('allows a VLESS + Reality UDP target while keeping the endpoint protocol as VLESS', async () => {
+    apiMocks.createEndpointPool.mockClear()
+    apiMocks.createEndpointPool.mockResolvedValue({ pool: { id: 'vless-udp-pool' }, replayed: false })
+    const wrapper = mount(CreateEndpointPoolDialog, { props: { groups, networks, rules: [{ ...rules[0], id: 'vless-udp-rule', name: 'VLESS UDP 入口', protocol: 'udp' }] as never }, global: { stubs: { Teleport: true } } })
+
+    await wrapper.get('select').setValue('vless-udp-rule')
+    expect(wrapper.text()).toContain('VLESS + Reality')
+    await wrapper.get('form').trigger('submit')
+
+    expect(apiMocks.createEndpointPool).toHaveBeenCalledWith(expect.objectContaining({ protocol: 'vless', rule_id: 'vless-udp-rule', port: 12000 }))
+  })
 })
