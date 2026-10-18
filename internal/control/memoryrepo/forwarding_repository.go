@@ -626,6 +626,14 @@ func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	customer := s.customers[item.CustomerID]
 	item = cloneForwardingRule(item)
 	item.Connection = nil // Live observations never enter configuration or revisions.
+	// Ordinary customer UDP has no node-bundle compiler, runtime capability, or
+	// deployment receipt path yet. Force the read projection to remain
+	// fail-closed even when a legacy snapshot incorrectly persisted Deployed=true.
+	// This is deliberately a projection-only correction; the stored rule remains
+	// untouched so snapshot recovery and rollback stay non-destructive.
+	if item.EffectiveIngressProtocol() == forwarding.IngressUDP || item.Protocol == forwarding.ProtocolUDP {
+		item.Deployed = false
+	}
 	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}
 	if item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport() {
 		availability = forwarding.CustomerAvailability{Enabled: s.hasNonCustomerSubjectLocked(item)}

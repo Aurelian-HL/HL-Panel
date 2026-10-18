@@ -205,6 +205,31 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	}
 }
 
+func TestOrdinaryUDPProjectionRemainsFailClosedForLegacyDeployedState(t *testing.T) {
+	s, request := forwardingRepositoryFixture(t)
+	now := time.Now().UTC()
+	udp := forwarding.Rule{
+		ID: "legacy-udp", CustomerID: request.CustomerID, Name: "legacy UDP",
+		EntryGroupID: request.EntryGroupID, EgressMode: forwarding.EgressDirect,
+		IngressProtocol: forwarding.IngressUDP, Protocol: forwarding.ProtocolUDP,
+		ListenPort: 12000, Targets: []forwarding.Target{{Host: "198.51.100.10", Port: 53}},
+		SelectionPolicy: forwarding.SelectionRoundRobin, Revision: 1,
+		CreatedAt: now, UpdatedAt: now, Status: forwarding.StatusActive, Deployed: true,
+	}
+	s.forwardRules[udp.ID] = udp
+
+	view, err := s.ForwardingRule(context.Background(), udp.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Deployed || view.Status != forwarding.StatusPendingActivation || view.ActivationReason != forwarding.ActivationReasonUDPUnsupported {
+		t.Fatalf("legacy UDP was advertised as usable: deployed=%v status=%s reason=%s", view.Deployed, view.Status, view.ActivationReason)
+	}
+	if stored := s.forwardRules[udp.ID]; !stored.Deployed || stored.ActivationReason != "" {
+		t.Fatalf("read projection mutated stored rule: deployed=%v reason=%s", stored.Deployed, stored.ActivationReason)
+	}
+}
+
 func TestForwardingExitAuthorizationAndPortProtocolIsolation(t *testing.T) {
 	s, request := forwardingRepositoryFixture(t)
 	service := forwarding.NewService(s, nil)
