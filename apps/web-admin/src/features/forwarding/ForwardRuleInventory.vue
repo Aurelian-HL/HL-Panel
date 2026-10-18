@@ -62,7 +62,9 @@ const targetSummary = (rule: ForwardRule) => {
   }
   return rule.targets.map((target) => targetAddress(target.host, target.port)).join('、') || '—'
 }
-const protocolSummary = (rule: ForwardRule) => `${ingressProtocolLabel(effectiveIngressProtocol(rule))} / ${rule.protocol.toUpperCase()}`
+const protocolSummary = (rule: ForwardRule) => effectiveIngressProtocol(rule) === 'vless_reality'
+  ? `VLESS + Reality · 外层 TCP · 解密后 ${rule.protocol.toUpperCase()}`
+  : `${ingressProtocolLabel(effectiveIngressProtocol(rule))} / ${rule.protocol.toUpperCase()}`
 const usedTraffic = (id: string) => {
   const value = props.trafficByRule[id]
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? byteAmount(value) : '—'
