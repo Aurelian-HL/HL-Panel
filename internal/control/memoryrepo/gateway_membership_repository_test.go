@@ -474,3 +474,25 @@ func TestMarkActivatedRequiresCurrentProtocolAndDeploymentEvidence(t *testing.T)
 		t.Fatal("valid activation was not idempotent")
 	}
 }
+
+func TestMarkActivatedRejectsUDPDirectWithoutWholeGroupCapability(t *testing.T) {
+	store, proof := protocolPublicationFixture(t)
+	if err := store.PublishProtocolHealth(context.Background(), proof); err != nil {
+		t.Fatal(err)
+	}
+	rule := store.forwardRules[proof.RuleID]
+	rule.Protocol = forwarding.ProtocolUDP
+	rule.VLESSFlow = ""
+	rule.VLESSFlowExplicit = true
+	rule.VLESSOutboundMode = forwarding.VLESSOutboundDirect
+	rule.Deployed = false
+	rule.Status = forwarding.StatusPendingActivation
+	store.forwardRules[proof.RuleID] = rule
+	before := len(store.auditEvents)
+	if err := store.MarkActivated(context.Background(), proof.RuleID, proof.RuleRevision, audit.Event{ID: "activation"}); !errors.Is(err, faults.ErrConflict) {
+		t.Fatalf("legacy node accepted UDP activation: %v", err)
+	}
+	if store.forwardRules[proof.RuleID].Deployed || len(store.auditEvents) != before {
+		t.Fatal("rejected UDP activation changed rule or audit")
+	}
+}

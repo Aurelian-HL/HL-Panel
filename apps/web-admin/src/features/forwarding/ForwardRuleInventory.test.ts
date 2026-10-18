@@ -175,7 +175,7 @@ describe('ForwardRuleInventory', () => {
 
   it.each([
     ['exit_group_engine_unsupported', '经出口组暂不支持下发'],
-    ['udp_engine_unsupported', 'UDP 节点能力不足，暂未下发'],
+    ['udp_engine_unsupported', 'UDP 节点需升级或启用支持，暂未下发'],
     ['advanced_options_engine_unsupported', '高级选项暂不支持下发'],
     ['selection_engine_unsupported', '最小连接数暂不支持下发'],
     ['node_configuration_pending', '配置同步中'],
@@ -188,6 +188,13 @@ describe('ForwardRuleInventory', () => {
     expect(wrapper.find('.business-status').text()).toBe(label)
     expect(wrapper.find('.business-status').classes()).toContain('business-status--warning')
     expect(wrapper.find('.business-status').text()).not.toBe('待激活')
+    wrapper.unmount()
+  })
+  it('shows the node upgrade requirement for VLESS Reality UDP DIRECT', () => {
+    const rule: ForwardRule = { ...baseRule, ingress_protocol: 'vless_reality', vless_outbound_mode: 'DIRECT', protocol: 'udp', status: 'pending_activation', activation_reason: 'udp_engine_unsupported' }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
+    expect(wrapper.find('.business-status').text()).toContain('节点需升级')
+    expect(wrapper.find('.business-status').text()).not.toBe('可用')
     wrapper.unmount()
   })
   it('shows the exhausted quota and opens the editor instead of pretending to resume', async () => {

@@ -109,6 +109,33 @@ func TestReconcileResumesPartialSetupAndSkipsInactiveRules(t *testing.T) {
 	}
 }
 
+func TestReconcileResumesUDPDirectWhileNodesAwaitUpgrade(t *testing.T) {
+	endpointSource := &testEndpoints{}
+	identities := &testIdentities{failOnce: true}
+	service := NewService(testNetworks{groupconfig.GroupNetwork{ConnectHost: "edge.example.com"}}, endpointSource, identities)
+	rule := readyRule()
+	rule.Protocol = forwarding.ProtocolUDP
+	rule.VLESSFlow = ""
+	rule.VLESSFlowExplicit = true
+	rule.VLESSOutboundMode = forwarding.VLESSOutboundDirect
+	rule.Status = forwarding.StatusPendingActivation
+	rule.ActivationReason = forwarding.ActivationReasonUDPUnsupported
+	if err := service.Reconcile(context.Background(), testRules{rule}); err == nil || endpointSource.creates != 1 {
+		t.Fatal("fixture did not interrupt after committing the UDP endpoint")
+	}
+	if err := service.Reconcile(context.Background(), testRules{rule}); err != nil {
+		t.Fatal(err)
+	}
+	if endpointSource.creates != 1 || identities.provisions != 2 || identities.binding.ID == "" {
+		t.Fatal("UDP setup was not recovered idempotently while awaiting node upgrade")
+	}
+	other := rule
+	other.VLESSOutboundMode = forwarding.VLESSOutboundSOCKS5
+	if err := NewService(testNetworks{}, &testEndpoints{}, &testIdentities{}).Reconcile(context.Background(), testRules{other}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReconcileContinuesAfterOneRuleFailsAndRunStops(t *testing.T) {
 	endpointSource := &testEndpoints{}
 	identities := &testIdentities{failOnce: true}

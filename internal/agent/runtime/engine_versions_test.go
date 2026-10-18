@@ -34,6 +34,14 @@ func (versionXrayRunner) Test(context.Context, string) error                    
 func (versionXrayRunner) Start(context.Context, string) (engine.XrayProcess, error) { return nil, nil }
 func (versionXrayRunner) EngineVersion() string                                     { return "26.9.25" }
 
+type capabilityXrayRunner struct{ version string }
+
+func (capabilityXrayRunner) Test(context.Context, string) error { return nil }
+func (capabilityXrayRunner) Start(context.Context, string) (engine.XrayProcess, error) {
+	return nil, nil
+}
+func (r capabilityXrayRunner) EngineVersion() string { return r.version }
+
 type versionGOSTRunner struct{}
 
 func (versionGOSTRunner) Test(context.Context, string) error                        { return nil }
@@ -62,5 +70,43 @@ func TestEngineVersionsReadAdapterAttestation(t *testing.T) {
 		}
 		// The caller must never be able to alter future heartbeat telemetry.
 		versions["xray"] = "changed"
+	}
+}
+
+func TestVLESSUDPDirectCapabilityRequiresManagedVerifiedXrayCore(t *testing.T) {
+	for _, test := range []struct {
+		name, mode, version string
+		autoStart           bool
+		want                bool
+	}{
+		{"verified xray", config.EngineModeXray, "26.7.28", true, true},
+		{"verified mixed", config.EngineModeMixed, "26.7.28", true, true},
+		{"unknown version", config.EngineModeXray, "unknown", true, false},
+		{"different version", config.EngineModeXray, "26.9.25", true, false},
+		{"unmanaged xray", config.EngineModeXray, "26.7.28", false, false},
+		{"gost mode", config.EngineModeGOST, "26.7.28", true, false},
+		{"dry run", config.EngineModeDryRun, "26.7.28", true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			xray, err := engine.NewXrayProcessAdapter(engine.XrayAdapterOptions{
+				StagingDir: filepath.Join(root, "staging"), ActivePath: filepath.Join(root, "xray.json"),
+				Runner: capabilityXrayRunner{version: test.version}, AutoStart: test.autoStart,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &Agent{
+				cfg:        config.Config{EngineMode: test.mode, Capabilities: []string{config.CapabilityXrayVLESSUDPDirect}},
+				engineMode: test.mode, xrayAdapter: xray,
+			}
+			got := false
+			for _, capability := range a.capabilities() {
+				got = got || capability == config.CapabilityXrayVLESSUDPDirect
+			}
+			if got != test.want {
+				t.Fatalf("capability = %v, want %v", got, test.want)
+			}
+		})
 	}
 }

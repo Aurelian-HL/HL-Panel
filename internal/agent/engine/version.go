@@ -14,6 +14,10 @@ import (
 const unknownEngineVersion = "unknown"
 const maxEngineVersionBytes = 4096
 
+// The release updater admits this exact Xray core after VLESS Reality and
+// DIRECT UDP compatibility testing. Other versions need their own acceptance.
+const verifiedVLESSUDPDirectXrayVersion = "26.7.28"
+
 var engineVersionNumber = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9]+(?:[-.][a-zA-Z0-9]+)*)?$`)
 
 // Read only the executable's fixed version command during runner initialization.
@@ -69,6 +73,10 @@ func (a *XrayProcessAdapter) EngineVersion() string {
 		return provider.EngineVersion()
 	}
 	return unknownEngineVersion
+}
+
+func (a *XrayProcessAdapter) SupportsVLESSUDPDirect() bool {
+	return a != nil && a.autoStart && a.EngineVersion() == verifiedVLESSUDPDirectXrayVersion
 }
 
 func (a *GOSTProcessAdapter) EngineVersion() string {

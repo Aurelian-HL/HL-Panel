@@ -833,9 +833,13 @@ func newBootID() (string, error) {
 func (a *Agent) capabilities() []string {
 	out := make([]string, 0, len(a.cfg.Capabilities)+1)
 	for _, c := range a.cfg.NodeCapabilities() {
-		if c != "gost-reliable-udp-v1" {
+		if c != "gost-reliable-udp-v1" && c != config.CapabilityXrayVLESSUDPDirect {
 			out = append(out, c)
 		}
+	}
+	if (a.engineMode == config.EngineModeXray || a.engineMode == config.EngineModeMixed) &&
+		a.xrayAdapter != nil && a.xrayAdapter.SupportsVLESSUDPDirect() {
+		out = append(out, config.CapabilityXrayVLESSUDPDirect)
 	}
 	if a.gostAdapter != nil && a.gostAdapter.SupportsReliableUDP() {
 		out = append(out, "gost-reliable-udp-v1")

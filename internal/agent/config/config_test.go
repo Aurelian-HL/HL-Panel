@@ -34,6 +34,18 @@ func TestNodeCapabilitiesOnlyAdvertiseActiveBBR2(t *testing.T) {
 	}
 }
 
+func TestNodeCapabilitiesCannotClaimVLESSUDPDirectFromConfiguration(t *testing.T) {
+	for _, mode := range []string{EngineModeDryRun, EngineModeGOST, EngineModeXray, EngineModeMixed} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Config{EngineMode: mode, Capabilities: []string{CapabilityXrayVLESSUDPDirect}}
+			cfg.setDefaults()
+			if hasCapability(cfg.NodeCapabilities(), CapabilityXrayVLESSUDPDirect) {
+				t.Fatal("configured capability bypassed runtime Xray attestation")
+			}
+		})
+	}
+}
+
 func TestHTTPClientUsesBoundedLongLivedTransport(t *testing.T) {
 	cfg := Config{RequestTimeout: Duration(17 * time.Second)}
 	client, err := cfg.HTTPClient()

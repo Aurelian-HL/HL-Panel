@@ -6,6 +6,7 @@ import (
 	"maps"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -269,7 +270,8 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect ||
 		rule.IngressReadiness() != forwarding.IngressReady ||
 		rule.PendingActivationReason() != forwarding.ActivationReasonVLESSRuntimeMaterialPending ||
-		!nodeSupportsVLESSReality(s.nodes[nodeID]) {
+		!nodeSupportsVLESSReality(s.nodes[nodeID]) ||
+		(requiresVLESSUDPDirectCapability(rule) && !nodeSupportsVLESSUDPDirect(s.nodes[nodeID])) {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
 	if effectiveSpeed := effectiveVLESSSpeedLimit(s, rule); effectiveSpeed > 0 && !nodeSupportsTCSpeedLimit(s.nodes[nodeID]) {
@@ -405,6 +407,53 @@ func nodeSupportsVLESSReality(node nodes.Node) bool {
 		}
 	}
 	return false
+}
+
+func requiresVLESSUDPDirectCapability(rule forwarding.Rule) bool {
+	return rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality &&
+		rule.Protocol == forwarding.ProtocolUDP && rule.VLESSOutboundMode == forwarding.VLESSOutboundDirect
+}
+
+func nodeSupportsVLESSUDPDirect(node nodes.Node) bool {
+	if !agentVersionAtLeast(node.AgentVersion, [3]uint64{0, 1, 117}) ||
+		node.EngineVersions["xray"] != "26.7.28" {
+		return false
+	}
+	for _, capability := range node.Capabilities {
+		if capability == agentconfig.CapabilityXrayVLESSUDPDirect {
+			return true
+		}
+	}
+	return false
+}
+
+func agentVersionAtLeast(version string, minimum [3]uint64) bool {
+	raw, ok := strings.CutPrefix(version, "v")
+	if !ok {
+		return false
+	}
+	parts := strings.Split(raw, ".")
+	if len(parts) != len(minimum) {
+		return false
+	}
+	for i, part := range parts {
+		if part == "" || (len(part) > 1 && part[0] == '0') {
+			return false
+		}
+		for _, digit := range part {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return false
+		}
+		if value != minimum[i] {
+			return value > minimum[i]
+		}
+	}
+	return true
 }
 
 func nodeSupportsTCSpeedLimit(node nodes.Node) bool {

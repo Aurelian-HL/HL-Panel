@@ -140,6 +140,7 @@ func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now ti
 	// nodes without reissuing bundles for ordinary heartbeats on existing nodes.
 	if reconcile && (nodeSupportsUsageGeneration(previousNode) != nodeSupportsUsageGeneration(node) ||
 		nodeSupportsVLESSReality(previousNode) != nodeSupportsVLESSReality(node) ||
+		nodeSupportsVLESSUDPDirect(previousNode) != nodeSupportsVLESSUDPDirect(node) ||
 		nodeSupportsGOSTUDPDirect(previousNode) != nodeSupportsGOSTUDPDirect(node) ||
 		nodeSupportsReliableUDP(previousNode) != nodeSupportsReliableUDP(node) ||
 		node.BundleCompilerRevision < NodeBundleCompilerRevision) {

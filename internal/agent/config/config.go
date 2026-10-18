@@ -28,6 +28,7 @@ const (
 	CapabilityNodeBundleV1            = "node-bundle-v1"
 	CapabilityDryRunFileAdapter       = "dry-run-file-adapter"
 	CapabilityXrayVLESSReality        = "xray-vless-reality"
+	CapabilityXrayVLESSUDPDirect      = "xray-vless-reality-udp-direct"
 	CapabilityGOSTTCPDirect           = "gost-tcp-direct"
 	CapabilityGOSTUDPDirect           = "gost-udp-direct"
 	CapabilityLinuxTCSpeedLimit       = "linux-tc-speed-limit-v1"
@@ -70,7 +71,7 @@ func detectTCPBBR2() bool {
 func (c Config) NodeCapabilities() []string {
 	capabilities := make([]string, 0, len(c.Capabilities)+1)
 	for _, capability := range c.Capabilities {
-		if capability != CapabilityTCPBBR2 {
+		if capability != CapabilityTCPBBR2 && capability != CapabilityXrayVLESSUDPDirect {
 			capabilities = append(capabilities, capability)
 		}
 	}

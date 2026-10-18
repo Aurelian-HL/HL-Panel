@@ -154,8 +154,10 @@ func (s *Service) Reconcile(ctx context.Context, source RuleSource) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if rule.Paused ||
-			rule.Status != forwarding.StatusPendingActivation || rule.ActivationReason != forwarding.ActivationReasonVLESSRuntimeMaterialPending {
+		if rule.Paused || rule.Status != forwarding.StatusPendingActivation ||
+			(rule.ActivationReason != forwarding.ActivationReasonVLESSRuntimeMaterialPending &&
+				!(rule.Protocol == forwarding.ProtocolUDP && rule.VLESSOutboundMode == forwarding.VLESSOutboundDirect &&
+					rule.ActivationReason == forwarding.ActivationReasonUDPUnsupported)) {
 			continue
 		}
 		actor := rule.OwnerID

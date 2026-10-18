@@ -40,6 +40,9 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 	if current.Paused || (current.Status != forwarding.StatusPendingActivation && current.Status != forwarding.StatusActive) {
 		return faults.ErrConflict
 	}
+	if s.vlessUDPDirectCapabilityMissingLocked(current) {
+		return faults.ErrConflict
+	}
 	if rule.Deployed {
 		return nil
 	}
@@ -556,6 +559,12 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 	item = s.forwardingBaseViewLocked(item)
 	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !item.Paused &&
 		(item.Status == forwarding.StatusPendingActivation || item.Status == forwarding.StatusActive) {
+		if s.vlessUDPDirectCapabilityMissingLocked(item) {
+			item.Deployed = false
+			item.Status = forwarding.StatusPendingActivation
+			item.ActivationReason = forwarding.ActivationReasonUDPUnsupported
+			return item
+		}
 		ready := false
 		reason := forwarding.ActivationReasonNoAvailableNodes
 		now := time.Now().UTC()
@@ -711,7 +720,8 @@ func (s *Store) vlessRuntimeMaterialReadyLocked(rule forwarding.Rule) bool {
 			continue
 		}
 		activeMembers++
-		if !nodeSupportsVLESSReality(s.nodes[nodeID]) {
+		if !nodeSupportsVLESSReality(s.nodes[nodeID]) ||
+			(requiresVLESSUDPDirectCapability(rule) && !nodeSupportsVLESSUDPDirect(s.nodes[nodeID])) {
 			return false
 		}
 		material, err := s.runtimeMaterialForNodeLocked(nodeID, bindingID)
@@ -720,6 +730,18 @@ func (s *Store) vlessRuntimeMaterialReadyLocked(rule forwarding.Rule) bool {
 		}
 	}
 	return activeMembers > 0
+}
+
+func (s *Store) vlessUDPDirectCapabilityMissingLocked(rule forwarding.Rule) bool {
+	if !requiresVLESSUDPDirectCapability(rule) {
+		return false
+	}
+	for nodeID, member := range s.membersByGroup[rule.EntryGroupID] {
+		if member.RetiredAt == nil && !nodeSupportsVLESSUDPDirect(s.nodes[nodeID]) {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneForwardingRule(item forwarding.Rule) forwarding.Rule {
