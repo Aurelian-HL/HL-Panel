@@ -86,12 +86,7 @@ func TestStructuredRuleThroughRealGOSTUDP(t *testing.T) {
 		t.Fatal(err)
 	}
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
-	startGOSTUDP(t, binary, configuration, address, target)
-
-	client, err := net.DialUDP("udp", nil, mustResolveUDPAddr(t, address))
-	if err != nil {
-		t.Fatal(err)
-	}
+	client := startGOSTUDP(t, binary, configuration, address, target)
 	defer client.Close()
 	for index := 0; index < 64; index++ {
 		payload := []byte(fmt.Sprintf("udp-payload-%03d", index))
@@ -266,7 +261,7 @@ func startGOST(t *testing.T, binary string, configuration []byte, address string
 	t.Fatal("GOST listener did not become ready")
 }
 
-func startGOSTUDP(t *testing.T, binary string, configuration []byte, address string, target forwarding.Target) {
+func startGOSTUDP(t *testing.T, binary string, configuration []byte, address string, target forwarding.Target) *net.UDPConn {
 	t.Helper()
 	directory := t.TempDir()
 	configPath := filepath.Join(directory, "gost.json")
@@ -310,10 +305,11 @@ func startGOSTUDP(t *testing.T, binary string, configuration []byte, address str
 			_, writeErr := client.Write(probe)
 			response := make([]byte, 256)
 			n, _, readErr := client.ReadFromUDP(response)
-			_ = client.Close()
 			if writeErr == nil && readErr == nil && string(response[:n]) == string(probe) {
-				return
+				_ = client.SetReadDeadline(time.Time{})
+				return client
 			}
+			_ = client.Close()
 		}
 		select {
 		case err := <-done:
@@ -324,4 +320,5 @@ func startGOSTUDP(t *testing.T, binary string, configuration []byte, address str
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("GOST UDP listener did not become ready")
+	return nil
 }
