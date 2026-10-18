@@ -94,9 +94,7 @@ func (service *ConnectionService) List(ctx context.Context, principal customerid
 		}
 		seen[record.Rule.ID] = true
 		protocol := "vless+reality"
-		// Vision is a TCP-only flow. UDP Reality rules deliberately use an
-		// empty flow, including legacy rows that predate VLESSFlowExplicit.
-		if record.Rule.Protocol == forwarding.ProtocolTCP && record.Rule.EffectiveVLESSFlow() == "xtls-rprx-vision" {
+		if record.Rule.EffectiveVLESSFlow() == "xtls-rprx-vision" {
 			protocol += "+vision"
 		}
 		view := ConnectionView{RuleID: record.Rule.ID, Name: record.Rule.Name, Protocol: protocol, Status: "unavailable"}

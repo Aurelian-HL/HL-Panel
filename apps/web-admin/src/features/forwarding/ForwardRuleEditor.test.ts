@@ -175,20 +175,30 @@ describe('ForwardRuleEditor', () => {
     wrapper.unmount()
   })
 
-  it('keeps VLESS + Reality as the customer protocol while allowing a UDP decrypted target', async () => {
+  it('shows VLESS SOCKS5 as TCP+UDP without changing an existing Vision URI', async () => {
     const wrapper = mountEditor()
     await populate(wrapper)
     await field(wrapper, '接入协议').get('select').setValue('vless_reality')
-    await field(wrapper, '目标协议').get('select').setValue('udp')
+    expect(wrapper.findAll('label.field').some((item) => item.find('span').text() === '目标协议')).toBe(false)
     await fieldStartingWith(wrapper, '目标地址').get('textarea').setValue('192.0.2.10:443:landing-user:landing-secret')
     await submit(wrapper)
 
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
-      ingress_protocol: 'vless_reality', protocol: 'udp', egress_mode: 'DIRECT',
-      vless_flow: '', vless_flow_explicit: false, accept_proxy_protocol: false, send_proxy_protocol: 0,
-      speed_limit_mbps: 0, ip_limit: 0, connection_limit: 0,
+      ingress_protocol: 'vless_reality', protocol: 'tcp', egress_mode: 'DIRECT',
+      vless_flow: 'xtls-rprx-vision', vless_flow_explicit: false,
     })
-    expect(wrapper.text()).toContain('Reality 外层传输固定为 TCP')
+    expect(wrapper.text()).toContain('VLESS + Reality / TCP')
+    expect(wrapper.text()).toContain('UDP ASSOCIATE')
+    wrapper.unmount()
+  })
+
+  it('keeps the URI flow of a legacy UDP rule during an unrelated edit', async () => {
+    const legacy = { ...rule, ingress_protocol: 'vless_reality' as const, protocol: 'udp' as const, vless_flow: '', vless_flow_explicit: false, vless_outbound_mode: 'SOCKS5' as const, vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019 }
+    const wrapper = mountEditor({ rule: legacy })
+    await field(wrapper, '名称').get('input').setValue('旧规则更名')
+    await submit(wrapper)
+    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ protocol: 'udp', vless_flow: '', vless_flow_explicit: false })
+    expect(wrapper.text()).toContain('Flow：空（保留原配置）')
     wrapper.unmount()
   })
 

@@ -109,11 +109,12 @@ export function effectiveIngressProtocol(rule: Pick<ForwardRule, 'ingress_protoc
   return rule.ingress_protocol ?? (rule.protocol === 'udp' ? 'udp' : 'tcp')
 }
 
-export function effectiveVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'>): string {
+export function effectiveVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'> & Partial<Pick<ForwardRule, 'protocol'>>): string {
+  if (rule.protocol === 'udp' && !rule.vless_flow && !rule.vless_flow_explicit) return ''
   return rule.vless_flow_explicit ? (rule.vless_flow ?? '') : (rule.vless_flow || 'xtls-rprx-vision')
 }
 
-export function supportedVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'>): boolean {
+export function supportedVLESSFlow(rule: Pick<ForwardRule, 'vless_flow' | 'vless_flow_explicit'> & Partial<Pick<ForwardRule, 'protocol'>>): boolean {
   return ['', 'xtls-rprx-vision'].includes(effectiveVLESSFlow(rule))
 }
 

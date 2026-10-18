@@ -131,9 +131,9 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	if !rule.SupportedVLESSFlow() || profile.Flow != rule.EffectiveVLESSFlow() {
 		return nil, errors.New("VLESS Reality profile flow must match the rule")
 	}
-	client := map[string]any{"id": identity.UUID}
-	if profile.Flow != "" {
-		client["flow"] = profile.Flow
+	client := map[string]any{"id": identity.UUID, "flow": profile.Flow}
+	if rule.Protocol == forwarding.ProtocolUDP && profile.Flow == "" {
+		delete(client, "flow")
 	}
 	inboundTag := statsTag("vless-reality-", rule)
 	clients := []any{client}
@@ -183,9 +183,9 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 	if probe != nil {
 		probeEmail := "hl-probe-" + rule.ID
 		probeTag := "probe-echo-" + rule.ID
-		probeClient := map[string]any{"id": probe.UUID, "email": probeEmail}
-		if profile.Flow != "" {
-			probeClient["flow"] = profile.Flow
+		probeClient := map[string]any{"id": probe.UUID, "flow": profile.Flow, "email": probeEmail}
+		if rule.Protocol == forwarding.ProtocolUDP && profile.Flow == "" {
+			delete(probeClient, "flow")
 		}
 		clients = append(clients, probeClient)
 		outbounds = append(outbounds, map[string]any{
@@ -207,6 +207,13 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		})
 	}
 	routes = append(routes, map[string]any{"type": "field", "inboundTag": []string{inboundTag}, "outboundTag": outboundTag})
+	realitySettings := map[string]any{
+		"show": false, "dest": profile.Dest, "xver": 0,
+		"serverNames": []string{profile.ServerName}, "privateKey": profile.PrivateKey, "shortIds": profile.ShortIDs,
+	}
+	if rule.Protocol == forwarding.ProtocolUDP && profile.Flow == "" {
+		realitySettings["minClientVer"] = "0.0.0"
+	}
 	config := map[string]any{
 		"log":   map[string]any{"loglevel": "warning", "access": "none"},
 		"api":   map[string]any{"tag": "hl-stats-api", "services": []string{"StatsService"}},
@@ -218,19 +225,9 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 			"protocol": "vless",
 			"settings": map[string]any{"clients": clients, "decryption": "none"},
 			"streamSettings": map[string]any{
-				"network":  "tcp",
-				"security": "reality",
-				"realitySettings": map[string]any{
-					"show": false,
-					"dest": profile.Dest,
-					"xver": 0,
-					// Keep compatibility with current Xray Reality clients,
-					// including empty-flow UDP requests, across core upgrades.
-					"minClientVer": "0.0.0",
-					"serverNames":  []string{profile.ServerName},
-					"privateKey":   profile.PrivateKey,
-					"shortIds":     profile.ShortIDs,
-				},
+				"network":         "tcp",
+				"security":        "reality",
+				"realitySettings": realitySettings,
 			},
 		}},
 		"outbounds": outbounds,

@@ -44,9 +44,17 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 			_, _ = udpTarget.WriteToUDP(buffer[:n], address)
 		}
 	}()
-	tcpTarget := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+	tcpTarget := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write([]byte("vless-reality-tcp-loopback"))
 	}))
+	if err := tcpTarget.Listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tcpTarget.Listener, err = net.Listen("tcp4", udpTarget.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcpTarget.Start()
 	t.Cleanup(tcpTarget.Close)
 
 	decoyCert, decoyKey, _ := testCertificate(t)
@@ -83,10 +91,15 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 		socks5Landing bool
 		badPassword   bool
 		visionFlow    bool
+		udpMetadata   bool
+		tcpOnlyDirect bool
 	}{
 		{name: "fixed_direct"},
+		{name: "fixed_direct_vision_udp", visionFlow: true, udpMetadata: true},
+		{name: "fixed_direct_tcp_denies_udp", visionFlow: true, tcpOnlyDirect: true},
 		{name: "socks5_landing", socks5Landing: true},
 		{name: "socks5_vision_flow", socks5Landing: true, visionFlow: true},
+		{name: "socks5_vision_udp_metadata", socks5Landing: true, visionFlow: true, udpMetadata: true},
 		{name: "socks5_wrong_password", socks5Landing: true, badPassword: true},
 	} {
 		t.Run(route.name, func(t *testing.T) {
@@ -103,7 +116,9 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 				Targets: []forwarding.Target{{Host: "127.0.0.1", Port: udpTarget.LocalAddr().(*net.UDPAddr).Port}},
 			}
 			if route.visionFlow {
-				rule.Protocol = forwarding.ProtocolTCP
+				if !route.udpMetadata {
+					rule.Protocol = forwarding.ProtocolTCP
+				}
 				rule.VLESSFlow = "xtls-rprx-vision"
 				serverProfile.Flow = rule.VLESSFlow
 			}
@@ -159,8 +174,8 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 				t.Fatal(err)
 			}
 			startXray(t, binaryPath, unmodifiedProductionConfig(t, clientConfig), localAddress(clientPort))
-			checkRealityUDP(t, clientPort, udpTarget.LocalAddr().(*net.UDPAddr).Port, !route.badPassword)
-			if route.socks5Landing && !route.badPassword {
+			checkRealityUDP(t, clientPort, udpTarget.LocalAddr().(*net.UDPAddr).Port, !route.badPassword && !route.tcpOnlyDirect)
+			if (route.socks5Landing || route.tcpOnlyDirect) && !route.badPassword {
 				checkRealityTCP(t, clientPort, tcpTarget.URL)
 			}
 		})
@@ -234,7 +249,7 @@ func checkRealityUDP(t *testing.T, clientPort, targetPort int, expectResponse bo
 		if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
 			return
 		}
-		t.Fatalf("wrong SOCKS5 credentials unexpectedly delivered UDP response: bytes=%d error=%v", n, err)
+		t.Fatalf("UDP unexpectedly reached a denied target: bytes=%d error=%v", n, err)
 	}
 	if err != nil {
 		t.Fatal(fmt.Errorf("SOCKS5 UDP response: %w", err))

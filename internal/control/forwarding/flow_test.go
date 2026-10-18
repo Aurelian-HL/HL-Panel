@@ -47,11 +47,11 @@ func TestNormalizeExplicitAndLegacyVLESSFlow(t *testing.T) {
 	}
 	udp.VLESSFlow = "xtls-rprx-vision"
 	udp.VLESSFlowExplicit = true
-	staleUDP := Rule{IngressProtocol: IngressVLESSReality, Protocol: ProtocolUDP, VLESSFlow: udp.VLESSFlow, VLESSFlowExplicit: udp.VLESSFlowExplicit}
-	if staleUDP.SupportedVLESSFlow() {
-		t.Fatal("VLESS UDP must reject the TCP Vision flow even before normalization")
+	visionUDP := Rule{IngressProtocol: IngressVLESSReality, Protocol: ProtocolUDP, VLESSFlow: udp.VLESSFlow, VLESSFlowExplicit: udp.VLESSFlowExplicit}
+	if !visionUDP.SupportedVLESSFlow() || visionUDP.EffectiveVLESSFlow() != "xtls-rprx-vision" {
+		t.Fatal("explicit Vision flow was not retained for a UDP-classified rule")
 	}
-	if _, err := NormalizeRequest(udp); err == nil {
-		t.Fatal("VLESS UDP accepted TCP Vision flow")
+	if got, err := NormalizeRequest(udp); err != nil || got.VLESSFlow != "xtls-rprx-vision" || !got.VLESSFlowExplicit {
+		t.Fatalf("VLESS UDP Vision flow normalization failed: %v %#v", err, got)
 	}
 }

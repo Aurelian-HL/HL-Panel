@@ -63,7 +63,9 @@ const targetSummary = (rule: ForwardRule) => {
   return rule.targets.map((target) => targetAddress(target.host, target.port)).join('、') || '—'
 }
 const protocolSummary = (rule: ForwardRule) => effectiveIngressProtocol(rule) === 'vless_reality'
-  ? `VLESS + Reality · 外层 TCP · 解密后 ${rule.protocol.toUpperCase()}`
+  ? rule.vless_outbound_mode === 'SOCKS5'
+    ? 'VLESS + Reality / TCP · 目标 TCP+UDP'
+    : `VLESS + Reality / TCP · 固定目标 ${rule.protocol.toUpperCase()}`
   : `${ingressProtocolLabel(effectiveIngressProtocol(rule))} / ${rule.protocol.toUpperCase()}`
 const usedTraffic = (id: string) => {
   const value = props.trafficByRule[id]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BYTES_PER_GB, BYTES_PER_TB, byteAmount, effectiveIngressProtocol, ingressProtocolLabel, ingressStatusFor, parseTargetAddresses, parseVLESSSOCKS5Target, targetAddress, validateRealityParameters } from './businessFormatters'
+import { BYTES_PER_GB, BYTES_PER_TB, byteAmount, effectiveIngressProtocol, effectiveVLESSFlow, ingressProtocolLabel, ingressStatusFor, parseTargetAddresses, parseVLESSSOCKS5Target, targetAddress, validateRealityParameters } from './businessFormatters'
 import { displayError } from './displayFormatters'
 
 describe('forwarding target entry', () => {
@@ -68,6 +68,8 @@ describe('VLESS Reality ingress', () => {
     expect(validateRealityParameters({ ingress_protocol: 'tcp', vless_flow_explicit: true })).toContain('Reality')
   })
   it('keeps legacy TCP and UDP records readable while exposing pending Reality state', () => {
+    expect(effectiveVLESSFlow({ protocol: 'udp', vless_flow: '', vless_flow_explicit: false })).toBe('')
+    expect(effectiveVLESSFlow({ protocol: 'udp', vless_flow: 'xtls-rprx-vision', vless_flow_explicit: true })).toBe('xtls-rprx-vision')
     expect(effectiveIngressProtocol({ protocol: 'tcp' })).toBe('tcp')
     expect(effectiveIngressProtocol({ protocol: 'udp' })).toBe('udp')
     expect(ingressProtocolLabel('tcp')).toBe('NY TCP')

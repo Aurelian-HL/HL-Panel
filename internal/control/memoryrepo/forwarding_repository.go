@@ -190,9 +190,12 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 	if previous.Revision != input.ExpectedRevision || item.Revision != input.ExpectedRevision+1 {
 		return forwarding.Rule{}, false, fmt.Errorf("%w: forwarding rule changed; reload before saving", faults.ErrConflict)
 	}
-	if input.PreserveVLESSFlow && previous.VLESSFlowExplicit &&
+	if input.PreserveVLESSFlow &&
 		previous.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
 		item.VLESSFlow, item.VLESSFlowExplicit = previous.VLESSFlow, previous.VLESSFlowExplicit
+		if previous.Protocol == forwarding.ProtocolUDP && item.Protocol != forwarding.ProtocolUDP && previous.VLESSFlow == "" && !previous.VLESSFlowExplicit {
+			item.VLESSFlowExplicit = true
+		}
 	}
 	item.CreatedAt = previous.CreatedAt
 	preserveRuleTraffic(&item, previous)

@@ -78,3 +78,29 @@ func TestExplicitEmptyFlowSurvivesLegacyEditReplayAndRestart(t *testing.T) {
 		t.Fatalf("explicit flow change rejected: %v", err)
 	}
 }
+
+func TestLegacyUDPFlowSurvivesProtocolMetadataEdit(t *testing.T) {
+	store, request, rule, _ := vlessCredentialEditFixture(t)
+	service := forwarding.NewService(store, nil)
+	request.Protocol = forwarding.ProtocolUDP
+	request.VLESSFlow, request.VLESSFlowExplicit = "", true
+	udpRule, _, err := service.UpdateForAdministrator(context.Background(), "admin-test", rule.ID, request, "set-udp-empty-flow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	legacy := store.forwardRules[rule.ID]
+	legacy.VLESSFlowExplicit = false
+	store.forwardRules[rule.ID] = legacy
+	store.mu.Unlock()
+	if legacy.EffectiveVLESSFlow() != "" {
+		t.Fatal("legacy UDP fixture did not retain its empty flow")
+	}
+	request.Revision = udpRule.Revision
+	request.Protocol = forwarding.ProtocolTCP
+	request.VLESSFlow, request.VLESSFlowExplicit = "xtls-rprx-vision", false
+	updated, _, err := service.UpdateForAdministrator(context.Background(), "admin-test", rule.ID, request, "edit-legacy-udp-metadata")
+	if err != nil || updated.EffectiveVLESSFlow() != "" || !updated.VLESSFlowExplicit {
+		t.Fatalf("legacy UDP URI changed during an old-client edit: %v %+v", err, updated)
+	}
+}

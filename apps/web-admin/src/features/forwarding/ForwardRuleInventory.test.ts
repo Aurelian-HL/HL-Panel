@@ -131,18 +131,18 @@ describe('ForwardRuleInventory', () => {
   })
 
   it('shows VLESS Reality transport layers and its pending parameter state', () => {
-    const vlessRule: ForwardRule = { ...baseRule, id: 'vless-rule', name: 'Reality 规则', ingress_protocol: 'vless_reality', vless_flow: 'xtls-rprx-vision', ingress_status: 'pending_reality_parameters' }
+    const vlessRule: ForwardRule = { ...baseRule, id: 'vless-rule', name: 'Reality 规则', ingress_protocol: 'vless_reality', vless_outbound_mode: 'SOCKS5', vless_flow: 'xtls-rprx-vision', ingress_status: 'pending_reality_parameters' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [vlessRule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
-    expect(wrapper.text()).toContain('VLESS + Reality · 外层 TCP · 解密后 TCP')
+    expect(wrapper.text()).toContain('VLESS + Reality / TCP · 目标 TCP+UDP')
     expect(wrapper.text()).toContain('待补 Reality 参数')
     wrapper.unmount()
   })
 
-  it('labels a VLESS UDP target as decrypted UDP instead of a native UDP entry', () => {
-    const vlessRule: ForwardRule = { ...baseRule, id: 'vless-udp-rule', name: 'Reality UDP 规则', ingress_protocol: 'vless_reality', protocol: 'udp', vless_flow: '' }
+  it('does not present a legacy VLESS UDP classification as an enablement switch', () => {
+    const vlessRule: ForwardRule = { ...baseRule, id: 'vless-udp-rule', name: 'Reality UDP 规则', ingress_protocol: 'vless_reality', vless_outbound_mode: 'SOCKS5', protocol: 'udp', vless_flow: '' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [vlessRule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
-    expect(wrapper.text()).toContain('VLESS + Reality · 外层 TCP · 解密后 UDP')
-    expect(wrapper.text()).not.toContain('VLESS + Reality / UDP')
+    expect(wrapper.text()).toContain('VLESS + Reality / TCP · 目标 TCP+UDP')
+    expect(wrapper.text()).not.toContain('解密后 UDP')
     wrapper.unmount()
   })
 

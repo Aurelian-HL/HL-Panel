@@ -219,3 +219,25 @@ func TestCustomerConnectionAPINeverLabelsLegacyUDPAsVision(t *testing.T) {
 		t.Fatalf("legacy UDP connection exposed a TCP Vision flow: %s", views[0].URI)
 	}
 }
+
+func TestCustomerConnectionAPILabelsExplicitUDPVision(t *testing.T) {
+	now := time.Now().UTC()
+	evidence := validConnectionEvidence(t, now)
+	evidence.Rule.Protocol = forwarding.ProtocolUDP
+	evidence.Rule.VLESSFlow = "xtls-rprx-vision"
+	evidence.Rule.VLESSFlowExplicit = true
+	reader := connectionReaderFunc(func(_ context.Context, _ string) ([]ConnectionEvidence, error) {
+		return []ConnectionEvidence{evidence}, nil
+	})
+	handler := testConnectionHandler(t, now, reader)
+	token := loginAPI(t, handler)
+	response := request(t, handler, http.MethodGet, "/api/v1/customer/connections", token, nil, nil)
+	views := connectionViews(t, response.Body.Bytes())
+	if response.Code != http.StatusOK || len(views) != 1 || views[0].Status != "ready" || views[0].Protocol != "vless+reality+vision" {
+		t.Fatalf("explicit UDP Vision connection was mislabeled: %d %s", response.Code, response.Body.String())
+	}
+	parsed, err := url.Parse(views[0].URI)
+	if err != nil || parsed.Query().Get("flow") != "xtls-rprx-vision" {
+		t.Fatalf("explicit UDP Vision URI changed: %s", views[0].URI)
+	}
+}

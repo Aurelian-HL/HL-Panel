@@ -45,9 +45,10 @@ func TestCompileDirectRealityVision(t *testing.T) {
 			StreamSettings struct {
 				Security        string `json:"security"`
 				RealitySettings struct {
-					Dest       string   `json:"dest"`
-					PrivateKey string   `json:"privateKey"`
-					ShortIDs   []string `json:"shortIds"`
+					MinClientVer string   `json:"minClientVer"`
+					Dest         string   `json:"dest"`
+					PrivateKey   string   `json:"privateKey"`
+					ShortIDs     []string `json:"shortIds"`
 				} `json:"realitySettings"`
 			} `json:"streamSettings"`
 		} `json:"inbounds"`
@@ -78,6 +79,9 @@ func TestCompileDirectRealityVision(t *testing.T) {
 	reality := config.Inbounds[0].StreamSettings.RealitySettings
 	if reality.Dest != "www.example.com:443" || reality.PrivateKey == "" || len(reality.ShortIDs) != 1 {
 		t.Fatalf("unexpected Reality settings: %#v", reality)
+	}
+	if reality.MinClientVer != "" {
+		t.Fatalf("existing TCP Vision Reality settings changed: %#v", reality)
 	}
 	if len(config.Outbounds) != 1 || config.Outbounds[0].Protocol != "freedom" || config.Outbounds[0].Settings.Redirect != "target.example.test:443" {
 		t.Fatalf("unexpected outbound: %#v", config.Outbounds)
@@ -177,8 +181,11 @@ func TestCompileDirectUDPKeepsRealityTCPIngressAndUsesUDPFinalRule(t *testing.T)
 				Clients []map[string]json.RawMessage `json:"clients"`
 			} `json:"settings"`
 			StreamSettings struct {
-				Network  string `json:"network"`
-				Security string `json:"security"`
+				Network         string `json:"network"`
+				Security        string `json:"security"`
+				RealitySettings struct {
+					MinClientVer string `json:"minClientVer"`
+				} `json:"realitySettings"`
 			} `json:"streamSettings"`
 		} `json:"inbounds"`
 		Outbounds []struct {
@@ -198,14 +205,54 @@ func TestCompileDirectUDPKeepsRealityTCPIngressAndUsesUDPFinalRule(t *testing.T)
 	if _, hasFlow := config.Inbounds[0].Settings.Clients[0]["flow"]; hasFlow {
 		t.Fatalf("UDP VLESS client must omit the TCP Vision flow field: %s", raw)
 	}
+	if config.Inbounds[0].StreamSettings.RealitySettings.MinClientVer != "0.0.0" {
+		t.Fatalf("empty-flow UDP client compatibility minimum missing: %s", raw)
+	}
 	if len(config.Outbounds) != 1 || len(config.Outbounds[0].Settings.FinalRules) != 1 || config.Outbounds[0].Settings.FinalRules[0].Network != "udp" {
 		t.Fatalf("UDP target final rule missing: %s", raw)
 	}
-	staleFlow := rule
-	staleFlow.VLESSFlow = "xtls-rprx-vision"
-	staleFlow.VLESSFlowExplicit = true
-	if _, err := CompileDirect(staleFlow, validIdentity(), validProfile(), Listener{Address: "127.0.0.1", Port: 24443}); err == nil {
-		t.Fatal("compiler accepted a stale TCP Vision flow on a VLESS UDP rule")
+	visionRule := rule
+	visionRule.VLESSFlow = "xtls-rprx-vision"
+	visionRaw, err := CompileDirect(visionRule, validIdentity(), validProfile(), Listener{Address: "127.0.0.1", Port: 24443})
+	if err != nil {
+		t.Fatalf("Vision over the Reality TCP ingress rejected for a UDP-classified target: %v", err)
+	}
+	config.Inbounds = nil
+	config.Outbounds = nil
+	if err := json.Unmarshal(visionRaw, &config); err != nil || string(config.Inbounds[0].Settings.Clients[0]["flow"]) != `"xtls-rprx-vision"` || config.Outbounds[0].Settings.FinalRules[0].Network != "udp" || config.Inbounds[0].StreamSettings.RealitySettings.MinClientVer != "" {
+		t.Fatalf("Vision changed the fixed DIRECT UDP permission: %v %s", err, visionRaw)
+	}
+}
+
+func TestCompileDirectPreservesTCPEmptyFlowFields(t *testing.T) {
+	rule := validRule()
+	rule.VLESSFlowExplicit = true
+	profile := validProfile()
+	profile.Flow = ""
+	raw, err := CompileDirectWithProbe(rule, validIdentity(), profile, Listener{Address: "127.0.0.1", Port: 24443}, ProbeIdentity{UUID: "615db532-728a-4a34-8353-873b34d12de2", EchoPort: 31998})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Inbounds []struct {
+			Settings struct {
+				Clients []map[string]json.RawMessage `json:"clients"`
+			} `json:"settings"`
+			StreamSettings struct {
+				RealitySettings map[string]json.RawMessage `json:"realitySettings"`
+			} `json:"streamSettings"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	for _, client := range config.Inbounds[0].Settings.Clients {
+		if string(client["flow"]) != `""` {
+			t.Fatalf("existing TCP empty-flow client field changed: %s", raw)
+		}
+	}
+	if _, present := config.Inbounds[0].StreamSettings.RealitySettings["minClientVer"]; present {
+		t.Fatalf("existing TCP Reality minimum changed: %s", raw)
 	}
 }
 

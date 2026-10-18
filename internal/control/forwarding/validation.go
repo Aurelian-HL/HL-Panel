@@ -123,12 +123,11 @@ func NormalizeRequest(input Request) (Request, error) {
 			return Request{}, fmt.Errorf("%w: VLESS Reality ingress does not support receiving Proxy Protocol in this slice", faults.ErrValidation)
 		}
 		if input.Protocol == ProtocolUDP {
-			if input.VLESSFlow != "" {
-				return Request{}, fmt.Errorf("%w: VLESS Reality UDP targets require an empty flow", faults.ErrValidation)
+			// Legacy UDP rules omitted flow and used an empty value. Preserve
+			// their customer URI, while allowing an explicitly supplied Vision flow.
+			if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
+				input.VLESSFlowExplicit = true
 			}
-			// An omitted UDP flow is intentionally empty. Mark it explicit so
-			// EffectiveVLESSFlow cannot apply the legacy TCP Vision default.
-			input.VLESSFlowExplicit = true
 		} else if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
 			input.VLESSFlow = "xtls-rprx-vision"
 		}

@@ -380,9 +380,9 @@ func DeriveStatus(rule Rule, customer CustomerAvailability, now time.Time) Statu
 // EffectiveVLESSFlow resolves the legacy omission without replacing an
 // explicitly empty imported flow.
 func (r Rule) EffectiveVLESSFlow() string {
-	// UDP targets use the VLESS request's native UDP mode and cannot use the
-	// Vision TCP flow. Keep legacy TCP rules defaulting to Vision.
-	if r.EffectiveIngressProtocol() == IngressVLESSReality && r.Protocol == ProtocolUDP {
+	// Old UDP rows omitted flow to request the empty value. Keep their URI
+	// stable; explicitly configured Vision also works over the TCP outer leg.
+	if r.EffectiveIngressProtocol() == IngressVLESSReality && r.Protocol == ProtocolUDP && r.VLESSFlow == "" && !r.VLESSFlowExplicit {
 		return r.VLESSFlow
 	}
 	if r.VLESSFlow == "" && !r.VLESSFlowExplicit {
@@ -393,8 +393,5 @@ func (r Rule) EffectiveVLESSFlow() string {
 
 func (r Rule) SupportedVLESSFlow() bool {
 	flow := r.EffectiveVLESSFlow()
-	if r.EffectiveIngressProtocol() == IngressVLESSReality && r.Protocol == ProtocolUDP {
-		return flow == ""
-	}
 	return flow == "" || flow == "xtls-rprx-vision"
 }

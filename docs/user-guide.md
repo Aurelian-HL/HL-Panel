@@ -225,7 +225,7 @@ journalctl -u hl-panel-edge-agent -n 50 --no-pager
 
 ### 本面板 VLESS 凭据
 
-在 **订阅管理 → VLESS 凭据** 中，为运行中的 VLESS Reality 规则签发凭据。Reality 外层固定使用 TCP；规则的解密后最终目标可以是 TCP 或 UDP，TCP 目标可使用 Vision Flow，UDP 目标使用空 Flow。规则需已部署，Reality 参数完整，并有绑定的 VLESS 稳定端点和健康节点。出站可以是直连或已配置的 SOCKS5 落地。
+在 **订阅管理 → VLESS 凭据** 中，为运行中的 VLESS Reality 规则签发凭据。Reality 外层固定使用 TCP；经 SOCKS5 出站时，同一条 VLESS URI 和原有 Flow 可承载目标 TCP 与 UDP。UDP 还要求 SOCKS5 上游支持 UDP ASSOCIATE 并允许对应网络流量，无需为此改动规则的历史协议分类。历史固定 DIRECT 出站仍按其原有单协议目标授权，不会自动放宽。规则需已部署，Reality 参数完整，并有绑定的 VLESS 稳定端点和健康节点。
 
 创建时选择规则和服务端点，随后可复制单条 URI 或在多线路订阅中引用该凭据。一组设备只产生一条稳定 URI，不会把组内每台节点展开成客户线路。**轮换**后，引用它的订阅会跟随当前凭据与就绪状态；配置尚未生效或节点不健康时暂不下发该线路。**撤销**会停用线路账号并清理对应节点凭据，撤销不可恢复，与订阅地址的“停用 / 恢复”不同。
 
