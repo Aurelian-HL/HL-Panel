@@ -561,17 +561,25 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 		}
 		return item
 	}
-	if item.EffectiveIngressProtocol() != forwarding.IngressTCP || item.Protocol != forwarding.ProtocolTCP || item.Paused ||
+	isTCP := item.EffectiveIngressProtocol() == forwarding.IngressTCP && item.Protocol == forwarding.ProtocolTCP
+	isUDP := item.EffectiveIngressProtocol() == forwarding.IngressUDP && item.Protocol == forwarding.ProtocolUDP
+	if !isTCP && !isUDP || item.Paused ||
 		(item.Status != forwarding.StatusPendingActivation && item.Status != forwarding.StatusActive) {
 		return item
 	}
 	count := 0
 	deployed := true
+	udpEngineMissing := false
 	for nodeID, member := range s.membersByGroup[item.EntryGroupID] {
 		if member.RetiredAt != nil {
 			continue
 		}
 		count++
+		if isUDP && !nodeSupportsGOSTUDPDirect(s.nodes[nodeID]) {
+			deployed = false
+			udpEngineMissing = true
+			break
+		}
 		input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
 		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
 			deployed = false
@@ -585,6 +593,9 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 	} else {
 		item.Status = forwarding.StatusPendingActivation
 		item.ActivationReason = item.PendingActivationReason()
+		if udpEngineMissing {
+			item.ActivationReason = forwarding.ActivationReasonUDPUnsupported
+		}
 	}
 	return item
 }

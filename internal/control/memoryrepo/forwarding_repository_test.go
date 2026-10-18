@@ -27,6 +27,24 @@ func forwardingRepositoryFixture(t testing.TB) (*Store, forwarding.Request) {
 	return s, forwarding.Request{Name: "forward", CustomerID: customer.ID, EntryGroupID: "entry-1", EgressMode: forwarding.EgressDirect, Protocol: forwarding.ProtocolTCP, Targets: []forwarding.Target{{Host: "landing.example.test", Port: 1080}}, SelectionPolicy: forwarding.SelectionRoundRobin}
 }
 
+func TestUDPDeploymentViewReportsMissingGOSTCapability(t *testing.T) {
+	s, request := forwardingRepositoryFixture(t)
+	nodeID := "entry-node"
+	s.nodes[nodeID] = nodes.Node{ID: nodeID, Name: nodeID, CredentialHash: "entry-node-credential-hash"}
+	s.membersByGroup[request.EntryGroupID][nodeID] = groups.Member{GroupID: request.EntryGroupID, NodeID: nodeID, DialHost: "entry.example.test", Weight: 1}
+
+	rule := forwarding.Rule{
+		ID: "udp-rule", Name: "udp", CustomerID: request.CustomerID, EntryGroupID: request.EntryGroupID,
+		EgressMode: forwarding.EgressDirect, IngressProtocol: forwarding.IngressUDP, Protocol: forwarding.ProtocolUDP,
+		Status: forwarding.StatusActive, Deployed: true, ListenPort: 12000, Revision: 1,
+		Targets: []forwarding.Target{{Host: "landing.example.test", Port: 1080}},
+	}
+	view := s.forwardingDeploymentViewLocked(rule)
+	if view.Deployed || view.Status != forwarding.StatusPendingActivation || view.ActivationReason != forwarding.ActivationReasonUDPUnsupported {
+		t.Fatalf("UDP without gost-udp-direct was advertised as ready: deployed=%v status=%s reason=%s", view.Deployed, view.Status, view.ActivationReason)
+	}
+}
+
 func TestAdministratorRuleHasSeparateIdempotencyAndSurvivesSnapshot(t *testing.T) {
 	s, request := forwardingRepositoryFixture(t)
 	service := forwarding.NewService(s, nil)
