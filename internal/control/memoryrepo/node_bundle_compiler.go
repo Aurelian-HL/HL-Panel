@@ -270,7 +270,7 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 	}
 	if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
 		options := importedconfig.NativeOptions{RuleID: rule.ID, CustomerID: rule.CustomerID, EntryGroupID: rule.EntryGroupID,
-			UUID: material.CredentialUUID, PrivateKey: material.RealityPrivateKey, ListenAddress: "0.0.0.0", ListenPort: rule.ListenPort}
+			UUID: material.CredentialUUID, PrivateKey: material.RealityPrivateKey, Protocol: string(rule.Protocol), ListenAddress: "0.0.0.0", ListenPort: rule.ListenPort}
 		if probe, exists := s.protocolProbes[rule.ID]; exists {
 			options.ProbeUUID, options.EchoPort = probe.UUID, probe.EchoPort
 		}

@@ -2,6 +2,7 @@ package memoryrepo
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -123,6 +124,44 @@ func TestNativeRuntimePersistsAndPauseResumeCompilesExactMaterial(t *testing.T) 
 	}
 	if _, err = DecodeSnapshot(raw); err != nil {
 		t.Fatal("revoked native history failed restore", err)
+	}
+}
+
+func TestNativeUDPRuntimePassesTargetProtocolWithoutChangingRealityIngress(t *testing.T) {
+	f, p := nativeRuntimeFixture(t)
+	ctx := context.Background()
+	service, _ := vlessruntime.NewService(f.store, time.Now)
+	if _, replay, err := service.BindImported(ctx, "admin", f.bindingID, f.nodeID, p.Config, "native-udp-bind"); err != nil || replay {
+		t.Fatalf("import bind failed: replay=%v err=%v", replay, err)
+	}
+	rule := f.store.forwardRules[f.rule.ID]
+	// Native transport parameters are immutable through the ordinary update
+	// service. This test models the persisted UDP rule produced by the import
+	// workflow, then exercises the same bundle compiler path.
+	rule.Protocol = forwarding.ProtocolUDP
+	rule.Paused = false
+	f.store.forwardRules[rule.ID] = rule
+	fragments, err := f.store.compileForwardingFragmentsLocked(f.nodeID)
+	if err != nil || len(fragments) != 1 {
+		t.Fatalf("native UDP did not compile: fragments=%d err=%v", len(fragments), err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(fragments[0].Config, &config); err != nil {
+		t.Fatal(err)
+	}
+	in := config["inbounds"].([]any)[0].(map[string]any)
+	stream := in["streamSettings"].(map[string]any)
+	if in["protocol"] != "vless" || stream["network"] != "tcp" || stream["security"] != "reality" {
+		t.Fatalf("native UDP changed ingress transport: %#v", in)
+	}
+	tag := in["tag"].(string)
+	metadata, err := base64.RawURLEncoding.DecodeString(strings.SplitN(tag, "--", 2)[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(metadata, &meta); err != nil || meta["protocol"] != "udp" {
+		t.Fatalf("native UDP metadata = %#v", meta)
 	}
 }
 

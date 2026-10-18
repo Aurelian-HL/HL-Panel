@@ -48,7 +48,7 @@ func TestNativeFragmentPreservesCredentialsAndScopesRoutes(t *testing.T) {
 	tag := in["tag"].(string)
 	metadata, err := base64.RawURLEncoding.DecodeString(strings.SplitN(tag, "--", 2)[1])
 	var meta map[string]string
-	if err != nil || json.Unmarshal(metadata, &meta) != nil || meta["rule_id"] != "rule-one" || meta["customer_id"] != "customer-one" {
+	if err != nil || json.Unmarshal(metadata, &meta) != nil || meta["rule_id"] != "rule-one" || meta["customer_id"] != "customer-one" || meta["protocol"] != "tcp" {
 		t.Fatal("usage attribution lost")
 	}
 	routes := got["routing"].(map[string]any)["rules"].([]any)
@@ -82,6 +82,88 @@ func TestNativeFragmentPreservesCredentialsAndScopesRoutes(t *testing.T) {
 		if tags[o.(map[string]any)["tag"].(string)] {
 			t.Fatal("outbound tags collide across customers")
 		}
+	}
+}
+
+func TestNativeUDPKeepsRealityTCPIngressAndOriginalOutbound(t *testing.T) {
+	p, err := importedconfig.PrepareNative(testfixture.Raw(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := nativeOptions(p)
+	options.Protocol = "udp"
+	fragment, err := importedconfig.CompileNativeFragment(p.Config, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(fragment, &config); err != nil {
+		t.Fatal(err)
+	}
+	in := config["inbounds"].([]any)[0].(map[string]any)
+	if in["protocol"] != "vless" {
+		t.Fatalf("native UDP changed ingress protocol: %#v", in["protocol"])
+	}
+	stream := in["streamSettings"].(map[string]any)
+	if stream["network"] != "tcp" || stream["security"] != "reality" {
+		t.Fatalf("native UDP changed Reality/TCP transport: %#v", stream)
+	}
+	if _, ok := stream["realitySettings"].(map[string]any); !ok {
+		t.Fatal("native UDP lost Reality settings")
+	}
+	outs := config["outbounds"].([]any)
+	if len(outs) != 1 || outs[0].(map[string]any)["protocol"] != "freedom" {
+		t.Fatalf("native UDP changed original outbound: %#v", outs)
+	}
+	outSettings := outs[0].(map[string]any)["settings"].(map[string]any)
+	if _, redirected := outSettings["redirect"]; redirected {
+		t.Fatal("native UDP introduced a fixed redirect")
+	}
+	routes := config["routing"].(map[string]any)["rules"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("native UDP changed original route count: %#v", routes)
+	}
+	tag := in["tag"].(string)
+	metadata, err := base64.RawURLEncoding.DecodeString(strings.SplitN(tag, "--", 2)[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]string
+	if err := json.Unmarshal(metadata, &meta); err != nil || meta["protocol"] != "udp" {
+		t.Fatalf("native UDP usage metadata = %#v", meta)
+	}
+}
+
+func TestNativeRejectsUnknownTargetProtocol(t *testing.T) {
+	p, err := importedconfig.PrepareNative(testfixture.Raw(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := nativeOptions(p)
+	options.Protocol = "quic"
+	if _, err := importedconfig.CompileNativeFragment(p.Config, options); err == nil {
+		t.Fatal("unknown native target protocol accepted")
+	}
+}
+
+func TestNativeRejectsUDPWhenImportedClientUsesVisionFlow(t *testing.T) {
+	document := testfixture.Document()
+	config := document["config"].(map[string]any)
+	inbound := config["inbounds"].([]any)[0].(map[string]any)
+	settings := inbound["settings"].(map[string]any)
+	settings["clients"].([]any)[0].(map[string]any)["flow"] = "xtls-rprx-vision"
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := importedconfig.PrepareNative(raw, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := nativeOptions(p)
+	options.Protocol = "udp"
+	if _, err := importedconfig.CompileNativeFragment(p.Config, options); err == nil {
+		t.Fatal("native UDP relabeled a TCP Vision flow")
 	}
 }
 
