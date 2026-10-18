@@ -238,7 +238,7 @@ func snapshotFromState(state State, now time.Time) membership.Snapshot {
 func poolAuthorizesRule(pool endpoints.EndpointPool, rule forwarding.Rule) bool {
 	return pool.Mode.Valid() && pool.RuleID != "" && rule.ID == pool.RuleID &&
 		rule.Revision > 0 && rule.EntryGroupID == pool.GroupID &&
-		rule.ListenPort == pool.Port && rule.Protocol == forwarding.ProtocolTCP &&
+		rule.ListenPort == pool.Port && (rule.Protocol == forwarding.ProtocolTCP || rule.Protocol == forwarding.ProtocolUDP) &&
 		pool.Protocol == "vless" && rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality &&
 		!rule.Paused && (rule.Status == forwarding.StatusPendingActivation || rule.Status == forwarding.StatusActive) && rule.ActivationReason == "" &&
 		rule.IngressReadiness() == forwarding.IngressReady

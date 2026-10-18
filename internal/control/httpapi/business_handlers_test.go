@@ -300,10 +300,16 @@ func TestBusinessVLESSRealityVisionRuleLifecycleAndShapeGuards(t *testing.T) {
 	invalidExit.EgressMode = forwarding.EgressExitGroup
 	invalidExit.ExitGroupID = f.exit.ID
 	businessRequest(t, f, http.MethodPost, "/api/v1/forwarding-rules", "vless-reality-exit", invalidExit, http.StatusBadRequest)
-	invalidUDP := input
-	invalidUDP.Name = "VLESS Reality UDP"
-	invalidUDP.Protocol = forwarding.ProtocolUDP
-	businessRequest(t, f, http.MethodPost, "/api/v1/forwarding-rules", "vless-reality-udp", invalidUDP, http.StatusBadRequest)
+	udpInput := input
+	udpInput.Name = "VLESS Reality UDP"
+	udpInput.Protocol = forwarding.ProtocolUDP
+	udpInput.VLESSFlow = ""
+	udpInput.VLESSFlowExplicit = true
+	var udpRule forwarding.Rule
+	decodeBusinessEntity(t, businessRequest(t, f, http.MethodPost, "/api/v1/forwarding-rules", "vless-reality-udp", udpInput, http.StatusCreated), "rule", &udpRule)
+	if udpRule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || udpRule.Protocol != forwarding.ProtocolUDP || udpRule.EffectiveVLESSFlow() != "" || !udpRule.VLESSFlowExplicit {
+		t.Fatalf("VLESS Reality UDP rule was not persisted with an explicit empty flow: %+v", udpRule)
+	}
 }
 
 func TestForwardingTransferAPIRequiresAdminAndCommitsOnlyValidPreview(t *testing.T) {

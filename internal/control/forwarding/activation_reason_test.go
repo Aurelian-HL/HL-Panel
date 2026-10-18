@@ -58,3 +58,14 @@ func TestPendingActivationReasonAllowsVLESSSpeedLimit(t *testing.T) {
 		t.Fatalf("VLESS speed limit reason = %q, want %q", got, ActivationReasonVLESSRuntimeMaterialPending)
 	}
 }
+
+func TestPendingActivationReasonAllowsVLESSUDP(t *testing.T) {
+	rule := Rule{IngressProtocol: IngressVLESSReality, Protocol: ProtocolUDP, EgressMode: EgressDirect,
+		VLESSFlowExplicit: true, RealityServerName: "www.example.com", RealityPublicKey: "AbCdEf0123456789AbCdEf0123456789AbCdEf01234", RealityShortID: "0123456789abcdef"}
+	if got := rule.PendingActivationReason(); got != ActivationReasonVLESSRuntimeMaterialPending {
+		t.Fatalf("VLESS UDP activation reason = %q, want %q", got, ActivationReasonVLESSRuntimeMaterialPending)
+	}
+	if got := rule.EffectiveVLESSFlow(); got != "" {
+		t.Fatalf("VLESS UDP flow = %q, want empty", got)
+	}
+}

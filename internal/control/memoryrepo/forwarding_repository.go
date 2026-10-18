@@ -638,7 +638,8 @@ func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 	// fail-closed even when a legacy snapshot incorrectly persisted Deployed=true.
 	// This is deliberately a projection-only correction; the stored rule remains
 	// untouched so snapshot recovery and rollback stay non-destructive.
-	if item.EffectiveIngressProtocol() == forwarding.IngressUDP || item.Protocol == forwarding.ProtocolUDP {
+	if item.EffectiveIngressProtocol() == forwarding.IngressUDP ||
+		(item.Protocol == forwarding.ProtocolUDP && item.EffectiveIngressProtocol() != forwarding.IngressVLESSReality) {
 		item.Deployed = false
 	}
 	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}

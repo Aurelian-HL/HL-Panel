@@ -129,7 +129,7 @@ func (service *ConnectionService) populate(view *ConnectionView, profile custome
 	rule, pool, binding := evidence.Rule, evidence.Pool, evidence.Binding
 	if profile.EffectiveStatus != customers.StatusActive || rule.ID == "" || rule.Paused || !rule.Deployed ||
 		rule.Status != forwarding.StatusPendingActivation || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
-		rule.Protocol != forwarding.ProtocolTCP || rule.IngressReadiness() != forwarding.IngressReady ||
+		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.IngressReadiness() != forwarding.IngressReady ||
 		!rule.SupportedVLESSFlow() || rule.RealityDestination == "" ||
 		evidence.ActiveBindingCount != 1 || evidence.ActivePoolCount != 1 ||
 		pool.RuleID != rule.ID || pool.GroupID != rule.EntryGroupID || pool.Protocol != "vless" ||

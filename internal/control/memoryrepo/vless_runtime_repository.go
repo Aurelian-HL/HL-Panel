@@ -251,7 +251,7 @@ func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Materia
 	}
 	rule, exists := s.forwardRules[material.ForwardingRuleID]
 	if !exists || rule.CustomerID != material.CustomerID || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
-		rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady ||
+		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady ||
 		rule.RealityPublicKey == "" || !vlessruntime.RealityKeyMatchesPublicKey(material.RealityPrivateKey, rule.RealityPublicKey) {
 		return fmt.Errorf("%w: runtime material does not match the ready VLESS Reality rule", faults.ErrConflict)
 	}

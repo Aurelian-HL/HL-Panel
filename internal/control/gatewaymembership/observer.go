@@ -87,7 +87,7 @@ func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeC
 		return ProtocolObservation{}, ErrProtocolObservationTarget
 	}
 	if state.Pool.ID == "" || state.Pool.Protocol != "vless" || state.Pool.RuleID != rule.ID ||
-		rule.ID == "" || rule.Protocol != forwarding.ProtocolTCP || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
+		rule.ID == "" || (rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
 		rule.Paused || (rule.Status != forwarding.StatusPendingActivation && rule.Status != forwarding.StatusActive) || rule.IngressReadiness() != forwarding.IngressReady {
 		return ProtocolObservation{}, ErrProtocolObservationUnavailable
 	}

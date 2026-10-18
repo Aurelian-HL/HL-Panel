@@ -74,8 +74,8 @@ func NormalizeRequest(input Request) (Request, error) {
 			return Request{}, fmt.Errorf("%w: SOCKS5 ingress requires a TCP target protocol", faults.ErrValidation)
 		}
 	case IngressVLESSReality:
-		if input.Protocol != ProtocolTCP || input.EgressMode != EgressDirect {
-			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires a TCP DIRECT route", faults.ErrValidation)
+		if (input.Protocol != ProtocolTCP && input.Protocol != ProtocolUDP) || input.EgressMode != EgressDirect {
+			return Request{}, fmt.Errorf("%w: VLESS Reality ingress requires a TCP or UDP DIRECT route", faults.ErrValidation)
 		}
 		if input.VLESSOutboundMode == "" {
 			// VLESS rules in the operator workflow always use the single
@@ -119,7 +119,14 @@ func NormalizeRequest(input Request) (Request, error) {
 		if input.AcceptProxyProtocol {
 			return Request{}, fmt.Errorf("%w: VLESS Reality ingress does not support receiving Proxy Protocol in this slice", faults.ErrValidation)
 		}
-		if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
+		if input.Protocol == ProtocolUDP {
+			if input.VLESSFlow != "" {
+				return Request{}, fmt.Errorf("%w: VLESS Reality UDP targets require an empty flow", faults.ErrValidation)
+			}
+			// An omitted UDP flow is intentionally empty. Mark it explicit so
+			// EffectiveVLESSFlow cannot apply the legacy TCP Vision default.
+			input.VLESSFlowExplicit = true
+		} else if input.VLESSFlow == "" && !input.VLESSFlowExplicit {
 			input.VLESSFlow = "xtls-rprx-vision"
 		}
 		if input.VLESSFlow != "" && input.VLESSFlow != "xtls-rprx-vision" {

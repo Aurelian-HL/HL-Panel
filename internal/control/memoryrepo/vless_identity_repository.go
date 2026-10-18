@@ -306,8 +306,8 @@ func (s *Store) validateVLESSCredentialRecordLocked(record vlessidentity.Credent
 	if !exists || rule.CustomerID != binding.CustomerID {
 		return fmt.Errorf("%w: forwarding rule does not belong to the customer", faults.ErrValidation)
 	}
-	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady || !rule.SupportedVLESSFlow() {
-		return fmt.Errorf("%w: VLESS identity requires a ready VLESS Reality Vision TCP DIRECT rule", faults.ErrValidation)
+	if rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality || (rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady || !rule.SupportedVLESSFlow() {
+		return fmt.Errorf("%w: VLESS identity requires a ready VLESS Reality TCP or UDP DIRECT rule", faults.ErrValidation)
 	}
 	pool, exists := s.endpointPools[binding.EndpointPoolID]
 	if !exists || pool.Mode != endpoints.ModeSingleServiceEndpoint || pool.Protocol != "vless" || pool.GroupID != rule.EntryGroupID {

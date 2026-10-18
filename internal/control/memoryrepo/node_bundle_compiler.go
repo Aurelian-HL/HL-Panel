@@ -245,7 +245,7 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding.Rule) (agentv1.ConfigurationFragment, bool, error) {
 	if rule.Paused || !forwardingRuleCompilableStatus(rule.Status) ||
 		rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
-		rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect ||
+		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect ||
 		rule.IngressReadiness() != forwarding.IngressReady ||
 		rule.PendingActivationReason() != forwarding.ActivationReasonVLESSRuntimeMaterialPending ||
 		!nodeSupportsVLESSReality(s.nodes[nodeID]) {

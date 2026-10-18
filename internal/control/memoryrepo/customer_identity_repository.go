@@ -332,7 +332,7 @@ func (r *customerIdentityRepository) ListSubscriptionsByCustomer(_ context.Conte
 			}
 			if binding, exists := activeBindings[rule.ID+"\x00"+pool.ID]; exists {
 				record.Status = "unavailable"
-				if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && rule.Protocol == forwarding.ProtocolTCP &&
+				if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && (rule.Protocol == forwarding.ProtocolTCP || rule.Protocol == forwarding.ProtocolUDP) &&
 					!rule.Paused && rule.Deployed && rule.Status == forwarding.StatusActive && rule.IngressReadiness() == forwarding.IngressReady &&
 					pool.Mode == endpoints.ModeSingleServiceEndpoint && pool.RuleID == rule.ID && pool.GroupID == rule.EntryGroupID {
 					healthy := false

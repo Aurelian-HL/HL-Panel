@@ -232,7 +232,11 @@ func (r Rule) PendingActivationReason() ActivationReason {
 	if r.EgressMode == EgressExitGroup && !r.UsesReliableUDPTunnel() {
 		return ActivationReasonExitGroupUnsupported
 	}
-	if r.EffectiveIngressProtocol() == IngressUDP || r.Protocol == ProtocolUDP {
+	// Native UDP listeners still have no executable bundle path. A VLESS
+	// Reality listener is different: its customer-facing transport remains
+	// TCP, while Xray can carry a UDP destination after the VLESS handshake.
+	if r.EffectiveIngressProtocol() == IngressUDP ||
+		(r.Protocol == ProtocolUDP && r.EffectiveIngressProtocol() != IngressVLESSReality) {
 		return ActivationReasonUDPUnsupported
 	}
 	if r.EffectiveIngressProtocol() == IngressSOCKS5 {
@@ -379,6 +383,11 @@ func DeriveStatus(rule Rule, customer CustomerAvailability, now time.Time) Statu
 // EffectiveVLESSFlow resolves the legacy omission without replacing an
 // explicitly empty imported flow.
 func (r Rule) EffectiveVLESSFlow() string {
+	// UDP targets use the VLESS request's native UDP mode and cannot use the
+	// Vision TCP flow. Keep legacy TCP rules defaulting to Vision.
+	if r.EffectiveIngressProtocol() == IngressVLESSReality && r.Protocol == ProtocolUDP {
+		return r.VLESSFlow
+	}
 	if r.VLESSFlow == "" && !r.VLESSFlowExplicit {
 		return "xtls-rprx-vision"
 	}
@@ -387,5 +396,8 @@ func (r Rule) EffectiveVLESSFlow() string {
 
 func (r Rule) SupportedVLESSFlow() bool {
 	flow := r.EffectiveVLESSFlow()
+	if r.EffectiveIngressProtocol() == IngressVLESSReality && r.Protocol == ProtocolUDP {
+		return flow == ""
+	}
 	return flow == "" || flow == "xtls-rprx-vision"
 }
