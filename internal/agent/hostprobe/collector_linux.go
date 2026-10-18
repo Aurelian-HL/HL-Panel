@@ -139,6 +139,26 @@ func connections(files ...string) *uint64 {
 	return ptr(total)
 }
 
+func tcpCongestionControl(readFile func(string) ([]byte, error)) (current string, available []string) {
+	if data, err := readFile("/proc/sys/net/ipv4/tcp_congestion_control"); err == nil {
+		value := strings.TrimSpace(string(data))
+		if value != "" && !strings.ContainsAny(value, " \t\r\n") {
+			current = value
+		}
+	}
+	if data, err := readFile("/proc/sys/net/ipv4/tcp_available_congestion_control"); err == nil {
+		seen := make(map[string]struct{})
+		for _, value := range strings.Fields(string(data)) {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			available = append(available, value)
+		}
+	}
+	return current, available
+}
+
 func Snapshot() *agentv1.HostSnapshot {
 	previous.Lock()
 	defer previous.Unlock()
@@ -197,6 +217,7 @@ func Snapshot() *agentv1.HostSnapshot {
 	previous.at = now
 	s.TCPConnCount, s.TCPListeners = tcpSockets("/proc/net/tcp", "/proc/net/tcp6")
 	s.UDPConnCount = connections("/proc/net/udp", "/proc/net/udp6")
+	s.TCPCongestionControl, s.TCPAvailableCongestionControl = tcpCongestionControl(os.ReadFile)
 	addresses, err := net.InterfaceAddrs()
 	collectIPAddresses(s, addresses, err)
 	return s

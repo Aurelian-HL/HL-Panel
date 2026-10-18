@@ -44,8 +44,10 @@ func TestCompileGOSTBundleRejectsMixedAndConflictingFragments(t *testing.T) {
 	}{
 		{"mixed xray", []agentv1.ConfigurationFragment{gostFragment("a", gostServiceA), {GroupID: "xray", GroupRevision: 1, Engine: agentv1.EngineXray, Config: json.RawMessage(`{"inbounds":[]}`)}}, ErrGOSTUnsupportedFragment},
 		{"duplicate name", []agentv1.ConfigurationFragment{gostFragment("a", gostServiceA), gostFragment("b", gostServiceA)}, ErrGOSTConfigConflict},
+		{"duplicate TCP listener", []agentv1.ConfigurationFragment{gostFragment("a", gostServiceA), gostFragment("b", strings.ReplaceAll(strings.Replace(gostServiceA, "forward-a", "forward-b", 1), "target-1", "target-2"))}, ErrGOSTConfigConflict},
 		{"unknown field", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[],"api":"127.0.0.1:1234"}`)}, ErrInvalidConfiguration},
 		{"incomplete service", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[{"name":"bad"}]}`)}, ErrInvalidConfiguration},
+		{"mixed TCP UDP pair", []agentv1.ConfigurationFragment{gostFragment("a", strings.Replace(gostServiceA, `"listener":{"type":"tcp"}`, `"listener":{"type":"udp"}`, 1))}, ErrInvalidConfiguration},
 		{"trailing value", []agentv1.ConfigurationFragment{gostFragment("a", `{"services":[]} {"services":[]}`)}, ErrInvalidConfiguration},
 	}
 	for _, tt := range tests {
@@ -88,6 +90,22 @@ func TestCompileGOSTBundlePreservesLoopbackStatsAPI(t *testing.T) {
 	fragment.Config = json.RawMessage(strings.Replace(string(fragment.Config), `{"services":`, `{"metrics":{"addr":"0.0.0.0:18090"},"services":`, 1))
 	if _, err := CompileGOSTBundle(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: []agentv1.ConfigurationFragment{fragment}}); !errors.Is(err, ErrInvalidConfiguration) {
 		t.Fatalf("non-loopback GOST API accepted: %v", err)
+	}
+}
+
+func TestCompileGOSTBundleAllowsTCPAndUDPOnSamePort(t *testing.T) {
+	udp := strings.ReplaceAll(strings.ReplaceAll(gostServiceA, `"forward-a"`, `"forward-udp"`), `"tcp"`, `"udp"`)
+	compiled, err := CompileGOSTBundle(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: []agentv1.ConfigurationFragment{
+		gostFragment("tcp", gostServiceA), gostFragment("udp", udp),
+	}})
+	if err != nil {
+		t.Fatalf("mixed TCP/UDP bundle with shared port rejected: %v", err)
+	}
+	var document struct {
+		Services []gostconfig.Service `json:"services"`
+	}
+	if err := json.Unmarshal(compiled, &document); err != nil || len(document.Services) != 2 {
+		t.Fatalf("merged mixed bundle services = %d, err=%v", len(document.Services), err)
 	}
 }
 

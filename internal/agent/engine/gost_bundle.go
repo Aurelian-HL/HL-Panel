@@ -21,7 +21,7 @@ var (
 	ErrGOSTConfigConflict      = errors.New("gost fragments contain conflicting services")
 )
 
-// CompileGOSTBundle accepts the verified TCP DIRECT subset only. Unknown
+// CompileGOSTBundle accepts verified TCP or UDP DIRECT fragments. Unknown
 // fields and mixed-engine bundles are rejected rather than silently omitted.
 func CompileGOSTBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	if bundle.SchemaVersion != BundleSchemaVersion || bundle.Fragments == nil {
@@ -31,6 +31,10 @@ func CompileGOSTBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 	sort.Slice(fragments, func(i, j int) bool { return fragments[i].GroupID < fragments[j].GroupID })
 	merged := gostconfig.Configuration{Services: []gostconfig.Service{}, Metrics: &gostconfig.Metrics{Addr: gostconfig.StatsAPIAddress}}
 	names := make(map[string]struct{})
+	// TCP and UDP have independent listener namespaces on a node. Include the
+	// validated transport in the conflict key so a mixed bundle may bind the
+	// same numeric port once per protocol while still rejecting same-protocol
+	// duplicates.
 	listeners := make(map[string]struct{})
 	for _, fragment := range fragments {
 		if fragment.Engine != agentv1.EngineGOST {
@@ -60,11 +64,12 @@ func CompileGOSTBundle(bundle agentv1.ConfigurationBundle) ([]byte, error) {
 			if _, exists := names[service.Name]; exists {
 				return nil, fmt.Errorf("%w: duplicate service name", ErrGOSTConfigConflict)
 			}
-			if _, exists := listeners[service.Addr]; exists {
+			listenerKey := service.Listener.Type + "|" + service.Addr
+			if _, exists := listeners[listenerKey]; exists {
 				return nil, fmt.Errorf("%w: duplicate listener address", ErrGOSTConfigConflict)
 			}
 			names[service.Name] = struct{}{}
-			listeners[service.Addr] = struct{}{}
+			listeners[listenerKey] = struct{}{}
 			merged.Services = append(merged.Services, service)
 		}
 	}
@@ -87,8 +92,11 @@ func validateGOSTMetrics(metrics gostconfig.Metrics) error {
 }
 
 func validateGOSTService(service gostconfig.Service) error {
-	if strings.TrimSpace(service.Name) == "" || service.Handler.Type != "tcp" || service.Listener.Type != "tcp" {
-		return errors.New("service must have a name and TCP handler/listener")
+	if strings.TrimSpace(service.Name) == "" {
+		return errors.New("service name is required")
+	}
+	if service.Handler.Type != service.Listener.Type || (service.Handler.Type != "tcp" && service.Handler.Type != "udp") {
+		return errors.New("service handler/listener must be a matching TCP or UDP pair")
 	}
 	if err := validateGOSTAddress(service.Addr, true); err != nil {
 		return fmt.Errorf("listener address: %w", err)

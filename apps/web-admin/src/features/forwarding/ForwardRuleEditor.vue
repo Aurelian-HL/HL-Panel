@@ -198,7 +198,7 @@ async function save(): Promise<void> {
   <BaseModal v-else :title="title" width="small" :close-disabled="busy" @close="emit('close')">
     <form id="forward-rule-editor" class="form-stack ny-compact-form" @submit.prevent="save">
       <label class="field"><span>名称</span><input v-model="form.name" maxlength="120" required /></label>
-      <label class="field"><span>接入协议</span><select v-model="form.ingress_protocol" class="ingress-protocol-selector"><option value="tcp">NY 转发</option><option value="vless_reality">VLESS + Reality</option><option hidden value="udp">原 NY UDP 规则</option><option hidden value="socks5">原 NY SOCKS5 规则</option></select></label>
+      <label class="field"><span>接入协议</span><select v-model="form.ingress_protocol" class="ingress-protocol-selector"><option value="tcp">NY TCP 转发</option><option value="udp">NY UDP 转发</option><option value="vless_reality">VLESS + Reality</option><option hidden value="socks5">原 NY SOCKS5 规则</option></select></label>
       <label class="field"><span>入口</span><select v-model="form.entry_group_id" required><option value="" disabled>请选择入口设备组</option><option v-if="form.entry_group_id && !entries.some(item => item.id === form.entry_group_id)" :value="form.entry_group_id">原入口已不可用</option><option v-for="item in entries" :key="item.id" :value="item.id">{{ item.name }}</option></select></label>
       <p v-if="!entries.length" class="field-help">暂无入口设备组，请先添加设备组成员。</p>
       <label class="field"><span>监听端口</span><input :value="form.listen_port || ''" type="number" min="0" max="65535" step="1" placeholder="自动分配" @input="form.listen_port = Number(($event.target as HTMLInputElement).value || 0)" /></label>

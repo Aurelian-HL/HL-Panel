@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 )
 
@@ -71,6 +72,35 @@ func TestRuleConnectionsRequireFreshVerifiedRuleListener(t *testing.T) {
 				t.Fatal("read view lost live state", err)
 			}
 		})
+	}
+}
+
+func TestRuleConnectionUsesIngressTransportRatherThanTargetProtocol(t *testing.T) {
+	s, proof := protocolPublicationFixture(t)
+	if err := s.PublishProtocolHealth(context.Background(), proof); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	node := s.nodes["node"]
+	node.LastHeartbeatAt = &now
+	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(2)}}}
+	s.nodes["node"] = node
+
+	rule := s.forwardRules["rule"]
+	// VLESS Reality remains a TCP listener even though ingress and target are
+	// represented by separate protocol fields.
+	rule.IngressProtocol = forwarding.IngressVLESSReality
+	rule.Protocol = forwarding.ProtocolTCP
+	got := s.ruleConnectionLocked(rule, now)
+	if got.Reason != "established" || got.Status != "online" || got.Connections != 2 {
+		t.Fatalf("VLESS TCP ingress was not sampled: %+v", got)
+	}
+
+	rule.IngressProtocol = forwarding.IngressUDP
+	rule.Protocol = forwarding.ProtocolTCP // inconsistent legacy data must follow ingress.
+	got = s.ruleConnectionLocked(rule, now)
+	if got.Reason != "tcp_only" || got.Status != "offline" {
+		t.Fatalf("UDP ingress was treated as TCP: %+v", got)
 	}
 }
 

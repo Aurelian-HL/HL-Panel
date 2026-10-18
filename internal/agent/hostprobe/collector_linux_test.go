@@ -2,7 +2,11 @@
 
 package hostprobe
 
-import "testing"
+import (
+	"os"
+	"reflect"
+	"testing"
+)
 
 func TestProcMeasurements(t *testing.T) {
 	total, idle, ok := cpuCounters("cpu 10 2 3 40 5 6 7 8 9 10\n")
@@ -46,5 +50,29 @@ func TestProcMeasurements(t *testing.T) {
 	sample := Snapshot()
 	if sample.MemoryTotalBytes == nil || *sample.MemoryTotalBytes == 0 || sample.DiskTotalBytes == nil || *sample.DiskTotalBytes == 0 || sample.UptimeSeconds == nil || sample.LoadAverage1 == nil {
 		t.Fatal("real host collection failed")
+	}
+}
+
+func TestTCPCongestionControl(t *testing.T) {
+	files := map[string][]byte{
+		"/proc/sys/net/ipv4/tcp_congestion_control":           []byte(" bbr2\n"),
+		"/proc/sys/net/ipv4/tcp_available_congestion_control": []byte("reno bbr2 bbr2 cubic\n"),
+	}
+	current, available := tcpCongestionControl(func(path string) ([]byte, error) {
+		value, ok := files[path]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return value, nil
+	})
+	if current != "bbr2" {
+		t.Fatalf("current congestion control = %q, want bbr2", current)
+	}
+	if want := []string{"reno", "bbr2", "cubic"}; !reflect.DeepEqual(available, want) {
+		t.Fatalf("available congestion control = %#v, want %#v", available, want)
+	}
+	current, available = tcpCongestionControl(func(string) ([]byte, error) { return nil, os.ErrNotExist })
+	if current != "" || available != nil {
+		t.Fatalf("unavailable congestion control fabricated values: %q %#v", current, available)
 	}
 }

@@ -457,6 +457,19 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 				return nil, errors.New("unassigned import in unsupported snapshot version")
 			}
 		}
+		// UDP DIRECT was historically persisted as statically unsupported while
+		// the control plane had no native GOST UDP compiler. That reason is no
+		// longer canonical: capability gating now happens per node. Clear only
+		// this exact legacy marker on otherwise valid UDP DIRECT rules so loading
+		// an old snapshot is idempotent and does not alter any user configuration.
+		for id, rule := range state.ForwardRules {
+			if rule.ActivationReason == forwarding.ActivationReasonUDPUnsupported &&
+				rule.EffectiveIngressProtocol() == forwarding.IngressUDP &&
+				rule.Protocol == forwarding.ProtocolUDP && rule.EgressMode == forwarding.EgressDirect {
+				rule.ActivationReason = ""
+				state.ForwardRules[id] = rule
+			}
+		}
 		if state.Version < nativeRuntimeSnapshotVersion {
 			for _, rule := range state.ForwardRules {
 				if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {

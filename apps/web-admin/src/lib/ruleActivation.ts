@@ -3,7 +3,7 @@ import { ingressStatusFor } from '@/lib/businessFormatters'
 
 export const unsupportedActivationLabels: Record<string, string> = {
   exit_group_engine_unsupported: '经出口组暂不支持下发',
-  udp_engine_unsupported: 'UDP 暂不支持下发',
+  udp_engine_unsupported: 'UDP 节点能力不足，暂未下发',
   advanced_options_engine_unsupported: '高级选项暂不支持下发',
   selection_engine_unsupported: '最小连接数暂不支持下发',
 }

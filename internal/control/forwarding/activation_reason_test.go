@@ -24,7 +24,7 @@ func TestPendingActivationReasonDoesNotPromiseUnsupportedNYRoutes(t *testing.T) 
 	}{
 		{"direct TCP", func(*Rule) {}, ""},
 		{"exit group", func(r *Rule) { r.EgressMode = EgressExitGroup }, ActivationReasonExitGroupUnsupported},
-		{"UDP", func(r *Rule) { r.IngressProtocol, r.Protocol = IngressUDP, ProtocolUDP }, ActivationReasonUDPUnsupported},
+		{"UDP", func(r *Rule) { r.IngressProtocol, r.Protocol = IngressUDP, ProtocolUDP }, ""},
 		{"SOCKS5", func(r *Rule) { r.IngressProtocol, r.Protocol = IngressSOCKS5, ProtocolTCP }, ActivationReasonSOCKS5RuntimeMaterialPending},
 		{"Proxy Protocol", func(r *Rule) { r.SendProxyProtocol = SendProxyV1TCP }, ActivationReasonAdvancedOptionsUnsupported},
 		{"speed limit", func(r *Rule) { r.SpeedLimitMbps = 10 }, ActivationReasonAdvancedOptionsUnsupported},

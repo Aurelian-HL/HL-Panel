@@ -83,3 +83,40 @@ func TestSnapshotRejectsSharedMachineForwardingListenerConflicts(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotMigratesLegacyUDPUnsupportedReason(t *testing.T) {
+	s, request, _ := sharedEntryGroupsFixture(t)
+	node := s.nodes["shared-node"]
+	node.CredentialHash = "legacy-udp-node-credential-hash"
+	s.nodes[node.ID] = node
+	s.nodesByCredential[node.CredentialHash] = node.ID
+	request.ListenPort = 12001
+	request.IngressProtocol = forwarding.IngressUDP
+	request.Protocol = forwarding.ProtocolUDP
+	rule, _, err := forwarding.NewService(s, nil).Create(context.Background(), "admin", request, "legacy-udp-rule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBytes, err := s.EncodeSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state snapshot
+	if err := json.Unmarshal(stateBytes, &state); err != nil {
+		t.Fatal(err)
+	}
+	persisted := state.ForwardRules[rule.ID]
+	persisted.ActivationReason = forwarding.ActivationReasonUDPUnsupported
+	state.ForwardRules[rule.ID] = persisted
+	modified, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := DecodeSnapshot(modified)
+	if err != nil {
+		t.Fatalf("legacy UDP snapshot failed to load: %v", err)
+	}
+	if got := restored.forwardRules[rule.ID].ActivationReason; got != "" {
+		t.Fatalf("legacy UDP activation reason = %q, want empty after migration", got)
+	}
+}

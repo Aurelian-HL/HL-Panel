@@ -90,6 +90,7 @@ try {
         'README.md',
         'backup-and-restore.md',
         'install.sh',
+        'configure-node-bbr2.py',
         'install-node.sh',
         'reinstall-node.py',
         'configure-node-bbr.py',

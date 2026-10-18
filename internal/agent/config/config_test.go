@@ -16,6 +16,24 @@ func TestDefaultHeartbeatSamplesEverySecond(t *testing.T) {
 	}
 }
 
+func TestNodeCapabilitiesOnlyAdvertiseActiveBBR2(t *testing.T) {
+	original := tcpBBR2Enabled
+	t.Cleanup(func() { tcpBBR2Enabled = original })
+
+	tcpBBR2Enabled = func() bool { return true }
+	cfg := Config{Capabilities: []string{"custom"}}
+	cfg.setDefaults()
+	if !hasCapability(cfg.NodeCapabilities(), CapabilityTCPBBR2) {
+		t.Fatalf("active BBR2 capability missing: %v", cfg.NodeCapabilities())
+	}
+
+	tcpBBR2Enabled = func() bool { return false }
+	cfg.Capabilities = append(cfg.Capabilities, CapabilityTCPBBR2)
+	if hasCapability(cfg.NodeCapabilities(), CapabilityTCPBBR2) {
+		t.Fatalf("disabled BBR2 capability was advertised: %v", cfg.NodeCapabilities())
+	}
+}
+
 func TestHTTPClientUsesBoundedLongLivedTransport(t *testing.T) {
 	cfg := Config{RequestTimeout: Duration(17 * time.Second)}
 	client, err := cfg.HTTPClient()

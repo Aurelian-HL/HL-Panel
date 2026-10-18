@@ -19,6 +19,11 @@ type HostSnapshot struct {
 	NetInSpeedBytesPerSecond  *uint64  `json:"net_in_speed_bytes_per_second,omitempty"`
 	NetOutSpeedBytesPerSecond *uint64  `json:"net_out_speed_bytes_per_second,omitempty"`
 	TCPConnCount              *uint64  `json:"tcp_conn_count,omitempty"`
+	// TCP congestion-control values are read from the kernel's effective
+	// defaults. They describe what new sockets may inherit, not existing
+	// connections or user-space QUIC/KCP congestion control.
+	TCPCongestionControl          string   `json:"tcp_congestion_control,omitempty"`
+	TCPAvailableCongestionControl []string `json:"tcp_available_congestion_control,omitempty"`
 	// Local TCP listener port -> established connections. Null means unknown;
 	// an empty object is a successful sample with no listeners. No peer IPs.
 	TCPListeners       map[string]uint64 `json:"tcp_listeners"`

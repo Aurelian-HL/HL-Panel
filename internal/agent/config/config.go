@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -28,7 +29,9 @@ const (
 	CapabilityDryRunFileAdapter       = "dry-run-file-adapter"
 	CapabilityXrayVLESSReality        = "xray-vless-reality"
 	CapabilityGOSTTCPDirect           = "gost-tcp-direct"
+	CapabilityGOSTUDPDirect           = "gost-udp-direct"
 	CapabilityLinuxTCSpeedLimit       = "linux-tc-speed-limit-v1"
+	CapabilityTCPBBR2                 = "tcp-bbr2"
 	EngineModeDryRun                  = "dry_run"
 	EngineModeXray                    = "xray"
 	EngineModeGOST                    = "gost"
@@ -37,6 +40,45 @@ const (
 
 // Overridden by the release build; configuration may explicitly override it.
 var DefaultAgentVersion = "dev"
+
+// tcpBBR2Enabled is injectable for policy tests. It only reports the
+// capability when the kernel both exposes bbr2 and has it selected as the
+// current TCP default; advertising an available-but-disabled algorithm would
+// let the control plane mistake support for an active node policy.
+var tcpBBR2Enabled = detectTCPBBR2
+
+func detectTCPBBR2() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	current, err := os.ReadFile("/proc/sys/net/ipv4/tcp_congestion_control")
+	if err != nil || strings.TrimSpace(string(current)) != "bbr2" {
+		return false
+	}
+	available, err := os.ReadFile("/proc/sys/net/ipv4/tcp_available_congestion_control")
+	if err != nil {
+		return false
+	}
+	for _, algorithm := range strings.Fields(string(available)) {
+		if algorithm == "bbr2" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Config) NodeCapabilities() []string {
+	capabilities := make([]string, 0, len(c.Capabilities)+1)
+	for _, capability := range c.Capabilities {
+		if capability != CapabilityTCPBBR2 {
+			capabilities = append(capabilities, capability)
+		}
+	}
+	if tcpBBR2Enabled() {
+		capabilities = append(capabilities, CapabilityTCPBBR2)
+	}
+	return uniqueStrings(capabilities)
+}
 
 type Duration time.Duration
 
@@ -188,7 +230,10 @@ func (c *Config) setDefaults() {
 		c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityXrayVLESSReality))
 	}
 	if c.EngineMode == EngineModeGOST || c.EngineMode == EngineModeMixed {
-		c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityGOSTTCPDirect))
+		// The supported GOST release exposes paired native TCP and UDP
+		// handler/listener services. The control plane still gates UDP on this
+		// capability, so pre-UDP agents keep receiving only their old fragments.
+		c.Capabilities = uniqueStrings(append(c.Capabilities, CapabilityGOSTTCPDirect, CapabilityGOSTUDPDirect))
 	}
 }
 

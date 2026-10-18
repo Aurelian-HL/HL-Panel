@@ -400,7 +400,7 @@ func (a *Agent) enroll(ctx context.Context) (state.Credentials, error) {
 		Platform:         goruntime.GOOS,
 		Architecture:     goruntime.GOARCH,
 		AgentVersion:     a.cfg.AgentVersion,
-		Capabilities:     append([]string(nil), a.cfg.Capabilities...),
+		Capabilities:     a.cfg.NodeCapabilities(),
 	})
 	if err != nil {
 		return state.Credentials{}, fmt.Errorf("enroll node: %w", err)
@@ -425,7 +425,7 @@ func (a *Agent) HeartbeatOnce(ctx context.Context) error {
 		Platform:          goruntime.GOOS,
 		Architecture:      goruntime.GOARCH,
 		AgentVersion:      a.cfg.AgentVersion,
-		Capabilities:      append([]string(nil), a.cfg.Capabilities...),
+		Capabilities:      a.cfg.NodeCapabilities(),
 		EngineVersions:    a.engineVersions(),
 		Resources:         resourceSnapshot(),
 		AppliedGeneration: current.AppliedGeneration(),

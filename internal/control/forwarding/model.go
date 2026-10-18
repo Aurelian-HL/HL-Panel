@@ -218,9 +218,9 @@ func (r Rule) PendingActivationReason() ActivationReason {
 	if r.EgressMode == EgressExitGroup {
 		return ActivationReasonExitGroupUnsupported
 	}
-	if r.EffectiveIngressProtocol() == IngressUDP || r.Protocol == ProtocolUDP {
-		return ActivationReasonUDPUnsupported
-	}
+	// Native UDP DIRECT is compiled only for nodes that advertise the GOST UDP
+	// capability. This method has no node context, so capability gating belongs
+	// to the node bundle compiler and deployment readiness projection.
 	if r.EffectiveIngressProtocol() == IngressSOCKS5 {
 		return ActivationReasonSOCKS5RuntimeMaterialPending
 	}

@@ -70,7 +70,7 @@ describe('ForwardRuleInventory', () => {
     wrapper.unmount()
   })
 
-  it('opens useful diagnostics on desktop and mobile without calling idle rules offline', async () => {
+  it('opens listener diagnostics and keeps a zero-connection listener gray on both layouts', async () => {
     const rule: ForwardRule = { ...baseRule, status: 'active', connection: { status: 'error', connections: 0, reason: 'listener_missing', error_nodes: 1, sampled_nodes: 1, missing_listener_nodes: 1, sampled_at: '2026-10-17T00:00:00Z', valid_for_ms: 5000 } }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
     for (const layout of ['.business-desktop', '.business-mobile']) {
@@ -87,8 +87,46 @@ describe('ForwardRuleInventory', () => {
       expect(wrapper.find(layout + ' .rule-connection-detail').exists()).toBe(false)
     }
     await wrapper.setProps({ rules: [{ ...rule, connection: { status: 'offline', connections: 0, reason: 'no_connections', valid_for_ms: 5000 } }] })
-    expect(wrapper.get('.rule-connection').text()).toContain('空闲')
-    expect(wrapper.get('.rule-connection').text()).not.toContain('不在线')
+    for (const layout of ['.business-desktop', '.business-mobile']) {
+      const badge = wrapper.get(layout + ' .rule-connection')
+      expect(badge.text()).toContain('不在线')
+      expect(badge.classes()).toContain('is-offline')
+      expect(badge.attributes('title')).toContain('不代表线路不通')
+    }
+    wrapper.unmount()
+  })
+
+  it('keeps working connections green and exposes partial failures on both layouts', async () => {
+    const rule: ForwardRule = { ...baseRule, status: 'active', connection: { status: 'online', connections: 4, reason: 'established', error_nodes: 2, sampled_nodes: 2, missing_listener_nodes: 1, apply_failed_nodes: 1, pending_nodes: 1, valid_for_ms: 5000 } }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
+    for (const layout of ['.business-desktop', '.business-mobile']) {
+      const badge = wrapper.get(layout + ' .rule-connection')
+      expect(badge.text()).toBe('在线+')
+      expect(badge.classes()).toContain('is-online')
+      expect(badge.classes()).not.toContain('is-error')
+      await badge.trigger('click')
+      const details = wrapper.get(layout + ' .rule-connection-detail').text()
+      expect(details).toContain('当前 TCP 连接 4 条')
+      expect(details).toContain('未检测到监听端口：1 台节点')
+      expect(details).toContain('节点最新配置更新失败：1 台')
+      expect(details).toContain('尚未确认当前规则配置：1 台节点')
+    }
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['not_sampled', '待采样'],
+    ['deployment_pending', '待配置确认'],
+    ['sample_expired', '采样过期'],
+  ] as const)('keeps %s telemetry unknown without claiming the line is broken', (reason, label) => {
+    const rule: ForwardRule = { ...baseRule, status: 'active', connection: { status: 'offline', connections: 0, reason } }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })
+    for (const layout of ['.business-desktop', '.business-mobile']) {
+      const badge = wrapper.get(layout + ' .rule-connection')
+      expect(badge.text()).toBe(label + '+')
+      expect(badge.classes()).toContain('is-offline')
+      expect(badge.text()).not.toContain('故障')
+    }
     wrapper.unmount()
   })
 
@@ -129,7 +167,7 @@ describe('ForwardRuleInventory', () => {
 
   it.each([
     ['exit_group_engine_unsupported', '经出口组暂不支持下发'],
-    ['udp_engine_unsupported', 'UDP 暂不支持下发'],
+    ['udp_engine_unsupported', 'UDP 节点能力不足，暂未下发'],
     ['advanced_options_engine_unsupported', '高级选项暂不支持下发'],
     ['selection_engine_unsupported', '最小连接数暂不支持下发'],
     ['node_configuration_pending', '配置同步中'],

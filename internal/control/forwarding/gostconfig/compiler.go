@@ -55,6 +55,18 @@ type Selector struct {
 // caller must authorize customer state and supply only rules eligible for this
 // node. A concrete bind IP is required so wildcard exposure is always explicit.
 func CompileDirectTCP(rules []forwarding.Rule, bindIP string) ([]byte, error) {
+	return compileDirect(rules, bindIP, forwarding.IngressTCP, forwarding.ProtocolTCP, "tcp", "TCP DIRECT")
+}
+
+// CompileDirectUDP compiles the ordinary UDP DIRECT subset supported by the
+// GOST UDP listener/handler pair. It intentionally does not enable a reliable
+// overlay: the node receives a native UDP socket and forwards datagrams to the
+// configured UDP targets.
+func CompileDirectUDP(rules []forwarding.Rule, bindIP string) ([]byte, error) {
+	return compileDirect(rules, bindIP, forwarding.IngressUDP, forwarding.ProtocolUDP, "udp", "UDP DIRECT")
+}
+
+func compileDirect(rules []forwarding.Rule, bindIP string, ingress forwarding.IngressProtocol, protocol forwarding.Protocol, engineType, routeName string) ([]byte, error) {
 	ip, err := netip.ParseAddr(bindIP)
 	if err != nil || ip.Zone() != "" {
 		return nil, fmt.Errorf("%w: bind IP must be an explicit IPv4 or IPv6 address", faults.ErrValidation)
@@ -73,11 +85,12 @@ func CompileDirectTCP(rules []forwarding.Rule, bindIP string) ([]byte, error) {
 			return nil, fmt.Errorf("%w: duplicate rule id", faults.ErrConflict)
 		}
 		ids[rule.ID] = struct{}{}
-		if rule.EffectiveIngressProtocol() != forwarding.IngressTCP || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect {
-			return nil, fmt.Errorf("%w: this compiler supports TCP DIRECT only; other routes require a verified engine adapter", faults.ErrValidation)
+		if rule.EffectiveIngressProtocol() != ingress || rule.Protocol != protocol || rule.EgressMode != forwarding.EgressDirect {
+			return nil, fmt.Errorf("%w: this compiler supports %s only; other routes require a verified engine adapter", faults.ErrValidation, routeName)
 		}
 		request, err := forwarding.NormalizeRequest(forwarding.Request{Name: rule.Name, CustomerID: rule.CustomerID, EntryGroupID: rule.EntryGroupID, ExitGroupID: rule.ExitGroupID,
-			EgressMode: rule.EgressMode, Protocol: rule.Protocol, ListenPort: rule.ListenPort, Targets: rule.Targets, SelectionPolicy: rule.SelectionPolicy})
+			EgressMode: rule.EgressMode, IngressProtocol: rule.EffectiveIngressProtocol(), Protocol: rule.Protocol, ListenPort: rule.ListenPort, Targets: rule.Targets, SelectionPolicy: rule.SelectionPolicy,
+			SendProxyProtocol: rule.SendProxyProtocol, AcceptProxyProtocol: rule.AcceptProxyProtocol, SpeedLimitMbps: rule.SpeedLimitMbps, IPLimit: rule.IPLimit, ConnectionLimit: rule.ConnectionLimit})
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +116,7 @@ func CompileDirectTCP(rules []forwarding.Rule, bindIP string) ([]byte, error) {
 			return nil, fmt.Errorf("%w: unsupported target selection policy", faults.ErrValidation)
 		}
 		service := Service{Name: "forward-" + rule.ID, Addr: net.JoinHostPort(ip.String(), strconv.Itoa(rule.ListenPort)),
-			Handler: EngineType{Type: "tcp"}, Listener: EngineType{Type: "tcp"}, Metadata: map[string]any{"enableStats": true}, Forwarder: Forwarder{Nodes: make([]Node, 0, len(request.Targets)), Selector: Selector{Strategy: strategy, MaxFails: 1, FailTimeout: 30_000_000_000}}}
+			Handler: EngineType{Type: engineType}, Listener: EngineType{Type: engineType}, Metadata: map[string]any{"enableStats": true}, Forwarder: Forwarder{Nodes: make([]Node, 0, len(request.Targets)), Selector: Selector{Strategy: strategy, MaxFails: 1, FailTimeout: 30_000_000_000}}}
 		for index, target := range request.Targets {
 			service.Forwarder.Nodes = append(service.Forwarder.Nodes, Node{Name: fmt.Sprintf("target-%d", index+1), Addr: net.JoinHostPort(target.Host, strconv.Itoa(target.Port))})
 		}

@@ -175,7 +175,8 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 		if !configured || network.ConnectHost == "" {
 			continue
 		}
-		rules := make([]forwarding.Rule, 0)
+		tcpRules := make([]forwarding.Rule, 0)
+		udpRules := make([]forwarding.Rule, 0)
 		for _, stored := range s.forwardRules {
 			if stored.EntryGroupID != groupID {
 				continue
@@ -198,19 +199,39 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 				}
 				continue
 			}
-			if rule.PendingActivationReason() != "" || !eligibleForGOSTDirect(rule) {
+			if eligibleForGOSTTCPDirect(rule) {
+				tcpRules = append(tcpRules, rule)
 				continue
 			}
-			rules = append(rules, rule)
+			if eligibleForGOSTUDPDirect(rule) && nodeSupportsGOSTUDPDirect(s.nodes[nodeID]) {
+				udpRules = append(udpRules, rule)
+			}
 		}
-		sort.Slice(rules, func(left, right int) bool { return rules[left].ID < rules[right].ID })
-		for _, rule := range rules {
+		sort.Slice(tcpRules, func(left, right int) bool { return tcpRules[left].ID < tcpRules[right].ID })
+		sort.Slice(udpRules, func(left, right int) bool { return udpRules[left].ID < udpRules[right].ID })
+		for _, rule := range tcpRules {
 			// ConnectHost is the public/customer address, not a safe local bind
 			// address. The node-side listener is explicit about binding all local
 			// interfaces; the advertised host remains in the customer projection.
 			raw, err := gostconfig.CompileDirectTCP([]forwarding.Rule{rule}, "0.0.0.0")
 			if err != nil {
 				return nil, fmt.Errorf("compile forwarding rule %s: %w", rule.ID, err)
+			}
+			revision := rule.Revision
+			if revision < 1 {
+				revision = 1
+			}
+			fragments = append(fragments, agentv1.ConfigurationFragment{
+				GroupID:       generations.ForwardingFragmentID(agentv1.EngineGOST, rule.ID),
+				GroupRevision: agentv1.GroupRevision(revision),
+				Engine:        agentv1.EngineGOST,
+				Config:        raw,
+			})
+		}
+		for _, rule := range udpRules {
+			raw, err := gostconfig.CompileDirectUDP([]forwarding.Rule{rule}, "0.0.0.0")
+			if err != nil {
+				return nil, fmt.Errorf("compile UDP forwarding rule %s: %w", rule.ID, err)
 			}
 			revision := rule.Revision
 			if revision < 1 {
@@ -443,7 +464,7 @@ func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time
 	return nil
 }
 
-func eligibleForGOSTDirect(rule forwarding.Rule) bool {
+func eligibleForGOSTTCPDirect(rule forwarding.Rule) bool {
 	if rule.Paused || !forwardingRuleCompilableStatus(rule.Status) || rule.EffectiveIngressProtocol() != forwarding.IngressTCP || rule.Protocol != forwarding.ProtocolTCP || rule.EgressMode != forwarding.EgressDirect {
 		return false
 	}
@@ -451,6 +472,26 @@ func eligibleForGOSTDirect(rule forwarding.Rule) bool {
 	// need an engine adapter that can enforce them, so the rule stays pending.
 	return rule.PendingActivationReason() == ""
 }
+
+func eligibleForGOSTUDPDirect(rule forwarding.Rule) bool {
+	if rule.Paused || !forwardingRuleCompilableStatus(rule.Status) || rule.EffectiveIngressProtocol() != forwarding.IngressUDP || rule.Protocol != forwarding.ProtocolUDP || rule.EgressMode != forwarding.EgressDirect {
+		return false
+	}
+	return rule.PendingActivationReason() == ""
+}
+
+func nodeSupportsGOSTUDPDirect(node nodes.Node) bool {
+	for _, capability := range node.Capabilities {
+		if capability == agentconfig.CapabilityGOSTUDPDirect {
+			return true
+		}
+	}
+	return false
+}
+
+// eligibleForGOSTDirect is retained for package-local callers and tests that
+// previously referred to the TCP-only helper.
+func eligibleForGOSTDirect(rule forwarding.Rule) bool { return eligibleForGOSTTCPDirect(rule) }
 
 // A deployed rule remains executable during later node-bundle recompiles.
 // Activation is a lifecycle projection; it must not make an otherwise valid

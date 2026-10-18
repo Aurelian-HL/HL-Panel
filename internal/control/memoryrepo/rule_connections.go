@@ -18,7 +18,11 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		result.Reason = "inactive"
 		return result
 	}
-	if rule.Protocol != forwarding.ProtocolTCP {
+	// Connection telemetry is a TCP-listener observation. The target protocol
+	// is a separate concern: VLESS Reality and SOCKS5 both use TCP ingress,
+	// while a legacy/malformed record must still be classified by its explicit
+	// customer-facing ingress when available.
+	if rule.EffectiveIngressProtocol() == forwarding.IngressUDP {
 		result.Reason = "tcp_only"
 		return result
 	}
@@ -103,9 +107,9 @@ func listenerConnectionCount(value any, port string) (count uint64, listening, s
 		if listeners == nil {
 			return
 		}
-			var exists bool
-			count, exists = listeners[port]
-			return count, exists, count <= 1<<53-1
+		var exists bool
+		count, exists = listeners[port]
+		return count, exists, count <= 1<<53-1
 	case map[string]any:
 		if listeners == nil {
 			return

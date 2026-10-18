@@ -27,6 +27,25 @@ func TestCompileExplicitListenerAndMultipleTargets(t *testing.T) {
 	}
 }
 
+func TestCompileDirectUDPUsesPairedUDPHandlerAndListener(t *testing.T) {
+	rule := validRule()
+	rule.IngressProtocol = forwarding.IngressUDP
+	rule.Protocol = forwarding.ProtocolUDP
+	rule.ListenPort = 12346
+	rule.Targets = []forwarding.Target{{Host: "127.0.0.1", Port: 9000}}
+	raw, err := CompileDirectUDP([]forwarding.Rule{rule}, "0.0.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config Configuration
+	if err := json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Services) != 1 || config.Services[0].Handler.Type != "udp" || config.Services[0].Listener.Type != "udp" || config.Services[0].Addr != "0.0.0.0:12346" {
+		t.Fatalf("invalid UDP configuration: %s", raw)
+	}
+}
+
 func TestCompilerRefusesUnsupportedOrConflictingRoutes(t *testing.T) {
 	for _, change := range []func(*forwarding.Rule){
 		func(r *forwarding.Rule) { r.Protocol = forwarding.ProtocolUDP },

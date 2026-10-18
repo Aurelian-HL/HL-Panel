@@ -24,6 +24,7 @@ $required = @(
     'deploy/README.md',
     'deploy/backup-and-restore.md',
     'deploy/install.sh',
+    'deploy/configure-node-bbr2.py',
     'deploy/install-node.sh',
     'deploy/reinstall-node.py',
     'deploy/configure-node-bbr.py',
