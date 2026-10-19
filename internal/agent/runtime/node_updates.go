@@ -148,10 +148,16 @@ func (a *Agent) verifyNodeUpdate(ctx context.Context) (int64, string, error) {
 		return 0, "", errors.New("configuration pending")
 	}
 	if desired == nil {
-		if current.Applied != nil {
-			return 0, "", errors.New("desired absent")
+		// Desired contains only unapplied generations. HTTP 204 is normal for
+		// an up-to-date node; verify its hash-checked last-known-good bundle.
+		applied, found, err := a.state.LastKnownGood()
+		if err != nil {
+			return 0, "", err
 		}
-		return 0, "", nil
+		if !found {
+			return 0, "", nil
+		}
+		desired = &applied
 	}
 	if current.Applied == nil || desired.Generation != current.Applied.Generation || desired.ConfigSHA256 != current.Applied.ConfigSHA256 {
 		return 0, "", errors.New("configuration not applied")

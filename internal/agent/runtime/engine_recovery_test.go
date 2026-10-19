@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,6 +127,12 @@ func TestRealEngineRecoveryWithoutNewDesiredAndDuringControlOutage(t *testing.T)
 		t.Fatalf("initial apply = %v, %v", applied, err)
 	}
 	offered.Store(false)
+	if goruntime.GOOS == "linux" {
+		generation, hash, err := a.verifyNodeUpdate(context.Background())
+		if err != nil || generation != int64(desired.Generation) || hash != desired.ConfigSHA256 {
+			t.Fatalf("real engine update verification with no pending desired: generation=%d error=%v", generation, err)
+		}
+	}
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("loopback-ok")) }))
 	defer target.Close()
 	statsConn, err := grpc.NewClient(apiAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))

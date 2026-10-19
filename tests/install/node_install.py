@@ -101,7 +101,8 @@ try:
         control_origin = f'https://127.0.0.1:{port}'
         context = ssl.create_default_context(cafile=str(cert))
         fault_state = {'enabled': False, 'enroll_calls': 0, 'lost_response': False,
-                       'attempts': [], 'panel_versions': [], 'reenroll_fault': False, 'reenroll_calls': 0}
+                       'attempts': [], 'panel_versions': [], 'reenroll_fault': False, 'reenroll_calls': 0,
+                       'update_task': None, 'update_results': []}
 
         class NodeProxy(BaseHTTPRequestHandler):
             def log_message(self, *_):
@@ -109,6 +110,22 @@ try:
 
             def forward(self):
                 body = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                # Disposable VM only: offer a fixed task through the real
+                # Agent HTTP loop without publishing this candidate first.
+                task = fault_state['update_task']
+                if task and self.path in ('/api/v1/agent/update-task/claim', '/api/v1/agent/update-task/result'):
+                    if self.path.endswith('/claim'):
+                        data = json.dumps(task).encode()
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/json')
+                        self.send_header('Content-Length', str(len(data)))
+                        self.end_headers(); self.wfile.write(data)
+                    else:
+                        result = json.loads(body)
+                        assert result['id'] == task['id'] and result['lease'] == task['lease']
+                        fault_state['update_results'].append(result)
+                        self.send_response(204); self.end_headers()
+                    return
                 enroll = self.path == '/api/v1/agent/enroll' and fault_state['enabled']
                 reenroll = self.path == '/api/v1/agent/reenroll' and fault_state['reenroll_fault']
                 if reenroll:
@@ -524,7 +541,20 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                     # download shim before the following installer scenarios.
                     update_helper.write_bytes((release/'deploy/update.py').read_bytes())
                 else:
-                    maintenance('/verified',{'id':task['id']})
+                    # No pending desired exists after normal acknowledgement.
+                    # The unprivileged Agent must verify the local good bundle,
+                    # both real engine processes and their owned sockets.
+                    desired_request = urllib.request.Request(control_origin + '/api/v1/agent/desired',
+                        headers={'Authorization': 'Bearer ' + credential['node_credential']})
+                    with urllib.request.urlopen(desired_request, context=context, timeout=10) as response:
+                        assert response.status == 204 and response.read() == b''
+                    fault_state['update_task'] = dict(task, lease='a'*64)
+                    wait_for(lambda: any(x['state']=='succeeded' for x in fault_state['update_results']),timeout=120)
+                    proof = next(x for x in fault_state['update_results'] if x['state']=='succeeded')
+                    ledger = json.loads(Path('/var/lib/hl-panel-edge/state.json').read_text())
+                    assert proof['verified_generation']==ledger['applied']['generation']
+                    assert proof['verified_sha256']==ledger['applied']['config_sha256']
+                    fault_state['update_task'] = None
                     assert maintenance()['task']['state']=='succeeded'
                     old_pid=after_pid
                     maintenance('/start',task)
