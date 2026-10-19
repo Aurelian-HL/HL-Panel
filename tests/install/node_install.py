@@ -44,6 +44,7 @@ secrets = []
 transcript = []
 checks = []
 acceptance_status = 'failed'
+worker_fixture = None
 
 
 def run(command, **options):
@@ -431,7 +432,13 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             spec = importlib.util.spec_from_file_location('node_updater', repo / 'deploy/update-node.py')
             node_updater = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(node_updater)
-            candidate = args.archive_directory.resolve()
+            # The real worker deliberately hides /home and has a private /tmp.
+            # Keep only this disposable VM's download fixture in shared /var/lib;
+            # do not relax the production service's filesystem protections.
+            worker_fixture = tempfile.TemporaryDirectory(prefix='hl-node-update-ci-', dir='/var/lib')
+            candidate = Path(worker_fixture.name)
+            for name in ('hl-panel-linux-amd64.tar.gz', 'hl-panel-linux-amd64.tar.gz.sha256'):
+                shutil.copy2(args.archive_directory / name, candidate / name)
             metadata = {'tag_name':args.version, 'draft':False, 'prerelease':False, 'published_at':'2026-01-01T00:00:00Z'}
             def candidate_request(url, limit=2*1024*1024):
                 if '/releases/tags/' in url: return json.dumps(metadata).encode()
@@ -487,6 +494,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 response=connection.getresponse();body=response.read();connection.close()
                 assert response.status == expected, 'local update endpoint unexpected HTTP status'
                 return json.loads(body)
+            def worker_verifying():
+                task = maintenance().get('task') or {}
+                if task.get('state') in ('failed', 'rolled_back', 'uncertain'):
+                    raise RuntimeError('Isolated worker update failed: ' + task['state'] + '/' + task.get('phase', ''))
+                return task.get('state') == 'verifying'
             assert maintenance()['capability'] == 'node-update-v1'
             maintenance('/start', {'command':'id'}, 400)
             archive_sha=hashlib.sha256((candidate/'hl-panel-linux-amd64.tar.gz').read_bytes()).hexdigest()
@@ -497,7 +509,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 task={'id':str(uuid.uuid4()),'version':args.version,'archive_sha256':archive_sha}
                 wait_for(lambda: maintenance('/start',task))
                 maintenance('/start',task)  # Replaying a task must not execute twice.
-                wait_for(lambda: maintenance()['task']['state']=='verifying',timeout=120)
+                wait_for(worker_verifying,timeout=120)
                 assert run(['systemctl','show','hl-panel-node-update','-p','MainPID','--value'],check=True).stdout.strip()==worker_pid
                 after_pid=run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()
                 assert after_pid!=before_pid
@@ -681,4 +693,6 @@ finally:
     run(['journalctl', '-u', 'hl-panel-edge-agent', '-n', '100', '--no-pager'])
     Path('node-install.log').write_text('\n'.join(transcript))
     Path('node-install-result.json').write_text(json.dumps({'status':acceptance_status,'checks':checks},indent=2)+'\n')
+    if worker_fixture is not None:
+        worker_fixture.cleanup()
 print(json.dumps({'status':'passed','checks':checks},indent=2))
