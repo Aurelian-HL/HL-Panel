@@ -12,12 +12,12 @@ describe('rule connection evidence', () => {
     expect(state.details.join(' ')).toContain('节点采样时间')
   })
   it('distinguishes idle, unavailable, pending and unsupported telemetry from a broken rule', () => {
-    for (const [reason, label] of [['no_connections', '不在线'], ['not_sampled', '待采样'], ['deployment_pending', '待配置确认'], ['tcp_only', '不适用'], ['sample_expired', '采样过期']] as const) {
+    for (const [reason, label] of [['no_connections', '不在线'], ['not_sampled', '不在线'], ['deployment_pending', '待配置确认'], ['tcp_only', '不适用'], ['sample_expired', '不在线']] as const) {
       const state = ruleConnectionPresentation({ ...rule, connection: { status: 'offline', connections: 0, reason } }, 0)
       expect(state.label).toBe(label)
       expect(state.status).toBe('offline')
     }
-    expect(ruleConnectionPresentation({ ...rule, connection: undefined }, 0).label).toBe('待采样')
+    expect(ruleConnectionPresentation({ ...rule, connection: undefined }, 0).label).toBe('不在线')
   })
   it('keeps UDP unsupported even when an older API omits connection telemetry', () => {
     for (const udp of [
@@ -35,15 +35,15 @@ describe('rule connection evidence', () => {
   })
   it('expires at the remaining server lease, including a zero lease and re-fetched old data', () => {
     expect(ruleConnectionPresentation(rule, 2299).status).toBe('online')
-    expect(ruleConnectionPresentation(rule, 2300).label).toBe('采样过期')
-    expect(ruleConnectionPresentation({ ...rule, connection: { ...rule.connection!, valid_for_ms: 0 } }, 0).label).toBe('采样过期')
+    expect(ruleConnectionPresentation(rule, 2300).label).toBe('不在线')
+    expect(ruleConnectionPresentation({ ...rule, connection: { ...rule.connection!, valid_for_ms: 0 } }, 0).label).toBe('不在线')
     const refetched = { ...rule, connection: { ...rule.connection!, valid_for_ms: 100 } }
-    expect(ruleConnectionPresentation(refetched, 100).label).toBe('采样过期')
+    expect(ruleConnectionPresentation(refetched, 100).label).toBe('不在线')
   })
   it('does not display stale failures as current failures', () => {
     const failed: ForwardRule = { ...rule, connection: { ...rule.connection!, status: 'error', connections: 0, reason: 'listener_missing', missing_listener_nodes: 1 } }
     expect(ruleConnectionPresentation(failed, 0).label).toBe('监听异常')
-    expect(ruleConnectionPresentation(failed, 2300).label).toBe('采样过期')
+    expect(ruleConnectionPresentation(failed, 2300).label).toBe('不在线')
   })
   it('preserves separate listener and apply failures, and partial failure warnings', () => {
     const failed: ForwardRule = { ...rule, connection: { ...rule.connection!, status: 'error', connections: 0, reason: 'node_apply_failed', apply_failed_nodes: 1, pending_nodes: 1 } }
@@ -62,7 +62,7 @@ describe('rule connection evidence', () => {
     const state = ruleConnectionPresentation(partial, 0)
     expect(state).toMatchObject({ status: 'online', label: '在线' })
     expect(state.details.join(' ')).toContain('未检测到监听端口：1 台节点')
-    expect(ruleConnectionPresentation(partial, 2300)).toMatchObject({ status: 'offline', label: '采样过期' })
+    expect(ruleConnectionPresentation(partial, 2300)).toMatchObject({ status: 'offline', label: '不在线' })
   })
   it('does not infer online status from invalid connection counts', () => {
     for (const connections of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
@@ -80,6 +80,6 @@ describe('rule connection evidence', () => {
     expect(ruleConnectionPresentation({ ...rule, status: 'quota_exhausted' }, 0).label).toBe('未启用')
     const legacy: ForwardRule = { ...rule, connection: { status: 'error', connections: 0, reason: 'listener_or_apply_failed' } }
     expect(ruleConnectionPresentation(legacy, 0).label).toBe('采样异常')
-    expect(ruleConnectionPresentation(legacy, 3000).label).toBe('采样过期')
+    expect(ruleConnectionPresentation(legacy, 3000).label).toBe('不在线')
   })
 })

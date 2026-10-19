@@ -69,23 +69,23 @@ describe('ForwardRulesPage', () => {
       await buttons()[1]!.trigger('click')
       for (let second = 1; second < 300; second++) await vi.advanceTimersByTimeAsync(1000)
       expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ sample: 400 })
-      expect(buttons()[1]!.text()).toContain('在线 1 条 / 1 客户')
+      expect(buttons()[1]!.text()).toContain('在线 1 人')
       expect(wrapper.findAll('.rule-connection').every(badge => badge.text().startsWith('在线'))).toBe(true)
       expect(wrapper.getComponent(ForwardRuleInventory).props('rules')).toHaveLength(1)
       // Ordinary refresh must not reset the sampling window or all badges.
       await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
       await flushPromises()
-      expect(buttons()[1]!.text()).toContain('在线 1 条 / 1 客户')
+      expect(buttons()[1]!.text()).toContain('在线 1 人')
       await vi.advanceTimersByTimeAsync(1000)
-      expect(buttons()[1]!.text()).toContain('在线 0 条 / 0 客户')
-      expect(buttons()[2]!.text()).toContain('不在线 1 条 / 1 客户')
+      expect(buttons()[1]!.text()).toContain('在线 0 人')
+      expect(buttons()[2]!.text()).toContain('不在线 1 人')
       expect(wrapper.text()).toContain('没有匹配的规则')
       await buttons()[2]!.trigger('click')
       expect(wrapper.findAll('.rule-connection').every(badge => badge.text().startsWith('不在线'))).toBe(true)
       expect(wrapper.getComponent(ForwardRuleInventory).props('rules')).toHaveLength(1)
     } finally { wrapper.unmount(); vi.useRealTimers() }
   })
-  it('filters sampled connection states and counts distinct bound customers', async () => {
+  it('includes unsampled customers as offline and counts distinct bound customers', async () => {
     const base: ForwardRule = { id: 'one', name: '在线一', customer_id: 'c-1', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active' }
     const online = { status: 'online', connections: 1, reason: 'established', valid_for_ms: 5000 } as const
     const offline = { status: 'offline', connections: 0, reason: 'no_connections', valid_for_ms: 5000 } as const
@@ -95,16 +95,21 @@ describe('ForwardRulesPage', () => {
       { ...base, id: 'three', name: '不在线一', customer_id: 'c-2', connection: offline },
       { ...base, id: 'four', name: '未绑定规则', customer_id: '', connection: offline },
       { ...base, id: 'five', name: '待采样规则', customer_id: 'c-3' },
+      { ...base, id: 'six', name: '在线客户的未采样规则' },
+      { ...base, id: 'seven', name: '同一未采样客户', customer_id: 'c-3' },
+      { ...base, id: 'eight', name: '暂停客户', customer_id: 'c-4', paused: true },
+      { ...base, id: 'nine', name: '采样过期客户', customer_id: 'c-5', connection: { ...offline, reason: 'sample_expired' } },
     ] })
     const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
     await flushPromises()
     const connectionButtons = wrapper.findAll('[aria-label="连接状态筛选"] button')
-    expect(connectionButtons[1]!.text()).toContain('在线 2 条 / 1 客户')
-    expect(connectionButtons[2]!.text()).toContain('不在线 2 条 / 1 客户')
+    expect(connectionButtons[1]!.text()).toContain('在线 1 人')
+    expect(connectionButtons[2]!.text()).toContain('不在线 4 人')
+    expect(wrapper.findAll('.rule-connection').some(badge => badge.text().includes('待采样'))).toBe(false)
     await connectionButtons[1]!.trigger('click')
-    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['one', 'two'])
+    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['one', 'two', 'six'])
     await connectionButtons[2]!.trigger('click')
-    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['three', 'four'])
+    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['three', 'four', 'five', 'seven', 'eight', 'nine'])
     wrapper.unmount()
   })
   it('renders rules before dictionaries finish and waits to enable creation', async () => {

@@ -60,7 +60,7 @@ it('expires old observations at a sampling boundary when polling stops, without 
     // Reading the same heartbeat again must not renew its age.
     rules.value = [...rules.value]
     await vi.advanceTimersByTimeAsync(300000)
-    expect(snapshot.value.one!.label).toBe('采样过期')
+    expect(snapshot.value.one!.label).toBe('不在线')
   } finally { wrapper.unmount() }
 })
 
@@ -73,9 +73,9 @@ it('invalidates only a changed rule, preserves other rules on additions and clea
   expect(snapshot.value.one!.label).toBe('已暂停')
   expect(snapshot.value.two!.label).toBe('在线')
   rules.value[0] = offline()
-  expect(snapshot.value.one!.label).toBe('待采样')
+  expect(snapshot.value.one!.label).toBe('不在线')
   rules.value[1] = { ...online, id: 'two', listen_port: 444 }
-  expect(snapshot.value.two!.label).toBe('待采样')
+  expect(snapshot.value.two!.label).toBe('不在线')
   wrapper.unmount()
   await flushPromises()
   expect(vi.getTimerCount()).toBe(0)

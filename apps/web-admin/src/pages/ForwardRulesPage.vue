@@ -77,34 +77,35 @@ const searchIndex = computed(() => new Map(rules.value.map((item) => {
     : ''
   return [item.id, [item.name, item.listen_port, deviceNames.value.get(item.entry_group_id), deviceNames.value.get(item.exit_group_id), vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()] as const
 })))
-function connectionStatus(rule: ForwardRule): 'online' | 'offline' | 'unknown' {
-  const label = connectionPresentations.value[rule.id]?.label
-  return label === '在线' ? 'online' : label === '不在线' ? 'offline' : 'unknown'
+function connectionStatus(rule: ForwardRule): 'online' | 'offline' {
+  return connectionPresentations.value[rule.id]?.status === 'online' ? 'online' : 'offline'
 }
 const baseFiltered = computed(() => {
   const keyword = query.value.trim().toLowerCase()
   return rules.value.filter((item) => (!keyword || searchIndex.value.get(item.id)?.includes(keyword)) && (filter.value === 'all' || (filter.value === 'paused' ? item.paused || item.status === 'quota_exhausted' : !item.paused && item.status !== 'quota_exhausted')) && (groupFilter.value === 'all' || (groupFilter.value === 'ungrouped' ? !item.rule_group_id : item.rule_group_id === groupFilter.value)))
 })
-const connectionCounts = computed(() => {
-  const rulesByStatus = { online: 0, offline: 0, unknown: 0 }
-  const customerStates = new Map<string, Set<'online' | 'offline' | 'unknown'>>()
+const customerConnections = computed(() => {
+  const customerStates = new Map<string, boolean>()
   for (const rule of baseFiltered.value) {
-    const state = connectionStatus(rule)
-    rulesByStatus[state]++
     if (rule.customer_id) {
-      if (!customerStates.has(rule.customer_id)) customerStates.set(rule.customer_id, new Set())
-      customerStates.get(rule.customer_id)!.add(state)
+      customerStates.set(rule.customer_id, customerStates.get(rule.customer_id) === true || connectionStatus(rule) === 'online')
     }
   }
+  return customerStates
+})
+const connectionCounts = computed(() => {
   let onlineCustomers = 0
   let offlineCustomers = 0
-  for (const states of customerStates.values()) {
-    if (states.has('online')) onlineCustomers++
-    else if (states.size === 1 && states.has('offline')) offlineCustomers++
+  for (const online of customerConnections.value.values()) {
+    if (online) onlineCustomers++
+    else offlineCustomers++
   }
-  return { ...rulesByStatus, onlineCustomers, offlineCustomers }
+  return { onlineCustomers, offlineCustomers }
 })
-const filtered = computed(() => connectionFilter.value === 'all' ? baseFiltered.value : baseFiltered.value.filter((rule) => connectionStatus(rule) === connectionFilter.value))
+const filtered = computed(() => connectionFilter.value === 'all' ? baseFiltered.value : baseFiltered.value.filter((rule) => {
+  const online = rule.customer_id ? customerConnections.value.get(rule.customer_id) === true : connectionStatus(rule) === 'online'
+  return online === (connectionFilter.value === 'online')
+}))
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / pageSize.value)))
 const pagedRules = computed(() => filtered.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
 const pageStart = computed(() => filtered.value.length ? (page.value - 1) * pageSize.value + 1 : 0)
@@ -355,7 +356,7 @@ onUnmounted(() => {
 <template>
   <div class="page-stack">
     <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions"><RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button><button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading || refreshing }" />刷新</button><button class="button button--primary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button></div></header>
-    <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><small class="connection-refresh-note">在线状态每 5 分钟更新</small><div class="segmented-control rule-connection-filter" aria-label="连接状态筛选" title="客户数按已绑定规则的客户账号去重；连接采样不能识别真实人数"><button :class="{ active: connectionFilter === 'all' }" @click="connectionFilter = 'all'">全部连接</button><button :class="{ active: connectionFilter === 'online' }" @click="connectionFilter = 'online'">在线 {{ connectionCounts.online }} 条 / {{ connectionCounts.onlineCustomers }} 客户</button><button :class="{ active: connectionFilter === 'offline' }" @click="connectionFilter = 'offline'">不在线 {{ connectionCounts.offline }} 条 / {{ connectionCounts.offlineCustomers }} 客户</button></div><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
+    <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><small class="connection-refresh-note">在线状态每 5 分钟更新</small><div class="segmented-control rule-connection-filter" aria-label="连接状态筛选" title="人数按已绑定规则的客户账号去重；任一规则在线即计为在线，未采样计入不在线；每 5 分钟更新"><button :class="{ active: connectionFilter === 'all' }" @click="connectionFilter = 'all'">全部连接</button><button :class="{ active: connectionFilter === 'online' }" @click="connectionFilter = 'online'">在线 {{ connectionCounts.onlineCustomers }} 人</button><button :class="{ active: connectionFilter === 'offline' }" @click="connectionFilter = 'offline'">不在线 {{ connectionCounts.offlineCustomers }} 人</button></div><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
     <section v-if="ready && rules.length" class="rule-batch-toolbar" aria-label="规则批量操作"><label><input type="checkbox" :checked="allFilteredSelected" :disabled="refreshing || batchBusy || !!busyId" @change="selectFiltered(($event.target as HTMLInputElement).checked)" />选择当前结果</label><span>{{ selectedIds.length }} 条已选择</span><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('pause')"><Pause :size="14" />暂停</button><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('resume')"><Play :size="14" />恢复</button><label class="rule-batch-move"><select v-model="moveGroupId" :disabled="refreshing || batchBusy || !!busyId"><option value="">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('move_group')"><FolderInput :size="14" />移动</button></label><button class="button button--danger" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="requestDelete([...selectedRules])"><Trash2 :size="14" />删除</button></section>
     <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
     <p v-if="resourceWarning && ready" class="inline-warning" role="status">{{ resourceWarning }}</p>

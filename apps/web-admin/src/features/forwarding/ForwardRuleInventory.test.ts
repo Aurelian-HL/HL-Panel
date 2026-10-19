@@ -123,9 +123,9 @@ describe('ForwardRuleInventory', () => {
   })
 
   it.each([
-    ['not_sampled', '待采样'],
+    ['not_sampled', '不在线'],
     ['deployment_pending', '待配置确认'],
-    ['sample_expired', '采样过期'],
+    ['sample_expired', '不在线'],
   ] as const)('keeps %s telemetry unknown without claiming the line is broken', (reason, label) => {
     const rule: ForwardRule = { ...baseRule, status: 'active', connection: { status: 'offline', connections: 0, reason } }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })

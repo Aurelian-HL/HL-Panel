@@ -17,7 +17,7 @@ export function ruleConnectionPresentation(rule: ForwardRule, elapsed: number): 
   // UDP has no TCP listener sample. Keep this stable for older API responses
   // which omit the connection object entirely.
   if (effectiveIngressProtocol(rule) === 'udp') return present('offline', '不适用', '此处仅统计 TCP 连接，不用于判断 UDP 规则是否可达。')
-  if (!sample) return present('offline', '待采样', '尚未收到这条规则的连接采样，不能据此判断线路断开。')
+  if (!sample) return present('offline', '不在线', '尚未收到这条规则的连接采样，不能据此判断线路断开。')
   if (sample.sampled_at) {
     const at = new Date(sample.sampled_at)
     if (Number.isFinite(at.getTime())) details.unshift('节点采样时间：' + at.toLocaleString('zh-CN', { hour12: false }))
@@ -33,7 +33,7 @@ export function ruleConnectionPresentation(rule: ForwardRule, elapsed: number): 
   const ttl = typeof sample.valid_for_ms === 'number' && Number.isFinite(sample.valid_for_ms)
     ? Math.max(0, sample.valid_for_ms) : 3000
   if (sample.reason === 'sample_expired' || elapsed >= ttl && (sample.sampled_at || sample.status !== 'offline' || sample.reason === 'no_connections')) {
-    return present('offline', '采样过期', '连接采样已过期，当前连接情况未知；不会据此判定线路不可用。')
+    return present('offline', '不在线', '连接采样已过期，当前连接情况未知；不会据此判定线路不可用。')
   }
   // Fresh positive socket evidence establishes online status even when a
   // different node reports an apply/listener failure. Keep those diagnostics
@@ -48,5 +48,5 @@ export function ruleConnectionPresentation(rule: ForwardRule, elapsed: number): 
   if (sample.reason === 'no_connections') return present('offline', '不在线', '已检测到监听端口，当前 TCP 连接为 0；“不在线”仅表示未采样到活动连接，不代表线路不通。')
   if (sample.reason === 'tcp_only') return present('offline', '不适用', '此处仅统计 TCP 连接，不用于判断 UDP 规则是否可达。')
   if (sample.reason === 'deployment_pending') return present('offline', '待配置确认', '当前配置回执尚未确认，暂不将端口连接数归属到这条规则。')
-  return present('offline', '待采样', '尚未收到这条规则的有效连接采样，不能据此判断线路断开。')
+  return present('offline', '不在线', '尚未收到这条规则的有效连接采样，不能据此判断线路断开。')
 }
