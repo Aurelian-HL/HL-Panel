@@ -52,6 +52,14 @@ beforeEach(() => {
 })
 
 describe('OverviewPage', () => {
+  it('shows the running version in both cards after an upgrade with cached site metadata', async () => {
+    mocked.getOverview.mockResolvedValue({ ...overview, panel: { ...overview.panel, version: 'v0.1.122' } })
+    const wrapper = mount(OverviewPage)
+    await flushPromises()
+    expect(wrapper.get('.xpanel-runtime .xpanel-version').text()).toBe('v0.1.122')
+    expect(wrapper.get('.xpanel-side .xpanel-tags').text()).toBe('v0.1.122')
+    wrapper.unmount()
+  })
   it.each([
     ['collected', '未配置'],
     ['unavailable', '采集失败'],
