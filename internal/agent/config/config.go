@@ -163,7 +163,7 @@ func Load(path string) (Config, error) {
 }
 
 func (c *Config) setDefaults() {
-	if c.AgentVersion == "" {
+	if c.AgentVersion == "" || DefaultAgentVersion != "dev" {
 		c.AgentVersion = DefaultAgentVersion
 	}
 	if c.EnrollmentTokenEnv == "" {

@@ -8,6 +8,8 @@ import argparse
 import base64
 import hashlib
 import importlib.util
+import http.client
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -464,6 +466,60 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                           '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
             assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits
             checks.append('controlled updates retain systemd automatic crash rate limits')
+
+            # The actual root systemd worker survives the agent it updates.
+            # Redirect ONLY official download transport on this disposable VM.
+            update_helper = Path('/opt/hl-panel/update.py')
+            def map_worker_downloads():
+                original = update_helper.read_text()
+                update_helper.write_text(original + '\nimport json as _ci_json\nfrom pathlib import Path as _CIPath\n_original_ci_request = request\ndef request(url, limit=2*1024*1024):\n' +
+                    '    if url == ' + repr('https://api.github.com/repos/Aurelian-HL/HL-Panel/releases/tags/'+args.version) + ': return ' + repr(json.dumps(metadata).encode()) + '\n' +
+                    '    if url.startswith(' + repr('https://github.com/Aurelian-HL/HL-Panel/releases/download/'+args.version+'/') + '): return (_CIPath(' + repr(str(candidate)) + ')/url.rsplit("/",1)[1]).read_bytes()\n' +
+                    '    return _original_ci_request(url, limit)\n')
+            class LocalUpdateConnection(http.client.HTTPConnection):
+                def connect(self):
+                    self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    self.sock.settimeout(10)
+                    self.sock.connect('/run/hl-panel-node-update.sock')
+            def maintenance(path='/status', data=None, expected=200):
+                connection = LocalUpdateConnection('localhost', timeout=10)
+                connection.request('GET' if data is None else 'POST', path, json.dumps(data) if data is not None else None, {'Content-Type':'application/json'})
+                response=connection.getresponse();body=response.read();connection.close()
+                assert response.status == expected, 'local update endpoint unexpected HTTP status'
+                return json.loads(body)
+            assert maintenance()['capability'] == 'node-update-v1'
+            maintenance('/start', {'command':'id'}, 400)
+            archive_sha=hashlib.sha256((candidate/'hl-panel-linux-amd64.tar.gz').read_bytes()).hexdigest()
+            for recovery in (False, True):
+                map_worker_downloads()
+                before_pid=run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()
+                worker_pid=run(['systemctl','show','hl-panel-node-update','-p','MainPID','--value'],check=True).stdout.strip()
+                task={'id':str(uuid.uuid4()),'version':args.version,'archive_sha256':archive_sha}
+                wait_for(lambda: maintenance('/start',task))
+                maintenance('/start',task)  # Replaying a task must not execute twice.
+                wait_for(lambda: maintenance()['task']['state']=='verifying',timeout=120)
+                assert run(['systemctl','show','hl-panel-node-update','-p','MainPID','--value'],check=True).stdout.strip()==worker_pid
+                after_pid=run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()
+                assert after_pid!=before_pid
+                wait_for(real_clients)
+                if recovery:
+                    run(['systemctl','restart','hl-panel-node-update'],check=True)
+                    assert maintenance()['task']['state']=='uncertain'
+                    maintenance('/rollback',{'id':task['id']})
+                    wait_for(lambda: maintenance()['task']['state']=='rolled_back',timeout=120)
+                    wait_for(real_clients)
+                    # Rollback restores its exact helper; remove this test's
+                    # download shim before the following installer scenarios.
+                    update_helper.write_bytes((release/'deploy/update.py').read_bytes())
+                else:
+                    maintenance('/verified',{'id':task['id']})
+                    assert maintenance()['task']['state']=='succeeded'
+                    old_pid=after_pid
+                    maintenance('/start',task)
+                    assert run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()==old_pid
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest()==identity_digest
+            checks.append('real root socket update survives Agent replacement, preserves identity and real forwarding; task replay, crash lock and explicit rollback verified')
+
             # Two real same-port group switches; both old group memberships
             # must be removed, not merely masked in the UI.
             changed_marker = b'hl-reinstalled-new-group-traffic'

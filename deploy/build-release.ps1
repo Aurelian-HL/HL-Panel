@@ -120,6 +120,8 @@ try {
         'update.py',
         'update-node.py',
         'panel-update-worker.py',
+        'node-update-worker.py',
+        'install-node-update.py',
         'configure-reality.sh',
         'configure-reality.py',
         'enable-domain-tls.sh',
@@ -136,6 +138,8 @@ try {
         'systemd\hl-panel-control-api.service',
         'systemd\hl-panel-update.socket',
         'systemd\hl-panel-update.service',
+        'systemd\hl-panel-node-update.socket',
+        'systemd\hl-panel-node-update.service',
         'systemd\hl-panel-edge-agent.service'
     )
     foreach ($relativePath in $deploymentFiles) {

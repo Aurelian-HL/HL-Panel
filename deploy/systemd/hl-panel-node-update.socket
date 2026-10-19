@@ -1,0 +1,12 @@
+[Unit]
+Description=HL-Panel local node update socket
+
+[Socket]
+ListenStream=/run/hl-panel-node-update.sock
+SocketUser=root
+SocketGroup=hl-edge
+SocketMode=0660
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

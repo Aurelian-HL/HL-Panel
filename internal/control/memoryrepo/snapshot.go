@@ -23,6 +23,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/licensing"
+	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -31,7 +32,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 23
+const SnapshotVersion = 24
 const importedTrafficSnapshotVersion = 21
 const nativeRuntimeSnapshotVersion = 20
 const importedIdentitySnapshotVersion = 19
@@ -142,6 +143,7 @@ type storedVLESSSOCKS5Upstream struct {
 }
 
 type snapshot struct {
+	NodeUpdates             map[string]nodeupdates.Record
 	Version                 int
 	GatewayMutationRevision uint64
 	Administrators          map[string]storedAdministrator
@@ -226,6 +228,7 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 	}
 	state := snapshot{
 		Version:        SnapshotVersion,
+		NodeUpdates:    s.nodeUpdates,
 		Administrators: make(map[string]storedAdministrator, len(s.adminsByUsername)),
 		Sessions:       s.sessionsByHash, CustomerSessions: s.customerSessions, Tokens: s.tokensByHash,
 		Nodes: make(map[string]storedNode, len(s.nodes)), NodesByCredential: s.nodesByCredential,
@@ -392,6 +395,23 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		seenRulePools[pool.RuleID] = id
 	}
 	s := New(auth.Administrator{})
+	if state.Version >= 24 && state.NodeUpdates == nil {
+		return nil, errors.New("missing node updates")
+	}
+	activeUpdates := 0
+	for id, r := range state.NodeUpdates {
+		if state.Version < 24 || id != r.Task.ID || !validUpdateRecord(r) || state.Nodes[r.Task.NodeID].CredentialHash == "" {
+			return nil, errors.New("invalid node update record")
+		}
+		if r.Task.Active() {
+			activeUpdates++
+		}
+		s.nodeUpdates[id] = r
+	}
+	if activeUpdates > 1 {
+		return nil, errors.New("multiple active node updates")
+	}
+
 	if state.Version == 1 {
 		if state.Customers != nil || state.UserGroups != nil || state.GroupNetworks != nil || state.ForwardRules != nil || state.BusinessIdempotency != nil {
 			return nil, errors.New("legacy snapshot contains unexpected business state")

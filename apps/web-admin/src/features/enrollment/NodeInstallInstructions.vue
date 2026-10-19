@@ -20,6 +20,7 @@ async function copyCommand() {
 </script>
 
 <template>
+<p class="text-secondary">此令牌安装命令会同时安装节点更新服务。安装后可在节点操作中直接更新，无需保存服务器密码。</p>
   <section class="node-install" aria-label="节点安装步骤">
     <h3>{{ offline ? '离线安装节点' : '一条命令安装并注册节点' }}</h3>
     <template v-if="!offline">

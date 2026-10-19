@@ -1,0 +1,19 @@
+[Unit]
+Description=HL-Panel fixed-purpose node updater
+Requires=hl-panel-node-update.socket
+After=network-online.target hl-panel-node-update.socket
+
+[Service]
+Type=simple
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/python3 -I /opt/hl-panel/node-update-worker.py
+StateDirectory=hl-panel-node-update
+StateDirectoryMode=0700
+Restart=on-failure
+RestartSec=5
+PrivateTmp=true
+ProtectHome=true
+StandardOutput=null
+StandardError=null

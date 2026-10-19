@@ -19,6 +19,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/postgressnapshot"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -31,6 +32,7 @@ import (
 
 type controlRepository interface {
 	customerIdentityRepositoryProvider
+	nodeupdates.Repository
 	audit.Repository
 	auth.Repository
 	enrollment.Repository

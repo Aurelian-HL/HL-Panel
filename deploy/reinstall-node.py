@@ -170,6 +170,9 @@ def restore_programs(backup):
         atomic_install(backup / item['source'], Path(item['destination']), item['mode'], item.get('uid', 0), item.get('gid', 0))
     # Keep the latest confirmed panel address and trust settings, as well as
     # credentials/usage. A program rollback must not undo a later registration.
+    if (backup / 'maintenance-rollback.py').is_file():
+        private_file(backup / 'maintenance-rollback.py')
+        run([sys.executable, str(backup / 'maintenance-rollback.py'), '--restore', str(backup / 'maintenance')])
     start_service()
 
 
@@ -234,6 +237,10 @@ def reinstall(args):
         item.setdefault('gid', 0)
     (backup / 'manifest.json').write_text(json.dumps(manifest) + '\n')
     (backup / 'manifest.json').chmod(0o600)
+    maintenance = args.release / 'deploy/install-node-update.py'
+    private_file(maintenance)
+    shutil.copy2(maintenance, backup / 'maintenance-rollback.py')
+    run([sys.executable, str(maintenance), '--snapshot', str(backup / 'maintenance')])
     shutil.copy2(args.release / 'deploy/reinstall-node.py', backup / 'reinstall-node.py')
     (backup / 'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' + str(backup / 'reinstall-node.py') + ' --rollback ' + str(backup) + '\n')
     (backup / 'rollback.sh').chmod(0o700)
@@ -263,6 +270,7 @@ def reinstall(args):
         install_confirmed_connection()
         for destination, source, mode in sources:
             atomic_install(args.release / source, destination, mode)
+        run([sys.executable,str(args.release/'deploy/install-node-update.py'),str(args.release)])
         start_service()
         require(digest(STATE / 'credentials.json') == manifest['credential_sha256'], '重装意外改变节点身份')
     except Exception:

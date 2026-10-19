@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import pwd
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,6 +23,17 @@ SERVICE = 'hl-panel-edge-agent.service'
 METRICS_OVERRIDE = Path('/etc/systemd/system/hl-panel-edge-agent.service.d/20-host-metrics.conf')
 METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n'
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
+
+
+RESULT_FILE = None
+
+def result(state, backup=None):
+    if RESULT_FILE:
+        data = {'state':state,'backup_directory':str(backup) if backup else ''}
+        fd, name = tempfile.mkstemp(dir=RESULT_FILE.parent)
+        with os.fdopen(fd,'w') as out:
+            json.dump(data,out);out.flush();os.fsync(out.fileno())
+        os.replace(name,RESULT_FILE)
 
 
 def verify_xray_version(binary):
@@ -154,6 +166,9 @@ def rollback(backup):
     require(manifest['credential_sha256'] == digest(STATE/'credentials.json'), '当前节点身份不同；拒绝回滚')
     for name in FILES:
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
+    if (backup/'maintenance-rollback.py').is_file():
+        private_regular(backup/'maintenance-rollback.py')
+        run([sys.executable,str(backup/'maintenance-rollback.py'),'--restore',str(backup/'maintenance')])
     restore_metrics(backup)
     run(['systemctl','stop',SERVICE])
     if (backup/'edge-agent.json').exists():
@@ -172,7 +187,15 @@ def main():
     parser=argparse.ArgumentParser(description='保留节点身份的正式版本升级')
     parser.add_argument('--version',default='latest')
     parser.add_argument('--rollback',type=Path)
+    parser.add_argument('--expected-sha256', default='')
+    parser.add_argument('--result-file', type=Path)
     args=parser.parse_args()
+    global RESULT_FILE
+    RESULT_FILE = args.result_file
+    if RESULT_FILE:
+        require(RESULT_FILE.parent.parent == Path('/var/lib/hl-panel-node-update') and not RESULT_FILE.parent.is_symlink() and RESULT_FILE.parent.stat().st_uid == 0 and not RESULT_FILE.parent.stat().st_mode & 0o077, '更新结果路径不安全')
+    require(not args.expected_sha256 or re.fullmatch(r'[a-f0-9]{64}', args.expected_sha256), '预期摘要无效')
+    result('failed')
     require(os.geteuid()==0 and sys.platform=='linux', '请在 Linux 节点机使用 root 运行')
     private_regular(CONFIG)
     private_credentials()
@@ -200,16 +223,21 @@ def main():
         base=REPO+'/releases/download/'+target+'/'
         archive.write_bytes(request(base+'hl-panel-linux-amd64.tar.gz',256*1024*1024))
         checksum=request(base+'hl-panel-linux-amd64.tar.gz.sha256',4096).decode().strip().split()
+        require(not args.expected_sha256 or digest(archive)==args.expected_sha256, '发布包与面板任务摘要不符')
         require(len(checksum)==2 and checksum[1]=='hl-panel-linux-amd64.tar.gz' and digest(archive)==checksum[0], '发布包摘要校验失败')
         release=backup/'release'
         release.mkdir()
         extract_verified(archive,release)
         require((release/'deploy/update-node.py').is_file(),'此版本未提供节点升级器')
+        for asset in ('deploy/install-node-update.py','deploy/node-update-worker.py',
+                      'deploy/systemd/hl-panel-node-update.socket','deploy/systemd/hl-panel-node-update.service'):
+            require((release/asset).is_file(), '发布包缺少节点更新服务资产；当前节点未停止')
         verify_xray_version(release/'bin/xray')
         run([str(release/'bin/gost'),'-V'])
         credential=digest(STATE/'credentials.json')
         shutil.copy2(CONFIG, backup/'edge-agent.json')
         config['heartbeat_interval'] = '1s'
+        config.pop('agent_version', None)
         (backup/'new-edge-agent.json').write_text(json.dumps(config)+'\n')
         (backup/'new-edge-agent.json').chmod(0o600)
         manifest={'credential_sha256':credential,'files':{}}
@@ -219,7 +247,12 @@ def main():
             dest.parent.mkdir(parents=True,exist_ok=True)
             shutil.copy2(ROOT/name,dest)
             manifest['files'][name]=digest(dest)
+        maintenance = release/'deploy/install-node-update.py'
+        require(maintenance.is_file(), '发布包缺少节点更新服务安装器')
+        shutil.copy2(maintenance, backup/'maintenance-rollback.py')
+        run([sys.executable,str(maintenance),'--snapshot',str(backup/'maintenance')])
         # Stop only HL agent, then capture a coherent usage journal and LKG.
+        result('uncertain', backup)
         run(['systemctl','stop',SERVICE])
         try:
             with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
@@ -238,6 +271,7 @@ def main():
                 install(release/source,ROOT/name)
             for name in ('update-node.py','update.py'):
                 install(release/'deploy'/name,ROOT/name)
+            run([sys.executable,str(release/'deploy/install-node-update.py'),str(release)])
             install_config(backup/'new-edge-agent.json')
             start_service()
             active()
@@ -245,9 +279,11 @@ def main():
         except Exception:
             if (backup/'manifest.json').is_file():
                 rollback(backup)
+                result('rolled_back',backup)
             else:
                 start_service()
             raise
+        result('verifying',backup)
         configure_tcp_bbr(release)
         print('[HL-panel 节点更新] 程序已更新；请回面板核对在线、版本和真实转发。')
         print('备份：'+str(backup))

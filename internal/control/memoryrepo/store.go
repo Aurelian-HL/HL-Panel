@@ -18,6 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -43,6 +44,7 @@ type Store struct {
 	customerSessions map[string]customeridentity.Session
 	tokensByHash     map[string]enrollment.Token
 
+	nodeUpdates          map[string]nodeupdates.Record
 	nodes                map[string]nodes.Node
 	nodesByCredential    map[string]string
 	deviceGroups         map[string]groups.DeviceGroup
@@ -91,6 +93,7 @@ func New(admin auth.Administrator) *Store {
 		customerSessions:      make(map[string]customeridentity.Session),
 		tokensByHash:          make(map[string]enrollment.Token),
 		nodes:                 make(map[string]nodes.Node),
+		nodeUpdates:           make(map[string]nodeupdates.Record),
 		nodesByCredential:     make(map[string]string),
 		deviceGroups:          make(map[string]groups.DeviceGroup),
 		membersByGroup:        make(map[string]map[string]groups.Member),

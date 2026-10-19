@@ -14,6 +14,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/config"
@@ -28,28 +29,29 @@ import (
 )
 
 type Agent struct {
-	cfg            config.Config
-	client         *controlclient.Client
-	credential     *state.CredentialStore
-	state          *state.AtomicStateStore
-	adapter        engine.EngineAdapter
-	xrayAdapter    *engine.XrayProcessAdapter
-	gostAdapter    *engine.GOSTProcessAdapter
-	engineMode     string
-	reconciler     *reconciler.Reconciler
-	nodeID         string
-	nodeSecret     string
-	bootID         string
-	logger         *slog.Logger
-	bootstrapMu    sync.Mutex
-	usageApplyMu   sync.Mutex
-	usageSource    usageagent.CounterSource
-	accessExecutor usageagent.AccessExecutor
-	usageReporter  *usageagent.Reporter
-	enforcement    *usageagent.EnforcementReconciler
-	trafficControl *trafficcontrol.Controller
-	probeEchoMu    sync.RWMutex
-	probeEcho      *probeecho.Server
+	nodeUpdateReady atomic.Bool
+	cfg             config.Config
+	client          *controlclient.Client
+	credential      *state.CredentialStore
+	state           *state.AtomicStateStore
+	adapter         engine.EngineAdapter
+	xrayAdapter     *engine.XrayProcessAdapter
+	gostAdapter     *engine.GOSTProcessAdapter
+	engineMode      string
+	reconciler      *reconciler.Reconciler
+	nodeID          string
+	nodeSecret      string
+	bootID          string
+	logger          *slog.Logger
+	bootstrapMu     sync.Mutex
+	usageApplyMu    sync.Mutex
+	usageSource     usageagent.CounterSource
+	accessExecutor  usageagent.AccessExecutor
+	usageReporter   *usageagent.Reporter
+	enforcement     *usageagent.EnforcementReconciler
+	trafficControl  *trafficcontrol.Controller
+	probeEchoMu     sync.RWMutex
+	probeEcho       *probeecho.Server
 }
 
 type Options struct {
@@ -596,7 +598,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	initialCancel()
 	childContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop, a.receiptLoop, a.probeEchoLoop}
+	loops := []func(context.Context) error{a.heartbeatLoop, a.desiredLoop, a.controlLoop, a.receiptLoop, a.probeEchoLoop, a.nodeUpdateLoop}
 	if process, ok := a.adapter.(interface{ RequiresLiveProcess() bool }); ok && process.RequiresLiveProcess() {
 		loops = append(loops, a.recoveryLoop)
 	}
@@ -834,7 +836,7 @@ func newBootID() (string, error) {
 func (a *Agent) capabilities() []string {
 	out := make([]string, 0, len(a.cfg.Capabilities)+1)
 	for _, c := range a.cfg.NodeCapabilities() {
-		if c != "gost-reliable-udp-v1" && c != config.CapabilityXrayVLESSUDPDirect {
+		if c != "node-update-v1" && c != "gost-reliable-udp-v1" && c != config.CapabilityXrayVLESSUDPDirect {
 			out = append(out, c)
 		}
 	}
@@ -844,6 +846,9 @@ func (a *Agent) capabilities() []string {
 	}
 	if a.gostAdapter != nil && a.gostAdapter.SupportsReliableUDP() {
 		out = append(out, "gost-reliable-udp-v1")
+	}
+	if a.nodeUpdateReady.Load() {
+		out = append(out, "node-update-v1")
 	}
 	return out
 }

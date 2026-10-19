@@ -301,6 +301,7 @@ fd,name=tempfile.mkstemp(dir=p.parent)
 with os.fdopen(fd,'w') as f: f.write(json.dumps(c)+'\n')
 os.chown(name,p.stat().st_uid,p.stat().st_gid); os.chmod(name,0o640); os.replace(name,p)
 PY
+python3 "$release/deploy/install-node-update.py" "$release"
 echo '[HL-panel 节点] 自动注册并启用开机自启…'
 HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh
 unset enrollment_token

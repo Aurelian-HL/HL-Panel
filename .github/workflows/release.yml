@@ -93,6 +93,8 @@ jobs:
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
+          python3 -m py_compile deploy/node-update-worker.py deploy/install-node-update.py
+          sudo python3 tests/install/test_node_update_worker.py
           python3 -m py_compile deploy/configure-node-bbr2.py
           python3 -m py_compile deploy/configure-node-bbr.py
           python3 tests/install/test_node_bbr.py
@@ -157,6 +159,8 @@ jobs:
             deploy/fetch-node-engines.py
             deploy/update.sh
             deploy/update.py
+            deploy/node-update-worker.py
+            deploy/install-node-update.py
             deploy/panel-update-worker.py
             deploy/update-node.py
             deploy/configure-reality.sh
@@ -175,6 +179,8 @@ jobs:
             deploy/systemd/hl-panel-control-api.service
             deploy/systemd/hl-panel-update.socket
             deploy/systemd/hl-panel-update.service
+            deploy/systemd/hl-panel-node-update.socket
+            deploy/systemd/hl-panel-node-update.service
             deploy/systemd/hl-panel-edge-agent.service
           )
           for source_file in "${deployment_files[@]}"; do

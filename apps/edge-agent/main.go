@@ -16,8 +16,13 @@ import (
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print release version")
 	configPath := flag.String("config", "config.json", "path to the edge-agent JSON configuration")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(config.DefaultAgentVersion)
+		return
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg, err := config.Load(*configPath)

@@ -8,6 +8,8 @@ import BaseModal from '@/components/BaseModal.vue'
 import { formatDateTime } from '@/lib/displayFormatters'
 import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, formatUptime, hasLiveProbeReading, measuredPercent, monitorStatus, probeReadingState } from './format'
 import ProbeMetricBar from './ProbeMetricBar.vue'
+import NodeUpdateDialog from '@/features/nodes/NodeUpdateDialog.vue'
+const updateNodeId = ref<string | null>(null)
 
 const props = withDefaults(defineProps<{ items: ProbeMember[]; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { groupMembers: () => [], unassigned: false })
 const emit = defineEmits<{ editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember] }>()
@@ -87,7 +89,7 @@ const uptimeDetails = (member: ProbeMember) => [
             <td><ProbeMetricBar label="CPU" :percent="measuredPercent(metric(member, 'cpu_percent'))" /></td>
             <td><ProbeMetricBar label="内存" :percent="capacityPercent(metric(member, 'memory_used_bytes'), metric(member, 'memory_total_bytes'))" /></td>
             <td><ProbeMetricBar label="存储" :percent="capacityPercent(metric(member, 'disk_used_bytes'), metric(member, 'disk_total_bytes'))" /></td>
-            <td><div class="probe-row-actions"><button v-if="groupMember(member.node_id)" type="button" class="button button--quiet probe-detail-button" :aria-label="`更改${nodeName(member)}权重，当前 ${groupMember(member.node_id)?.weight}`" :title="`权重 ${groupMember(member.node_id)?.weight} · 更改权重`" @click="emit('editWeight', groupMember(member.node_id)!)"><Settings2 :size="17" /><span>{{ groupMember(member.node_id)?.weight }}</span></button><button type="button" class="button button--quiet probe-detail-button" :aria-label="`查看${nodeName(member)}监测详情`" :title="`查看${nodeName(member)}监测详情`" @click="selectedId = member.node_id"><Eye :size="17" /></button><button v-if="canDelete(member)" type="button" class="button button--quiet probe-delete-button" :aria-label="'删除' + nodeName(member)" @click="emit('deleteNode', member)"><Trash2 :size="15" />删除</button></div></td>
+            <td><div class="probe-row-actions"><button v-if="groupMember(member.node_id)" type="button" class="button button--quiet probe-detail-button" :aria-label="`更改${nodeName(member)}权重，当前 ${groupMember(member.node_id)?.weight}`" :title="`权重 ${groupMember(member.node_id)?.weight} · 更改权重`" @click="emit('editWeight', groupMember(member.node_id)!)"><Settings2 :size="17" /><span>{{ groupMember(member.node_id)?.weight }}</span></button><button type="button" class="button button--quiet probe-detail-button" :aria-label="`查看${nodeName(member)}监测详情`" :title="`查看${nodeName(member)}监测详情`" @click="selectedId = member.node_id"><Eye :size="17" /></button><button v-if="member.link_status !== 'unmanaged'" type="button" class="button button--quiet probe-detail-button" @click="updateNodeId = member.node_id">更新</button><button v-if="canDelete(member)" type="button" class="button button--quiet probe-delete-button" :aria-label="'删除' + nodeName(member)" @click="emit('deleteNode', member)"><Trash2 :size="15" />删除</button></div></td>
           </tr>
         </tbody>
       </table>
@@ -115,7 +117,7 @@ const uptimeDetails = (member: ProbeMember) => [
           <div class="probe-mobile-network"><div><span>下行</span><strong>{{ formatRate(metric(member, 'net_in_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_in_transfer_bytes')) }}</small></div><div><span>上行</span><strong>{{ formatRate(metric(member, 'net_out_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_out_transfer_bytes')) }}</small></div></div>
           <div class="probe-meter-list"><ProbeMetricBar label="CPU" :percent="measuredPercent(metric(member, 'cpu_percent'))" /><ProbeMetricBar label="内存" :percent="capacityPercent(metric(member, 'memory_used_bytes'), metric(member, 'memory_total_bytes'))" /><ProbeMetricBar label="磁盘" :percent="capacityPercent(metric(member, 'disk_used_bytes'), metric(member, 'disk_total_bytes'))" /></div>
         </div>
-        <footer><small :class="{ 'probe-stale': !live(member) }">{{ probeReadingState(member, upstreamStatus, now) }} · {{ member.sampled_at ? formatDateTime(member.sampled_at) : '未采集' }}</small><div><button v-if="groupMember(member.node_id)" type="button" class="button button--quiet probe-detail-button" :aria-label="`更改${nodeName(member)}权重，当前 ${groupMember(member.node_id)?.weight}`" @click="emit('editWeight', groupMember(member.node_id)!)"><Settings2 :size="16" />{{ groupMember(member.node_id)?.weight }}</button><button type="button" class="button button--quiet probe-detail-button" :aria-label="`查看${nodeName(member)}监测详情`" :title="`查看${nodeName(member)}监测详情`" @click="selectedId = member.node_id"><Eye :size="16" /></button><button v-if="canDelete(member)" type="button" class="button button--quiet probe-delete-button" :aria-label="'删除' + nodeName(member)" @click="emit('deleteNode', member)"><Trash2 :size="15" />删除</button></div></footer>
+        <footer><small :class="{ 'probe-stale': !live(member) }">{{ probeReadingState(member, upstreamStatus, now) }} · {{ member.sampled_at ? formatDateTime(member.sampled_at) : '未采集' }}</small><div><button v-if="groupMember(member.node_id)" type="button" class="button button--quiet probe-detail-button" :aria-label="`更改${nodeName(member)}权重，当前 ${groupMember(member.node_id)?.weight}`" @click="emit('editWeight', groupMember(member.node_id)!)"><Settings2 :size="16" />{{ groupMember(member.node_id)?.weight }}</button><button type="button" class="button button--quiet probe-detail-button" :aria-label="`查看${nodeName(member)}监测详情`" :title="`查看${nodeName(member)}监测详情`" @click="selectedId = member.node_id"><Eye :size="16" /></button><button v-if="member.link_status !== 'unmanaged'" type="button" class="button button--quiet probe-detail-button" @click="updateNodeId = member.node_id">更新</button><button v-if="canDelete(member)" type="button" class="button button--quiet probe-delete-button" :aria-label="'删除' + nodeName(member)" @click="emit('deleteNode', member)"><Trash2 :size="15" />删除</button></div></footer>
       </article>
     </div>
 
@@ -143,4 +145,5 @@ const uptimeDetails = (member: ProbeMember) => [
       </div>
     </BaseModal>
   </div>
+<NodeUpdateDialog v-if="updateNodeId" :key="updateNodeId" :node-id="updateNodeId" @close="updateNodeId = null" />
 </template>

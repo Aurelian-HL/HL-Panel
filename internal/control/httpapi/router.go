@@ -22,6 +22,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/panelmigration"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
@@ -42,6 +43,7 @@ type PlatformInfo struct {
 }
 
 type API struct {
+	nodeUpdates        *nodeupdates.Service
 	auth               *auth.Service
 	enrollment         *enrollment.Service
 	nodes              *nodes.Service
@@ -159,6 +161,14 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 		api.vlessSetup = vlesssetup.NewService(api.groupNetworks, api.endpoints, api.vlessIdentity, vlesssetup.WithRuleAccess(api.forwarding))
 	}
 	mux := http.NewServeMux()
+	if api.nodeUpdates != nil {
+		mux.HandleFunc("GET /api/v1/nodes/{node_id}/updates", api.requireAdministrator(api.nodeUpdateStatus))
+		mux.HandleFunc("POST /api/v1/nodes/{node_id}/updates", api.requireAdministrator(api.startNodeUpdate))
+		mux.HandleFunc("POST /api/v1/nodes/{node_id}/updates/{task_id}/cancel", api.requireAdministrator(api.cancelNodeUpdate))
+		mux.HandleFunc("POST /api/v1/agent/update-task/claim", api.requireNode(api.claimNodeUpdate))
+		mux.HandleFunc("POST /api/v1/agent/update-task/result", api.requireNode(api.reportNodeUpdate))
+	}
+
 	api.registerSubscriptionRoutes(mux)
 	api.registerBusinessRoutes(mux)
 	api.registerSiteRoutes(mux)

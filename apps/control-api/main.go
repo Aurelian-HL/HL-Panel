@@ -35,6 +35,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/migrationbackup"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/panelmigration"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
@@ -265,6 +266,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	}
 	options := []httpapi.Option{
 		httpapi.WithReleases(versionService),
+		httpapi.WithNodeUpdates(nodeupdates.New(store, versionService)),
 		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
 		httpapi.WithLicensing(licensingService),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
