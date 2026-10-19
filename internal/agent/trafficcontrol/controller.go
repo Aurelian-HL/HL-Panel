@@ -169,7 +169,9 @@ func (c *Controller) applyPort(ctx context.Context, port, rate int) error {
 		if direction == "egress" {
 			portArg = "src_port"
 		}
-		args := []string{"filter", "replace", "dev", c.interfaceName, direction, "pref", pref, "protocol", "ip", "flower", portArg, strconv.Itoa(port), "action", "police", "rate", strconv.Itoa(rate) + "mbit", "burst", "64k", "conform-exceed", "drop"}
+		// Use a deterministic handle so replace updates an existing rule with
+		// the same preference instead of failing with EEXIST during restore.
+		args := []string{"filter", "replace", "dev", c.interfaceName, direction, "pref", pref, "handle", "1", "protocol", "ip", "flower", "ip_proto", "tcp", portArg, strconv.Itoa(port), "action", "police", "rate", strconv.Itoa(rate) + "mbit", "burst", "64k", "conform-exceed", "drop"}
 		if err := c.runner.Run(ctx, c.binary, args...); err != nil {
 			return err
 		}
