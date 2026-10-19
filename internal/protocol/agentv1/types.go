@@ -92,8 +92,8 @@ type UsageMetadata struct {
 
 const CapabilityUsageGeneration = "usage-config-generation-v1"
 
-// NativeRealityStatsTagPrefix marks source-preserved listeners. These retain
-// the source version policy instead of receiving the legacy HL default.
+// NativeRealityStatsTagPrefix marks source-preserved listeners. Explicit source
+// version policies survive; empty minimums use the runtime compatibility default.
 const NativeRealityStatsTagPrefix = "vless-reality-kl-native-"
 
 type ConfigurationFragment struct {

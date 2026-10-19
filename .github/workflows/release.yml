@@ -127,6 +127,19 @@ jobs:
           python3 deploy/reliable_udp_engine.py "$RUNNER_TEMP/udp-release" | tee udp-build.json
           manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
           python3 tests/install/reliable_udp_release.py --bundle "$RUNNER_TEMP/udp-release/bundle" --manifest-sha256 "$manifest_sha" --results "$RUNNER_TEMP/udp-release/results.json" 2>&1 | tee udp-runtime.log
+      - name: Prepare verified legacy Reality client for compatibility acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/xray-legacy"
+          mkdir -p "$fixture"
+          curl --fail --location --retry 2 --connect-timeout 15 --max-time 120 \
+            https://github.com/XTLS/Xray-core/releases/download/v25.10.15/Xray-linux-64.zip \
+            -o "$fixture/client.zip"
+          (cd "$fixture" && echo 'df22ad60c1251c9fb63d7f85b3677872edf61c6715eba64b06adbfec658f4938  client.zip' | sha256sum --check)
+          unzip -j "$fixture/client.zip" xray -d "$fixture"
+          chmod 700 "$fixture/xray"
+          "$fixture/xray" version
       - name: Build release archive
         shell: bash
         env:
@@ -146,7 +159,7 @@ jobs:
           "$release/bin/xray" version
           "$release/bin/gost" -V
           # Real engines and loopback clients, no production services.
-          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" go test -p 1 -v ./internal/agent/runtime ./internal/agent/engine ./internal/control/httpapi ./tests/integration/xray ./tests/integration/gost
+          env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" HL_TEST_XRAY_LEGACY_BINARY="$RUNNER_TEMP/xray-legacy/xray" go test -p 1 -v ./internal/agent/runtime ./internal/agent/engine ./internal/control/httpapi ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md
