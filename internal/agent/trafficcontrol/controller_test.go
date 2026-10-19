@@ -66,6 +66,13 @@ func TestApplyBundleShapesMultiplePortsAndRemovesOldPorts(t *testing.T) {
 			t.Fatalf("traffic controller replaced root qdisc: %v", command)
 		}
 	}
+	for _, command := range runner.commands {
+		joined := strings.Join(command, " ")
+		if strings.Contains(joined, "filter replace") &&
+			(!strings.Contains(joined, "handle 1") || !strings.Contains(joined, "ip_proto tcp")) {
+			t.Fatalf("traffic filter is not replace-safe or protocol-scoped: %v", command)
+		}
+	}
 }
 
 func TestApplyBundleSkipsUnchangedPorts(t *testing.T) {
