@@ -43,6 +43,14 @@ describe('ForwardRuleInventory', () => {
     wrapper.unmount()
   })
 
+  it('does not show an operator-specific pre-migration traffic line in the release UI', () => {
+    const imported: ForwardRule = { ...baseRule, imported_traffic: { upload_bytes: 1024, download_bytes: 2048 } }
+    const wrapper = mount(ForwardRuleInventory, { props: { rules: [imported], devices, ruleGroups: [], selectedIds: [], busyId: '', trafficByRule: { [imported.id]: 3072 } } })
+    expect(wrapper.text()).not.toContain('含迁移前')
+    expect(wrapper.find('.rule-used-traffic').text()).toContain('3 KB')
+    wrapper.unmount()
+  })
+
   it('uses compact, labelled actions and preserves every rule action', async () => {
     const rule: ForwardRule = { ...baseRule, ingress_protocol: 'vless_reality' }
     const wrapper = mount(ForwardRuleInventory, { props: { rules: [rule], devices, ruleGroups: [], selectedIds: [], busyId: '' } })

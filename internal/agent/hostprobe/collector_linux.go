@@ -21,6 +21,39 @@ var previous struct {
 	total, idle, rx, tx uint64
 	cpuValid, netValid  bool
 	at                  time.Time
+	tcpCount            *uint64
+	tcpListeners        map[string]uint64
+	tcpSampledAt        time.Time
+	tcpGeneration       agentv1.NodeConfigGeneration
+}
+
+const tcpSampleInterval = 5 * time.Minute
+
+func InvalidateTCP() {
+	previous.Lock()
+	previous.tcpSampledAt = time.Time{}
+	previous.Unlock()
+}
+
+func SetTCPGeneration(generation agentv1.NodeConfigGeneration) {
+	previous.Lock()
+	defer previous.Unlock()
+	if previous.tcpGeneration != generation {
+		previous.tcpGeneration = generation
+		previous.tcpSampledAt = time.Time{}
+	}
+}
+
+func cachedTCPSockets(now time.Time, scan func() (*uint64, map[string]uint64)) (*uint64, map[string]uint64, *int64) {
+	if previous.tcpSampledAt.IsZero() || now.Before(previous.tcpSampledAt) || now.Sub(previous.tcpSampledAt) >= tcpSampleInterval {
+		previous.tcpCount, previous.tcpListeners = scan()
+		previous.tcpSampledAt = now
+	}
+	if previous.tcpListeners == nil {
+		return nil, nil, nil
+	}
+	ageMS := now.Sub(previous.tcpSampledAt).Milliseconds()
+	return previous.tcpCount, previous.tcpListeners, &ageMS
 }
 
 func number(s string) (uint64, bool) { v, err := strconv.ParseUint(s, 10, 64); return v, err == nil }
@@ -215,7 +248,9 @@ func Snapshot() *agentv1.HostSnapshot {
 		previous.netValid = false
 	}
 	previous.at = now
-	s.TCPConnCount, s.TCPListeners = tcpSockets("/proc/net/tcp", "/proc/net/tcp6")
+	s.TCPConnCount, s.TCPListeners, s.TCPListenersSampleAgeMS = cachedTCPSockets(now, func() (*uint64, map[string]uint64) {
+		return tcpSockets("/proc/net/tcp", "/proc/net/tcp6")
+	})
 	s.UDPConnCount = connections("/proc/net/udp", "/proc/net/udp6")
 	s.TCPCongestionControl, s.TCPAvailableCongestionControl = tcpCongestionControl(os.ReadFile)
 	addresses, err := net.InterfaceAddrs()

@@ -55,6 +55,28 @@ beforeEach(() => {
 afterEach(() => { config.global.plugins = [] })
 
 describe('ForwardRulesPage', () => {
+  it('filters sampled connection states and counts distinct bound customers', async () => {
+    const base: ForwardRule = { id: 'one', name: '在线一', customer_id: 'c-1', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active' }
+    const online = { status: 'online', connections: 1, reason: 'established', valid_for_ms: 5000 } as const
+    const offline = { status: 'offline', connections: 0, reason: 'no_connections', valid_for_ms: 5000 } as const
+    mocked.rules.mockResolvedValue({ items: [
+      { ...base, connection: online },
+      { ...base, id: 'two', name: '在线二', connection: online },
+      { ...base, id: 'three', name: '不在线一', customer_id: 'c-2', connection: offline },
+      { ...base, id: 'four', name: '未绑定规则', customer_id: '', connection: offline },
+      { ...base, id: 'five', name: '待采样规则', customer_id: 'c-3' },
+    ] })
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+    const connectionButtons = wrapper.findAll('[aria-label="连接状态筛选"] button')
+    expect(connectionButtons[1]!.text()).toContain('在线 2 条 / 1 客户')
+    expect(connectionButtons[2]!.text()).toContain('不在线 2 条 / 1 客户')
+    await connectionButtons[1]!.trigger('click')
+    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['one', 'two'])
+    await connectionButtons[2]!.trigger('click')
+    expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((rule: ForwardRule) => rule.id)).toEqual(['three', 'four'])
+    wrapper.unmount()
+  })
   it('renders rules before dictionaries finish and waits to enable creation', async () => {
     const rule: ForwardRule = { id: 'rule-early', name: '先显示规则', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [{ host: '192.0.2.10', port: 443 }], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active', traffic_used_bytes: 0 }
     mocked.rules.mockResolvedValue({ items: [rule] })

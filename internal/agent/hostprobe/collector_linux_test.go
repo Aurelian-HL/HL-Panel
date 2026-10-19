@@ -6,7 +6,44 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
+
+func TestCachedTCPSocketsRefreshesAtFiveMinutesAndOnGenerationChange(t *testing.T) {
+	previous.Lock()
+	oldCount, oldListeners, oldAt, oldGeneration := previous.tcpCount, previous.tcpListeners, previous.tcpSampledAt, previous.tcpGeneration
+	previous.tcpCount, previous.tcpListeners, previous.tcpSampledAt, previous.tcpGeneration = nil, nil, time.Time{}, 0
+	previous.Unlock()
+	defer func() {
+		previous.Lock()
+		previous.tcpCount, previous.tcpListeners, previous.tcpSampledAt, previous.tcpGeneration = oldCount, oldListeners, oldAt, oldGeneration
+		previous.Unlock()
+	}()
+	now := time.Now()
+	calls := 0
+	scan := func() (*uint64, map[string]uint64) {
+		calls++
+		count := uint64(calls)
+		return &count, map[string]uint64{"443": count}
+	}
+	check := func(at time.Time, wantCalls int) {
+		previous.Lock()
+		count, listeners, age := cachedTCPSockets(at, scan)
+		previous.Unlock()
+		if calls != wantCalls || count == nil || *count != uint64(wantCalls) || listeners["443"] != uint64(wantCalls) || age == nil {
+			t.Fatalf("calls=%d count=%v listeners=%v age=%v", calls, count, listeners, age)
+		}
+	}
+	check(now, 1)
+	check(now.Add(4*time.Minute), 1)
+	InvalidateTCP()
+	check(now.Add(4*time.Minute+time.Second), 2)
+	SetTCPGeneration(agentv1.NodeConfigGeneration(1))
+	check(now.Add(4*time.Minute+2*time.Second), 3)
+	check(now.Add(9*time.Minute+2*time.Second), 4)
+}
 
 func TestProcMeasurements(t *testing.T) {
 	total, idle, ok := cpuCounters("cpu 10 2 3 40 5 6 7 8 9 10\n")

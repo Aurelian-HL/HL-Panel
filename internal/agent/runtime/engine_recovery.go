@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/agent/config"
+	"github.com/hongle/hl-panel/internal/agent/hostprobe"
 	"github.com/hongle/hl-panel/internal/agent/reconciler"
 	usageagent "github.com/hongle/hl-panel/internal/agent/usage"
 )
@@ -33,6 +34,7 @@ func (a *Agent) recoverEngine(ctx context.Context) error {
 	}
 	restored, err := a.reconciler.EnsureApplied(ctx)
 	if restored && err == nil {
+		hostprobe.InvalidateTCP()
 		a.logger.Warn("exited engine recovered from last-known-good configuration")
 	}
 	return err
@@ -127,7 +129,9 @@ func (a *Agent) stopEngine(ctx context.Context) error {
 			a.logger.Warn("final usage collection before engine stop failed", "error", err)
 		}
 	}
-	return a.closeEngines(ctx)
+	err := a.closeEngines(ctx)
+	hostprobe.InvalidateTCP()
+	return err
 }
 
 func (a *Agent) restartEngine(ctx context.Context) error {
@@ -149,7 +153,10 @@ func (a *Agent) restartEngine(ctx context.Context) error {
 		return err
 	}
 	if pending {
-		return a.reconciler.RecoverPending(ctx)
+		err = a.reconciler.RecoverPending(ctx)
+	} else {
+		err = a.reconciler.RestoreApplied(ctx)
 	}
-	return a.reconciler.RestoreApplied(ctx)
+	hostprobe.InvalidateTCP()
+	return err
 }

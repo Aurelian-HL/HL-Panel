@@ -150,15 +150,61 @@ func TestRuleConnectionRemainingFreshnessDoesNotRenewOnRead(t *testing.T) {
 	node.LastHeartbeatAt = &at
 	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(3)}}}
 	s.nodes["node"] = node
-	for _, age := range []time.Duration{time.Second, 4 * time.Second, ruleConnectionFreshness} {
+	for _, age := range []time.Duration{time.Second, 4 * time.Second, ruleConnectionHeartbeatFreshness} {
 		got := s.ruleConnectionLocked(s.forwardRules["rule"], at.Add(age))
-		if age < ruleConnectionFreshness {
-			if got.Status != "online" || got.ValidForMS != (ruleConnectionFreshness-age).Milliseconds() || got.SampledNodes != 1 {
+		if age < ruleConnectionHeartbeatFreshness {
+			if got.Status != "online" || got.ValidForMS != (ruleConnectionHeartbeatFreshness-age).Milliseconds() || got.SampledNodes != 1 {
 				t.Fatalf("sample read renewed its freshness at %v: %+v", age, got)
 			}
 		} else if got.Reason != "sample_expired" || got.Connections != 0 || got.ValidForMS != 0 || got.StaleNodes != 1 {
 			t.Fatalf("expired heartbeat reported live connections: %+v", got)
 		}
+	}
+}
+
+func TestRuleConnectionFiveMinuteSampleRequiresLiveHeartbeat(t *testing.T) {
+	s, _ := protocolPublicationFixture(t)
+	now := time.Now().UTC()
+	node := s.nodes["node"]
+	node.LastHeartbeatAt = &now
+	node.Resources = map[string]any{"host": map[string]any{
+		"tcp_listeners":               map[string]any{"443": float64(2)},
+		"tcp_listeners_sample_age_ms": float64((4 * time.Minute).Milliseconds()),
+	}}
+	s.nodes["node"] = node
+	got := s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Status != "online" || got.Connections != 2 || got.SampledAt == nil || !got.SampledAt.Equal(now.Add(-4*time.Minute)) {
+		t.Fatalf("four-minute sample was not retained: %+v", got)
+	}
+	oldHeartbeat := now.Add(-30 * time.Second)
+	node.LastHeartbeatAt = &oldHeartbeat
+	node.Resources["host"].(map[string]any)["tcp_listeners_sample_age_ms"] = float64((4*time.Minute - 30*time.Second).Milliseconds())
+	s.nodes["node"] = node
+	got = s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Status != "online" || got.ValidForMS < time.Minute.Milliseconds() {
+		t.Fatalf("brief heartbeat gap expired five-minute sample: %+v", got)
+	}
+	node.LastHeartbeatAt = &now
+	s.nodes["node"] = node
+	node.Resources["host"].(map[string]any)["tcp_listeners_sample_age_ms"] = float64(ruleConnectionFreshness.Milliseconds())
+	s.nodes["node"] = node
+	got = s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Reason != "sample_expired" || got.Connections != 0 {
+		t.Fatalf("expired sample remained online: %+v", got)
+	}
+	node.Resources["host"].(map[string]any)["tcp_listeners_sample_age_ms"] = "invalid"
+	s.nodes["node"] = node
+	got = s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Reason != "sample_expired" {
+		t.Fatalf("malformed sample age was accepted: %+v", got)
+	}
+	oldHeartbeat = now.Add(-ruleConnectionFreshness)
+	node.LastHeartbeatAt = &oldHeartbeat
+	node.Resources["host"].(map[string]any)["tcp_listeners_sample_age_ms"] = float64(0)
+	s.nodes["node"] = node
+	got = s.ruleConnectionLocked(s.forwardRules["rule"], now)
+	if got.Reason != "sample_expired" || got.Connections != 0 {
+		t.Fatalf("stale heartbeat preserved online state: %+v", got)
 	}
 }
 

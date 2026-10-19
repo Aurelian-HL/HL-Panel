@@ -10,7 +10,10 @@ import (
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 )
 
-const ruleConnectionFreshness = 5 * time.Second
+const (
+	ruleConnectionHeartbeatFreshness = 5 * time.Second
+	ruleConnectionFreshness          = 5*time.Minute + 30*time.Second
+)
 
 func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwarding.RuleConnection {
 	result := &forwarding.RuleConnection{Status: "offline", Reason: "not_sampled"}
@@ -26,10 +29,12 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		result.Reason = "tcp_only"
 		return result
 	}
-	observe := func(at time.Time) {
+	observe := func(at time.Time, lease time.Duration) {
 		if result.SampledAt == nil || at.Before(*result.SampledAt) {
 			result.SampledAt = &at
-			result.ValidForMS = max(0, (ruleConnectionFreshness - now.Sub(at)).Milliseconds())
+		}
+		if result.ValidForMS == 0 || lease.Milliseconds() < result.ValidForMS {
+			result.ValidForMS = max(0, lease.Milliseconds())
 		}
 	}
 	for nodeID, member := range s.membersByGroup[rule.EntryGroupID] {
@@ -42,10 +47,36 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 			continue
 		}
 		age := now.Sub(*node.LastHeartbeatAt)
-		if age < 0 || age >= ruleConnectionFreshness {
+		host, ok := node.Resources["host"].(map[string]any)
+		if !ok {
 			result.StaleNodes++
 			continue
 		}
+		heartbeatFreshness := ruleConnectionHeartbeatFreshness
+		if _, exists := host["tcp_listeners_sample_age_ms"]; exists {
+			heartbeatFreshness = ruleConnectionFreshness
+		}
+		if age < 0 || age >= heartbeatFreshness {
+			result.StaleNodes++
+			continue
+		}
+		sampledAt := *node.LastHeartbeatAt
+		sampleFreshness := ruleConnectionHeartbeatFreshness
+		if raw, exists := host["tcp_listeners_sample_age_ms"]; exists {
+			sampleAge, ok := tcpSampleAge(raw)
+			if !ok {
+				result.StaleNodes++
+				continue
+			}
+			sampledAt = sampledAt.Add(-sampleAge)
+			sampleFreshness = ruleConnectionFreshness
+		}
+		sampleAge := now.Sub(sampledAt)
+		if sampleAge < 0 || sampleAge >= sampleFreshness {
+			result.StaleNodes++
+			continue
+		}
+		lease := min(heartbeatFreshness-age, sampleFreshness-sampleAge)
 		applyFailed := node.LastApplyGeneration == node.DesiredGeneration && node.LastApplyStatus == "failed"
 		if applyFailed {
 			// A failed full-bundle update does not prove that this existing
@@ -53,7 +84,7 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 			// rule-scoped socket evidence; never erase a known-good count.
 			result.ApplyFailedNodes++
 			result.ErrorNodes++
-			observe(*node.LastHeartbeatAt)
+			observe(sampledAt, lease)
 		}
 		// A matching real-engine receipt prevents another process using the same
 		// local port from making a pending/unapplied rule appear online.
@@ -62,15 +93,11 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 			result.PendingNodes++
 			continue
 		}
-		host, ok := node.Resources["host"].(map[string]any)
-		if !ok {
-			continue
-		}
 		count, listening, sampled := listenerConnectionCount(host["tcp_listeners"], strconv.Itoa(rule.ListenPort))
 		if !sampled {
 			continue
 		}
-		observe(*node.LastHeartbeatAt)
+		observe(sampledAt, lease)
 		result.SampledNodes++
 		if !listening {
 			result.MissingListenerNodes++
@@ -99,6 +126,28 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		result.Reason = "sample_expired"
 	}
 	return result
+}
+
+func tcpSampleAge(value any) (time.Duration, bool) {
+	var ms float64
+	switch v := value.(type) {
+	case float64:
+		ms = v
+	case int64:
+		ms = float64(v)
+	case json.Number:
+		var err error
+		ms, err = v.Float64()
+		if err != nil {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || ms < 0 || ms > float64(ruleConnectionFreshness.Milliseconds()) || math.Trunc(ms) != ms {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 func listenerConnectionCount(value any, port string) (count uint64, listening, sampled bool) {

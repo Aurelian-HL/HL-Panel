@@ -419,6 +419,7 @@ func (a *Agent) HeartbeatOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load state for heartbeat: %w", err)
 	}
+	hostprobe.SetTCPGeneration(current.AppliedGeneration())
 	request := agentv1.HeartbeatRequest{
 		BootID:            a.bootID,
 		Hostname:          a.cfg.Hostname,

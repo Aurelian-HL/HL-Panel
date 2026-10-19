@@ -26,9 +26,10 @@ type HostSnapshot struct {
 	TCPAvailableCongestionControl []string `json:"tcp_available_congestion_control,omitempty"`
 	// Local TCP listener port -> established connections. Null means unknown;
 	// an empty object is a successful sample with no listeners. No peer IPs.
-	TCPListeners       map[string]uint64 `json:"tcp_listeners"`
-	UDPConnCount       *uint64           `json:"udp_conn_count,omitempty"`
-	IPv4               string            `json:"ipv4,omitempty"`
-	IPv6               string            `json:"ipv6,omitempty"`
-	IPCollectionStatus string            `json:"ip_collection_status,omitempty"`
+	TCPListeners            map[string]uint64 `json:"tcp_listeners"`
+	TCPListenersSampleAgeMS *int64            `json:"tcp_listeners_sample_age_ms,omitempty"`
+	UDPConnCount            *uint64           `json:"udp_conn_count,omitempty"`
+	IPv4                    string            `json:"ipv4,omitempty"`
+	IPv6                    string            `json:"ipv6,omitempty"`
+	IPCollectionStatus      string            `json:"ip_collection_status,omitempty"`
 }
