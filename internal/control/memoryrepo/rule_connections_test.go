@@ -23,7 +23,7 @@ func TestRuleConnectionsRequireFreshVerifiedRuleListener(t *testing.T) {
 		{"failed collection", "offline", "not_sampled", func(s *Store) { s.nodes["node"].Resources["host"].(map[string]any)["tcp_listeners"] = nil }},
 		{"stale", "offline", "sample_expired", func(s *Store) {
 			n := s.nodes["node"]
-			at := time.Now().Add(-time.Minute)
+			at := time.Now().Add(-6 * time.Minute)
 			n.LastHeartbeatAt = &at
 			s.nodes["node"] = n
 		}},
@@ -150,10 +150,10 @@ func TestRuleConnectionRemainingFreshnessDoesNotRenewOnRead(t *testing.T) {
 	node.LastHeartbeatAt = &at
 	node.Resources = map[string]any{"host": map[string]any{"tcp_listeners": map[string]any{"443": float64(3)}}}
 	s.nodes["node"] = node
-	for _, age := range []time.Duration{time.Second, 4 * time.Second, ruleConnectionHeartbeatFreshness} {
+	for _, age := range []time.Duration{time.Second, 4 * time.Second, 5 * time.Minute, ruleConnectionFreshness} {
 		got := s.ruleConnectionLocked(s.forwardRules["rule"], at.Add(age))
-		if age < ruleConnectionHeartbeatFreshness {
-			if got.Status != "online" || got.ValidForMS != (ruleConnectionHeartbeatFreshness-age).Milliseconds() || got.SampledNodes != 1 {
+		if age < ruleConnectionFreshness {
+			if got.Status != "online" || got.ValidForMS != (ruleConnectionFreshness-age).Milliseconds() || got.SampledNodes != 1 {
 				t.Fatalf("sample read renewed its freshness at %v: %+v", age, got)
 			}
 		} else if got.Reason != "sample_expired" || got.Connections != 0 || got.ValidForMS != 0 || got.StaleNodes != 1 {

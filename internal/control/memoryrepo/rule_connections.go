@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	ruleConnectionHeartbeatFreshness = 5 * time.Second
-	ruleConnectionFreshness          = 5*time.Minute + 30*time.Second
+	ruleConnectionFreshness = 5*time.Minute + 30*time.Second
 )
 
 func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwarding.RuleConnection {
@@ -52,16 +51,15 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 			result.StaleNodes++
 			continue
 		}
-		heartbeatFreshness := ruleConnectionHeartbeatFreshness
-		if _, exists := host["tcp_listeners_sample_age_ms"]; exists {
-			heartbeatFreshness = ruleConnectionFreshness
-		}
+		// Legacy agents omit sample age. Their listener observations use the
+		// same five-minute display window; this does not renew routing health.
+		heartbeatFreshness := ruleConnectionFreshness
 		if age < 0 || age >= heartbeatFreshness {
 			result.StaleNodes++
 			continue
 		}
 		sampledAt := *node.LastHeartbeatAt
-		sampleFreshness := ruleConnectionHeartbeatFreshness
+		sampleFreshness := ruleConnectionFreshness
 		if raw, exists := host["tcp_listeners_sample_age_ms"]; exists {
 			sampleAge, ok := tcpSampleAge(raw)
 			if !ok {
@@ -69,7 +67,6 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 				continue
 			}
 			sampledAt = sampledAt.Add(-sampleAge)
-			sampleFreshness = ruleConnectionFreshness
 		}
 		sampleAge := now.Sub(sampledAt)
 		if sampleAge < 0 || sampleAge >= sampleFreshness {

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ForwardRule } from '@/api/business'
-import { ruleConnectionPresentation } from './ruleConnection'
-const props = defineProps<{ rule: ForwardRule; elapsed: number }>()
+import { ruleConnectionPresentation, type RuleConnectionPresentation } from './ruleConnection'
+const props = defineProps<{ rule: ForwardRule; elapsed: number; presentation?: RuleConnectionPresentation }>()
 const expanded = ref(false)
-const state = computed(() => ruleConnectionPresentation(props.rule, props.elapsed))
+const state = computed(() => props.presentation ?? ruleConnectionPresentation(props.rule, props.elapsed))
 </script>
 <template>
   <button type="button" class="rule-connection" :class="'is-' + state.status" :title="state.title + ' 点击查看采样说明'" :aria-label="rule.name + '：' + state.label + '，查看连接采样详情'" :aria-expanded="expanded" @click="expanded = !expanded">{{ state.label }}<span aria-hidden="true" class="connection-disclosure">{{ expanded ? '−' : '+' }}</span></button>

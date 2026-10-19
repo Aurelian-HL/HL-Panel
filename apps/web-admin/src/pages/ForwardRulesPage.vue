@@ -13,7 +13,7 @@ import ForwardRuleInventory from '@/features/forwarding/ForwardRuleInventory.vue
 import ConfirmRuleDeletion from '@/features/forwarding/ConfirmRuleDeletion.vue'
 import ForwardRuleTransferDialog from '@/features/forwarding/ForwardRuleTransferDialog.vue'
 import { loadRuleTraffic } from '@/features/forwarding/ruleTraffic'
-import { ruleConnectionPresentation } from '@/features/forwarding/ruleConnection'
+import { useRuleConnectionSnapshot } from '@/features/forwarding/useRuleConnectionSnapshot'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { ruleInput } from '@/lib/businessFormatters'
@@ -33,9 +33,7 @@ const query = ref('')
 const filter = ref('all')
 const groupFilter = ref('all')
 const connectionFilter = ref<'all' | 'online' | 'offline'>('all')
-const connectionClock = ref(performance.now())
-const connectionReceived = new WeakMap<object, number>()
-let connectionClockTimer: number | undefined
+const connectionPresentations = useRuleConnectionSnapshot(rules)
 const selectedIds = ref<string[]>([])
 const page = ref(1)
 const pageSize = ref(20)
@@ -80,9 +78,7 @@ const searchIndex = computed(() => new Map(rules.value.map((item) => {
   return [item.id, [item.name, item.listen_port, deviceNames.value.get(item.entry_group_id), deviceNames.value.get(item.exit_group_id), vlessUpstream, ...item.targets.map((target) => `${target.host}:${target.port}`)].join(' ').toLowerCase()] as const
 })))
 function connectionStatus(rule: ForwardRule): 'online' | 'offline' | 'unknown' {
-  if (rule.connection && !connectionReceived.has(rule.connection)) connectionReceived.set(rule.connection, performance.now())
-  const elapsed = rule.connection ? Math.max(0, connectionClock.value - (connectionReceived.get(rule.connection) ?? -Infinity)) : Infinity
-  const label = ruleConnectionPresentation(rule, elapsed).label
+  const label = connectionPresentations.value[rule.id]?.label
   return label === '在线' ? 'online' : label === '不在线' ? 'offline' : 'unknown'
 }
 const baseFiltered = computed(() => {
@@ -345,14 +341,12 @@ async function exportRules(): Promise<void> {
 }
 onMounted(async () => {
   active = true
-  connectionClockTimer = window.setInterval(() => { connectionClock.value = performance.now() }, 1000)
   document.addEventListener('visibilitychange', handleTrafficVisibilityChange)
   await load()
   if (active) scheduleTrafficRefresh()
 })
 onUnmounted(() => {
   active = false
-  window.clearInterval(connectionClockTimer)
   loadVersion++
   document.removeEventListener('visibilitychange', handleTrafficVisibilityChange)
   if (trafficTimer !== undefined) window.clearTimeout(trafficTimer)
@@ -361,7 +355,7 @@ onUnmounted(() => {
 <template>
   <div class="page-stack">
     <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions"><RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button><button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading || refreshing }" />刷新</button><button class="button button--primary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button></div></header>
-    <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><div class="segmented-control rule-connection-filter" aria-label="连接状态筛选" title="客户数按已绑定规则的客户账号去重；连接采样不能识别真实人数"><button :class="{ active: connectionFilter === 'all' }" @click="connectionFilter = 'all'">全部连接</button><button :class="{ active: connectionFilter === 'online' }" @click="connectionFilter = 'online'">在线 {{ connectionCounts.online }} 条 / {{ connectionCounts.onlineCustomers }} 客户</button><button :class="{ active: connectionFilter === 'offline' }" @click="connectionFilter = 'offline'">不在线 {{ connectionCounts.offline }} 条 / {{ connectionCounts.offlineCustomers }} 客户</button></div><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
+    <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><small class="connection-refresh-note">在线状态每 5 分钟更新</small><div class="segmented-control rule-connection-filter" aria-label="连接状态筛选" title="客户数按已绑定规则的客户账号去重；连接采样不能识别真实人数"><button :class="{ active: connectionFilter === 'all' }" @click="connectionFilter = 'all'">全部连接</button><button :class="{ active: connectionFilter === 'online' }" @click="connectionFilter = 'online'">在线 {{ connectionCounts.online }} 条 / {{ connectionCounts.onlineCustomers }} 客户</button><button :class="{ active: connectionFilter === 'offline' }" @click="connectionFilter = 'offline'">不在线 {{ connectionCounts.offline }} 条 / {{ connectionCounts.offlineCustomers }} 客户</button></div><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
     <section v-if="ready && rules.length" class="rule-batch-toolbar" aria-label="规则批量操作"><label><input type="checkbox" :checked="allFilteredSelected" :disabled="refreshing || batchBusy || !!busyId" @change="selectFiltered(($event.target as HTMLInputElement).checked)" />选择当前结果</label><span>{{ selectedIds.length }} 条已选择</span><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('pause')"><Pause :size="14" />暂停</button><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('resume')"><Play :size="14" />恢复</button><label class="rule-batch-move"><select v-model="moveGroupId" :disabled="refreshing || batchBusy || !!busyId"><option value="">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('move_group')"><FolderInput :size="14" />移动</button></label><button class="button button--danger" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="requestDelete([...selectedRules])"><Trash2 :size="14" />删除</button></section>
     <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
     <p v-if="resourceWarning && ready" class="inline-warning" role="status">{{ resourceWarning }}</p>
@@ -369,7 +363,7 @@ onUnmounted(() => {
     <StatePanel v-else-if="error" state="error" title="规则加载失败" :message="error" @retry="load" />
     <StatePanel v-else-if="!rules.length" state="empty" title="暂无转发规则" message="点击添加规则创建。" />
     <StatePanel v-else-if="!filtered.length" state="empty" title="没有匹配的规则" message="调整搜索词或筛选条件。" />
-    <ForwardRuleInventory v-else :rules="pagedRules" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" :download-busy-id="downloadBusyId" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
+    <ForwardRuleInventory v-else :rules="pagedRules" :devices="devices" :networks="networks" :traffic-by-rule="trafficByRule" :connection-presentations="connectionPresentations" :rule-groups="ruleGroups" :selected-ids="selectedIds" :busy-id="busyId || (batchBusy ? 'batch' : '')" :download-busy-id="downloadBusyId" @select="selectRule" @edit="openExisting($event)" @copy="openExisting($event, true)" @connection="copyConnection" @toggle="toggle" @delete="requestDelete([$event])" />
     <nav v-if="ready && filtered.length" class="rule-pagination" aria-label="转发规则分页">
       <span class="rule-pagination__summary">显示 {{ pageStart }}-{{ pageEnd }}，共 {{ filtered.length }} 条</span>
       <div class="rule-pagination__right"><label class="rule-pagination__size"><span>每页</span><select v-model.number="pageSize" aria-label="每页规则数量"><option v-for="size in pageSizeOptions" :key="size" :value="size">{{ size }}</option></select><span>条</span></label>
@@ -385,14 +379,15 @@ onUnmounted(() => {
 <style scoped>
 .rule-pagination { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 12px; border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; color: var(--ny-muted); font-size: 12px; }
 .rule-pagination__summary { white-space: nowrap; }
-.rule-connection-filter { margin-left: auto; }
+.connection-refresh-note { margin-left: auto; color: var(--ny-muted); font-size: 12px; }
+.rule-connection-filter { margin-left: 0; }
 .rule-pagination__right { display: flex; align-items: center; gap: 16px; margin-left: auto; }
 .rule-pagination__size, .rule-pagination__buttons { display: inline-flex; align-items: center; gap: 7px; }
 .rule-pagination__size select { min-height: 30px; padding: 4px 25px 4px 8px; border: 1px solid var(--ny-border-dark); border-radius: 3px; background: #fff; color: var(--ny-text); }
 .rule-pagination__buttons .button { min-height: 30px; padding: 4px 9px; }
 @media (max-width: 640px) {
   .rule-pagination { align-items: stretch; flex-direction: column; }
-  .rule-connection-filter { margin-left: 0; }
+  .connection-refresh-note { margin-left: 0; }
   .rule-pagination__right { flex-direction: column; align-items: stretch; margin-left: 0; }
   .rule-pagination__summary, .rule-pagination__size, .rule-pagination__buttons { justify-content: space-between; }
   .rule-pagination__buttons .button { flex: 1; }

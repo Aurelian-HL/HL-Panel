@@ -55,6 +55,36 @@ beforeEach(() => {
 afterEach(() => { config.global.plugins = [] })
 
 describe('ForwardRulesPage', () => {
+  it('keeps badges, filters and customer counts fixed while traffic polls until the five-minute boundary', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    const rule: ForwardRule = { id: 'sample', name: '五分钟采样', customer_id: 'c-1', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active', traffic_used_bytes: 100,
+      connection: { status: 'online', connections: 1, reason: 'established', valid_for_ms: 330000 } }
+    mocked.rules.mockResolvedValueOnce({ items: [rule] }).mockImplementation(async () => ({ items: [{ ...rule, traffic_used_bytes: 400,
+      connection: { status: 'offline', connections: 0, reason: 'no_connections', valid_for_ms: 330000 } }] }))
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      const buttons = () => wrapper.findAll('[aria-label="连接状态筛选"] button')
+      await buttons()[1]!.trigger('click')
+      for (let second = 1; second < 300; second++) await vi.advanceTimersByTimeAsync(1000)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ sample: 400 })
+      expect(buttons()[1]!.text()).toContain('在线 1 条 / 1 客户')
+      expect(wrapper.findAll('.rule-connection').every(badge => badge.text().startsWith('在线'))).toBe(true)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('rules')).toHaveLength(1)
+      // Ordinary refresh must not reset the sampling window or all badges.
+      await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+      await flushPromises()
+      expect(buttons()[1]!.text()).toContain('在线 1 条 / 1 客户')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(buttons()[1]!.text()).toContain('在线 0 条 / 0 客户')
+      expect(buttons()[2]!.text()).toContain('不在线 1 条 / 1 客户')
+      expect(wrapper.text()).toContain('没有匹配的规则')
+      await buttons()[2]!.trigger('click')
+      expect(wrapper.findAll('.rule-connection').every(badge => badge.text().startsWith('不在线'))).toBe(true)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('rules')).toHaveLength(1)
+    } finally { wrapper.unmount(); vi.useRealTimers() }
+  })
   it('filters sampled connection states and counts distinct bound customers', async () => {
     const base: ForwardRule = { id: 'one', name: '在线一', customer_id: 'c-1', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'active' }
     const online = { status: 'online', connections: 1, reason: 'established', valid_for_ms: 5000 } as const

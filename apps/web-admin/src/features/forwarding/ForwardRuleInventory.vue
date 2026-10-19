@@ -7,6 +7,7 @@ import { byteAmount, effectiveIngressProtocol, ingressProtocolLabel, targetAddre
 import { ruleDisplayStatus } from '@/lib/ruleActivation'
 import ForwardRuleActions from './ForwardRuleActions.vue'
 import RuleConnectionStatus from './RuleConnectionStatus.vue'
+import type { RuleConnectionPresentation } from './ruleConnection'
 
 const props = withDefaults(defineProps<{
   rules: ForwardRule[]
@@ -14,6 +15,7 @@ const props = withDefaults(defineProps<{
   ruleGroups: RuleGroup[]
   networks?: GroupNetwork[]
   trafficByRule?: Record<string, number>
+  connectionPresentations?: Record<string, RuleConnectionPresentation>
   selectedIds: string[]
   busyId: string
   downloadBusyId?: string
@@ -29,7 +31,7 @@ watch(() => props.rules, (rules) => {
   for (const rule of rules) if (rule.connection && !received.has(rule.connection)) received.set(rule.connection, now)
 }, { immediate: true })
 let clockTimer: number | undefined
-onMounted(() => { clockTimer = window.setInterval(() => { clock.value = performance.now() }, 1000) })
+onMounted(() => { if (!props.connectionPresentations) clockTimer = window.setInterval(() => { clock.value = performance.now() }, 1000) })
 onUnmounted(() => { window.clearInterval(clockTimer) })
 const connectionElapsed = (rule: ForwardRule) => Math.max(0, clock.value - (rule.connection ? received.get(rule.connection) ?? -Infinity : -Infinity))
 
@@ -87,7 +89,7 @@ function selectVisible(selected: boolean): void {
         </tr></thead>
         <tbody><tr v-for="rule in rules" :key="rule.id">
           <td class="rule-select-column"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /></td>
-          <td><div class="rule-name-line"><strong class="table-primary">{{ rule.name }}</strong><RuleConnectionStatus :rule="rule" :elapsed="connectionElapsed(rule)" /></div><small class="table-secondary rule-protocol">{{ protocolSummary(rule) }}</small><small v-if="rule.description" class="table-secondary">{{ rule.description }}</small></td>
+          <td><div class="rule-name-line"><strong class="table-primary">{{ rule.name }}</strong><RuleConnectionStatus :rule="rule" :elapsed="connectionElapsed(rule)" :presentation="connectionPresentations?.[rule.id]" /></div><small class="table-secondary rule-protocol">{{ protocolSummary(rule) }}</small><small v-if="rule.description" class="table-secondary">{{ rule.description }}</small></td>
           <td class="rule-entry-cell"><div class="rule-route-heading"><span>入口：{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></td>
           <td class="rule-exit-cell"><div class="rule-route-heading"><span>出口：{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></td>
           <td class="rule-used-traffic">{{ usedTraffic(rule.id) }}<small class="table-secondary">{{ rule.traffic_limit_bytes ? `限额 ${byteAmount(rule.traffic_limit_bytes)}` : '不限量' }}</small><small v-if="rule.traffic_quota_monthly" class="table-secondary">每月清零</small><small v-if="rule.traffic_limit_bytes && (rule.traffic_used_bytes ?? 0) >= rule.traffic_limit_bytes" class="table-secondary">额度用完，自动暂停</small></td>
@@ -98,7 +100,7 @@ function selectVisible(selected: boolean): void {
     </div>
     <div class="business-mobile">
       <article v-for="rule in rules" :key="rule.id" class="business-card">
-        <header><div class="rule-card-select"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /><div><div class="rule-name-line"><h3>{{ rule.name }}</h3><RuleConnectionStatus :rule="rule" :elapsed="connectionElapsed(rule)" /></div><p>{{ protocolSummary(rule) }}</p></div></div><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></header>
+        <header><div class="rule-card-select"><input type="checkbox" :checked="selectedIds.includes(rule.id)" :disabled="!!busyId" :aria-label="`选择规则 ${rule.name}`" @change="$emit('select', rule, ($event.target as HTMLInputElement).checked)" /><div><div class="rule-name-line"><h3>{{ rule.name }}</h3><RuleConnectionStatus :rule="rule" :elapsed="connectionElapsed(rule)" :presentation="connectionPresentations?.[rule.id]" /></div><p>{{ protocolSummary(rule) }}</p></div></div><BusinessStatus :status="ruleDisplayStatus(rule)" :paused="rule.paused" /></header>
         <dl>
           <div class="rule-card-route"><dt>入口</dt><dd><div class="rule-route-heading"><span>{{ deviceName(rule.entry_group_id) }}</span><small v-if="multiplier(rule.entry_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.entry_group_id) }}</small></div><span class="rule-address">{{ entryAddress(rule) }}</span></dd></div>
           <div class="rule-card-route"><dt>出口</dt><dd><div class="rule-route-heading"><span>{{ exitName(rule) }}</span><small v-if="rule.egress_mode !== 'DIRECT' && multiplier(rule.exit_group_id) !== null" class="rule-multiplier">倍率 {{ multiplier(rule.exit_group_id) }}</small></div><span class="rule-address rule-targets">{{ targetSummary(rule) }}</span></dd></div>
