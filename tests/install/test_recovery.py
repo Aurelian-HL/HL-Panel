@@ -189,6 +189,7 @@ class NodeRecoveryTests(IsolatedFiles):
         self.release = self.root / 'release'
         for relative in ('bin/edge-agent', 'bin/xray', 'bin/gost',
                          'deploy/edge-agent/enroll.sh', 'deploy/reinstall-node.py',
+                         'deploy/install-node-update.py',
                          'deploy/systemd/hl-panel-edge-agent.service'):
             path = self.release / relative
             path.parent.mkdir(parents=True, exist_ok=True)

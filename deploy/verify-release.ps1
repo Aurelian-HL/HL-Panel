@@ -34,6 +34,8 @@ $required = @(
     'deploy/update.py',
     'deploy/update-node.py',
     'deploy/panel-update-worker.py',
+    'deploy/node-update-worker.py',
+    'deploy/install-node-update.py',
     'deploy/configure-reality.sh',
     'deploy/configure-reality.py',
     'deploy/enable-domain-tls.sh',
@@ -49,6 +51,8 @@ $required = @(
     'deploy/systemd/hl-panel-control-api.service',
     'deploy/systemd/hl-panel-update.socket',
     'deploy/systemd/hl-panel-update.service',
+    'deploy/systemd/hl-panel-node-update.socket',
+    'deploy/systemd/hl-panel-node-update.service',
     'deploy/systemd/hl-panel-edge-agent.service'
 )
 foreach ($relativePath in $required) {
