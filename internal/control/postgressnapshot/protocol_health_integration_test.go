@@ -201,6 +201,67 @@ func TestProtocolHealthRenewalDoesNotRewriteSnapshot(t *testing.T) {
 	assertHealth(t, other, proof)
 }
 
+func TestProtocolHealthRenewalAfterLeaseLossDoesNotRewriteSnapshot(t *testing.T) {
+	s, _, proof := protocolHealthFixture(t)
+	ctx := context.Background()
+	if results, err := s.PublishProtocolHealthBatch(ctx, []gatewaymembership.ProtocolObservation{proof}); err != nil || results[0] != nil {
+		t.Fatal(results, err)
+	}
+	// Simulate lost leases only in the isolated test database. The durable rule
+	// remains activated, while its public projection must fail closed.
+	raw, _ := healthSnapshot(t, s)
+	var snapshot map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	snapshot["ProtocolHealth"] = json.RawMessage(`{}`)
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE nyvp_control_snapshots SET payload=$1,revision=revision+1 WHERE singleton=true`, raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`DELETE FROM hl_panel_protocol_health`); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	rule, err := s.ForwardingRule(ctx, proof.RuleID)
+	if err != nil || rule.Deployed {
+		t.Fatalf("missing lease did not fail closed: deployed=%v err=%v", rule.Deployed, err)
+	}
+	before, revision := healthSnapshot(t, s)
+	beforeAudits, err := s.AuditEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof.VerifiedAt = proof.VerifiedAt.Add(time.Second)
+	proof.LeaseExpiresAt = proof.LeaseExpiresAt.Add(time.Second)
+	if results, err := s.PublishProtocolHealthBatch(ctx, []gatewaymembership.ProtocolObservation{proof}); err != nil || results[0] != nil {
+		t.Fatal(results, err)
+	}
+	after, next := healthSnapshot(t, s)
+	if !bytes.Equal(before, after) || next != revision+1 {
+		t.Fatal("lease recovery rewrote snapshot or lost revision")
+	}
+	afterAudits, err := s.AuditEvents(ctx)
+	if err != nil || len(afterAudits) != len(beforeAudits) {
+		t.Fatalf("lease recovery repeated activation audit: %v", err)
+	}
+	assertHealth(t, s, proof)
+	rule, err = s.ForwardingRule(ctx, proof.RuleID)
+	if err != nil || !rule.Deployed {
+		t.Fatalf("fresh valid lease did not restore health: deployed=%v err=%v", rule.Deployed, err)
+	}
+}
+
 func TestProtocolHealthConcurrentBusinessWriteAndRollback(t *testing.T) {
 	s, _, proof := protocolHealthFixture(t)
 	ctx := context.Background()

@@ -1,5 +1,6 @@
 import type { ProbeMember, ProbeUpstreamStatus } from '@/api/probe'
 import { serverNow } from '@/lib/serverClock'
+import { countryFlagCodes } from './countryFlags'
 
 export function formatBytes(value: number | undefined): string {
   if (value === undefined || !Number.isFinite(value) || value < 0) return '未采集'
@@ -36,8 +37,8 @@ export function formatUptime(seconds: number | undefined): string {
 }
 
 export function countryFlag(code: string | undefined): string {
-  const normalized = code?.toLowerCase()
-  return normalized === 'us' || normalized === 'hk' ? `/flags/${normalized}.png` : ''
+  const normalized = code?.trim().toLowerCase() ?? ''
+  return countryFlagCodes.has(normalized) ? `/flags/${normalized}.svg` : ''
 }
 
 export function formatUnixTime(seconds: number | undefined): string {

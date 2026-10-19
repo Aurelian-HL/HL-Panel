@@ -65,9 +65,14 @@ describe('probe measurement formatting', () => {
   })
 
   it('formats only valid country codes and Unix boot times', () => {
-    expect(countryFlag('US')).toBe('/flags/us.png')
-    expect(countryFlag('hk')).toBe('/flags/hk.png')
-    expect(countryFlag('CN')).toBe('')
+    expect(countryFlag('US')).toBe('/flags/us.svg')
+    expect(countryFlag('hk')).toBe('/flags/hk.svg')
+    expect(countryFlag('CN')).toBe('/flags/cn.svg')
+    expect(countryFlag(' JP ')).toBe('/flags/jp.svg')
+    expect(countryFlag('DE')).toBe('/flags/de.svg')
+    expect(countryFlag('SG')).toBe('/flags/sg.svg')
+    expect(countryFlag('../us')).toBe('')
+    expect(countryFlag(undefined)).toBe('')
     expect(countryFlag('unknown')).toBe('')
     expect(formatUnixTime(1750000000)).not.toBe('未采集')
     expect(formatUnixTime(0)).toBe('未采集')

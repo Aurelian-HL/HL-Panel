@@ -147,8 +147,15 @@ func (v *ForwardingReadView) CheckProtocolHealthRenewal(ctx context.Context, obs
 	}
 	state := v.WithOverlays(v.state.persistenceRevision, nil, nil, nil).state
 	for _, observation := range observations {
-		rule, lookupErr := state.ForwardingRule(ctx, observation.RuleID)
-		if lookupErr == nil && !rule.Deployed {
+		if err = ctx.Err(); err != nil {
+			return nil, false, false, err
+		}
+		// This flag selects the audited first-activation transaction. The
+		// public projection clears Deployed when a lease expires; consulting
+		// it here would turn ordinary recovery/renewal into a full snapshot
+		// rewrite and evaluate every group member for each observation.
+		// PublishProtocolHealth below still checks all current proof bindings.
+		if rule, exists := state.forwardRules[observation.RuleID]; exists && !rule.Deployed {
 			needsActivation = true
 		}
 	}

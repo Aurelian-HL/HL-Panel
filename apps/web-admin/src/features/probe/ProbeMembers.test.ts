@@ -12,8 +12,8 @@ describe('ProbeMembers', () => {
     ]
     const wrapper = mount(ProbeMembers, { props: { items, upstreamStatus: 'ok', now: Date.now() } })
     const rows = wrapper.findAll('.probe-table tbody tr')
-    expect(rows[0]!.get('.probe-region img').attributes('src')).toBe('/flags/us.png')
-    expect(rows[1]!.get('.probe-region img').attributes('src')).toBe('/flags/hk.png')
+    expect(rows[0]!.get('.probe-region img').attributes('src')).toBe('/flags/us.svg')
+    expect(rows[1]!.get('.probe-region img').attributes('src')).toBe('/flags/hk.svg')
     expect(rows[0]!.get('.probe-region').text()).toBe('US')
     expect(rows[1]!.get('.probe-region').text()).toBe('HK')
     expect(wrapper.findAll('.probe-mobile-facts .probe-region img')).toHaveLength(2)
