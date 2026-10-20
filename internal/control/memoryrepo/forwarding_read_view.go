@@ -138,6 +138,10 @@ func (v *ForwardingReadView) ListManagedForwardingRules(ctx context.Context, adm
 	return v.state.ListManagedForwardingRules(ctx, adminID)
 }
 
+func (v *ForwardingReadView) ManagedForwardingRule(ctx context.Context, adminID, id string) (forwarding.Rule, error) {
+	return v.state.ManagedForwardingRule(ctx, adminID, id)
+}
+
 // CheckProtocolHealthRenewal validates proofs on a detached request copy. It
 // never activates a rule or changes this view. First activation must be replayed
 // by the persistence adapter against its complete audited write state.

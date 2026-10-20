@@ -31,7 +31,7 @@ func BenchmarkForwardingRulesReadView(b *testing.B) {
 	bundle.SchemaVersion = 1
 	for i := 0; i < 200; i++ {
 		request.Name = fmt.Sprintf("rule-%03d", i)
-		rule, _, err := service.Create(ctx, "admin-test", request, request.Name)
+		rule, _, err := service.CreateForCustomerByAdministrator(ctx, "admin-test", request.CustomerID, request, request.Name)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -72,6 +72,29 @@ func BenchmarkForwardingRulesReadView(b *testing.B) {
 		}
 	}
 	check(view.ListForwardingRules(ctx))
+	managed, err := view.ListManagedForwardingRules(ctx, "admin-test")
+	if err != nil || len(managed) != 200 {
+		b.Fatalf("benchmark needs 200 delegated rules, got %d: %v", len(managed), err)
+	}
+	target := managed[0].ID
+	b.Run("authorized_list_for_one", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			items, err := view.ListManagedForwardingRules(ctx, "admin-test")
+			if err != nil || len(items) != 200 || items[0].ID != target {
+				b.Fatal("authorized list lost benchmark rule", err)
+			}
+		}
+	})
+	b.Run("authorized_single", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			rule, err := view.ManagedForwardingRule(ctx, "admin-test", target)
+			if err != nil || rule.ID != target || rule.Status != forwarding.StatusActive {
+				b.Fatal("single rule lost authorization or receipts", err)
+			}
+		}
+	})
 	b.Run("decode_and_evaluate", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {

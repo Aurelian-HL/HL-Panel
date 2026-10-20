@@ -25,6 +25,13 @@ type Service struct {
 type BatchSource interface {
 	ResolveSubscriptionLines(context.Context, string, string, []string) (map[string]string, map[string]error, error)
 }
+
+// ConnectionSource resolves a complete connection from one authoritative read.
+// Implementations must retain the ordinary ownership and live-readiness checks.
+type ConnectionSource interface {
+	ResolveForwardingConnection(context.Context, string, string) (Connection, error)
+	ResolveIdentityConnection(context.Context, string, string) (Connection, error)
+}
 type Connection struct {
 	URI      string `json:"uri"`
 	Name     string `json:"name"`
@@ -73,6 +80,29 @@ func (s *Service) ResolveSubscriptionLine(ctx context.Context, admin, customer, 
 	connection, err := s.Resolve(ctx, admin, record)
 	return connection.URI, err
 }
+
+func (s *Service) ResolveForwardingConnection(ctx context.Context, admin, ruleID string) (Connection, error) {
+	if source, ok := s.batch.(ConnectionSource); ok {
+		return source.ResolveForwardingConnection(ctx, admin, ruleID)
+	}
+	record, err := s.identities.CredentialForAdministrator(ctx, admin, ruleID)
+	if err != nil {
+		return Connection{}, err
+	}
+	return s.Resolve(ctx, admin, record)
+}
+
+func (s *Service) ResolveIdentityConnection(ctx context.Context, admin, bindingID string) (Connection, error) {
+	if source, ok := s.batch.(ConnectionSource); ok {
+		return source.ResolveIdentityConnection(ctx, admin, bindingID)
+	}
+	record, err := s.identities.CredentialByIDForAdministrator(ctx, admin, bindingID)
+	if err != nil {
+		return Connection{}, err
+	}
+	return s.Resolve(ctx, admin, record)
+}
+
 func (s *Service) Resolve(ctx context.Context, admin string, record vlessidentity.CredentialRecord) (Connection, error) {
 	rule, err := s.forwarding.GetForAdministrator(ctx, admin, record.Binding.ForwardingRuleID)
 	if err != nil {

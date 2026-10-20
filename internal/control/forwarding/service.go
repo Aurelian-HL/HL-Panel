@@ -307,6 +307,11 @@ func (s *Service) GetForCustomer(ctx context.Context, customerID, id string) (Ru
 }
 
 func (s *Service) GetForAdministrator(ctx context.Context, adminID, id string) (Rule, error) {
+	if repository, ok := s.repository.(interface {
+		ManagedForwardingRule(context.Context, string, string) (Rule, error)
+	}); ok {
+		return repository.ManagedForwardingRule(ctx, adminID, strings.TrimSpace(id))
+	}
 	rule, err := s.Get(ctx, id)
 	if err != nil {
 		return Rule{}, err

@@ -21,8 +21,8 @@ func (s *Store) ResolveSubscriptionLines(ctx context.Context, administratorID, c
 		uris   map[string]string
 		errors map[string]error
 	}
-	result, err := transact(ctx, s, false, func(state *memoryrepo.Store) (batchResult, error) {
-		uris, errorsByBinding, err := state.ResolveSubscriptionLines(ctx, administratorID, customerID, bindings)
+	result, err := readForwarding(ctx, s, func(view *memoryrepo.ForwardingReadView) (batchResult, error) {
+		uris, errorsByBinding, err := view.ResolveSubscriptionLines(ctx, administratorID, customerID, bindings)
 		return batchResult{uris: uris, errors: errorsByBinding}, err
 	})
 	return result.uris, result.errors, err

@@ -32,6 +32,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
 	"github.com/hongle/hl-panel/internal/control/targetprobe"
 	usagehttpapi "github.com/hongle/hl-panel/internal/control/usage/httpapi"
+	"github.com/hongle/hl-panel/internal/control/vlessconnection"
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/control/vlesssetup"
@@ -59,6 +60,7 @@ type API struct {
 	subscriptions      *subscriptions.Service
 	announcements      *announcements.Service
 	vlessIdentity      *vlessidentity.Service
+	vlessConnections   *vlessconnection.Service
 	vlessRuntime       *vlessruntime.Service
 	vlessSetup         *vlesssetup.Service
 	vlessSetupOnce     sync.Once
@@ -131,6 +133,10 @@ func WithVLESS(identityService *vlessidentity.Service, runtimeService *vlessrunt
 
 func WithSubscriptions(service *subscriptions.Service) Option {
 	return func(api *API) { api.subscriptions = service }
+}
+
+func WithVLESSConnections(service *vlessconnection.Service) Option {
+	return func(api *API) { api.vlessConnections = service }
 }
 
 type Option func(*API)

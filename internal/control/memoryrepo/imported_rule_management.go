@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 )
 
@@ -54,6 +55,18 @@ func (s *Store) delegatedRuleManagedByLocked(rule forwarding.Rule, adminID strin
 		}
 	}
 	return false
+}
+
+// ManagedForwardingRule uses exactly the list's ownership/provenance checks,
+// but evaluates readiness only for the requested rule.
+func (s *Store) ManagedForwardingRule(_ context.Context, adminID, id string) (forwarding.Rule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rule, exists := s.forwardRules[id]
+	if !exists || (!rule.OwnedByAdministrator(adminID) && !s.importedRuleManagedByLocked(rule, adminID) && !s.delegatedRuleManagedByLocked(rule, adminID)) {
+		return forwarding.Rule{}, faults.ErrNotFound
+	}
+	return s.forwardingViewLocked(rule), nil
 }
 
 func (s *Store) ListManagedForwardingRules(_ context.Context, adminID string) ([]forwarding.Rule, error) {

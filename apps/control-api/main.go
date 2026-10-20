@@ -274,6 +274,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
 		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, panelruntime.NewSystemdController("hl-panel-control-api.service"), logger, time.Now).WithLogs(panelLogs).WithAudit(auditService).WithStatePath(controlStatePath)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
+		httpapi.WithVLESSConnections(vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService, store)),
 		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService, store), time.Now)),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),
