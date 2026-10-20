@@ -13,9 +13,11 @@ class IssuerNginxFixture:
     route = '/api/v2/public/hl-license/__ci_include_probe'
     response = b'isolated-issuer-include-preserved\n'
 
-    def __init__(self):
+    def __init__(self, domain='hl-panel-smoke.invalid'):
         assert os.geteuid() == 0
         assert os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true'
+        assert domain in ('hl-panel-smoke.invalid', 'hl-panel.invalid')
+        self.domain = domain
         assert not self.snippet.exists() and not self.snippet.is_symlink()
         original = self.site.read_text()
         # Only the domain's HTTPS server receives this independent include.
@@ -24,7 +26,7 @@ class IssuerNginxFixture:
         matching = [index for index, server in enumerate(servers)
                     if 'server_name '+self.domain+';' in server
                     and 'listen 443 ssl' in server]
-        assert len(matching) == 1
+        assert len(matching) == 1, 'Expected exactly one disposable HTTPS domain server'
         marker = '    include /etc/nginx/snippets/hl-panel-app-locations.conf;'
         index = matching[0]
         assert servers[index].count(marker) == 1

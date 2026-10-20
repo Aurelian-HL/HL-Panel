@@ -90,7 +90,9 @@ with tempfile.TemporaryDirectory(prefix='hl-license-preflight-') as temporary:
         source.extractall(stage, filter='data')
     subprocess.run(['bash', str(stage/'deploy/setup-panel-license.sh'), '--domain', 'hl-panel-smoke.invalid'], check=True)
 from issuer_nginx_fixture import IssuerNginxFixture
-issuer_nginx = IssuerNginxFixture()
+# The v0.1.5 default-credential install uses its original IP-only placeholder.
+# Preserve that real legacy site; preparing licensing does not rename it.
+issuer_nginx = IssuerNginxFixture('hl-panel.invalid')
 protected = fingerprint()
 spec = importlib.util.spec_from_file_location('hl_panel_test_updater',repository/'deploy/update.py')
 update = importlib.util.module_from_spec(spec)
