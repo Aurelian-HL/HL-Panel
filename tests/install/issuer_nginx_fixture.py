@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import ssl
 import subprocess
+import time
+import urllib.error
 import urllib.request
 
 
@@ -41,7 +43,20 @@ class IssuerNginxFixture:
         self.snippet_bytes = self.snippet.read_bytes()
         subprocess.run(['nginx', '-t'], check=True)
         subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
-        self.verify()
+        # reload returns after sending HUP, before new workers necessarily serve
+        # the include. The old generation legitimately returns 404 briefly.
+        # Wait for the exact HTTPS response; a persistent routing error still
+        # fails, and subsequent upgrade/rollback assertions remain immediate.
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                self.verify()
+                break
+            except urllib.error.HTTPError as error:
+                if error.code != 404 or time.monotonic() >= deadline:
+                    raise
+                error.close()
+                time.sleep(0.1)
 
     def verify(self):
         assert self.site.read_bytes() == self.site_bytes, 'Issuer include site changed'
