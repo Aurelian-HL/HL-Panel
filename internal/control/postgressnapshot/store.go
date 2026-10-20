@@ -14,6 +14,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -41,6 +42,8 @@ const (
 // Reads reuse a validated snapshot only while its database row identity matches.
 // Database errors are intentionally redacted to avoid leaking DSNs or payloads.
 type Store struct {
+	quotaMu        sync.RWMutex
+	panelQuota     panelquota.Provider
 	db             *sql.DB
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
@@ -355,10 +358,13 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	}
 	attachNodeConfigHistoryReader(ctx, tx, state)
 	var before map[string]int64
+	state.SetPanelQuotaProvider(s.quotaProvider())
+	var beforeUsage panelquota.Usage
 	var auditCount int
 	var committedCache snapshotReadCache
 	if write {
 		before = state.DesiredGenerationIndex()
+		beforeUsage, _ = state.PanelResourceUsage(ctx)
 		auditCount = len(state.AuditEvents())
 	}
 	result, err := operation(state)
@@ -367,6 +373,10 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	}
 	if write {
 		events := state.AuditEvents()
+		afterUsage, _ := state.PanelResourceUsage(ctx)
+		if err := s.validatePanelGrowth(beforeUsage, afterUsage); err != nil {
+			return zero, err
+		}
 		if auditCount > len(events) {
 			return zero, errors.New("audit state changed unexpectedly")
 		}

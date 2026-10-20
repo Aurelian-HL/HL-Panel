@@ -55,6 +55,11 @@ func (s *Store) createDeviceGroupLocked(group groups.DeviceGroup, event audit.Ev
 			return fmt.Errorf("%w: device group name already exists", faults.ErrConflict)
 		}
 	}
+	after := s.panelResourceUsageLocked()
+	after.DeviceGroups++
+	if err := s.validatePanelGrowthLocked(after); err != nil {
+		return err
+	}
 	s.deviceGroups[group.ID] = group
 	s.membersByGroup[group.ID] = make(map[string]groups.Member)
 	s.revisionByIdempotency[group.ID] = make(map[string]string)

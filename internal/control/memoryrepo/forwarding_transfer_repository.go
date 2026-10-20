@@ -13,7 +13,12 @@ import (
 func (s *Store) PreviewForwardingImport(_ context.Context, candidates []forwarding.ImportCandidate) ([]forwarding.ImportEvaluation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	evaluations, _ := s.evaluateForwardingImportLocked(candidates)
+	evaluations, working := s.evaluateForwardingImportLocked(candidates)
+	after := s.panelResourceUsageLocked()
+	after.Rules = len(working)
+	if err := s.validatePanelGrowthLocked(after); err != nil {
+		return nil, err
+	}
 	return evaluations, nil
 }
 
@@ -81,6 +86,12 @@ func (s *Store) ImportForwardingRules(_ context.Context, input forwarding.Import
 	if len(result.Items) == 0 {
 		rollbackAutoNetworks()
 		return forwarding.ImportResult{}, false, fmt.Errorf("%w: import must contain at least one rule", faults.ErrValidation)
+	}
+	after := s.panelResourceUsageLocked()
+	after.Rules = len(working)
+	if err := s.validatePanelGrowthLocked(after); err != nil {
+		rollbackAutoNetworks()
+		return forwarding.ImportResult{}, false, err
 	}
 	if len(autoNetworks) > 0 {
 		if event.Metadata == nil {

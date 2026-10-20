@@ -5,16 +5,58 @@ import PanelLicenseReminder from './PanelLicenseReminder.vue'
 import { panelLicenseApi, type PanelLicenseStatus } from '@/api/panelLicense'
 import { panelLicenseStore as store } from '@/stores/panelLicense'
 
-vi.mock('@/api/panelLicense', () => ({ panelLicenseApi: { status: vi.fn(), sync: vi.fn(), dismiss: vi.fn(), prepare: vi.fn(), commit: vi.fn() } }))
+vi.mock('@/api/panelLicense', () => ({ panelLicenseApi: { status: vi.fn(), sync: vi.fn(), dismiss: vi.fn(), prepare: vi.fn(), commit: vi.fn(), registerFree: vi.fn() } }))
 vi.mock('@/stores/auth', async () => {
   const { computed, ref } = await import('vue')
   const user = ref({ id: 'admin-test' })
   return { authStore: { user, isAuthenticated: computed(() => Boolean(user.value)) } }
 })
-const sample: PanelLicenseStatus = { enabled: true, domain: 'panel.example.test', status: 'active', management_allowed: true, expires_at: '2026-10-22T08:00:00Z', reminder_due: true, renewal_url: 'https://ht.hongle.work/', checked_at: '2026-10-20T08:00:00Z' }
+const sample: PanelLicenseStatus = { enabled: true, tier: 'licensed', limits: { device_groups: 0, rules: 0 }, license_id: 'lic-test', domain: 'panel.example.test', status: 'active', management_allowed: true, expires_at: '2026-10-22T08:00:00Z', reminder_due: true, renewal_url: 'https://ht.hongle.work/', checked_at: '2026-10-20T08:00:00Z' }
 beforeEach(() => { vi.clearAllMocks(); store.clear(); vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample }) })
 
 describe('Panel license UI', () => {
+  it('keeps legacy signed identities restricted until explicit entitlements are synchronized', async () => {
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, status: 'upgrade_required', tier: undefined, limits: undefined, expires_at: null, management_allowed: false, reminder_due: false })
+    vi.mocked(panelLicenseApi.sync).mockResolvedValue(sample)
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    expect(wrapper.text()).toContain('旧授权待同步'); expect(wrapper.text()).toContain('同步后显示')
+    expect(wrapper.text()).not.toContain('永久授权'); expect(wrapper.text()).not.toContain('登记免费域名')
+    await wrapper.findAll('button').find(b => b.text() === '同步授权')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('授权有效'); wrapper.unmount()
+  })
+  it('registers free without a code and keeps DNS proof after a failed verification', async () => {
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, tier: undefined, limits: undefined, license_id: undefined, status: 'unactivated', management_allowed: false, reminder_due: false })
+    vi.mocked(panelLicenseApi.registerFree).mockResolvedValue({ purpose: 'free-registration', dns_name: '_hl-license.panel.example.test', dns_value: 'hl-license-v2=free', expires_at: '2026-10-20T08:10:00Z' })
+    const free = { ...sample, tier: 'free' as const, limits: { device_groups: 1, rules: 10 }, usage: { device_groups: 1, rules: 10 }, term: { kind: 'perpetual' as const }, expires_at: null, reminder_due: false }
+    vi.mocked(panelLicenseApi.commit).mockRejectedValueOnce(new Error('DNS 证明尚未生效')).mockResolvedValueOnce(free)
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    expect(wrapper.findAll('button').find(b => b.text() === '同步授权')!.attributes('disabled')).toBeDefined()
+    await wrapper.findAll('button').find(b => b.text() === '登记免费域名')!.trigger('click'); await flushPromises()
+    expect(panelLicenseApi.registerFree).toHaveBeenCalledOnce(); expect(panelLicenseApi.prepare).not.toHaveBeenCalled()
+    expect(wrapper.find('input[type=password]').exists()).toBe(false)
+    await wrapper.findAll('button').find(b => b.text() === '验证 DNS 并开通免费版')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('DNS 证明尚未生效'); expect(wrapper.text()).toContain('hl-license-v2=free')
+    await wrapper.findAll('button').find(b => b.text() === '验证 DNS 并开通免费版')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('免费域名已验证，额度已生效'); expect(wrapper.text()).toContain('10 / 10 条')
+    expect(wrapper.text()).toContain('停用规则也计数'); expect(wrapper.text()).not.toContain('永久授权'); wrapper.unmount()
+  })
+  it('allows changing from an unfinished free proof to paid activation', async () => {
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, tier: undefined, license_id: undefined, status: 'unactivated', management_allowed: false })
+    vi.mocked(panelLicenseApi.registerFree).mockResolvedValue({ purpose: 'free-registration', dns_name: '_hl-license.panel.example.test', dns_value: 'hl-license-v2=free', expires_at: '2026-10-20T08:10:00Z' })
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '登记免费域名')!.trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(b => b.text() === '激活授权码')!.trigger('click'); await flushPromises()
+    expect(wrapper.find('input[type=password]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('验证 DNS 并开通免费版'); wrapper.unmount()
+  })
+  it('shows existing over-limit content and unavailable usage without granting unlimited quota', async () => {
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, tier: 'free', limits: { device_groups: 1, rules: 10 }, usage: { device_groups: 2, rules: 11 }, expires_at: null, reminder_due: false })
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    expect(wrapper.text()).toContain('2 / 1 个'); expect(wrapper.text()).toContain('11 / 10 条')
+    expect(wrapper.text()).toContain('可维护和删除')
+    store.status.value = { ...store.status.value!, usage: undefined, usage_unavailable: true }; await flushPromises()
+    expect(wrapper.text()).toContain('当前用量暂未读到'); expect(wrapper.text()).toContain('— / 10 条'); wrapper.unmount()
+  })
   it('displays explicit domain, expiry, restrictions and perpetual status without local issuance', async () => {
     const wrapper = mount(PanelLicenseCard); await flushPromises()
     expect(wrapper.text()).toContain('panel.example.test')

@@ -45,6 +45,7 @@ type Client struct {
 	flight             sync.Mutex
 	state              cachedState
 	claims             *Claims
+	legacyClaims       *Claims // Verified identity only; never grants management or quota.
 	challenge          *Challenge
 	lastError          string
 	lastAttempt        time.Time
@@ -70,6 +71,8 @@ type Status struct {
 	LicenseID         string     `json:"license_id,omitempty"`
 	Revision          int64      `json:"revision,omitempty"`
 	Term              *Term      `json:"term,omitempty"`
+	Tier              string     `json:"tier,omitempty"`
+	Limits            *Limits    `json:"limits,omitempty"`
 	ExpiresAt         *time.Time `json:"expires_at"`
 	CheckedAt         *time.Time `json:"checked_at,omitempty"`
 	LeaseValidUntil   *time.Time `json:"lease_valid_until,omitempty"`
@@ -157,7 +160,7 @@ func NewClient(config Config) (*Client, error) {
 			// A damaged cache must fail closed for management without preventing
 			// existing subscriptions and authenticated node reports from serving.
 			c.state = cachedState{Dismissals: make(map[string]string)}
-			c.claims, c.challenge = nil, nil
+			c.claims, c.legacyClaims, c.challenge = nil, nil, nil
 			c.lastError = "授权缓存校验失败，请重新激活；现有转发继续运行"
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -175,10 +178,22 @@ func (c *Client) restore(data []byte) error {
 		if err := Verify(*c.state.Envelope, c.config.Keys, &claims); err != nil {
 			return err
 		}
-		if err := c.validateClaims(claims, "", false); err != nil {
+		legacy, err := claimsEntitlementFields(*c.state.Envelope)
+		if err != nil {
 			return err
 		}
-		c.claims = &claims
+		if legacy {
+			// Old signed caches preserve identity only, never management rights.
+			if err := c.validateClaimsIdentity(claims, "", false); err != nil {
+				return err
+			}
+			c.legacyClaims = &claims
+		} else {
+			if err := c.validateClaims(claims, "", false); err != nil {
+				return err
+			}
+			c.claims = &claims
+		}
 	}
 	if c.state.Challenge != nil {
 		var challenge Challenge
@@ -210,6 +225,15 @@ func (c *Client) identity(version int, issuer, product, audience, domain, instan
 	return version == Version && issuer == c.config.IssuerID && product == Product && audience == Audience && domain == c.config.Domain && instance == c.config.InstanceID && thumb == Thumbprint(c.key.Public().(ed25519.PublicKey))
 }
 func (c *Client) validateClaims(s Claims, requestID string, fresh bool) error {
+	if err := ValidateEntitlements(s.Tier, s.Limits); err != nil {
+		return err
+	}
+	if s.Tier == TierFree && s.Term.Kind != "perpetual" {
+		return errors.New("invalid free license term")
+	}
+	return c.validateClaimsIdentity(s, requestID, fresh)
+}
+func (c *Client) validateClaimsIdentity(s Claims, requestID string, fresh bool) error {
 	if !c.identity(s.Version, s.Issuer, s.Product, s.Audience, s.Domain, s.InstanceID, s.InstanceKeyThumbprint) || s.LicenseID == "" || s.Revision < 1 || s.Term.Validate() != nil {
 		return errors.New("license identity mismatch")
 	}
@@ -302,17 +326,27 @@ func (c *Client) accept(envelope Envelope, requestID string) error {
 	if err := Verify(envelope, c.config.Keys, &s); err != nil {
 		return err
 	}
+	if legacy, err := claimsEntitlementFields(envelope); err != nil || legacy {
+		return errors.New("explicit signed license entitlements required")
+	}
 	if err := c.validateClaims(s, requestID, true); err != nil {
 		return err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if old := c.claims; old != nil {
+	old := c.claims
+	if old == nil {
+		old = c.legacyClaims
+	}
+	if old != nil {
 		if old.LicenseID != s.LicenseID || s.Revision < old.Revision || s.IssuedAt.Before(old.IssuedAt) {
 			return errors.New("outdated license response")
 		}
 		if s.Revision == old.Revision {
 			a, b := *old, s
+			if c.legacyClaims != nil {
+				a.Tier, a.Limits = b.Tier, b.Limits
+			}
 			a.RequestID = ""
 			b.RequestID = ""
 			a.IssuedAt = time.Time{}
@@ -338,28 +372,48 @@ func (c *Client) accept(envelope Envelope, requestID string) error {
 		return err
 	}
 	c.claims = &s
+	c.legacyClaims = nil
 	c.challenge = nil
 	c.lastError = ""
 	return nil
 }
 func (c *Client) Prepare(ctx context.Context, code string) (Challenge, error) {
+	return c.prepare(ctx, code, false)
+}
+func (c *Client) RegisterFree(ctx context.Context) (Challenge, error) {
+	return c.prepare(ctx, "", true)
+}
+func (c *Client) prepare(ctx context.Context, code string, free bool) (Challenge, error) {
 	if c.configurationError != nil {
 		return Challenge{}, c.configurationError
 	}
 	c.flight.Lock()
 	defer c.flight.Unlock()
-	r := c.request("prepare")
+	operation, path, purpose := "prepare", "/activation/prepare", ""
+	if free {
+		operation, path, purpose = "free-prepare", "/free/prepare", "free-registration"
+		c.mu.RLock()
+		hasLicense := c.claims != nil || c.legacyClaims != nil
+		c.mu.RUnlock()
+		if hasLicense {
+			return Challenge{}, errors.New("本机已有授权，请同步现有授权；变更类型须在 HT 显式处理")
+		}
+	}
+	r := c.request(operation)
 	r.Code = strings.TrimSpace(code)
-	if len(r.Code) < 16 || len(r.Code) > 512 || strings.ContainsAny(r.Code, " \t\r\n") {
+	if !free && (len(r.Code) < 16 || len(r.Code) > 512 || strings.ContainsAny(r.Code, " \t\r\n")) {
 		return Challenge{}, errors.New("授权码格式无效")
 	}
-	envelope, err := c.call(ctx, "prepare", "/activation/prepare", r)
+	envelope, err := c.call(ctx, operation, path, r)
 	if err != nil {
 		return Challenge{}, err
 	}
 	var challenge Challenge
 	if err := Verify(envelope, c.config.Keys, &challenge); err != nil {
 		return Challenge{}, err
+	}
+	if challenge.Purpose != purpose {
+		return Challenge{}, errors.New("invalid signed challenge purpose")
 	}
 	if !c.identity(challenge.Version, challenge.Issuer, challenge.Product, challenge.Audience, challenge.Domain, challenge.InstanceID, challenge.InstanceKeyThumbprint) || challenge.RequestID != r.RequestID || challenge.DNSName != "_hl-license."+c.config.Domain || !strings.HasPrefix(challenge.DNSValue, "hl-license-v2=") || challenge.ReservationID == "" || challenge.IssuedAt.Before(c.config.Now().Add(-5*time.Minute)) || challenge.IssuedAt.After(c.config.Now().Add(5*time.Minute)) || !challenge.ExpiresAt.After(c.config.Now()) || challenge.ExpiresAt.Sub(challenge.IssuedAt) > 15*time.Minute {
 		return Challenge{}, errors.New("invalid signed activation challenge")
@@ -383,16 +437,27 @@ func (c *Client) Commit(ctx context.Context) error {
 	defer c.flight.Unlock()
 	c.mu.RLock()
 	challenge := c.challenge
+	proof := c.state.Challenge
 	c.mu.RUnlock()
 	if challenge == nil {
-		return errors.New("请先提供授权码获取域名证明")
+		return errors.New("请先登记免费域名或提供授权码获取域名证明")
 	}
 	if !challenge.ExpiresAt.After(c.config.Now()) {
 		return errors.New("域名证明已过期，请重新获取")
 	}
-	r := c.request("commit")
-	r.ReservationID = challenge.ReservationID
-	envelope, err := c.call(ctx, "commit", "/activation/commit", r)
+	operation, path := "commit", "/activation/commit"
+	if challenge.Purpose == "free-registration" {
+		operation, path = "free-commit", "/free/commit"
+	} else if challenge.Purpose != "" {
+		return errors.New("invalid challenge purpose")
+	}
+	r := c.request(operation)
+	if challenge.Purpose == "free-registration" {
+		r.Challenge = proof
+	} else {
+		r.ReservationID = challenge.ReservationID
+	}
+	envelope, err := c.call(ctx, operation, path, r)
 	if err != nil {
 		return err
 	}
@@ -408,6 +473,9 @@ func (c *Client) Sync(ctx context.Context) error {
 	defer c.flight.Unlock()
 	c.mu.Lock()
 	claims := c.claims
+	if claims == nil {
+		claims = c.legacyClaims
+	}
 	if claims == nil {
 		c.mu.Unlock()
 		return errors.New("面板尚未激活授权")
@@ -476,10 +544,19 @@ func (c *Client) Status(actor string) Status {
 		s.Status = "unconfigured"
 		return s
 	}
+	if c.legacyClaims != nil {
+		s.Status, s.LicenseID, s.Revision = "upgrade_required", c.legacyClaims.LicenseID, c.legacyClaims.Revision
+		s.ExpiresAt = c.legacyClaims.LicenseExpiresAt
+		s.LastError = "旧授权身份已校验，请同步获取最新授权类型和额度；同步前管理保持受限"
+		return s
+	}
 	if a := c.claims; a != nil {
 		s.Status = a.Status
 		s.LicenseID = a.LicenseID
 		s.Revision = a.Revision
+		s.Tier = a.Tier
+		limits := a.Limits
+		s.Limits = &limits
 		term := a.Term
 		s.Term = &term
 		s.ExpiresAt = a.LicenseExpiresAt

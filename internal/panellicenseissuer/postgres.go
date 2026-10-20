@@ -137,6 +137,24 @@ func (t *pgTransaction) ClaimDomain(ctx context.Context, domain, id string) erro
 	}
 	return nil
 }
+
+// Serialize competing free registrations before looking up the current owner.
+// Administrative claims are protected by the domains table's unique constraint.
+// Retained historical domain claims deliberately continue to block registration.
+func (t *pgTransaction) ByDomain(ctx context.Context, domain string) (license, error) {
+	if _, err := t.tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", digestLock("domain:"+domain)); err != nil {
+		return license{}, err
+	}
+	var id string
+	err := t.tx.QueryRow(ctx, "SELECT license_id FROM hl_license_v2.domains WHERE domain=$1", domain).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return license{}, ErrNotFound
+	}
+	if err != nil {
+		return license{}, err
+	}
+	return t.Get(ctx, id)
+}
 func (t *pgTransaction) Save(ctx context.Context, l license) error {
 	raw, err := json.Marshal(l)
 	if err != nil {

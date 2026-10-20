@@ -69,14 +69,14 @@ class LicensePreflightTests(unittest.TestCase):
         self.env = self.root/'control-api.env'; self.env.write_text('CONTROL_LICENSE_DOMAIN=panel.example.test\n')
         self.candidate = self.root/'candidate'; (self.candidate/'deploy').mkdir(parents=True)
         (self.candidate/'deploy/check-panel-license.py').write_text('isolated helper')
-        for name in ('instance-key','state.json'): (self.directory/name).write_bytes(b'isolated')
+        for name in ('instance-key','identity.json','state.json'): (self.directory/name).write_bytes(b'isolated')
         # Redirect the one canonical directory to the temporary test directory.
         actual_path = Path
         self.paths = patch.object(check,'Path',lambda value: self.directory if str(value)=='/var/lib/hl-panel-license' else actual_path(value))
         self.paths.start(); self.addCleanup(self.paths.stop)
 
     def test_missing_identity_never_executes_candidate(self):
-        (self.directory/'state.json').unlink()
+        (self.directory/'identity.json').unlink()
         with patch.object(check.subprocess,'run') as run, self.assertRaises(ValueError):
             check.check(self.candidate/'bin/control-api', self.env)
         run.assert_not_called()
@@ -92,6 +92,15 @@ class LicensePreflightTests(unittest.TestCase):
         for result in (types.SimpleNamespace(returncode=1,stdout=b''),types.SimpleNamespace(returncode=0,stdout=b'{"enabled":true}')):
             with self.subTest(result=result),patch.object(check.subprocess,'run',return_value=result),self.assertRaises(ValueError):
                 check.check(self.candidate/'bin/control-api',self.env)
+
+    def test_initialized_free_identity_can_upgrade_to_restricted_registration_ui(self):
+        status = {'enabled':True,'status':'unactivated','management_allowed':False}
+        (self.directory/'state.json').unlink()
+        with patch.object(check.subprocess,'run',return_value=types.SimpleNamespace(returncode=0,stdout=json.dumps(status).encode())):
+            self.assertFalse(check.check(self.candidate/'bin/control-api',self.env)['management_allowed'])
+        status['last_error']='授权缓存校验失败'
+        with patch.object(check.subprocess,'run',return_value=types.SimpleNamespace(returncode=0,stdout=json.dumps(status).encode())),self.assertRaises(ValueError):
+            check.check(self.candidate/'bin/control-api',self.env)
 
     def test_upgrade_failure_is_explicit_and_runs_no_service_command(self):
         with patch.object(update.subprocess,'run',return_value=types.SimpleNamespace(returncode=1)) as run:

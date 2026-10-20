@@ -23,7 +23,10 @@ PY
 }
 
 activate_panel_license() {
-  local binary="$1" domain="$2" state_dir="$3" code_file="${4:-}" trust status challenge answer
+  local binary="$1" domain="$2" state_dir="$3" code_file="${4:-}" tier="${5:-licensed}" trust status challenge answer
+  [[ "$tier" == free || "$tier" == licensed ]] || fail "授权类型只能是 free 或 licensed"
+  [[ "$tier" != free || -z "$code_file" ]] || fail "免费登记不使用授权码文件；正式授权请选择 licensed"
+  LICENSE_AWAITING_REGISTRATION=false
   domain="${domain,,}"
   LICENSE_DOMAIN="$domain"
   [[ ! -L "$state_dir" ]] || fail "授权状态目录不能是符号链接"
@@ -75,6 +78,14 @@ PY
   fi
   if python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("license_id") else 1)' <<<"$status"; then
     fail "本机已有绑定但授权暂不可用。请在 HT 续期或恢复网络后重跑安装；无需重新占用授权码，请勿删除 $state_dir"
+  fi
+  if python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("last_error") else 1)' <<<"$status"; then
+    fail "本机授权缓存异常，请保留身份目录并检查；不能通过免费安装绕过原有绑定"
+  fi
+  if [[ "$tier" == free ]]; then
+    LICENSE_AWAITING_REGISTRATION=true
+    log "免费安装身份已初始化；安装后登录面板登记并验证域名。验证前禁止新增，验证后整个面板限 1 个设备组、10 条规则（含停用）。"
+    return 0
   fi
   printf '\n本项目仅供个人合法用途，实验性功能请勿用于关键生产环境。\n一码仅限一个管理域名和实例，禁止转售、分享授权码或复制实例密钥。\n面板会在本机保存账号、规则和统计；授权服务只接收授权和必要审计信息，不接收客户转发内容。\n'
   local license_code=""

@@ -88,7 +88,7 @@ func run() error {
 	id := "ci-" + hex.EncodeToString(nonce[:])
 	now := time.Now().UTC()
 	expires := now.Add(48 * time.Hour)
-	claims := panellicense.Claims{Version: 2, Issuer: issuer, Product: panellicense.Product, Audience: panellicense.Audience, RequestID: hex.EncodeToString(nonce[:]), LicenseID: "ci-license-" + id, Domain: name, InstanceID: id, InstanceKeyThumbprint: panellicense.Thumbprint(public), Revision: 1, Status: "active", Term: panellicense.Term{Kind: "days", Days: 2}, ActivatedAt: now, LicenseExpiresAt: &expires, IssuedAt: now, RefreshAfter: now.Add(23 * time.Hour), LeaseValidUntil: now.Add(24 * time.Hour)}
+	claims := panellicense.Claims{Version: 2, Tier: panellicense.TierLicensed, Limits: panellicense.Limits{}, Issuer: issuer, Product: panellicense.Product, Audience: panellicense.Audience, RequestID: hex.EncodeToString(nonce[:]), LicenseID: "ci-license-" + id, Domain: name, InstanceID: id, InstanceKeyThumbprint: panellicense.Thumbprint(public), Revision: 1, Status: "active", Term: panellicense.Term{Kind: "days", Days: 2}, ActivatedAt: now, LicenseExpiresAt: &expires, IssuedAt: now, RefreshAfter: now.Add(23 * time.Hour), LeaseValidUntil: now.Add(24 * time.Hour)}
 	envelope, err := panellicense.Sign(claims, keyID, ed25519.PrivateKey(raw))
 	if err != nil {
 		return err

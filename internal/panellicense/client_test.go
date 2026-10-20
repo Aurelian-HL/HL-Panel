@@ -55,7 +55,7 @@ func (f *signedFixture) claims(nonce string) Claims {
 	if !refresh.Before(lease) {
 		refresh = f.now.Add(lease.Sub(f.now) / 2)
 	}
-	return Claims{Version: Version, Issuer: f.client.config.IssuerID, Product: Product, Audience: Audience, RequestID: nonce, Domain: f.client.config.Domain, InstanceID: f.client.config.InstanceID, InstanceKeyThumbprint: Thumbprint(f.client.key.Public().(ed25519.PublicKey)), LicenseID: "lic-test", Revision: f.revision, Status: f.status, Term: Term{Kind: "days", Days: 2}, ActivatedAt: time.Date(2026, 10, 20, 7, 0, 0, 0, time.UTC), LicenseExpiresAt: &f.expires, IssuedAt: f.now, RefreshAfter: refresh, LeaseValidUntil: lease}
+	return Claims{Version: Version, Tier: TierLicensed, Limits: Limits{}, Issuer: f.client.config.IssuerID, Product: Product, Audience: Audience, RequestID: nonce, Domain: f.client.config.Domain, InstanceID: f.client.config.InstanceID, InstanceKeyThumbprint: Thumbprint(f.client.key.Public().(ed25519.PublicKey)), LicenseID: "lic-test", Revision: f.revision, Status: f.status, Term: Term{Kind: "days", Days: 2}, ActivatedAt: time.Date(2026, 10, 20, 7, 0, 0, 0, time.UTC), LicenseExpiresAt: &f.expires, IssuedAt: f.now, RefreshAfter: refresh, LeaseValidUntil: lease}
 }
 func (f *signedFixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.calls.Add(1)

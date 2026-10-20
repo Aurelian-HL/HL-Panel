@@ -27,6 +27,7 @@ type reservation struct {
 type transaction interface {
 	Get(context.Context, string) (license, error)
 	ByCode(context.Context, string) (license, error)
+	ByDomain(context.Context, string) (license, error)
 	ClaimDomain(context.Context, string, string) error
 	Save(context.Context, license) error
 	Reservation(context.Context, string) (reservation, error)

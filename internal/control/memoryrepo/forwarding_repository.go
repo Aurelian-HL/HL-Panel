@@ -125,6 +125,11 @@ func (s *Store) CreateForwardingRule(_ context.Context, input forwarding.CreateI
 	if input.AutoReality && input.RealityPrivateKey == "" {
 		return forwarding.Rule{}, false, fmt.Errorf("%w: automatic Reality target is not configured on the control plane", faults.ErrValidation)
 	}
+	after := s.panelResourceUsageLocked()
+	after.Rules++
+	if err := s.validatePanelGrowthLocked(after); err != nil {
+		return forwarding.Rule{}, false, err
+	}
 	item := cloneForwardingRule(input.Rule)
 	item.UserGroupDetached = false
 	if _, exists := s.forwardRules[item.ID]; exists {
@@ -402,6 +407,13 @@ func (s *Store) saveForwardingRuleLocked(key, hash string, item forwarding.Rule,
 }
 
 func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwarding.Rule, privateKey string, upstream *provisioningvless.SOCKS5Upstream, echoPort int, event audit.Event) (forwarding.Rule, bool, error) {
+	if _, exists := s.forwardRules[item.ID]; !exists {
+		after := s.panelResourceUsageLocked()
+		after.Rules++
+		if err := s.validatePanelGrowthLocked(after); err != nil {
+			return forwarding.Rule{}, false, err
+		}
+	}
 	previousProbe, hadProbe := s.protocolProbes[item.ID]
 	probe := previousProbe
 	if item.EffectiveIngressProtocol() == forwarding.IngressVLESSReality && !hadProbe {

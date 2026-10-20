@@ -12,9 +12,12 @@ import (
 	p "github.com/hongle/hl-panel/internal/panellicense"
 	"github.com/jackc/pgx/v5"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -81,7 +84,11 @@ func testAuthority(t *testing.T) *authority {
 		t.Fatal(err)
 	}
 	config.Database = name
-	store, err := OpenPostgres(ctx, config.ConnString())
+	// ConnString returns the original parsed DSN, not later field edits.
+	// Build a new loopback URL so every authority really uses its own fresh DB.
+	databaseURL := url.URL{Scheme: "postgres", User: url.UserPassword(config.User, config.Password),
+		Host: net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), Path: "/" + name, RawQuery: "sslmode=disable"}
+	store, err := OpenPostgres(ctx, databaseURL.String())
 	if err != nil {
 		admin.Exec(ctx, "DROP DATABASE "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
 		admin.Close(ctx)

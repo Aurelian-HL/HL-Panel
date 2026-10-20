@@ -11,12 +11,18 @@ import (
 
 func (s *Service) Public(ctx context.Context, operation string, signed p.InstanceRequest) (p.Envelope, error) {
 	var empty p.Envelope
-	if operation != "prepare" && operation != "commit" && operation != "sync" {
+	if operation != "prepare" && operation != "commit" && operation != "sync" && operation != "free-prepare" && operation != "free-commit" {
 		return empty, invalid("unknown activation operation")
 	}
 	r, err := p.VerifyRequest(operation, signed, s.now())
 	if err != nil {
 		return empty, invalid("invalid signed instance request")
+	}
+	if operation == "free-prepare" || operation == "free-commit" {
+		return s.freePublic(ctx, operation, r, signed)
+	}
+	if r.Challenge != nil {
+		return empty, invalid("unexpected free registration challenge")
 	}
 	switch operation {
 	case "prepare":
@@ -87,6 +93,9 @@ func (s *Service) Public(ctx context.Context, operation string, signed p.Instanc
 			if err != nil {
 				return nil, err
 			}
+			if err = normalizeStoredEntitlements(&l.Record); err != nil {
+				return nil, err
+			}
 			if !matchBinding(l, r) {
 				return nil, ErrBinding
 			}
@@ -121,6 +130,9 @@ func (s *Service) prepare(ctx context.Context, tx transaction, r p.Request) (p.C
 	var empty p.Challenge
 	l, err := tx.ByCode(ctx, hash(r.Code))
 	if err != nil {
+		return empty, err
+	}
+	if err = normalizeStoredEntitlements(&l.Record); err != nil {
 		return empty, err
 	}
 	if l.Record.RevokedAt != nil {
@@ -168,6 +180,9 @@ func (s *Service) commit(ctx context.Context, tx transaction, r p.Request) (p.Cl
 	}
 	l, err := tx.Get(ctx, reservation.LicenseID)
 	if err != nil {
+		return empty, err
+	}
+	if err = normalizeStoredEntitlements(&l.Record); err != nil {
 		return empty, err
 	}
 	// Re-read after locking the license, since another transaction may have
@@ -222,5 +237,5 @@ func (s *Service) claims(l license, requestID string) p.Claims {
 	if !refresh.Before(lease) {
 		refresh = now.Add(lease.Sub(now) / 2)
 	}
-	return p.Claims{Version: p.Version, Issuer: s.config.Issuer, Product: p.Product, Audience: p.Audience, RequestID: requestID, LicenseID: l.Record.ID, Domain: l.Record.Domain, InstanceID: l.Record.InstanceID, InstanceKeyThumbprint: p.Thumbprint(ed25519.PublicKey(key)), Revision: l.Record.Revision, Status: state, Term: l.Record.Term, ActivatedAt: *l.Record.ActivatedAt, LicenseExpiresAt: l.Record.LicenseExpiresAt, IssuedAt: now, RefreshAfter: refresh, LeaseValidUntil: lease}
+	return p.Claims{Version: p.Version, Issuer: s.config.Issuer, Product: p.Product, Audience: p.Audience, RequestID: requestID, LicenseID: l.Record.ID, Domain: l.Record.Domain, InstanceID: l.Record.InstanceID, InstanceKeyThumbprint: p.Thumbprint(ed25519.PublicKey(key)), Revision: l.Record.Revision, Status: state, Tier: l.Record.Tier, Limits: l.Record.Limits, Term: l.Record.Term, ActivatedAt: *l.Record.ActivatedAt, LicenseExpiresAt: l.Record.LicenseExpiresAt, IssuedAt: now, RefreshAfter: refresh, LeaseValidUntil: lease}
 }

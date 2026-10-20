@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"github.com/hongle/hl-panel/internal/control/auth"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/hongle/hl-panel/internal/panellicense"
 	"net/http"
 )
@@ -10,13 +11,32 @@ import (
 func WithPanelLicense(client *panellicense.Client) Option {
 	return func(api *API) { api.panelLicense = client }
 }
+func WithPanelLicenseUsage(source panelquota.UsageSource) Option {
+	return func(api *API) { api.panelLicenseUsage = source }
+}
+func (api *API) writePanelLicenseStatus(w http.ResponseWriter, r *http.Request, actor string) {
+	response := struct {
+		panellicense.Status
+		Usage            *panelquota.Usage `json:"usage,omitempty"`
+		UsageUnavailable bool              `json:"usage_unavailable,omitempty"`
+	}{Status: api.panelLicense.Status(actor)}
+	if api.panelLicenseUsage != nil {
+		usage, err := api.panelLicenseUsage.PanelResourceUsage(r.Context())
+		if err == nil {
+			response.Usage = &usage
+		} else {
+			response.UsageUnavailable = true
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
 func (api *API) registerPanelLicenseRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/license/status", api.requireAdministratorSession(func(w http.ResponseWriter, r *http.Request, s auth.Session) {
 		if api.panelLicense == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 			return
 		}
-		writeJSON(w, http.StatusOK, api.panelLicense.Status(s.AdminID))
+		api.writePanelLicenseStatus(w, r, s.AdminID)
 	}))
 	if api.panelLicense == nil {
 		return
@@ -31,14 +51,22 @@ func (api *API) registerPanelLicenseRoutes(mux *http.ServeMux) {
 			panelLicenseFailure(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, api.panelLicense.Status(s.AdminID))
+		api.writePanelLicenseStatus(w, r, s.AdminID)
 	}))
 	mux.HandleFunc("POST /api/v1/license/reminders/dismiss", api.requireAdministrator(func(w http.ResponseWriter, r *http.Request, s auth.Session) {
 		if err := api.panelLicense.Dismiss(s.AdminID); err != nil {
 			panelLicenseFailure(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, api.panelLicense.Status(s.AdminID))
+		api.writePanelLicenseStatus(w, r, s.AdminID)
+	}))
+	mux.HandleFunc("POST /api/v1/license/free/prepare", api.requireAdministrator(func(w http.ResponseWriter, r *http.Request, _ auth.Session) {
+		challenge, err := api.panelLicense.RegisterFree(r.Context())
+		if err != nil {
+			panelLicenseFailure(w)
+			return
+		}
+		writeJSON(w, http.StatusOK, challenge)
 	}))
 	mux.HandleFunc("POST /api/v1/license/activation/prepare", api.requireAdministrator(func(w http.ResponseWriter, r *http.Request, _ auth.Session) {
 		var input struct {
@@ -60,7 +88,7 @@ func (api *API) registerPanelLicenseRoutes(mux *http.ServeMux) {
 			panelLicenseFailure(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, api.panelLicense.Status(s.AdminID))
+		api.writePanelLicenseStatus(w, r, s.AdminID)
 	}))
 }
 func panelLicenseFailure(w http.ResponseWriter) {

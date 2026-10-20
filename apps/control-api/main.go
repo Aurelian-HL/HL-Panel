@@ -148,6 +148,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return err
 	}
 	defer closeStore()
+	store.SetPanelQuotaProvider(panelLicenseQuota(configuration.PanelLicense))
 	if durable, ok := store.(*postgressnapshot.Store); ok {
 		migrated, exists, err := durable.MigrationRuntime(context.Background())
 		if err != nil {
@@ -282,6 +283,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
 		httpapi.WithLicensing(licensingService),
 		httpapi.WithPanelLicense(configuration.PanelLicense),
+		httpapi.WithPanelLicenseUsage(store),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),

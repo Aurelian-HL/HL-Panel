@@ -129,6 +129,9 @@ func (s *Service) List(ctx context.Context) ([]p.LicenseRecord, error) {
 	}
 	now := s.now()
 	for i := range items {
+		if err = normalizeStoredEntitlements(&items[i]); err != nil {
+			return nil, err
+		}
 		items[i].Status = status(items[i], now)
 	}
 	return items, nil
@@ -152,6 +155,17 @@ func (s *Service) Issue(ctx context.Context, key string, input p.IssueRequest) (
 	if input.Term.Validate() != nil {
 		return result, invalid("invalid license term")
 	}
+	tier := input.Tier
+	if tier == "" {
+		tier = p.TierLicensed
+	}
+	if tier != p.TierLicensed {
+		return result, invalid("free domains must register through DNS self-service")
+	}
+	limits, err := validateTierTerm(tier, input.Term)
+	if err != nil {
+		return result, err
+	}
 	digest, err := fingerprint("issue", input)
 	if err != nil {
 		return result, err
@@ -173,7 +187,7 @@ func (s *Service) Issue(ctx context.Context, key string, input p.IssueRequest) (
 			return nil, err
 		}
 		now := s.now()
-		l := license{Record: p.LicenseRecord{ID: id, Domain: domain, Term: input.Term, Revision: 1, Status: "pending", CodePrefix: code[:10], CreatedAt: now}, CodeHash: hash(code)}
+		l := license{Record: p.LicenseRecord{ID: id, Domain: domain, Tier: tier, Limits: limits, Term: input.Term, Revision: 1, Status: "pending", CodePrefix: code[:10], CreatedAt: now}, CodeHash: hash(code)}
 		if input.Term.Kind == "until" {
 			l.Record.LicenseExpiresAt = input.Term.ExpiresAt
 		}
@@ -189,6 +203,9 @@ func (s *Service) Issue(ctx context.Context, key string, input p.IssueRequest) (
 		return result, err
 	}
 	if err = json.Unmarshal(raw, &result); err != nil {
+		return result, err
+	}
+	if err = normalizeStoredEntitlements(&result.License); err != nil {
 		return result, err
 	}
 	result.Replayed = replayed
@@ -208,7 +225,17 @@ func (s *Service) Mutate(ctx context.Context, id, action, key string, input p.Mu
 	if input.ExpectedRevision < 1 {
 		return result, invalid("expected_revision required")
 	}
+	if action != "change-tier" && input.Tier != "" {
+		return result, invalid("tier changes require change-tier")
+	}
 	switch action {
+	case "change-tier":
+		if input.Term == nil || input.Domain != "" {
+			return result, invalid("change-tier requires tier and term only")
+		}
+		if _, err := validateTierTerm(input.Tier, *input.Term); err != nil {
+			return result, err
+		}
 	case "extend":
 		if input.Term == nil || input.Term.Validate() != nil || input.Domain != "" {
 			return result, invalid("extend requires only a valid term")
@@ -241,12 +268,22 @@ func (s *Service) Mutate(ctx context.Context, id, action, key string, input p.Mu
 		if err != nil {
 			return nil, err
 		}
+		if err = normalizeStoredEntitlements(&l.Record); err != nil {
+			return nil, err
+		}
 		if l.Record.Revision != input.ExpectedRevision {
 			return nil, ErrRevisionConflict
 		}
 		now := s.now()
 		switch action {
+		case "change-tier":
+			if err = changeTier(&l.Record, input.Tier, *input.Term, now); err != nil {
+				return nil, err
+			}
 		case "extend":
+			if _, err = validateTierTerm(l.Record.Tier, *input.Term); err != nil {
+				return nil, err
+			}
 			if err = extendTerm(&l.Record, *input.Term, now); err != nil {
 				return nil, err
 			}
@@ -276,7 +313,7 @@ func (s *Service) Mutate(ctx context.Context, id, action, key string, input p.Mu
 			l.CodeHash = hash(code)
 			l.Record.CodePrefix = code[:10]
 		}
-		if action != "extend" {
+		if action != "extend" && action != "change-tier" {
 			if err = tx.ClearReservations(ctx, id); err != nil {
 				return nil, err
 			}
@@ -295,6 +332,9 @@ func (s *Service) Mutate(ctx context.Context, id, action, key string, input p.Mu
 		return result, err
 	}
 	if err = json.Unmarshal(raw, &result); err != nil {
+		return result, err
+	}
+	if err = normalizeStoredEntitlements(&result.License); err != nil {
 		return result, err
 	}
 	result.Replayed = replayed

@@ -19,6 +19,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/nodeupdates"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
 	"github.com/hongle/hl-panel/internal/control/subscriptions"
@@ -28,6 +29,7 @@ import (
 )
 
 type Store struct {
+	panelQuota panelquota.Provider
 	// Present only on immutable read projections; authoritative writes never cache authorization.
 	forwardingProjection *forwardingProjection
 

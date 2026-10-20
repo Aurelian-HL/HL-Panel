@@ -24,6 +24,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/panelmigration"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/releases"
@@ -78,6 +79,7 @@ type API struct {
 	automaticMigration *panelmigration.Service
 	licensing          *licensing.Service
 	panelLicense       *panellicense.Client
+	panelLicenseUsage  panelquota.UsageSource
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {

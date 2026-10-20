@@ -16,6 +16,7 @@ API_PORT="8080"
 IP_HTTPS_PORT="8443"
 LICENSE_ISSUER_URL=""
 LICENSE_CODE_FILE=""
+LICENSE_TIER=""
 LICENSE_STATE_DIR="/var/lib/hl-panel-license"
 LICENSE_DOMAIN=""
 LICENSE_INSTANCE_ID=""
@@ -151,7 +152,7 @@ usage() {
                  [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
                  [--ip-https-port PORT]
                  [--admin-username NAME] [--email EMAIL] [--password-stdin]
-                 [--license-code-file /root/hl-license-code]
+                 [--license-tier free|licensed] [--license-code-file /root/hl-license-code]
 
 选项：
   --repo              GitHub 仓库；默认 Aurelian-HL/HL-Panel
@@ -163,7 +164,8 @@ usage() {
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   --password-stdin    从标准输入读取一行管理员密码；须明确指定域名和账号
-  --license-code-file  从受限文件读取授权码；省略时在终端隐藏输入，不支持明文命令行参数
+  --license-tier  免费 free 在安装后登录面板自助验证域名；licensed 使用 HT 授权码
+  --license-code-file  正式授权从受限文件读取授权码；licensed 省略文件时在终端隐藏输入
   --migration-receiver TASK_ID  自动迁移专用：首次启动前隔离新机业务写入
   -h, --help          显示帮助
 
@@ -186,6 +188,7 @@ while (($#)); do
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     --password-stdin) PASSWORD_STDIN=true; shift ;;
     --license-code-file) (($# >= 2)) || fail "--license-code-file 缺少参数"; LICENSE_CODE_FILE="$2"; shift 2 ;;
+    --license-tier) (($# >= 2)) || fail "--license-tier 缺少参数"; LICENSE_TIER="$2"; shift 2 ;;
     --license-issuer|--license-code|--license-domain|--license-instance-id) fail "旧授权参数已停用；请使用 --domain 和 --license-code-file，签发服务由正式发行包固定" ;;
     --migration-receiver) (($# >= 2)) || fail "--migration-receiver 缺少参数"; MIGRATION_RECEIVER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -636,7 +639,10 @@ grep -Fq '__HL_PANEL_IP_HTTPS_PORT__' "$RELEASE_DIR/deploy/nginx/hl-panel.conf.t
 
 [[ -f "$RELEASE_DIR/deploy/activate-panel-license.sh" ]] || fail "所选发行包缺少授权安装组件"
 source "$RELEASE_DIR/deploy/activate-panel-license.sh"
-activate_panel_license "$RELEASE_DIR/bin/control-api" "$DOMAIN" "$LICENSE_STATE_DIR" "$LICENSE_CODE_FILE"
+if [[ -z "$LICENSE_TIER" ]]; then
+  if [[ -n "$LICENSE_CODE_FILE" ]]; then LICENSE_TIER=licensed; else LICENSE_TIER=free; fi
+fi
+activate_panel_license "$RELEASE_DIR/bin/control-api" "$DOMAIN" "$LICENSE_STATE_DIR" "$LICENSE_CODE_FILE" "$LICENSE_TIER"
 
 log "创建 HL-panel 独立目录和服务账号"
 useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin hlpanel
@@ -788,7 +794,7 @@ for attempt in {1..20}; do
   if systemctl is-active --quiet hl-panel-control-api.service \
     && HEALTH_RESPONSE="$(curl --fail --silent --show-error --connect-timeout 2 --max-time 5 "http://127.0.0.1:$API_PORT/healthz")" \
     && systemctl is-active --quiet hl-panel-control-api.service; then
-    if [[ -z "$LICENSE_ISSUER_URL" || "$HEALTH_RESPONSE" =~ \"license_active\"[[:space:]]*:[[:space:]]*true ]]; then break; fi
+    if [[ -z "$LICENSE_ISSUER_URL" || "$HEALTH_RESPONSE" =~ \"license_active\"[[:space:]]*:[[:space:]]*true || "${LICENSE_AWAITING_REGISTRATION:-false}" == true ]]; then break; fi
   fi
   if ((attempt == 20)); then
     systemctl --no-pager --full status hl-panel-control-api.service || true
@@ -840,7 +846,11 @@ HL-panel 安装完成
 
 EOF
 if [[ -n "$LICENSE_ISSUER_URL" ]]; then
-  printf '  授权：已激活（绑定 %s，安装器不会输出授权码）。\n' "$LICENSE_DOMAIN"
+  if [[ "${LICENSE_AWAITING_REGISTRATION:-false}" == true ]]; then
+    printf '  授权：待验证免费域名 %s；请登录面板登记并验证 TXT 后使用（1 设备组 / 10 条规则）。\n' "$LICENSE_DOMAIN"
+  else
+    printf '  授权：已激活（绑定 %s，安装器不会输出授权码）。\n' "$LICENSE_DOMAIN"
+  fi
 fi
 if [[ "$ADMIN_DEFAULT_PASSWORD" == true ]]; then
   printf '  初始密码：123456\n  首次登录后必须到个人中心修改密码（新密码至少 8 个字符）。\n'

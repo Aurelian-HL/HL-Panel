@@ -1,6 +1,10 @@
 # 独立 HL 授权服务 v2
 
-仅本地开发和隔离验收，尚未发布。此程序仅访问独立 PostgreSQL 的 `hl_license_v2` schema，不连接 HT、HL 客户数据库或转发服务。
+本次免费登记与档位变更仅在本地开发和隔离验收，尚未部署。此程序仅访问独立 PostgreSQL 的 `hl_license_v2` schema，不连接 HT、HL 客户数据库或转发服务。
+
+免费用户在 HL 内自助登记域名；首次登记不签发免费授权码。`POST /api/v2/public/hl-license/free/prepare` 接受实例签名的 `free-prepare` 身份请求，返回带 `purpose=free-registration` 的十分钟签名 DNS challenge。此步骤无状态，不访问数据库，不创建授权或占用域名；相同签名请求得到相同 challenge。`free/commit` 接受实例签名的 `free-commit`，请求只额外携带完整 `challenge` envelope；验证签名、用途、实例、域名、时效和 TXT 后事务创建免费授权。整个面板额度固定 `device_groups=1,rules=10`；正式授权的签名为 `tier=licensed,limits=0/0`，保留既有业务权限。字段缺失或错配不能由客户端默认为正式授权。
+
+免费域名已有同一实例及公钥时可恢复；正式授权、撤销记录、其他实例和历史换绑域名均不能借自助登记改档或绕过限制。HT 的 `change-tier` 必须带期望 revision、目标 tier、term 和可信操作审计，保留 ID、域名及实例绑定。升级正式有期授权从变更时起算（未激活则首次激活起算）；改为免费固定永久。相同档位必须走原续期规则，不能用改档缩短永久正式授权。公开代理需覆盖两个免费路径；已有不改写 URI 的 `/api/v2/public/hl-license/` 前缀代理可直接覆盖，恢复发布时仍须现场核验。生产发布仍暂停。
 
 构建：`go build ./apps/panel-license-issuer`。HTTP 只监听 loopback，由独立 HTTPS 反向代理暴露；不得复用客户数据库凭据。运行前设置以下环境变量，其中秘密只传文件路径：
 

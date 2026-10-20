@@ -9,13 +9,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BINARY="$(dirname -- "$SCRIPT_DIR")/bin/control-api"
 DOMAIN=""
 CODE_FILE=""
+LICENSE_TIER=""
 while (($#)); do
   case "$1" in
-    --binary|--domain|--license-code-file)
+    --binary|--domain|--license-code-file|--license-tier)
       (($# >= 2)) || fail "$1 缺少参数"
-      case "$1" in --binary) BINARY="$2";; --domain) DOMAIN="$2";; --license-code-file) CODE_FILE="$2";; esac
+      case "$1" in --binary) BINARY="$2";; --domain) DOMAIN="$2";; --license-code-file) CODE_FILE="$2";; --license-tier) LICENSE_TIER="$2";; esac
       shift 2;;
-    *) fail "用法：bash setup-panel-license.sh --domain 管理域名 [--binary 授权版control-api] [--license-code-file /root/授权码文件]";;
+    *) fail "用法：bash setup-panel-license.sh --domain 管理域名 [--binary 授权版control-api] [--license-tier free|licensed] [--license-code-file /root/授权码文件]";;
   esac
 done
 [[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || fail "请提供管理域名，不能填写 IP、URL 或端口"
@@ -25,7 +26,10 @@ LICENSE_STATE_DIR=/var/lib/hl-panel-license
 source "$SCRIPT_DIR/activate-panel-license.sh"
 # If later steps fail, retain the successfully bound identity for retries.
 trap 'if [[ -d "$LICENSE_STATE_DIR" ]]; then license_state_permissions "$LICENSE_STATE_DIR" hlpanel; fi' EXIT
-activate_panel_license "$BINARY" "$DOMAIN" "$LICENSE_STATE_DIR" "$CODE_FILE"
+if [[ -z "$LICENSE_TIER" ]]; then
+  if [[ -n "$CODE_FILE" ]]; then LICENSE_TIER=licensed; else LICENSE_TIER=free; fi
+fi
+activate_panel_license "$BINARY" "$DOMAIN" "$LICENSE_STATE_DIR" "$CODE_FILE" "$LICENSE_TIER"
 license_state_permissions "$LICENSE_STATE_DIR" hlpanel
 DROPIN_DIR=/etc/systemd/system/hl-panel-control-api.service.d
 DROPIN="$DROPIN_DIR/30-panel-license.conf"

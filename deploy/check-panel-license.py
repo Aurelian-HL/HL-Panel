@@ -23,7 +23,7 @@ def check(binary, env_file):
     directory = Path(values.get('CONTROL_LICENSE_STATE_DIR', '/var/lib/hl-panel-license'))
     if directory != Path('/var/lib/hl-panel-license') or directory.is_symlink():
         raise ValueError('请使用受管授权状态目录')
-    for name in ('instance-key', 'state.json'):
+    for name in ('instance-key', 'identity.json'):
         path = directory/name
         if path.is_symlink() or not path.is_file():
             raise ValueError('尚未接入本机签名授权')
@@ -35,7 +35,9 @@ def check(binary, env_file):
     if result.returncode:
         raise ValueError('候选版本无法读取或校验本机授权身份')
     status = json.loads(result.stdout)
-    if not status.get('enabled') or not status.get('license_id'):
+    awaiting = (status.get('status') == 'unactivated' and not status.get('license_id')
+                and not status.get('last_error') and not status.get('management_allowed'))
+    if not status.get('enabled') or (not status.get('license_id') and not awaiting):
         raise ValueError('本机尚未完成有效签名授权绑定')
     return status
 
@@ -50,7 +52,7 @@ def main():
     except (OSError, ValueError, subprocess.SubprocessError):
         print('升级前授权检查未通过，当前服务未停止。请先使用已校验发行包的 deploy/setup-panel-license.sh --domain 管理域名 完成授权接入；勿删除授权身份或使用全新安装覆盖现有面板。', file=sys.stderr)
         return 1
-    print('升级前签名授权身份检查通过（商业到期仍由运行时限制管理，存量服务继续保留）。')
+    print('升级前本机授权身份检查通过（待验证或到期时限制管理，存量服务继续保留；升级不等于授权激活）。')
     return 0
 
 

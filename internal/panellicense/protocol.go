@@ -77,9 +77,11 @@ type Request struct {
 	Code              string    `json:"code,omitempty"`
 	ReservationID     string    `json:"reservation_id,omitempty"`
 	LicenseID         string    `json:"license_id,omitempty"`
+	Challenge         *Envelope `json:"challenge,omitempty"`
 }
 
 type Challenge struct {
+	Purpose               string    `json:"purpose,omitempty"`
 	Version               int       `json:"version"`
 	Issuer                string    `json:"issuer"`
 	Product               string    `json:"product"`
@@ -107,6 +109,8 @@ type Claims struct {
 	InstanceKeyThumbprint string     `json:"instance_key_thumbprint"`
 	Revision              int64      `json:"revision"`
 	Status                string     `json:"status"`
+	Tier                  string     `json:"tier"`
+	Limits                Limits     `json:"limits"`
 	Term                  Term       `json:"term"`
 	ActivatedAt           time.Time  `json:"activated_at"`
 	LicenseExpiresAt      *time.Time `json:"license_expires_at"`
@@ -122,6 +126,7 @@ type Actor struct {
 }
 type IssueRequest struct {
 	Domain string `json:"domain"`
+	Tier   string `json:"tier,omitempty"`
 	Term   Term   `json:"term"`
 	Actor  Actor  `json:"actor"`
 	Reason string `json:"reason"`
@@ -132,10 +137,13 @@ type MutationRequest struct {
 	Reason           string `json:"reason"`
 	Term             *Term  `json:"term,omitempty"`
 	Domain           string `json:"domain,omitempty"`
+	Tier             string `json:"tier,omitempty"`
 }
 type LicenseRecord struct {
 	ID               string     `json:"id"`
 	Domain           string     `json:"domain"`
+	Tier             string     `json:"tier"`
+	Limits           Limits     `json:"limits"`
 	Term             Term       `json:"term"`
 	Revision         int64      `json:"revision"`
 	Status           string     `json:"status"`

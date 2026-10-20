@@ -41,7 +41,7 @@ func (d *panelE2EDNS) LookupTXT(_ context.Context, name string) ([]string, error
 	return append([]string{}, d.records[name]...), nil
 }
 
-// TestPanelLicenseRuntimeLifecycle uses a real control-api child process, two
+// TestPanelLicenseRuntimeLifecycle uses a real control-api child process,
 // fresh PostgreSQL databases and the delivered HT handler over trusted HTTPS.
 // DNS and the HT administrator session are synthetic; no production is loaded.
 func TestPanelLicenseRuntimeLifecycle(t *testing.T) {
@@ -203,7 +203,7 @@ func TestPanelLicenseRuntimeLifecycle(t *testing.T) {
 	panelEnv := environment(map[string]string{"CONTROL_LISTEN_ADDRESS": address, "CONTROL_DATABASE_URL": panelDSN, "CONTROL_BOOTSTRAP_ADMIN_USERNAME": "license-acceptance-admin", "CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH": string(hash), "CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_B64": base64.StdEncoding.EncodeToString(tokenBytes[:32]), "CONTROL_LICENSE_STATE_DIR": state, "CONTROL_PANEL_LOG_FILE": filepath.Join(directory, "panel.log"), "CONTROL_PANEL_CONTROL_STATE_FILE": filepath.Join(directory, "control-state.json")})
 	client := &http.Client{Timeout: 15 * time.Second}
 	var session string
-	call := func(method, path string, body any, want int) []byte {
+	call := func(method, path string, body any, want ...int) []byte {
 		t.Helper()
 		var reader io.Reader
 		if body != nil {
@@ -226,8 +226,12 @@ func TestPanelLicenseRuntimeLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if response.StatusCode != want {
-			t.Fatalf("%s %s status %d want %d; sensitive response omitted", method, path, response.StatusCode, want)
+		accepted := false
+		for _, code := range want {
+			accepted = accepted || response.StatusCode == code
+		}
+		if !accepted {
+			t.Fatalf("%s %s status %d want %v; sensitive response omitted", method, path, response.StatusCode, want)
 		}
 		return raw
 	}
@@ -410,4 +414,26 @@ func TestPanelLicenseRuntimeLifecycle(t *testing.T) {
 	}
 	call("POST", "/user-groups", map[string]any{"name": "blocked after revocation"}, 403)
 	t.Log("HT revocation followed; reads/login retained and writes restricted")
+	stop()
+	// A separate empty panel database and identity exercise the self-service path
+	// without inheriting a commercial activation or any business data.
+	panelDSN = newDB("free_panel")
+	if err := os.WriteFile(dsnFile, []byte(panelDSN), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range []string{"apply", "verify"} {
+		if code := migratecmd.Run(ctx, []string{action, "-dsn-file", dsnFile}, io.Discard, io.Discard); code != 0 {
+			t.Fatalf("free runtime usage migration %s failed (exit %d)", action, code)
+		}
+	}
+	state = filepath.Join(directory, "free-identity")
+	if err := os.Mkdir(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "identity.json"), []byte(`{"domain":"free-runtime.example.test","instance_id":"hlp-isolated-free-runtime-e2e"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	panelEnv = environment(map[string]string{"CONTROL_LISTEN_ADDRESS": address, "CONTROL_DATABASE_URL": panelDSN, "CONTROL_BOOTSTRAP_ADMIN_USERNAME": "license-acceptance-admin", "CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH": string(hash), "CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_B64": base64.StdEncoding.EncodeToString(tokenBytes[:32]), "CONTROL_LICENSE_STATE_DIR": state, "CONTROL_PANEL_LOG_FILE": filepath.Join(directory, "free-panel.log"), "CONTROL_PANEL_CONTROL_STATE_FILE": filepath.Join(directory, "free-control-state.json")})
+	start()
+	verifyFreePanelRuntime(t, call, status, ht, func() { stop(); start() }, dns, state)
 }

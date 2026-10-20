@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"io"
 	"os"
 	"path/filepath"
@@ -23,6 +24,23 @@ var panelLicenseIssuerURL string
 var panelLicenseIssuerID string
 var panelLicensePublicKeys string    // JSON object: key ID -> raw base64url public key
 var panelLicensePublicKeysB64 string // Raw base64url JSON avoids linker/shell quoting.
+
+func panelLicenseQuota(client *panellicense.Client) panelquota.Provider {
+	if client == nil {
+		return nil
+	}
+	return func() panelquota.Limits {
+		status := client.Status("")
+		// Missing, expired or unverified entitlements never allow expansion.
+		if !status.ManagementAllowed || status.Limits == nil || status.Limits.Validate(status.Tier) != nil {
+			return panelquota.Limits{}
+		}
+		if status.Tier == panellicense.TierLicensed {
+			return panelquota.Limits{DeviceGroups: -1, Rules: -1}
+		}
+		return panelquota.Limits{DeviceGroups: status.Limits.DeviceGroups, Rules: status.Limits.Rules}
+	}
+}
 
 func signedLicenseEnabled() bool {
 	return pinnedLicenseTrust() || os.Getenv("CONTROL_LICENSE_V2") == "true"
@@ -104,7 +122,7 @@ func licenseSidecarIdentity(domain, instance, directory string) (string, string)
 
 func panelLicenseCommand(arguments []string, input io.Reader, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("usage: control-api license {trust|prepare|commit|status|sync} --domain DOMAIN --instance ID --state-dir DIRECTORY")
+		return errors.New("usage: control-api license {trust|register-free|prepare|commit|status|sync} --domain DOMAIN --instance ID --state-dir DIRECTORY")
 	}
 	if arguments[0] == "trust" {
 		if panelLicenseIssuerURL == "" || panelLicenseIssuerID == "" || (panelLicensePublicKeys == "" && panelLicensePublicKeysB64 == "") {
@@ -141,6 +159,12 @@ func panelLicenseCommand(arguments []string, input io.Reader, output io.Writer) 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	switch arguments[0] {
+	case "register-free":
+		challenge, err := client.RegisterFree(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(challenge)
 	case "prepare":
 		raw, err := io.ReadAll(io.LimitReader(input, 514))
 		if err != nil || len(raw) > 513 {
