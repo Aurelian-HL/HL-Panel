@@ -93,6 +93,9 @@ type Challenge struct {
 	ReservationID         string    `json:"reservation_id"`
 	DNSName               string    `json:"dns_name"`
 	DNSValue              string    `json:"dns_value"`
+	VerificationMethod    string    `json:"verification_method,omitempty"`
+	HTTPPath              string    `json:"http_path,omitempty"`
+	HTTPValue             string    `json:"http_value,omitempty"`
 	IssuedAt              time.Time `json:"issued_at"`
 	ExpiresAt             time.Time `json:"expires_at"`
 }

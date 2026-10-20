@@ -28,6 +28,9 @@ type Config struct {
 	AdminToken string
 	Clock      func() time.Time
 	Resolver   TXTResolver
+	// HTTPVerifier is an embedding/test seam, never an operator-configurable
+	// network bypass. The command always uses the strict public HTTP-01 verifier.
+	HTTPVerifier HTTPProofVerifier
 }
 type Service struct {
 	store  repository
@@ -56,6 +59,9 @@ func newService(store repository, config Config) (*Service, error) {
 	}
 	if config.Resolver == nil {
 		config.Resolver = net.DefaultResolver
+	}
+	if config.HTTPVerifier == nil {
+		config.HTTPVerifier = newHTTPProofVerifier()
 	}
 	config.SigningKey = append(ed25519.PrivateKey(nil), config.SigningKey...)
 	return &Service{store: store, config: config}, nil

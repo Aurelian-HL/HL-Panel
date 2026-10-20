@@ -128,3 +128,29 @@ func TestLicenseCLIReadsIdentityFromExplicitStateDirectory(t *testing.T) {
 		t.Fatal("CLI failed to use explicit identity or granted unactivated access", err)
 	}
 }
+
+func TestAutomaticFreeRequiresMatchingInstallerIdentity(t *testing.T) {
+	pinTestLicense(t)
+	for _, tc := range []struct {
+		name, raw string
+		want      bool
+	}{
+		{"new automatic install", `{"domain":"panel.example.test","instance_id":"hlp-auto-test","auto_free":true}`, true},
+		{"older install", `{"domain":"panel.example.test","instance_id":"hlp-auto-test"}`, false},
+		{"manual install", `{"domain":"panel.example.test","instance_id":"hlp-auto-test","auto_free":false}`, false},
+		{"other domain", `{"domain":"other.example.test","instance_id":"hlp-auto-test","auto_free":true}`, false},
+		{"other instance", `{"domain":"panel.example.test","instance_id":"hlp-other-test","auto_free":true}`, false},
+		{"corrupt identity", `{"auto_free":true`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.WriteFile(filepath.Join(directory, "identity.json"), []byte(tc.raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			configuration, err := signedLicenseConfig("panel.example.test", "hlp-auto-test", directory)
+			if err != nil || configuration.AutoRegisterFree != tc.want {
+				t.Fatalf("automatic install intent: got %v, want %v: %v", configuration.AutoRegisterFree, tc.want, err)
+			}
+		})
+	}
+}

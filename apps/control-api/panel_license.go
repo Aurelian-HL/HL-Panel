@@ -75,10 +75,26 @@ func signedLicenseConfig(domain, instance, directory string) (panellicense.Confi
 		keys[id] = ed25519.PublicKey(raw)
 	}
 	configuration := panellicense.Config{IssuerURL: u, IssuerID: id, Keys: keys, Domain: domain, InstanceID: instance, Directory: directory, Timeout: 10 * time.Second}
+	configuration.AutoRegisterFree = automaticFreeIdentity(directory, domain, instance)
 	if err := panellicense.ValidateConfig(configuration); err != nil {
 		return panellicense.Config{}, err
 	}
 	return configuration, nil
+}
+
+func automaticFreeIdentity(directory, domain, instance string) bool {
+	path := filepath.Join(directory, "identity.json")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 2048 {
+		return false
+	}
+	var identity struct {
+		Domain     string `json:"domain"`
+		InstanceID string `json:"instance_id"`
+		AutoFree   bool   `json:"auto_free"`
+	}
+	raw, err := os.ReadFile(path)
+	return err == nil && json.Unmarshal(raw, &identity) == nil && identity.AutoFree && identity.Domain == domain && identity.InstanceID == instance
 }
 func loadSignedLicense() (*panellicense.Client, error) {
 	domain, instance, directory := licenseRuntimeIdentity()

@@ -21,14 +21,15 @@ import (
 )
 
 type Config struct {
-	IssuerURL  string
-	IssuerID   string
-	Keys       map[string]ed25519.PublicKey
-	Domain     string
-	InstanceID string
-	Directory  string
-	Timeout    time.Duration
-	Now        func() time.Time
+	IssuerURL        string
+	IssuerID         string
+	Keys             map[string]ed25519.PublicKey
+	Domain           string
+	InstanceID       string
+	Directory        string
+	Timeout          time.Duration
+	Now              func() time.Time
+	AutoRegisterFree bool // Installer intent only; never derived from a sync failure.
 }
 
 type cachedState struct {
@@ -38,18 +39,19 @@ type cachedState struct {
 }
 
 type Client struct {
-	config             Config
-	key                ed25519.PrivateKey
-	http               *http.Client
-	mu                 sync.RWMutex
-	flight             sync.Mutex
-	state              cachedState
-	claims             *Claims
-	legacyClaims       *Claims // Verified identity only; never grants management or quota.
-	challenge          *Challenge
-	lastError          string
-	lastAttempt        time.Time
-	configurationError error
+	config              Config
+	key                 ed25519.PrivateKey
+	http                *http.Client
+	mu                  sync.RWMutex
+	flight              sync.Mutex
+	state               cachedState
+	claims              *Claims
+	legacyClaims        *Claims // Verified identity only; never grants management or quota.
+	challenge           *Challenge
+	lastError           string
+	lastAttempt         time.Time
+	configurationError  error
+	registrationBlocked bool
 }
 
 var ErrSyncThrottled = errors.New("授权同步过于频繁，请在 10 秒后重试")
@@ -79,6 +81,7 @@ type Status struct {
 	LastError         string     `json:"last_error,omitempty"`
 	ReminderDue       bool       `json:"reminder_due"`
 	RenewalURL        string     `json:"renewal_url"`
+	AutoRegistration  bool       `json:"auto_registration,omitempty"`
 }
 
 // ValidateConfig checks trust and identity without creating state or keys.
@@ -162,6 +165,7 @@ func NewClient(config Config) (*Client, error) {
 			c.state = cachedState{Dismissals: make(map[string]string)}
 			c.claims, c.legacyClaims, c.challenge = nil, nil, nil
 			c.lastError = "授权缓存校验失败，请重新激活；现有转发继续运行"
+			c.registrationBlocked = true
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -378,22 +382,34 @@ func (c *Client) accept(envelope Envelope, requestID string) error {
 	return nil
 }
 func (c *Client) Prepare(ctx context.Context, code string) (Challenge, error) {
-	return c.prepare(ctx, code, false)
+	return c.prepare(ctx, code, "licensed")
 }
 func (c *Client) RegisterFree(ctx context.Context) (Challenge, error) {
-	return c.prepare(ctx, "", true)
+	return c.prepare(ctx, "", "free")
 }
-func (c *Client) prepare(ctx context.Context, code string, free bool) (Challenge, error) {
+func (c *Client) prepare(ctx context.Context, code string, mode string) (Challenge, error) {
 	if c.configurationError != nil {
 		return Challenge{}, c.configurationError
 	}
 	c.flight.Lock()
 	defer c.flight.Unlock()
+	if mode == "install" {
+		c.mu.RLock()
+		eligible := c.installEligibleLocked()
+		c.mu.RUnlock()
+		if !eligible {
+			return Challenge{}, errors.New("本机不符合自动免费登记条件")
+		}
+	}
 	operation, path, purpose := "prepare", "/activation/prepare", ""
+	free := mode != "licensed"
 	if free {
 		operation, path, purpose = "free-prepare", "/free/prepare", "free-registration"
+		if mode == "install" {
+			operation, path, purpose = "free-install-prepare", "/free/install/prepare", InstallFreePurpose
+		}
 		c.mu.RLock()
-		hasLicense := c.claims != nil || c.legacyClaims != nil
+		hasLicense := c.claims != nil || c.legacyClaims != nil || c.registrationBlocked
 		c.mu.RUnlock()
 		if hasLicense {
 			return Challenge{}, errors.New("本机已有授权，请同步现有授权；变更类型须在 HT 显式处理")
@@ -415,7 +431,11 @@ func (c *Client) prepare(ctx context.Context, code string, free bool) (Challenge
 	if challenge.Purpose != purpose {
 		return Challenge{}, errors.New("invalid signed challenge purpose")
 	}
-	if !c.identity(challenge.Version, challenge.Issuer, challenge.Product, challenge.Audience, challenge.Domain, challenge.InstanceID, challenge.InstanceKeyThumbprint) || challenge.RequestID != r.RequestID || challenge.DNSName != "_hl-license."+c.config.Domain || !strings.HasPrefix(challenge.DNSValue, "hl-license-v2=") || challenge.ReservationID == "" || challenge.IssuedAt.Before(c.config.Now().Add(-5*time.Minute)) || challenge.IssuedAt.After(c.config.Now().Add(5*time.Minute)) || !challenge.ExpiresAt.After(c.config.Now()) || challenge.ExpiresAt.Sub(challenge.IssuedAt) > 15*time.Minute {
+	validProof := challenge.DNSName == "_hl-license."+c.config.Domain && strings.HasPrefix(challenge.DNSValue, "hl-license-v2=") && challenge.VerificationMethod == "" && challenge.HTTPPath == "" && challenge.HTTPValue == ""
+	if mode == "install" {
+		validProof = ValidInstallProof(challenge) && challenge.ExpiresAt.Sub(challenge.IssuedAt) <= 10*time.Minute
+	}
+	if !c.identity(challenge.Version, challenge.Issuer, challenge.Product, challenge.Audience, challenge.Domain, challenge.InstanceID, challenge.InstanceKeyThumbprint) || challenge.RequestID != r.RequestID || !validProof || challenge.ReservationID == "" || challenge.IssuedAt.Before(c.config.Now().Add(-5*time.Minute)) || challenge.IssuedAt.After(c.config.Now().Add(5*time.Minute)) || !challenge.ExpiresAt.After(c.config.Now()) || !challenge.ExpiresAt.After(challenge.IssuedAt) || challenge.ExpiresAt.Sub(challenge.IssuedAt) > 15*time.Minute {
 		return Challenge{}, errors.New("invalid signed activation challenge")
 	}
 	c.mu.Lock()
@@ -430,6 +450,9 @@ func (c *Client) prepare(ctx context.Context, code string, free bool) (Challenge
 	return challenge, nil
 }
 func (c *Client) Commit(ctx context.Context) error {
+	return c.commit(ctx, false)
+}
+func (c *Client) commit(ctx context.Context, installOnly bool) error {
 	if c.configurationError != nil {
 		return c.configurationError
 	}
@@ -438,7 +461,11 @@ func (c *Client) Commit(ctx context.Context) error {
 	c.mu.RLock()
 	challenge := c.challenge
 	proof := c.state.Challenge
+	eligible := c.installEligibleLocked()
 	c.mu.RUnlock()
+	if installOnly && (!eligible || challenge == nil || challenge.Purpose != InstallFreePurpose) {
+		return errors.New("自动登记不得提交其他授权流程")
+	}
 	if challenge == nil {
 		return errors.New("请先登记免费域名或提供授权码获取域名证明")
 	}
@@ -448,11 +475,13 @@ func (c *Client) Commit(ctx context.Context) error {
 	operation, path := "commit", "/activation/commit"
 	if challenge.Purpose == "free-registration" {
 		operation, path = "free-commit", "/free/commit"
+	} else if challenge.Purpose == InstallFreePurpose && ValidInstallProof(*challenge) {
+		operation, path = "free-install-commit", "/free/install/commit"
 	} else if challenge.Purpose != "" {
 		return errors.New("invalid challenge purpose")
 	}
 	r := c.request(operation)
-	if challenge.Purpose == "free-registration" {
+	if challenge.Purpose == "free-registration" || challenge.Purpose == InstallFreePurpose {
 		r.Challenge = proof
 	} else {
 		r.ReservationID = challenge.ReservationID
@@ -514,7 +543,7 @@ func (c *Client) Run(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
-		if err := c.Sync(ctx); err != nil {
+		if err := c.reconcile(ctx); err != nil {
 			delay *= 2
 			if delay < 15*time.Second {
 				delay = 15 * time.Second
@@ -540,6 +569,7 @@ func (c *Client) Status(actor string) Status {
 	defer c.mu.RUnlock()
 	now := c.config.Now()
 	s := Status{Enabled: true, Status: "unactivated", Domain: c.config.Domain, RenewalURL: "https://ht.hongle.work/", LastError: c.lastError}
+	s.AutoRegistration = c.installEligibleLocked()
 	if c.configurationError != nil {
 		s.Status = "unconfigured"
 		return s

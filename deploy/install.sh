@@ -164,12 +164,13 @@ usage() {
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   --password-stdin    从标准输入读取一行管理员密码；须明确指定域名和账号
-  --license-tier  免费 free 在安装后登录面板自助验证域名；licensed 使用 HT 授权码
+  --license-tier      默认免费 free，自动验证并登记 HT；licensed 使用 HT 授权码
   --license-code-file  正式授权从受限文件读取授权码；licensed 省略文件时在终端隐藏输入
   --migration-receiver TASK_ID  自动迁移专用：首次启动前隔离新机业务写入
   -h, --help          显示帮助
 
-安装必须提供 HT 发放的域名授权码并验证 DNS TXT；授权信任由发行包固定。
+免费安装无需授权码或 TXT；管理域名须指向本机且公网 80 端口可访问。
+正式授权使用 HT 授权码并验证 DNS TXT；授权信任由发行包固定。
 安装只创建 HL-panel 独立实例，不导入或删除其他面板数据。
 安装会询问管理员账号、密码；回车采用 admin / 123456。
 使用默认密码时首次登录必须在个人中心修改；自定义密码至少 8 个字符。
@@ -467,7 +468,7 @@ find_nginx_name_conflicts() {
 }
 
 if [[ "$DOMAIN_EXPLICIT" != true ]]; then
-  read -r -p "设置面板管理域名 [必填，需完成授权 DNS TXT 验证]：" DOMAIN_INPUT </dev/tty
+  read -r -p "设置面板管理域名 [必填，免费版将自动验证域名]：" DOMAIN_INPUT </dev/tty
   DOMAIN="$DOMAIN_INPUT"
   unset DOMAIN_INPUT
 fi
@@ -642,7 +643,7 @@ source "$RELEASE_DIR/deploy/activate-panel-license.sh"
 if [[ -z "$LICENSE_TIER" ]]; then
   if [[ -n "$LICENSE_CODE_FILE" ]]; then LICENSE_TIER=licensed; else LICENSE_TIER=free; fi
 fi
-activate_panel_license "$RELEASE_DIR/bin/control-api" "$DOMAIN" "$LICENSE_STATE_DIR" "$LICENSE_CODE_FILE" "$LICENSE_TIER"
+activate_panel_license "$RELEASE_DIR/bin/control-api" "$DOMAIN" "$LICENSE_STATE_DIR" "$LICENSE_CODE_FILE" "$LICENSE_TIER" true
 
 log "创建 HL-panel 独立目录和服务账号"
 useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin hlpanel
@@ -808,6 +809,20 @@ systemctl enable --now nginx
 systemctl reload nginx
 ROLLBACK_REQUIRED=false
 
+if [[ "${LICENSE_AWAITING_REGISTRATION:-false}" == true ]]; then
+  log "等待免费版自动验证域名并登记 HT（最多 60 秒，未完成将在后台重试）"
+  LICENSE_WAIT_DEADLINE=$((SECONDS + 60))
+  while ((SECONDS < LICENSE_WAIT_DEADLINE)); do
+    if HEALTH_RESPONSE="$(curl --fail --silent --connect-timeout 2 --max-time 3 "http://127.0.0.1:$API_PORT/healthz")" \
+      && [[ "$HEALTH_RESPONSE" =~ \"license_active\"[[:space:]]*:[[:space:]]*true ]]; then
+      LICENSE_AWAITING_REGISTRATION=false
+      log "免费版已自动登记 HT（整个面板共享 1 个设备组 / 10 条规则）"
+      break
+    fi
+    sleep 2
+  done
+fi
+
 if [[ "$DOMAIN" == "hl-panel.invalid" ]]; then
   log "未设置域名；使用 IP 入口 https://$PUBLIC_IP:$IP_HTTPS_PORT/（自签名证书）"
 else
@@ -847,7 +862,8 @@ HL-panel 安装完成
 EOF
 if [[ -n "$LICENSE_ISSUER_URL" ]]; then
   if [[ "${LICENSE_AWAITING_REGISTRATION:-false}" == true ]]; then
-    printf '  授权：待验证免费域名 %s；请登录面板登记并验证 TXT 后使用（1 设备组 / 10 条规则）。\n' "$LICENSE_DOMAIN"
+    printf '  授权：免费版自动登记待完成（%s）；服务已保留，将自动重试。\n' "$LICENSE_DOMAIN"
+    printf '  请确认域名指向本机且公网 80 端口可访问；无需授权码或手动 TXT。\n'
   else
     printf '  授权：已激活（绑定 %s，安装器不会输出授权码）。\n' "$LICENSE_DOMAIN"
   fi

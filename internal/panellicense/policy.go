@@ -3,6 +3,7 @@ package panellicense
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // Guard restricts business writes while leaving authentication and all existing
@@ -12,6 +13,10 @@ func Guard(client *Client, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, InstallProofPath) {
+			client.ServeInstallProof(w, r)
+			return
+		}
 		if !client.Status("").ManagementAllowed && !OperationAllowed(r) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")

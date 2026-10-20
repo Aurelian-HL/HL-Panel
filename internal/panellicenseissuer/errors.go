@@ -24,6 +24,7 @@ var (
 	ErrInvalidCode         = problem("invalid_code", "invalid license code", 403)
 	ErrChallengeExpired    = problem("challenge_expired", "activation challenge expired; prepare again", 409)
 	ErrDNS                 = problem("dns_not_verified", "activation DNS TXT record not verified", 409)
+	ErrHTTP                = problem("http_not_verified", "installation HTTP ownership proof not verified", 409)
 )
 
 func publicError(err error) *Error {

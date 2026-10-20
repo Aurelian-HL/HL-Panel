@@ -17,7 +17,7 @@ BASH = os.environ.get('BASH_PATH') or shutil.which('bash')
 
 @unittest.skipUnless(BASH, 'Bash is required for installer helper verification')
 class ActivationShellTests(unittest.TestCase):
-    def run_helper(self, status, tier='free'):
+    def run_helper(self, status, tier='free', automatic=False):
         with tempfile.TemporaryDirectory(prefix='hl-license-shell-') as temporary:
             root = Path(temporary)
             binary = root/'control-api-stub'
@@ -42,10 +42,10 @@ export -f python3
 license_state_permissions() { :; }
 install() { mkdir -p "${@: -1}"; }
 openssl() { printf '0123456789abcdef0123456789abcdef'; }
-activate_panel_license "$BINARY_PATH" panel.example.test "$STATE_PATH" '' "$TIER"
+activate_panel_license "$BINARY_PATH" panel.example.test "$STATE_PATH" '' "$TIER" "$AUTOMATIC"
 printf 'awaiting=%s\\n' "$LICENSE_AWAITING_REGISTRATION"
 ''', encoding='utf-8', newline='\n')
-            env = dict(os.environ, HELPER_PATH=(ROOT/'deploy/activate-panel-license.sh').as_posix(), PYTHON_EXE=Path(sys.executable).as_posix(), BINARY_PATH=binary.as_posix(), STATE_PATH=(root/'identity').as_posix(), CALLS_FILE=(root/'calls').as_posix(), STATUS_JSON=json.dumps(status), TIER=tier)
+            env = dict(os.environ, HELPER_PATH=(ROOT/'deploy/activate-panel-license.sh').as_posix(), PYTHON_EXE=Path(sys.executable).as_posix(), BINARY_PATH=binary.as_posix(), STATE_PATH=(root/'identity').as_posix(), CALLS_FILE=(root/'calls').as_posix(), STATUS_JSON=json.dumps(status), TIER=tier, AUTOMATIC=str(automatic).lower())
             result = subprocess.run([BASH, script.as_posix()], env=env, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
             calls = (root/'calls').read_text().splitlines() if (root/'calls').exists() else []
             identity = json.loads((root/'identity/identity.json').read_text())
@@ -58,6 +58,14 @@ printf 'awaiting=%s\\n' "$LICENSE_AWAITING_REGISTRATION"
         self.assertEqual(calls, ['trust', 'sync', 'status'])
         self.assertEqual(identity['domain'], 'panel.example.test')
         self.assertTrue(identity['instance_id'].startswith('hlp-'))
+        self.assertFalse(identity['auto_free'])
+
+    def test_automatic_install_records_intent_without_code_or_early_activation(self):
+        result, calls, identity = self.run_helper({'enabled': True, 'status': 'unactivated', 'management_allowed': False}, automatic=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(identity['auto_free'])
+        self.assertEqual(calls, ['trust', 'sync', 'status'])
+        self.assertIn('无需授权码或 TXT', result.stdout)
 
     def test_existing_expired_licensed_binding_is_not_downgraded_to_free(self):
         result, calls, _ = self.run_helper({'enabled': True, 'status': 'expired', 'tier': 'licensed', 'license_id': 'lic-existing', 'management_allowed': False})

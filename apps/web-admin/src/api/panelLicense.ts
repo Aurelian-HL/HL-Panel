@@ -5,6 +5,7 @@ export interface PanelLicenseStatus {
   enabled: boolean
   status: 'active' | 'expired' | 'revoked' | 'stale' | 'unactivated' | 'unconfigured' | 'upgrade_required'
   management_allowed: boolean
+  auto_registration?: boolean
   domain: string
   license_id?: string
   revision?: number

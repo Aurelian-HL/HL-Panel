@@ -39,11 +39,17 @@ func run() error {
 	directory := flags.String("fixture", "", "")
 	state := flags.String("state", "", "")
 	domain := flags.String("domain", "", "")
+	serve := flags.Bool("serve", false, "run disposable real issuer")
+	check := flags.Bool("check", false, "verify durable free registration")
+	dsnFile := flags.String("dsn-file", "", "disposable database connection file")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
 	if !filepath.IsAbs(*directory) {
 		return fmt.Errorf("absolute fixture directory is required")
+	}
+	if *serve || *check {
+		return issuerFixture(*directory, *dsnFile, *serve)
 	}
 	if *state == "" {
 		if err := os.Mkdir(*directory, 0700); err != nil {
@@ -57,7 +63,7 @@ func run() error {
 			return err
 		}
 		keys, _ := json.Marshal(map[string]string{keyID: base64.RawURLEncoding.EncodeToString(public)})
-		linker := "-X main.panelLicenseIssuerURL=http://127.0.0.1:1 -X main.panelLicenseIssuerID=" + issuer + " -X main.panelLicensePublicKeysB64=" + base64.RawURLEncoding.EncodeToString(keys)
+		linker := "-X main.panelLicenseIssuerURL=http://127.0.0.1:18712 -X main.panelLicenseIssuerID=" + issuer + " -X main.panelLicensePublicKeysB64=" + base64.RawURLEncoding.EncodeToString(keys)
 		return write(filepath.Join(*directory, "ldflags"), []byte(linker))
 	}
 	if !filepath.IsAbs(*state) {

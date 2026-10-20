@@ -13,6 +13,11 @@ server {
     location / {
         return 301 https://$host$request_uri;
     }
+
+    location ^~ /.well-known/hl-panel-license/ {
+        include /etc/nginx/snippets/hl-panel-api-proxy.conf;
+        access_log off;
+    }
 }
 
 server {

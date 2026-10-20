@@ -113,6 +113,7 @@ func (s *Service) verifyFreeChallenge(r p.Request) (p.Challenge, error) {
 		c.InstanceID != r.InstanceID || c.InstanceKeyThumbprint != p.Thumbprint(ed25519.PublicKey(key)) ||
 		len(c.RequestID) < 16 || len(c.RequestID) > 128 ||
 		!strings.HasPrefix(c.ReservationID, "free_") || len(c.ReservationID) != 37 ||
+		c.VerificationMethod != "" || c.HTTPPath != "" || c.HTTPValue != "" ||
 		c.DNSName != "_hl-license."+r.Domain || !strings.HasPrefix(c.DNSValue, "hl-license-v2=") || len(c.DNSValue) != 46 {
 		return c, ErrBinding
 	}
@@ -125,9 +126,19 @@ func (s *Service) verifyFreeChallenge(r p.Request) (p.Challenge, error) {
 }
 
 func (s *Service) commitFree(ctx context.Context, tx transaction, r p.Request) (p.Claims, error) {
+	return s.commitFreeRegistration(ctx, tx, r, s.verifyFreeChallenge, "DNS")
+}
+
+// Both ownership methods share the exact domain lock, identity recovery and
+// entitlement transaction. The supplied verifier rechecks expiry after locking.
+func (s *Service) commitFreeRegistration(ctx context.Context, tx transaction, r p.Request, verify func(p.Request) (p.Challenge, error), method string) (p.Claims, error) {
 	var empty p.Claims
+	registerAction, recoverAction := "free-register", "free-register-recover"
+	if method == "HTTP-01" {
+		registerAction, recoverAction = "free-install-register", "free-install-recover"
+	}
 	l, err := tx.ByDomain(ctx, r.Domain)
-	if _, challengeErr := s.verifyFreeChallenge(r); challengeErr != nil {
+	if _, challengeErr := verify(r); challengeErr != nil {
 		return empty, challengeErr
 	}
 	if err == nil {
@@ -142,7 +153,7 @@ func (s *Service) commitFree(ctx context.Context, tx transaction, r p.Request) (
 		if l.Record.Tier != p.TierFree || !matchBinding(l, r) || l.Record.ActivatedAt == nil || status(l.Record, s.now()) != "active" {
 			return empty, ErrDomainConflict
 		}
-		if err = s.audit(ctx, tx, l, "free-register-recover", p.Actor{ID: r.InstanceID, Name: "HL instance"}, "DNS ownership and existing free binding verified"); err != nil {
+		if err = s.audit(ctx, tx, l, recoverAction, p.Actor{ID: r.InstanceID, Name: "HL instance"}, method+" ownership and existing free binding verified"); err != nil {
 			return empty, err
 		}
 		return s.claims(l, r.RequestID), nil
@@ -172,7 +183,7 @@ func (s *Service) commitFree(ctx context.Context, tx transaction, r p.Request) (
 	if err = tx.Save(ctx, l); err != nil {
 		return empty, err
 	}
-	if err = s.audit(ctx, tx, l, "free-register", p.Actor{ID: r.InstanceID, Name: "HL instance"}, "Free domain self-registration verified by DNS and instance signature"); err != nil {
+	if err = s.audit(ctx, tx, l, registerAction, p.Actor{ID: r.InstanceID, Name: "HL instance"}, "Free domain self-registration verified by "+method+" and instance signature"); err != nil {
 		return empty, err
 	}
 	return s.claims(l, r.RequestID), nil

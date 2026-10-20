@@ -85,6 +85,14 @@ async function main() {
       async function load(value, name) {
         status = value; state = name; await page.goto(`${origin}/system-settings`, { waitUntil: 'networkidle' }); await card.waitFor()
       }
+      await load({ ...initial, auto_registration: true }, 'automatic-pending')
+      await card.getByText(/正在自动验证免费域名并登记 HT/).waitFor()
+      assert.equal(await card.getByRole('button', { name: '登记免费域名' }).count(), 0)
+      await capture('automatic-pending')
+      status = { ...free }
+      await card.getByRole('button', { name: '刷新登记状态' }).click()
+      await card.getByRole('heading', { name: '免费域名已验证', exact: true }).waitFor()
+      await capture('automatic-active')
       await load({ ...initial }, 'unactivated')
       assert.equal(await card.getByRole('button', { name: '同步授权', exact: true }).isDisabled(), true)
       await capture('unactivated')

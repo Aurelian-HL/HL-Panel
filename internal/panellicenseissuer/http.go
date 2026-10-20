@@ -118,6 +118,10 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			operation = "free-prepare"
 		case p.PublicPath + "/free/commit":
 			operation = "free-commit"
+		case p.PublicPath + "/free/install/prepare":
+			operation = "free-install-prepare"
+		case p.PublicPath + "/free/install/commit":
+			operation = "free-install-commit"
 		}
 		if operation != "" {
 			var signed p.InstanceRequest

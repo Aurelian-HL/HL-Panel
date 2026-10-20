@@ -23,7 +23,7 @@ PY
 }
 
 activate_panel_license() {
-  local binary="$1" domain="$2" state_dir="$3" code_file="${4:-}" tier="${5:-licensed}" trust status challenge answer
+  local binary="$1" domain="$2" state_dir="$3" code_file="${4:-}" tier="${5:-licensed}" auto_install="${6:-false}" trust status challenge answer
   [[ "$tier" == free || "$tier" == licensed ]] || fail "授权类型只能是 free 或 licensed"
   [[ "$tier" != free || -z "$code_file" ]] || fail "免费登记不使用授权码文件；正式授权请选择 licensed"
   LICENSE_AWAITING_REGISTRATION=false
@@ -59,13 +59,13 @@ PY
   fi
   [[ "$LICENSE_INSTANCE_ID" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || fail "本机授权实例编号无效，请检查授权状态目录"
   local args=(--domain "$domain" --instance "$LICENSE_INSTANCE_ID" --state-dir "$state_dir")
-  python3 - "$state_dir" "$domain" "$LICENSE_INSTANCE_ID" <<'PY'
+  python3 - "$state_dir" "$domain" "$LICENSE_INSTANCE_ID" "$tier" "$auto_install" <<'PY'
 import json, os, pathlib, sys, tempfile
-directory, domain, instance = sys.argv[1:]
+directory, domain, instance, tier, auto_install = sys.argv[1:]
 if (pathlib.Path(directory)/'identity.json').exists():
     raise SystemExit(0)  # Already checked above; do not rewrite a bound identity.
 with tempfile.NamedTemporaryFile(mode='w', dir=directory, prefix='.identity-', delete=False) as pending:
-    json.dump({'domain':domain, 'instance_id':instance}, pending)
+    json.dump({'domain':domain, 'instance_id':instance, 'auto_free':tier == 'free' and auto_install == 'true'}, pending)
     pending.flush()
     os.fsync(pending.fileno())
 os.replace(pending.name, pathlib.Path(directory)/'identity.json')
@@ -84,7 +84,11 @@ PY
   fi
   if [[ "$tier" == free ]]; then
     LICENSE_AWAITING_REGISTRATION=true
-    log "免费安装身份已初始化；安装后登录面板登记并验证域名。验证前禁止新增，验证后整个面板限 1 个设备组、10 条规则（含停用）。"
+    if [[ "$auto_install" == true ]]; then
+      log "免费安装身份已初始化；服务启动后自动验证管理域名并登记到 HT，无需授权码或 TXT。验证前禁止新增，验证后整个面板限 1 个设备组、10 条规则（含停用）。"
+    else
+      log "免费身份已初始化；升级后登录面板登记并验证域名。验证前禁止新增，验证后整个面板限 1 个设备组、10 条规则（含停用）。"
+    fi
     return 0
   fi
   printf '\n本项目仅供个人合法用途，实验性功能请勿用于关键生产环境。\n一码仅限一个管理域名和实例，禁止转售、分享授权码或复制实例密钥。\n面板会在本机保存账号、规则和统计；授权服务只接收授权和必要审计信息，不接收客户转发内容。\n'

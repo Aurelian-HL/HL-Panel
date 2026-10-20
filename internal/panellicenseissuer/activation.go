@@ -11,7 +11,7 @@ import (
 
 func (s *Service) Public(ctx context.Context, operation string, signed p.InstanceRequest) (p.Envelope, error) {
 	var empty p.Envelope
-	if operation != "prepare" && operation != "commit" && operation != "sync" && operation != "free-prepare" && operation != "free-commit" {
+	if operation != "prepare" && operation != "commit" && operation != "sync" && operation != "free-prepare" && operation != "free-commit" && operation != "free-install-prepare" && operation != "free-install-commit" {
 		return empty, invalid("unknown activation operation")
 	}
 	r, err := p.VerifyRequest(operation, signed, s.now())
@@ -20,6 +20,9 @@ func (s *Service) Public(ctx context.Context, operation string, signed p.Instanc
 	}
 	if operation == "free-prepare" || operation == "free-commit" {
 		return s.freePublic(ctx, operation, r, signed)
+	}
+	if operation == "free-install-prepare" || operation == "free-install-commit" {
+		return s.freeInstallPublic(ctx, operation, r, signed)
 	}
 	if r.Challenge != nil {
 		return empty, invalid("unexpected free registration challenge")

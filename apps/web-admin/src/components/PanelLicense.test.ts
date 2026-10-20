@@ -15,6 +15,19 @@ const sample: PanelLicenseStatus = { enabled: true, tier: 'licensed', limits: { 
 beforeEach(() => { vi.clearAllMocks(); store.clear(); vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample }) })
 
 describe('Panel license UI', () => {
+  it('shows automatic registration pending and refreshes without requiring DNS or a code', async () => {
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, status: 'unactivated', tier: undefined, license_id: undefined, auto_registration: true, management_allowed: false })
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    expect(wrapper.text()).toContain('正在自动验证免费域名并登记 HT')
+    expect(wrapper.text()).toContain('公网 80 端口可访问')
+    expect(wrapper.text()).not.toContain('登记免费域名')
+    expect(wrapper.text()).not.toContain('请准备该域名的 DNS 管理权限')
+    vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, tier: 'free', limits: { device_groups: 1, rules: 10 }, expires_at: null })
+    await wrapper.findAll('button').find(b => b.text() === '刷新登记状态')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('免费域名已验证')
+    expect(panelLicenseApi.prepare).not.toHaveBeenCalled(); expect(panelLicenseApi.registerFree).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
   it('keeps legacy signed identities restricted until explicit entitlements are synchronized', async () => {
     vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, status: 'upgrade_required', tier: undefined, limits: undefined, expires_at: null, management_allowed: false, reminder_due: false })
     vi.mocked(panelLicenseApi.sync).mockResolvedValue(sample)

@@ -6,6 +6,7 @@ apt, PostgreSQL, systemd, nginx, TLS, password changes and restart durability
 are real. Run as root in the dedicated fresh-install GitHub Actions job.
 """
 import argparse
+import atexit
 import codecs
 import errno
 import json
@@ -28,6 +29,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--archive-directory', required=True)
 parser.add_argument('--version', required=True)
 parser.add_argument('--credentials', choices=['default', 'custom'], required=True)
+parser.add_argument('--automatic-free', action='store_true')
 args = parser.parse_args()
 assert os.geteuid() == 0, 'Requires disposable root CI VM'
 assert os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true', 'Explicit CI isolation required'
@@ -39,7 +41,37 @@ username = 'ci.operator' if custom else 'admin'
 # Test-only generated credential, never a real user's password.
 password = 'test-' + os.urandom(24).hex() if custom else '123456'
 replacement = 'test-' + os.urandom(24).hex()
-seed_license('hl-panel-smoke.invalid', '/var/lib/hl-panel-license')
+if args.automatic_free:
+    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', 'Automatic installation uses a disposable hosted VM'
+    assert not Path('/var/lib/hl-panel-license').exists(), 'Automatic registration requires empty identity and cache'
+    subprocess.run(['apt-get', 'update'], check=True)
+    subprocess.run(['apt-get', 'install', '-y', '--no-install-recommends', 'postgresql', 'postgresql-client'], check=True)
+    subprocess.run(['systemctl', 'start', 'postgresql'], check=True)
+    role = subprocess.check_output(['runuser', '-u', 'postgres', '--', 'psql', '-X', '-tAc', "SELECT 1 FROM pg_roles WHERE rolname='root'"], text=True).strip()
+    if not role:
+        subprocess.run(['runuser', '-u', 'postgres', '--', 'createuser', '--superuser', 'root'], check=True)
+    subprocess.run(['runuser', '-u', 'postgres', '--', 'createdb', '--owner=root', 'hl_license_install_fixture'], check=True)
+    fixture = Path(os.environ['HL_PANEL_LICENSE_FIXTURE_DIR'])
+    dsn = fixture/'install-dsn'
+    dsn.write_text('postgres:///hl_license_install_fixture?host=/var/run/postgresql&user=root')
+    dsn.chmod(0o600)
+    fixture_command = [str(fixture/'licensefixture'), '--fixture', str(fixture), '--dsn-file', str(dsn)]
+    issuer_log = open('fresh-install-issuer.log', 'w')
+    issuer_process = subprocess.Popen([*fixture_command, '--serve'], stdout=issuer_log, stderr=issuer_log)
+    atexit.register(issuer_process.terminate)
+    for _ in range(30):
+        assert issuer_process.poll() is None, 'Disposable issuer exited'
+        try:
+            urllib.request.urlopen('http://127.0.0.1:18712/healthz', timeout=1).close()
+            break
+        except urllib.error.HTTPError:
+            break  # Any HTTP response proves the real server is listening.
+        except OSError:
+            time.sleep(0.2)
+    else:
+        raise RuntimeError('Disposable issuer did not start')
+else:
+    seed_license('hl-panel-smoke.invalid', '/var/lib/hl-panel-license')
 
 with tempfile.TemporaryDirectory(prefix='hl-install-smoke-') as temporary:
     work = Path(temporary)
@@ -170,6 +202,20 @@ request('GET', '/auth/me', token=token, expected=401)
 request('POST', '/auth/login', {'username':username, 'password':password}, expected=401)
 session = login(replacement)
 assert session['user']['must_change_password'] is False
+
+if args.automatic_free:
+    license_status = request('GET', '/license/status', token=session['access_token'])
+    assert license_status['status'] == 'active' and license_status['management_allowed'] is True, license_status
+    assert license_status['tier'] == 'free' and license_status['limits'] == {'device_groups': 1, 'rules': 10}
+    assert not license_status.get('auto_registration'), 'Verified license is still pending'
+    identity = json.loads(Path('/var/lib/hl-panel-license/identity.json').read_text())
+    assert identity['auto_free'] is True and identity['domain'] == 'hl-panel-smoke.invalid'
+    assert '免费版已自动登记 HT' in transcript
+    registered = json.loads(subprocess.check_output([*fixture_command, '--check'], text=True))
+    assert registered['free_registration']['instance_id'] == identity['instance_id']
+    assert registered['audit_events'] > 0
+    # Service restart above must retain the original instance and only one row.
+    Path('fresh-install-license-result.json').write_text(json.dumps(registered, indent=2))
 overview = request('GET', '/overview', token=session['access_token'])
 assert overview['nodes'] == []
 assert overview['node_count'] == 0
@@ -212,5 +258,7 @@ Path('fresh-install-result.json').write_text(json.dumps({
     'panel_host_metrics': True,
     'web_update_socket_and_admin_authorization': True,
     'nginx_automatic_adaptation': 'Nginx 自动适配完成' in transcript,
+    'automatic_free_http01_real_issuer_and_postgresql': args.automatic_free,
+    'empty_identity_without_authorization_code': args.automatic_free,
 }, indent=2))
 print('FRESH_INSTALL_ACCEPTED: ' + args.credentials)

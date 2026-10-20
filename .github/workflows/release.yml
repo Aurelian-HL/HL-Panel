@@ -92,7 +92,8 @@ jobs:
           HL_LICENSE_TEST_DATABASE_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/postgres?sslmode=disable
         run: |
           go test ./...
-          go test -race ./internal/control/deploymentreceipts
+          go test -race ./internal/control/deploymentreceipts ./internal/panellicense
+          go test -race -v ./internal/panellicenseissuer
           go test -race ./internal/control/panelmigration ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/usage/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime ./internal/agent/engine ./internal/agent/usage ./internal/agent/probeecho ./internal/gateway/... ./internal/routing/endpointrouter
           go vet ./...
           for script in deploy/activate-panel-license.sh deploy/setup-panel-license.sh; do bash -n "$script"; done
@@ -301,11 +302,11 @@ jobs:
           CREDENTIALS: ${{ matrix.credentials }}
           EXPECT_NGINX_ADAPTATION: ${{ matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom' }}
         run: |
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" \
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
             HL_PANEL_EXPECT_NGINX_ADAPTATION="$EXPECT_NGINX_ADAPTATION" \
             python3 tests/install/fresh_install.py \
             --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG" \
-            --credentials "$CREDENTIALS"
+            --credentials "$CREDENTIALS" --automatic-free
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -313,6 +314,8 @@ jobs:
           path: |
             fresh-install.log
             fresh-install-result.json
+            fresh-install-issuer.log
+            fresh-install-license-result.json
   nginx-compatibility:
     needs: release
     runs-on: ubuntu-22.04
