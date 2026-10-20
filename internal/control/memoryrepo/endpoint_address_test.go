@@ -92,11 +92,15 @@ func TestBoundEndpointSyncsAddressAndRejectsChangesThatBreakBinding(t *testing.T
 	}
 	request.ListenPort = rule.ListenPort + 1
 	request.Revision = rule.Revision
-	_, _, err = forwardingService.UpdateForAdministrator(ctx, "admin-test", rule.ID, request, "change-port")
-	if !errors.Is(err, faults.ErrConflict) {
-		t.Fatalf("rule change detached the endpoint: %v", err)
+	changedRule, _, err := forwardingService.UpdateForAdministrator(ctx, "admin-test", rule.ID, request, "change-port")
+	if err != nil {
+		t.Fatalf("bound rule port change failed: %v", err)
 	}
-	_, _, err = rulegroups.NewService(store, nil).BatchForAdministrator(ctx, "admin-test", rulegroups.BatchRequest{Operation: rulegroups.BatchDelete, RuleIDs: []string{rule.ID}, ExpectedRevisions: map[string]int64{rule.ID: rule.Revision}}, "delete-rule")
+	changedPool, err = store.EndpointPool(ctx, pool.ID)
+	if err != nil || changedPool.Port != changedRule.ListenPort || changedPool.ID != pool.ID || changedPool.RuleID != rule.ID {
+		t.Fatalf("rule port change detached the endpoint: %v", err)
+	}
+	_, _, err = rulegroups.NewService(store, nil).BatchForAdministrator(ctx, "admin-test", rulegroups.BatchRequest{Operation: rulegroups.BatchDelete, RuleIDs: []string{rule.ID}, ExpectedRevisions: map[string]int64{rule.ID: changedRule.Revision}}, "delete-rule")
 	if err != nil {
 		t.Fatalf("rule deletion with unreferenced endpoint failed: %v", err)
 	}

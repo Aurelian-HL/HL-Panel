@@ -237,16 +237,11 @@ func (s *Store) UpdateForwardingRule(_ context.Context, input forwarding.UpdateI
 		}
 		event.Metadata["entry_network_defaulted"] = true
 	}
-	for _, pool := range s.endpointPools {
-		if pool.RuleID == item.ID && (pool.GroupID != item.EntryGroupID || pool.Port != item.ListenPort ||
-			(pool.Protocol == "vless" && item.EffectiveIngressProtocol() != forwarding.IngressVLESSReality) ||
-			(pool.Protocol == "tcp" && item.EffectiveIngressProtocol() != forwarding.IngressTCP) ||
-			(pool.Protocol == "socks5" && item.EffectiveIngressProtocol() != forwarding.IngressSOCKS5)) {
-			if autoNetwork {
-				delete(s.groupNetworks, item.EntryGroupID)
-			}
-			return forwarding.Rule{}, false, fmt.Errorf("%w: forwarding rule change would invalidate a bound service endpoint", faults.ErrConflict)
+	if err := s.validateBoundEndpointUpdateLocked(item); err != nil {
+		if autoNetwork {
+			delete(s.groupNetworks, item.EntryGroupID)
 		}
+		return forwarding.Rule{}, false, err
 	}
 	if privateKey != "" && !vlessruntime.RealityKeyMatchesPublicKey(privateKey, item.RealityPublicKey) {
 		if autoNetwork {
@@ -475,7 +470,13 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	if probe.UUID != "" {
 		s.protocolProbes[item.ID] = probe
 	}
+	// Rule and endpoint must agree before compiling any node configuration.
+	// Restore the endpoint and its health evidence if compilation fails.
+	restoreEndpoint := s.syncBoundEndpointPortLocked(storedItem, event.CreatedAt)
 	if err := s.recompileForwardingGroupsLocked(groups, event.CreatedAt); err != nil {
+		if restoreEndpoint != nil {
+			restoreEndpoint()
+		}
 		if hadPreviousTunnel {
 			s.reliableUDPTunnels[item.ID] = previousTunnel
 		} else {
