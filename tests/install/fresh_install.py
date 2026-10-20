@@ -22,6 +22,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from license_fixture import seed_license
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--archive-directory', required=True)
@@ -38,6 +39,7 @@ username = 'ci.operator' if custom else 'admin'
 # Test-only generated credential, never a real user's password.
 password = 'test-' + os.urandom(24).hex() if custom else '123456'
 replacement = 'test-' + os.urandom(24).hex()
+seed_license('hl-panel-smoke.invalid', '/var/lib/hl-panel-license')
 
 with tempfile.TemporaryDirectory(prefix='hl-install-smoke-') as temporary:
     work = Path(temporary)
@@ -69,8 +71,7 @@ os.execv(os.environ['HL_PANEL_REAL_CURL'], ['curl', *values])
                        HL_PANEL_REAL_CURL=real_curl)
     command = ['bash', str(repository / 'install.sh'),
                '--public-ip', '8.8.8.8', '--api-port', '19991', '--ip-https-port', '19443']
-    if custom:
-        command.extend(['--domain', 'hl-panel-smoke.invalid'])
+    command.extend(['--domain', 'hl-panel-smoke.invalid'])
     pid, terminal = pty.fork()
     if pid == 0:
         os.execve('/bin/bash', command, environment)

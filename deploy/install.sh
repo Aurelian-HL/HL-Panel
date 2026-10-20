@@ -15,7 +15,8 @@ PUBLIC_IP=""
 API_PORT="8080"
 IP_HTTPS_PORT="8443"
 LICENSE_ISSUER_URL=""
-LICENSE_CODE=""
+LICENSE_CODE_FILE=""
+LICENSE_STATE_DIR="/var/lib/hl-panel-license"
 LICENSE_DOMAIN=""
 LICENSE_INSTANCE_ID=""
 INSTALL_ROOT="/opt/hl-panel"
@@ -150,26 +151,23 @@ usage() {
                  [--domain DOMAIN] [--public-ip IPv4] [--api-port PORT]
                  [--ip-https-port PORT]
                  [--admin-username NAME] [--email EMAIL] [--password-stdin]
-                 [--license-issuer URL --license-code CODE]
-                 [--license-domain DOMAIN_OR_IP] [--license-instance-id ID]
+                 [--license-code-file /root/hl-license-code]
 
 选项：
   --repo              GitHub 仓库；默认 Aurelian-HL/HL-Panel
   --version           发布标签；默认 latest
-  --domain            面板域名；未指定时询问，回车使用 IP 入口
+  --domain            授权的面板管理域名；必填，未指定时在终端询问
   --public-ip         指定本机公网 IPv4；自动检测失败时必须提供
   --api-port          API 本机监听端口；默认 8080，已有服务占用时可指定 8081
   --ip-https-port     IP HTTPS 独立监听端口；默认 8443，不得使用 80、443 或 API 端口
   --admin-username    首次管理员账号；默认 admin
   --email             Let's Encrypt 证书通知邮箱，可选
   --password-stdin    从标准输入读取一行管理员密码；须明确指定域名和账号
-  --license-issuer    授权签发面板地址，例如 https://panel.example.com
-  --license-code      一次性授权码；只写入本机受限文件，不写入日志
-  --license-domain    授权绑定域名或 IP；省略时使用 --domain 或本机公网 IP
-  --license-instance-id  可选的稳定实例 ID；省略时由安装器生成
+  --license-code-file  从受限文件读取授权码；省略时在终端隐藏输入，不支持明文命令行参数
   --migration-receiver TASK_ID  自动迁移专用：首次启动前隔离新机业务写入
   -h, --help          显示帮助
 
+安装必须提供 HT 发放的域名授权码并验证 DNS TXT；授权信任由发行包固定。
 安装只创建 HL-panel 独立实例，不导入或删除其他面板数据。
 安装会询问管理员账号、密码；回车采用 admin / 123456。
 使用默认密码时首次登录必须在个人中心修改；自定义密码至少 8 个字符。
@@ -187,10 +185,8 @@ while (($#)); do
     --admin-username) (($# >= 2)) || fail "--admin-username 缺少参数"; ADMIN_USERNAME="$2"; ADMIN_USERNAME_EXPLICIT=true; shift 2 ;;
     --email) (($# >= 2)) || fail "--email 缺少参数"; EMAIL="$2"; shift 2 ;;
     --password-stdin) PASSWORD_STDIN=true; shift ;;
-    --license-issuer) (($# >= 2)) || fail "--license-issuer 缺少参数"; LICENSE_ISSUER_URL="$2"; shift 2 ;;
-    --license-code) (($# >= 2)) || fail "--license-code 缺少参数"; LICENSE_CODE="$2"; shift 2 ;;
-    --license-domain) (($# >= 2)) || fail "--license-domain 缺少参数"; LICENSE_DOMAIN="$2"; shift 2 ;;
-    --license-instance-id) (($# >= 2)) || fail "--license-instance-id 缺少参数"; LICENSE_INSTANCE_ID="$2"; shift 2 ;;
+    --license-code-file) (($# >= 2)) || fail "--license-code-file 缺少参数"; LICENSE_CODE_FILE="$2"; shift 2 ;;
+    --license-issuer|--license-code|--license-domain|--license-instance-id) fail "旧授权参数已停用；请使用 --domain 和 --license-code-file，签发服务由正式发行包固定" ;;
     --migration-receiver) (($# >= 2)) || fail "--migration-receiver 缺少参数"; MIGRATION_RECEIVER="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) fail "未知参数：$1" ;;
@@ -257,10 +253,6 @@ valid_public_ipv4() {
 }
 if [[ -n "$PUBLIC_IP" ]]; then
   valid_public_ipv4 "$PUBLIC_IP" || fail "--public-ip 必须是公网 IPv4 地址"
-fi
-if [[ -n "$LICENSE_ISSUER_URL" || -n "$LICENSE_CODE" || -n "$LICENSE_DOMAIN" || -n "$LICENSE_INSTANCE_ID" ]]; then
-  [[ "$LICENSE_ISSUER_URL" =~ ^https?://[^[:space:]/]+([:/].*)?$ ]] || fail "--license-issuer 必须是 http(s) URL"
-  [[ -n "$LICENSE_CODE" && "$LICENSE_CODE" != *[$' \t\r\n']* && ${#LICENSE_CODE} -ge 16 && ${#LICENSE_CODE} -le 512 ]] || fail "--license-code 格式无效"
 fi
 if ! command -v apt-get >/dev/null 2>&1; then fail "当前仅支持 Debian/Ubuntu 的 apt 安装流程"; fi
 if [[ ! -r /etc/os-release ]] || ! grep -Eq '^(ID=debian|ID=ubuntu|ID_LIKE=.*debian)' /etc/os-release; then
@@ -472,8 +464,8 @@ find_nginx_name_conflicts() {
 }
 
 if [[ "$DOMAIN_EXPLICIT" != true ]]; then
-  read -r -p "设置面板域名 [回车使用 IP 访问]：" DOMAIN_INPUT </dev/tty
-  DOMAIN="${DOMAIN_INPUT:-hl-panel.invalid}"
+  read -r -p "设置面板管理域名 [必填，需完成授权 DNS TXT 验证]：" DOMAIN_INPUT </dev/tty
+  DOMAIN="$DOMAIN_INPUT"
   unset DOMAIN_INPUT
 fi
 [[ "$DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]] || fail "域名格式无效"
@@ -559,7 +551,10 @@ cleanup() {
     if [[ "$STATE_DIR_CREATED" == true ]]; then rm -rf -- "$STATE_DIR"; fi
     if [[ "$ACME_WEBROOT_CREATED" == true ]]; then rm -rf -- "$ACME_WEBROOT"; fi
     if [[ "$INSTALL_ROOT_CREATED" == true ]]; then rm -rf -- "$INSTALL_ROOT"; fi
-    if [[ "$USER_CREATED" == true ]]; then userdel hlpanel >/dev/null 2>&1 || true; fi
+    if [[ "$USER_CREATED" == true ]]; then
+      if declare -F license_state_permissions >/dev/null && [[ -d "$LICENSE_STATE_DIR" && ! -L "$LICENSE_STATE_DIR" ]]; then license_state_permissions "$LICENSE_STATE_DIR" root; fi
+      userdel hlpanel >/dev/null 2>&1 || true
+    fi
   fi
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
     rm -rf -- "$WORK_DIR"
@@ -594,19 +589,8 @@ if [[ -z "$PUBLIC_IP" ]]; then
   valid_public_ipv4 "$PUBLIC_IP" || fail "无法确认本机公网 IPv4；请重新运行并传入 --public-ip 公网IPv4"
 fi
 
-if [[ -n "$LICENSE_ISSUER_URL" || -n "$LICENSE_CODE" || -n "$LICENSE_DOMAIN" || -n "$LICENSE_INSTANCE_ID" ]]; then
-  [[ -n "$LICENSE_ISSUER_URL" && -n "$LICENSE_CODE" ]] || fail "授权安装必须同时提供 --license-issuer 和 --license-code"
-  if [[ -z "$LICENSE_DOMAIN" ]]; then
-    if [[ "$DOMAIN" != "hl-panel.invalid" ]]; then LICENSE_DOMAIN="$DOMAIN"; else LICENSE_DOMAIN="$PUBLIC_IP"; fi
-  fi
-  if [[ "$LICENSE_DOMAIN" != "$PUBLIC_IP" && ! "$LICENSE_DOMAIN" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]; then
-    valid_public_ipv4 "$LICENSE_DOMAIN" || fail "--license-domain 必须是域名或公网 IPv4"
-  fi
-  if [[ -z "$LICENSE_INSTANCE_ID" ]]; then
-    LICENSE_INSTANCE_ID="hlp-$(openssl rand -hex 16)"
-  fi
-  [[ "$LICENSE_INSTANCE_ID" =~ ^[A-Za-z0-9._:-]{8,128}$ ]] || fail "--license-instance-id 格式无效"
-fi
+[[ "$DOMAIN" != "hl-panel.invalid" ]] || fail "授权安装必须提供管理域名，不能仅使用 IP"
+LICENSE_DOMAIN="$DOMAIN"
 
 if [[ -x /usr/sbin/nginx ]]; then
   NGINX_CONFIG="$(/usr/sbin/nginx -T 2>/dev/null)" || fail "现有 Nginx 配置检查失败，未创建 HL-panel 文件"
@@ -650,9 +634,14 @@ RELEASE_DIR="$WORK_DIR/release"
 grep -Fq '__HL_PANEL_IP_HTTPS_PORT__' "$RELEASE_DIR/deploy/nginx/hl-panel.conf.template" \
   || fail "所选 release 不支持独立 IP HTTPS 端口；请使用包含此功能的新版 release 和同标签 install.sh"
 
+[[ -f "$RELEASE_DIR/deploy/activate-panel-license.sh" ]] || fail "所选发行包缺少授权安装组件"
+source "$RELEASE_DIR/deploy/activate-panel-license.sh"
+activate_panel_license "$RELEASE_DIR/bin/control-api" "$DOMAIN" "$LICENSE_STATE_DIR" "$LICENSE_CODE_FILE"
+
 log "创建 HL-panel 独立目录和服务账号"
 useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin hlpanel
 USER_CREATED=true
+license_state_permissions "$LICENSE_STATE_DIR" hlpanel
 mkdir "$INSTALL_ROOT"
 INSTALL_ROOT_CREATED=true
 chown root:root "$INSTALL_ROOT"
@@ -710,20 +699,12 @@ CONTROL_BOOTSTRAP_ADMIN_USERNAME=$ADMIN_USERNAME
 CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH="$ADMIN_HASH"
 CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_FILE=$CONFIG_DIR/customer-password-fingerprint-key
 EOF
-if [[ -n "$LICENSE_ISSUER_URL" ]]; then
-  install -o root -g hlpanel -m 0640 /dev/null "$CONFIG_DIR/license-code"
-  printf '%s\n' "$LICENSE_CODE" > "$CONFIG_DIR/license-code"
-  printf '%s\n' "$LICENSE_INSTANCE_ID" > "$CONFIG_DIR/license-instance-id"
-  chown root:hlpanel "$CONFIG_DIR/license-code" "$CONFIG_DIR/license-instance-id"
-  chmod 0640 "$CONFIG_DIR/license-code" "$CONFIG_DIR/license-instance-id"
-  cat >> "$WORK_DIR/control-api.env" <<EOF
-CONTROL_LICENSE_ISSUER_URL=$LICENSE_ISSUER_URL
-CONTROL_LICENSE_CODE_FILE=$CONFIG_DIR/license-code
+cat >> "$WORK_DIR/control-api.env" <<EOF
+CONTROL_LICENSE_V2=true
 CONTROL_LICENSE_DOMAIN=$LICENSE_DOMAIN
 CONTROL_LICENSE_INSTANCE_ID=$LICENSE_INSTANCE_ID
-CONTROL_LICENSE_ENFORCE=true
+CONTROL_LICENSE_STATE_DIR=$LICENSE_STATE_DIR
 EOF
-fi
 unset ADMIN_HASH
 install -o root -g hlpanel -m 0640 "$WORK_DIR/control-api.env" "$CONFIG_DIR/control-api.env"
 

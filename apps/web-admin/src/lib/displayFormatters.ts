@@ -23,6 +23,11 @@ export function formatRelativeTime(value: string | null | undefined): string {
 export function displayError(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   const translations: Array<[RegExp, string]> = [
+    [/customer has forwarding rules/i, '该用户仍有关联转发规则，请先删除或转移规则，再删除用户'],
+    [/customer has subscriptions/i, '该用户仍有关联订阅，请先删除订阅，再删除用户'],
+    [/customer has VLESS identities/i, '该用户仍有线路身份绑定，请先处理对应转发规则和身份，再删除用户'],
+    [/user group has customers/i, '该用户组内仍有用户，请先将用户移到其他组或删除用户'],
+    [/user group is referenced by a device group/i, '该用户组仍被设备组引用，请先在设备组中解除关联'],
     [/delete customer rules first/i, '该用户仍有关联转发规则，请先删除或转移规则，再删除用户'],
     [/customer still has subscriptions/i, '该用户仍有关联订阅，请先处理订阅，再删除用户'],
     [/customer still has VLESS bindings/i, '该用户仍有线路身份绑定，请先解除绑定，再删除用户'],

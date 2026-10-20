@@ -21,8 +21,8 @@ import (
 )
 
 type RealityDefaults struct {
-	ServerName  string
-	Destination string
+	ServerName  string `json:"server_name"`
+	Destination string `json:"destination"`
 }
 
 func NormalizeRealityDefaults(value RealityDefaults) (RealityDefaults, error) {
@@ -56,10 +56,11 @@ func NormalizeRealityDefaults(value RealityDefaults) (RealityDefaults, error) {
 }
 
 type Service struct {
-	repository    Repository
-	now           func() time.Time
-	reality       RealityDefaults
-	probeEchoPort int
+	repository     Repository
+	now            func() time.Time
+	reality        RealityDefaults
+	realityTargets []RealityDefaults
+	probeEchoPort  int
 }
 
 type ServiceOption func(*Service)
@@ -127,6 +128,9 @@ func (s *Service) create(ctx context.Context, actorType, actorID string, request
 		return Rule{}, false, err
 	}
 	digest := sha256.Sum256(data)
+	if err := s.selectCreationRealityTarget(&request); err != nil {
+		return Rule{}, false, err
+	}
 	autoReality := automaticRealityKeys(request)
 	privateKey, err := s.fillAutomaticReality(&request)
 	if err != nil {

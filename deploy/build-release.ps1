@@ -14,12 +14,22 @@ param(
 
     [string] $GostBundleDirectory,
 
-    [string] $GostManifestSha256
+    [string] $GostManifestSha256,
+
+    [string] $LicenseIssuerURL,
+    [string] $LicenseIssuerID,
+    [string] $LicensePublicKeys
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if ([string]::IsNullOrWhiteSpace($LicenseIssuerURL) -or [string]::IsNullOrWhiteSpace($LicenseIssuerID) -or [string]::IsNullOrWhiteSpace($LicensePublicKeys)) { throw 'Commercial release requires LicenseIssuerURL, LicenseIssuerID and LicensePublicKeys (key ID to raw base64url public key JSON)' }
+if ($LicenseIssuerURL -notmatch '^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$' -or $LicenseIssuerID -notmatch '^https://[A-Za-z0-9./:_-]+$') { throw 'Invalid pinned issuer identity or URL' }
+$parsedLicenseKeys = $LicensePublicKeys | ConvertFrom-Json
+if ($parsedLicenseKeys -isnot [PSCustomObject] -or @($parsedLicenseKeys.PSObject.Properties).Count -eq 0) { throw 'At least one pinned issuer public key is required' }
+foreach ($entry in $parsedLicenseKeys.PSObject.Properties) { if ($entry.Name -notmatch '^[A-Za-z0-9_-]+$' -or $entry.Value -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'Invalid Ed25519 issuer public key' } }
+$licenseKeysB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($parsedLicenseKeys | ConvertTo-Json -Compress))).TrimEnd('=').Replace('+', '-').Replace('/', '_')
 $hasGostBundle = -not [string]::IsNullOrWhiteSpace($GostBundleDirectory)
 $hasGostManifest = -not [string]::IsNullOrWhiteSpace($GostManifestSha256)
 if ($hasGostBundle -ne $hasGostManifest) {
@@ -38,6 +48,30 @@ if ($hasGostBundle) {
 }
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+# Share the official CI trust validator, including canonical Ed25519 decoding
+# and rejection of the disposable test-only signing identity.
+$trustEnvironment = @{
+    HL_PANEL_LICENSE_ISSUER_URL = $LicenseIssuerURL
+    HL_PANEL_LICENSE_ISSUER_ID = $LicenseIssuerID
+    HL_PANEL_LICENSE_PUBLIC_KEYS_B64 = $licenseKeysB64
+}
+$previousTrustEnvironment = @{}
+try {
+    foreach ($name in $trustEnvironment.Keys) {
+        $previousTrustEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        [Environment]::SetEnvironmentVariable($name, $trustEnvironment[$name], 'Process')
+    }
+    $licenseFlags = & $PythonExecutable (Join-Path $PSScriptRoot 'build-license-trust.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Official license trust validation failed' }
+} finally {
+    foreach ($name in $previousTrustEnvironment.Keys) {
+        if ($null -eq $previousTrustEnvironment[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            [Environment]::SetEnvironmentVariable($name, $previousTrustEnvironment[$name], 'Process')
+        }
+    }
+}
 if ([IO.Path]::IsPathRooted($ReleaseDirectory)) {
     $releasePath = [IO.Path]::GetFullPath($ReleaseDirectory)
 } else {
@@ -97,7 +131,7 @@ try {
     foreach ($target in $targets) {
         $outputPath = Join-Path $stagePath ('bin/{0}' -f $target.Name)
         $buildFlags = @('-trimpath')
-        if ($target.Name -eq 'control-api') { $buildFlags += @('-ldflags', "-X main.platformVersion=$Version") }
+        if ($target.Name -eq 'control-api') { $buildFlags += @('-ldflags', "-X main.platformVersion=$Version $licenseFlags") }
         if ($target.Name -eq 'edge-agent') { $buildFlags += @('-ldflags', "-X github.com/hongle/hl-panel/internal/agent/config.DefaultAgentVersion=$Version") }
         & $goCommand.Source build @buildFlags -o $outputPath $target.Package
         if ($LASTEXITCODE -ne 0) {
@@ -109,8 +143,12 @@ try {
 
     $deploymentFiles = @(
         'README.md',
+        'panel-license.md',
         'backup-and-restore.md',
         'install.sh',
+        'activate-panel-license.sh',
+        'setup-panel-license.sh',
+        'check-panel-license.py',
         'install-node.sh',
         'reinstall-node.py',
         'configure-node-bbr2.py',

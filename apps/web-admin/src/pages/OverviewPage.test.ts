@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+vi.mock('@/api/panelLicense', () => ({ panelLicenseApi: { status: vi.fn().mockResolvedValue({ enabled: false }) } }))
 
 const mocked = vi.hoisted(() => ({ getOverview: vi.fn(), loadSite: vi.fn(), controlPanel: vi.fn(), getPanelControl: vi.fn() }))
 

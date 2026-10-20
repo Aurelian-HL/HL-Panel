@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Two real HTTP-triggered upgrades against a published release on a CI VM.
+"""Two real HTTP-triggered upgrades of an isolated signed candidate on a CI VM.
 
 The baseline uses this source with an older build version, installed using the
-existing isolated installer transport. During upgrades nothing is redirected:
-GitHub metadata, tagged updater, assets, SQL, systemd and health checks are real.
+existing isolated installer transport. Only fixed GitHub metadata, tagged updater
+and archive URLs are mapped to the isolated candidate. HTTP API, Unix root worker,
+SQL, systemd, authorization preflight and health checks execute normally.
 Never run this script against a user's panel.
 """
 import argparse
@@ -50,11 +51,41 @@ if args.prepare:
             for path in stage.iterdir():
                 output.add(path, arcname=path.name)
         (args.output_directory/'hl-panel-linux-amd64.tar.gz.sha256').write_text(hashlib.sha256(target.read_bytes()).hexdigest()+'  '+target.name+'\n')
-    print('Prepared isolated older build; upgrade will use real published assets')
+    print('Prepared isolated older build; upgrade will use isolated signed assets')
     raise SystemExit(0)
 
 assert os.geteuid() == 0 and os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true'
 assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+assert args.archive_directory and os.environ.get('HL_PANEL_LICENSE_FIXTURE_DIR')
+candidate = args.archive_directory.resolve()
+metadata = {'tag_name':args.version,'draft':False,'prerelease':False,'published_at':'2026-01-01T00:00:00Z',
+            'assets':[{'name':name} for name in ('hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256')]}
+# Inject transport into this disposable installation only, never the archives.
+# Both root worker imports and its child updater receive the same bounded map.
+tagged_script = candidate/'isolated-tagged-updater.py'
+injection = f'''
+_ci_metadata = {json.dumps(metadata).encode()!r}
+_ci_files = {{
+    'https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/{args.version}/deploy/update.py': {str(tagged_script)!r},
+    REPO + '/releases/download/{args.version}/hl-panel-linux-amd64.tar.gz': {str(candidate/'hl-panel-linux-amd64.tar.gz')!r},
+    REPO + '/releases/download/{args.version}/hl-panel-linux-amd64.tar.gz.sha256': {str(candidate/'hl-panel-linux-amd64.tar.gz.sha256')!r},
+}}
+def request(url, limit=2*1024*1024):
+    if url in (API + '/releases/latest', API + '/releases/tags/{args.version}'):
+        return _ci_metadata
+    if url not in _ci_files:
+        raise UpdateError('Unexpected isolated release URL')
+    data = Path(_ci_files[url]).read_bytes()
+    if len(data) > limit:
+        raise UpdateError('Isolated release response too large')
+    return data
+
+'''
+source = (repository/'deploy/update.py').read_text()
+guard = "if __name__=='__main__':"
+assert source.count(guard) == 1
+isolated_source = source.replace(guard, injection+guard)
+tagged_script.write_text(isolated_source)
 base = 'http://127.0.0.1:19991/api/v1'
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -93,6 +124,7 @@ def fingerprint():
 protected = fingerprint()
 results = []
 for round_number in (1, 2):
+    Path('/opt/hl-panel/current/deploy/update.py').write_text(isolated_source)
     identifier = str(uuid.uuid4())
     started = time.monotonic()
     payload = {'version':args.version, 'administrator_password':password}
@@ -112,7 +144,7 @@ for round_number in (1, 2):
         task = status['task']
         assert task['id'] == identifier
         if task['state'] == 'failed':
-            raise AssertionError('Published web update failed: '+task['message'])
+            raise AssertionError('Isolated web update failed: '+task['message'])
         if task['state'] == 'succeeded':
             break
         time.sleep(2)
@@ -135,6 +167,6 @@ for round_number in (1, 2):
         assert request('GET', '/device-groups', token=token) == groups
 
 report = Path('web-update-result.json')
-report.write_text(json.dumps({'real_published_github_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True}, indent=2)+'\n')
+report.write_text(json.dumps({'real_published_github_transport':False,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True}, indent=2)+'\n')
 report.chmod(0o644)
 print('WEB_UPDATE_ACCEPTED_TWO_ROUNDS')

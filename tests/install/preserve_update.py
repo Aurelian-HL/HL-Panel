@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tarfile
+import tempfile
 import sys
 import time
 import urllib.error
@@ -75,6 +77,18 @@ def fingerprint():
                 values[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
     return values
 
+# Exercise the real legacy preparation path before changing the live version.
+# Candidate trust is disposable and its private key stays outside the archive.
+from license_fixture import seed_license
+seed_license('hl-panel-smoke.invalid', '/var/lib/hl-panel-license')
+package = archive/'hl-panel-linux-amd64.tar.gz'
+assert hashlib.sha256(package.read_bytes()).hexdigest() == (archive/'hl-panel-linux-amd64.tar.gz.sha256').read_text().split()[0]
+with tempfile.TemporaryDirectory(prefix='hl-license-preflight-') as temporary:
+    stage = Path(temporary)
+    stage.chmod(0o755)
+    with tarfile.open(package, 'r:gz') as source:
+        source.extractall(stage, filter='data')
+    subprocess.run(['bash', str(stage/'deploy/setup-panel-license.sh'), '--domain', 'hl-panel-smoke.invalid'], check=True)
 protected = fingerprint()
 spec = importlib.util.spec_from_file_location('hl_panel_test_updater',repository/'deploy/update.py')
 update = importlib.util.module_from_spec(spec)

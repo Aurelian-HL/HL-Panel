@@ -5,6 +5,7 @@ import { businessApi, type Customer, type UserGroup } from '@/api/business'
 import StatePanel from '@/components/StatePanel.vue'
 import CustomerEditor from '@/features/customers/CustomerEditor.vue'
 import CustomerInventory from '@/features/customers/CustomerInventory.vue'
+import DeleteCustomerResourceDialog from '@/features/customers/DeleteCustomerResourceDialog.vue'
 import { toast } from '@/composables/toast'
 import { displayError } from '@/lib/displayFormatters'
 const customers = ref<Customer[]>([])
@@ -15,6 +16,7 @@ const query = ref('')
 const filter = ref('all')
 const editor = ref(false)
 const selected = ref<Customer | null>(null)
+const deleting = ref<Customer | null>(null)
 const filtered = computed(() => customers.value.filter((item) => `${item.username} ${item.display_name}`.toLowerCase().includes(query.value.trim().toLowerCase()) && (filter.value === 'all' || item.effective_status === filter.value)))
 async function load(): Promise<void> {
   loading.value = true; error.value = ''
@@ -23,6 +25,7 @@ async function load(): Promise<void> {
 }
 function open(customer: Customer | null): void { selected.value = customer; editor.value = true }
 async function saved(customer: Customer): Promise<void> { editor.value = false; toast.success('用户已保存', customer.display_name || customer.username); await load() }
+async function deleted(): Promise<void> { deleting.value = null; toast.success('用户已删除'); await load() }
 onMounted(load)
 </script>
 <template>
@@ -33,8 +36,9 @@ onMounted(load)
     <StatePanel v-else-if="error && !customers.length" state="error" title="用户加载失败" :message="error" @retry="load" />
     <StatePanel v-else-if="!customers.length" state="empty" title="暂无用户" message="点击“添加用户”创建账号。" />
     <StatePanel v-else-if="!filtered.length" state="empty" title="没有匹配的用户" message="调整搜索或授权状态筛选。" />
-    <CustomerInventory v-else :customers="filtered" :groups="groups" @edit="open" />
+    <CustomerInventory v-else :customers="filtered" :groups="groups" @edit="open" @delete="deleting = $event" />
     <p v-if="error && customers.length" class="inline-warning">刷新失败，保留上次数据：{{ error }}</p>
     <CustomerEditor v-if="editor" :customer="selected" :groups="groups" @close="editor = false" @saved="saved" />
+    <DeleteCustomerResourceDialog v-if="deleting" kind="customer" :item="deleting" :name="deleting.display_name || deleting.username" @close="deleting = null" @deleted="deleted" />
   </div>
 </template>

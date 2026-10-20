@@ -18,6 +18,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/licensing"
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/protocolprobe"
+	"github.com/hongle/hl-panel/internal/panellicense"
 	"github.com/hongle/hl-panel/internal/securefile"
 )
 
@@ -46,6 +47,7 @@ type runtimeConfig struct {
 	LicenseInstanceID              string
 	LicenseRenewInterval           time.Duration
 	LicenseHTTPTimeout             time.Duration
+	PanelLicense                   *panellicense.Client
 }
 
 func loadRuntimeConfig() (runtimeConfig, error) {
@@ -150,6 +152,17 @@ func loadRuntimeConfig() (runtimeConfig, error) {
 }
 
 func loadLicenseConfig(configuration *runtimeConfig) error {
+	if signedLicenseEnabled() {
+		client, err := loadSignedLicense()
+		if err != nil {
+			// Fail closed for management, preserving subscriptions and node
+			// reports after an older updater switches the binary prematurely.
+			client = panellicense.RestrictedClient()
+		}
+		configuration.PanelLicense = client
+		configuration.LicenseEnforce = true
+		return nil
+	}
 	issuer := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_ISSUER_URL"))
 	code := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_CODE"))
 	codeFile := strings.TrimSpace(os.Getenv("CONTROL_LICENSE_CODE_FILE"))

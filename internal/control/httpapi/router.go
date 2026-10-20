@@ -35,6 +35,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/control/vlesssetup"
+	"github.com/hongle/hl-panel/internal/panellicense"
 )
 
 type PlatformInfo struct {
@@ -70,11 +71,13 @@ type API struct {
 	nezha              *nezhamonitor.Service
 	hostGeo            *hostgeo.Service
 	targetProbe        *targetprobe.Service
+	realityProbe       *targetprobe.RealityService
 	releases           *releases.Service
 	migration          *migrationbackup.Service
 	panelUpdate        *panelupdate.Service
 	automaticMigration *panelmigration.Service
 	licensing          *licensing.Service
+	panelLicense       *panellicense.Client
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {
@@ -91,6 +94,10 @@ func WithLicensing(service *licensing.Service) Option {
 
 func WithTargetProbe(service *targetprobe.Service) Option {
 	return func(api *API) { api.targetProbe = service }
+}
+
+func WithRealityProbe(service *targetprobe.RealityService) Option {
+	return func(api *API) { api.realityProbe = service }
 }
 
 func WithNezha(service *nezhamonitor.Service) Option {
@@ -186,7 +193,8 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
-	if api.licensing != nil {
+	api.registerPanelLicenseRoutes(mux)
+	if api.licensing != nil && api.panelLicense == nil {
 		mux.HandleFunc("GET /api/v1/license", api.requireAdministrator(api.licenseStatus))
 		mux.HandleFunc("POST /api/v1/license/codes", api.requireAdministrator(api.issueLicenseCode))
 		mux.HandleFunc("GET /api/v1/license/codes", api.requireAdministrator(api.listLicenseCodes))

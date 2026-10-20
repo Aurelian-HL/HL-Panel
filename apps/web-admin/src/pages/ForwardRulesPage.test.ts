@@ -19,6 +19,8 @@ const mocked = vi.hoisted(() => ({
   previewRuleImport: vi.fn(),
   importRules: vi.fn(),
   exportRules: vi.fn(),
+  realityTargets: vi.fn(),
+  probeReality: vi.fn(),
 }))
 vi.mock('@/api/business', () => ({ businessApi: mocked }))
 const mockedUsage = vi.hoisted(() => ({ query: vi.fn() }))
@@ -50,6 +52,7 @@ beforeEach(() => {
   mocked.deviceGroups.mockResolvedValue({ items: [device] })
   mocked.groupNetworks.mockResolvedValue({ items: [network] })
   mocked.ruleGroups.mockResolvedValue({ items: [] })
+  mocked.realityTargets.mockResolvedValue({ items: [] })
   mocked.exportRules.mockResolvedValue({ schema_version: 'nyvp.forwarding-rules/v1', exported_at: '2026-10-04T00:00:00Z', rules: [] })
 })
 afterEach(() => { config.global.plugins = [] })

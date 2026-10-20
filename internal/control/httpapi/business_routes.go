@@ -8,12 +8,15 @@ func (api *API) registerBusinessRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/v1/customers/{id}", api.requireAdministrator(api.getCustomer))
 		mux.HandleFunc("POST /api/v1/customers", api.requireAdministrator(api.saveCustomer))
 		mux.HandleFunc("PUT /api/v1/customers/{id}", api.requireAdministrator(api.saveCustomer))
+		mux.HandleFunc("DELETE /api/v1/customers/{id}", api.requireAdministrator(api.deleteCustomer))
 		mux.HandleFunc("GET /api/v1/user-groups", api.requireAdministrator(api.listUserGroups))
 		mux.HandleFunc("GET /api/v1/user-groups/{id}", api.requireAdministrator(api.getUserGroup))
 		mux.HandleFunc("POST /api/v1/user-groups", api.requireAdministrator(api.saveUserGroup))
 		mux.HandleFunc("PUT /api/v1/user-groups/{id}", api.requireAdministrator(api.saveUserGroup))
+		mux.HandleFunc("DELETE /api/v1/user-groups/{id}", api.requireAdministrator(api.deleteUserGroup))
 	}
 	if api.forwarding != nil {
+		mux.HandleFunc("GET /api/v1/forwarding-reality-targets", api.requireAdministrator(api.listRealityTargets))
 		mux.HandleFunc("POST /api/v1/customers/{id}/forwarding-rules", api.requireAdministrator(api.createCustomerForwardingRule))
 		mux.HandleFunc("GET /api/v1/forwarding-rules", api.requireAdministrator(api.listForwardingRules))
 		mux.HandleFunc("GET /api/v1/forwarding-rules/export", api.requireAdministrator(api.exportForwardingRules))
@@ -26,6 +29,9 @@ func (api *API) registerBusinessRoutes(mux *http.ServeMux) {
 	}
 	if api.targetProbe != nil {
 		mux.HandleFunc("POST /api/v1/forwarding-target-probes", api.requireAdministrator(api.probeForwardingTarget))
+	}
+	if api.realityProbe != nil {
+		mux.HandleFunc("POST /api/v1/forwarding-reality-target-probes", api.requireAdministrator(api.probeRealityTarget))
 	}
 	if api.ruleGroups != nil {
 		mux.HandleFunc("GET /api/v1/rule-groups", api.requireAdministrator(api.listRuleGroups))

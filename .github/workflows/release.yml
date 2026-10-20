@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Existing release tag to build
+        description: Existing release tag, or candidate version when verification_only is true
         required: true
         default: v0.1.1
         type: string
       verification_only:
-        description: Repeat all installation and forwarding checks without publishing again
+        description: Verify the selected workflow ref without creating a tag or publishing
         required: false
         default: false
         type: boolean
@@ -41,12 +41,14 @@ jobs:
       tag: ${{ steps.release_ref.outputs.tag }}
       commit: ${{ steps.release_ref.outputs.commit }}
     steps:
-      - name: Resolve existing release tag
+      - name: Resolve release tag or isolated verification commit
         id: release_ref
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.version || github.ref_name }}
+          VERIFICATION_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.verification_only == true }}
+          VERIFICATION_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           tag="$RELEASE_TAG"
@@ -54,12 +56,18 @@ jobs:
             echo 'Release tag must start with v and a digit and contain only letters, digits, dots, underscores, or hyphens.' >&2
             exit 1
           fi
-          remote_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref')
-          if [[ "$remote_ref" != "refs/tags/$tag" ]]; then
-            echo 'The requested release tag does not exist in this repository.' >&2
-            exit 1
+          if [[ "$VERIFICATION_ONLY" == true ]]; then
+            # Manual acceptance pins this run's selected source commit. No tag
+            # is created, and the publish job is disabled for this entire run.
+            commit="$VERIFICATION_COMMIT"
+          else
+            remote_ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.ref')
+            if [[ "$remote_ref" != "refs/tags/$tag" ]]; then
+              echo 'The requested release tag does not exist in this repository.' >&2
+              exit 1
+            fi
+            commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')
           fi
-          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$tag" --jq '.sha')
           if [[ ! "$commit" =~ ^[0-9a-f]{40}$ ]]; then
             echo 'The release tag did not resolve to a commit.' >&2
             exit 1
@@ -81,13 +89,17 @@ jobs:
         env:
           NYVP_TEST_POSTGRES_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/nyvp_release_test?sslmode=disable
           NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
+          HL_LICENSE_TEST_DATABASE_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/postgres?sslmode=disable
         run: |
           go test ./...
           go test -race ./internal/control/deploymentreceipts
           go test -race ./internal/control/panelmigration ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/usage/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime ./internal/agent/engine ./internal/agent/usage ./internal/agent/probeecho ./internal/gateway/... ./internal/routing/endpointrouter
           go vet ./...
-          bash -n install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh
-          sh -n deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh
+          for script in deploy/activate-panel-license.sh deploy/setup-panel-license.sh; do bash -n "$script"; done
+          python3 -m py_compile deploy/check-panel-license.py deploy/build-license-trust.py tests/install/license_fixture.py
+          python3 tests/install/test_panel_license.py
+          for script in install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh; do bash -n "$script"; done
+          for script in deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh; do sh -n "$script"; done
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
           python3 -m py_compile tests/install/fresh_install.py
           python3 -m py_compile tests/install/prepare_ci_apt.py
@@ -144,13 +156,18 @@ jobs:
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
+          HL_PANEL_LICENSE_ISSUER_URL: ${{ vars.HL_PANEL_LICENSE_ISSUER_URL }}
+          HL_PANEL_LICENSE_ISSUER_ID: ${{ vars.HL_PANEL_LICENSE_ISSUER_ID }}
+          HL_PANEL_LICENSE_PUBLIC_KEYS_B64: ${{ vars.HL_PANEL_LICENSE_PUBLIC_KEYS_B64 }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/hl-panel-release"
           mkdir -p "$release/bin" "$release/web-admin" "$release/deploy"
           export CGO_ENABLED=0 GOOS=linux GOARCH=amd64
           build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG -X main.platformBuildTime=$build_time" -o "$release/bin/control-api" ./apps/control-api
+          license_flags=$(python3 deploy/build-license-trust.py)
+          go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG -X main.platformBuildTime=$build_time $license_flags" -o "$release/bin/control-api" ./apps/control-api
+          "$release/bin/control-api" license trust
           go build -trimpath -o "$release/bin/usage-migrate" ./apps/usage-migrate
           go build -trimpath -ldflags "-X github.com/hongle/hl-panel/internal/agent/config.DefaultAgentVersion=$RELEASE_TAG" -o "$release/bin/edge-agent" ./apps/edge-agent
           manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
@@ -163,8 +180,12 @@ jobs:
           cp -R apps/web-admin/dist/. "$release/web-admin/"
           deployment_files=(
             deploy/README.md
+            deploy/panel-license.md
             deploy/backup-and-restore.md
             deploy/install.sh
+            deploy/activate-panel-license.sh
+            deploy/setup-panel-license.sh
+            deploy/check-panel-license.py
             deploy/install-node.sh
             deploy/reinstall-node.py
             deploy/configure-node-bbr2.py
@@ -214,6 +235,34 @@ jobs:
           path: |
             ${{ runner.temp }}/hl-panel-linux-amd64.tar.gz
             ${{ runner.temp }}/hl-panel-linux-amd64.tar.gz.sha256
+      - name: Build separate disposable signed installation candidate
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release_ref.outputs.tag }}
+          HL_PANEL_DISPOSABLE_INSTALL_TEST: 'true'
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/license-fixture"
+          go build -trimpath -o "$RUNNER_TEMP/licensefixture" ./tests/install/licensefixture
+          "$RUNNER_TEMP/licensefixture" --fixture "$fixture"
+          mv "$RUNNER_TEMP/licensefixture" "$fixture/licensefixture"
+          isolated="$RUNNER_TEMP/hl-panel-isolated"
+          cp -R "$RUNNER_TEMP/hl-panel-release" "$isolated"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-X main.platformVersion=$RELEASE_TAG $(cat "$fixture/ldflags")" -o "$isolated/bin/control-api" ./apps/control-api
+          "$isolated/bin/control-api" license trust
+          (cd "$isolated" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum --check SHA256SUMS)
+          mkdir "$RUNNER_TEMP/isolated-candidate"
+          tar -C "$isolated" -czf "$RUNNER_TEMP/isolated-candidate/hl-panel-linux-amd64.tar.gz" .
+          (cd "$RUNNER_TEMP/isolated-candidate" && sha256sum hl-panel-linux-amd64.tar.gz > hl-panel-linux-amd64.tar.gz.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hl-panel-isolated-candidate
+          path: ${{ runner.temp }}/isolated-candidate/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: disposable-license-fixture
+          retention-days: 1
+          path: ${{ runner.temp }}/license-fixture/
   fresh-install:
     needs: release
     runs-on: ${{ matrix.os }}
@@ -229,10 +278,18 @@ jobs:
           ref: ${{ needs.release.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Prepare bounded HTTPS package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Exercise existing nginx-light automatic adaptation
         if: matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom'
         run: |
@@ -244,7 +301,7 @@ jobs:
           CREDENTIALS: ${{ matrix.credentials }}
           EXPECT_NGINX_ADAPTATION: ${{ matrix.os == 'ubuntu-22.04' && matrix.credentials == 'custom' }}
         run: |
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true \
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" \
             HL_PANEL_EXPECT_NGINX_ADAPTATION="$EXPECT_NGINX_ADAPTATION" \
             python3 tests/install/fresh_install.py \
             --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG" \
@@ -257,12 +314,13 @@ jobs:
             fresh-install.log
             fresh-install-result.json
   nginx-compatibility:
+    needs: release
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.version || github.ref_name }}
+          ref: ${{ needs.release.outputs.commit }}
       - name: Prepare bounded HTTPS package downloads on the disposable VM
         run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Verify nginx-light automatic adaptation and site preservation on a disposable VM
@@ -292,10 +350,18 @@ jobs:
           path: baseline-source
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Prepare bounded HTTPS package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Install the previous official version on a disposable VM
         run: |
           set -euo pipefail
@@ -304,12 +370,12 @@ jobs:
             curl -fsSL --retry 2 "https://github.com/Aurelian-HL/HL-Panel/releases/download/v0.1.5/$file" -o "$RUNNER_TEMP/baseline/$file"
           done
           (cd "$RUNNER_TEMP/baseline" && sha256sum --check hl-panel-linux-amd64.tar.gz.sha256)
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 baseline-source/tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/baseline" --version v0.1.5 --credentials default
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" python3 baseline-source/tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/baseline" --version v0.1.5 --credentials default
       - name: Verify data-preserving update and real database rollback
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/preserve_update.py --archive-directory "$RUNNER_TEMP/candidate" --previous-version v0.1.5 --version "$RELEASE_TAG"
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" python3 tests/install/preserve_update.py --archive-directory "$RUNNER_TEMP/candidate" --previous-version v0.1.5 --version "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -327,15 +393,23 @@ jobs:
           ref: ${{ needs.release.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Prepare bounded HTTPS package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Verify complete node installation and real forwarding on a disposable VM
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG"
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" python3 tests/install/node_install.py --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -353,10 +427,18 @@ jobs:
           ref: ${{ needs.release.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Prepare bounded HTTPS package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Prepare isolated PostgreSQL and candidate binaries
         run: |
           sudo apt-get update
@@ -373,7 +455,7 @@ jobs:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
-          sudo env HL_PANEL_DISPOSABLE_MIGRATION_TEST=true python3 tests/install/panel_migration.py \
+          sudo env HL_PANEL_DISPOSABLE_MIGRATION_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" python3 tests/install/panel_migration.py \
             --binaries /var/tmp/hl-panel-migration-ci/bin --version "$RELEASE_TAG" | tee panel-migration-result.log
       - uses: actions/upload-artifact@v4
         if: always()
@@ -390,15 +472,23 @@ jobs:
           ref: ${{ needs.release.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Prepare package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Verify receiver installation, encrypted restore and restart isolation
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true python3 tests/install/automatic_migration.py \
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" python3 tests/install/automatic_migration.py \
             --archive-directory "$RUNNER_TEMP/candidate" --version "$RELEASE_TAG"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -406,7 +496,7 @@ jobs:
           name: automatic-migration
           path: automatic-migration-result.json
   publish:
-    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install, panel-migration, automatic-migration]
+    needs: [release, fresh-install, nginx-compatibility, safe-update, node-install, panel-migration, automatic-migration, web-update]
     if: ${{ inputs.verification_only != true }}
     runs-on: ubuntu-latest
     steps:
@@ -429,8 +519,8 @@ jobs:
             --verify-tag \
             --generate-notes
   web-update:
-    # This job needs published assets: it uses GitHub's real release transport.
-    needs: [release, publish]
+    # Fixed GitHub URLs map to the disposable signed candidate; run before publish.
+    needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -443,24 +533,32 @@ jobs:
           cache: true
       - uses: actions/download-artifact@v4
         with:
-          name: hl-panel-candidate
+          name: hl-panel-isolated-candidate
           path: ${{ runner.temp }}/candidate
+      - uses: actions/download-artifact@v4
+        with:
+          name: disposable-license-fixture
+          path: ${{ runner.temp }}/license-fixture
+      - name: Protect disposable test-only issuer key
+        run: |
+          chmod 700 "$RUNNER_TEMP/license-fixture" "$RUNNER_TEMP/license-fixture/licensefixture"
+          chmod 600 "$RUNNER_TEMP/license-fixture/issuer-key" "$RUNNER_TEMP/license-fixture/ldflags"
       - name: Build isolated older baseline with the update channel
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags '-X main.platformVersion=v0.1.0' -o "$RUNNER_TEMP/baseline-control-api" ./apps/control-api
+          CGO_ENABLED=0 go build -trimpath -ldflags "-X main.platformVersion=v0.1.0 $(cat "$RUNNER_TEMP/license-fixture/ldflags")" -o "$RUNNER_TEMP/baseline-control-api" ./apps/control-api
           python3 tests/install/web_update.py --prepare --version "$RELEASE_TAG" \
             --archive-directory "$RUNNER_TEMP/candidate" --baseline-binary "$RUNNER_TEMP/baseline-control-api" \
             --output-directory "$RUNNER_TEMP/web-baseline"
       - name: Prepare package downloads on the disposable VM
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/prepare_ci_apt.py
       - name: Install the isolated baseline
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/web-baseline" --version v0.1.0 --credentials default
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/fresh_install.py --archive-directory "$RUNNER_TEMP/web-baseline" --version v0.1.0 --credentials default
       - name: Verify two real HTTP upgrades and a real rollback
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
-        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/web_update.py --version "$RELEASE_TAG"
+        run: sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true HL_PANEL_LICENSE_FIXTURE_DIR="$RUNNER_TEMP/license-fixture" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" python3 tests/install/web_update.py --version "$RELEASE_TAG" --archive-directory "$RUNNER_TEMP/candidate"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

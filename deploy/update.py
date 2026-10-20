@@ -73,6 +73,18 @@ def run_best_effort(arguments):
         pass
 
 
+def check_candidate_license(destination):
+    helper = destination/'deploy/check-panel-license.py'
+    if not helper.is_file():
+        return  # Releases before licensing v2 have no such preflight.
+    result = subprocess.run([sys.executable, str(helper), '--binary', str(destination/'bin/control-api'),
+                             '--env-file', str(CONFIG/'control-api.env')],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    require(result.returncode == 0,
+            '升级前授权检查未通过，当前服务未停止。请先使用已校验发行包的 deploy/setup-panel-license.sh --domain 管理域名 完成授权接入；不要删除身份或重装现有面板。')
+    print('[HL-panel 更新] 本机签名授权身份已通过候选版本校验。', flush=True)
+
+
 def cleanup_incomplete_update(backup, destination, stop_attempted):
     """Remove only artifacts created before the durable rollback journal exists."""
     if stop_attempted:
@@ -603,6 +615,8 @@ def main():
             destination=ROOT/'releases'/(target+'-'+stamp)
             destination.mkdir(mode=0o755)
             extract_verified(archive,destination)
+            # Run verified candidate logic while the old service still runs.
+            check_candidate_license(destination)
             # Domains, TLS and custom routes remain intact. A bounded subscription
             # location is added below, with its own backup and rollback.
             # Runtime/schema changes are handled by the verified new binaries.
