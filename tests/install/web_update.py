@@ -9,6 +9,7 @@ SQL, systemd, authorization preflight and health checks execute normally.
 Never run this script against a user's panel.
 """
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -58,7 +59,22 @@ if args.prepare:
 assert os.geteuid() == 0 and os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true'
 assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
 assert args.archive_directory and os.environ.get('HL_PANEL_LICENSE_FIXTURE_DIR')
-candidate = args.archive_directory.resolve()
+# The real worker has ProtectHome=true and PrivateTmp=true. Keep only the
+# fixed candidate assets outside /home and private /tmp, while preserving
+# those production service protections throughout this acceptance.
+candidate_source = args.archive_directory.resolve()
+fixture_directory = tempfile.TemporaryDirectory(prefix='hl-panel-web-update-', dir='/var/lib')
+atexit.register(fixture_directory.cleanup)
+candidate = Path(fixture_directory.name)
+candidate.chmod(0o700)
+for name in ('hl-panel-linux-amd64.tar.gz', 'hl-panel-linux-amd64.tar.gz.sha256'):
+    source = candidate_source/name
+    target = candidate/name
+    shutil.copyfile(source, target)
+    target.chmod(0o600)
+    assert hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest()
+assert (candidate/'hl-panel-linux-amd64.tar.gz.sha256').read_text().split()[0] == hashlib.sha256(
+    (candidate/'hl-panel-linux-amd64.tar.gz').read_bytes()).hexdigest()
 metadata = {'tag_name':args.version,'draft':False,'prerelease':False,'published_at':'2026-01-01T00:00:00Z',
             'assets':[{'name':name} for name in ('hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256')]}
 # Inject transport into this disposable installation only, never the archives.
@@ -162,6 +178,13 @@ for round_number in (1, 2):
         task = status['task']
         assert task['id'] == identifier
         if task['state'] == 'failed':
+            # Expose only the updater's deliberately non-secret status lines.
+            # Raw private worker output, configs and credentials stay on the VM.
+            log = Path('/var/lib/hl-panel-update')/(identifier+'.log')
+            if log.is_file() and not log.is_symlink():
+                for line in log.read_text(encoding='utf-8', errors='replace')[-32768:].splitlines():
+                    if line.startswith('[HL-panel 更新] '):
+                        print(line, flush=True)
             raise AssertionError('Isolated web update failed: '+task['message'])
         if task['state'] == 'succeeded':
             break
