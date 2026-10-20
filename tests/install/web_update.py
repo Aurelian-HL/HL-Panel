@@ -2,8 +2,9 @@
 """Two real HTTP-triggered upgrades of an isolated signed candidate on a CI VM.
 
 The baseline uses this source with an older build version, installed using the
-existing isolated installer transport. Only fixed GitHub metadata, tagged updater
-and archive URLs are mapped to the isolated candidate. HTTP API, Unix root worker,
+existing isolated installer transport. The baseline-only Go overlay maps the
+release list to fixed loopback metadata. Only fixed GitHub updater metadata,
+tagged updater and archive URLs are mapped to the isolated candidate. HTTP API, Unix root worker,
 SQL, systemd, authorization preflight and health checks execute normally.
 Never run this script against a user's panel.
 """
@@ -100,10 +101,20 @@ def request(method, route, data=None, token=None, expected=200, identifier=None)
         response = opener.open(req, timeout=25)
     except urllib.error.HTTPError as error:
         response = error
-    assert response.code == expected, f'{method} {route}: HTTP {response.code}, expected {expected}'
     body = response.read()
+    if response.code != expected:
+        # Only expose structured problem codes, never request credentials or
+        # arbitrary response text in public CI logs.
+        try:
+            problem = json.loads(body).get('error', {})
+            code = problem.get('code', 'unknown') if isinstance(problem, dict) else 'unknown'
+        except (ValueError, AttributeError):
+            code = 'invalid_response'
+        raise AssertionError(f'{method} {route}: HTTP {response.code}, expected {expected}; code={code}')
     return json.loads(body) if body else None
 
+from web_release_fixture import WebReleaseFixture
+releases = WebReleaseFixture(args.version)
 assert request('GET', '/public/site-info')['platform_version'] == BASELINE
 session = request('POST', '/auth/login', {'username':'admin', 'password':'123456'})
 token = session['access_token']
@@ -127,6 +138,11 @@ protected = fingerprint()
 results = []
 for round_number in (1, 2):
     Path('/opt/hl-panel/current/deploy/update.py').write_text(isolated_source)
+    versions = request('GET', '/system/version', token=token)
+    assert versions['current_version'] == BASELINE
+    assert any(version['tag'] == args.version and version['can_update'] for version in versions['versions'])
+    for rejected_version in (BASELINE, 'v999.0.0'):
+        request('POST', '/panel/update', {'version':rejected_version, 'administrator_password':password}, token, 400, str(uuid.uuid4()))
     identifier = str(uuid.uuid4())
     started = time.monotonic()
     payload = {'version':args.version, 'administrator_password':password}
@@ -172,6 +188,8 @@ for round_number in (1, 2):
         issuer_nginx.verify()
 
 report = Path('web-update-result.json')
-report.write_text(json.dumps({'real_published_github_transport':False,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True,'independent_issuer_include_and_https_route_preserved':True}, indent=2)+'\n')
+assert releases.requests >= 2
+releases.close()
+report.write_text(json.dumps({'real_published_github_transport':False,'baseline_only_go_release_list_overlay':True,'loopback_release_metadata_requests':releases.requests,'current_and_unlisted_versions_rejected':True,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True,'independent_issuer_include_and_https_route_preserved':True}, indent=2)+'\n')
 report.chmod(0o644)
 print('WEB_UPDATE_ACCEPTED_TWO_ROUNDS')

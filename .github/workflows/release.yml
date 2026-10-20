@@ -101,7 +101,7 @@ jobs:
           for script in install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh; do bash -n "$script"; done
           for script in deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh; do sh -n "$script"; done
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
-          python3 -m py_compile tests/install/fresh_install.py
+          python3 -m py_compile tests/install/fresh_install.py tests/install/web_update.py tests/install/web_release_fixture.py tests/install/issuer_nginx_fixture.py
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
@@ -547,7 +547,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
-          CGO_ENABLED=0 go build -trimpath -ldflags "-X main.platformVersion=v0.1.0 $(cat "$RUNNER_TEMP/license-fixture/ldflags")" -o "$RUNNER_TEMP/baseline-control-api" ./apps/control-api
+          python3 tests/install/web_release_fixture.py --output-directory "$RUNNER_TEMP/web-release-overlay"
+          CGO_ENABLED=0 go build -overlay "$RUNNER_TEMP/web-release-overlay/overlay.json" -trimpath -ldflags "-X main.platformVersion=v0.1.0 $(cat "$RUNNER_TEMP/license-fixture/ldflags")" -o "$RUNNER_TEMP/baseline-control-api" ./apps/control-api
           python3 tests/install/web_update.py --prepare --version "$RELEASE_TAG" \
             --archive-directory "$RUNNER_TEMP/candidate" --baseline-binary "$RUNNER_TEMP/baseline-control-api" \
             --output-directory "$RUNNER_TEMP/web-baseline"
