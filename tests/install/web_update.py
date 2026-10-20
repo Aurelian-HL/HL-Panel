@@ -121,6 +121,8 @@ assert request('GET', '/panel/update', token=token)['task'] is None
 def fingerprint():
     return {str(path):hashlib.sha256(path.read_bytes()).hexdigest() for directory in ('/etc/hl-panel', '/etc/nginx') for path in Path(directory).rglob('*') if path.is_file() and not path.is_symlink()}
 
+from issuer_nginx_fixture import IssuerNginxFixture
+issuer_nginx = IssuerNginxFixture()
 protected = fingerprint()
 results = []
 for round_number in (1, 2):
@@ -155,6 +157,7 @@ for round_number in (1, 2):
     request('POST', '/auth/login', {'username':'admin','password':password})
     request('POST', '/auth/login', {'username':'admin','password':'123456'}, expected=401)
     assert fingerprint() == protected
+    issuer_nginx.verify()
     backup = Path(task['backup_directory'])
     assert backup.parent == Path('/var/backups/hl-panel') and (backup/'rollback.sh').is_file()
     subprocess.run(['pg_restore', '--list', str(backup/'database.dump')], stdout=subprocess.DEVNULL, check=True)
@@ -165,8 +168,10 @@ for round_number in (1, 2):
         subprocess.run(['bash', str(backup/'rollback.sh')], check=True)
         assert request('GET', '/public/site-info')['platform_version'] == BASELINE
         assert request('GET', '/device-groups', token=token) == groups
+        assert fingerprint() == protected
+        issuer_nginx.verify()
 
 report = Path('web-update-result.json')
-report.write_text(json.dumps({'real_published_github_transport':False,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True}, indent=2)+'\n')
+report.write_text(json.dumps({'real_published_github_transport':False,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True,'independent_issuer_include_and_https_route_preserved':True}, indent=2)+'\n')
 report.chmod(0o644)
 print('WEB_UPDATE_ACCEPTED_TWO_ROUNDS')

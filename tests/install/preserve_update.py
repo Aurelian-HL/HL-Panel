@@ -89,6 +89,8 @@ with tempfile.TemporaryDirectory(prefix='hl-license-preflight-') as temporary:
     with tarfile.open(package, 'r:gz') as source:
         source.extractall(stage, filter='data')
     subprocess.run(['bash', str(stage/'deploy/setup-panel-license.sh'), '--domain', 'hl-panel-smoke.invalid'], check=True)
+from issuer_nginx_fixture import IssuerNginxFixture
+issuer_nginx = IssuerNginxFixture()
 protected = fingerprint()
 spec = importlib.util.spec_from_file_location('hl_panel_test_updater',repository/'deploy/update.py')
 update = importlib.util.module_from_spec(spec)
@@ -152,6 +154,7 @@ def verify(version):
         assert web['available'] is True and web['task'] is None
     assert fingerprint()==expected,'Configuration changed beyond explicitly managed locations, metrics and update units'
     subprocess.run(['nginx','-t'],check=True)
+    issuer_nginx.verify()
 
 # Invalid SHA must fail without stopping the service or switching binaries.
 corrupt=True
@@ -209,6 +212,7 @@ report.write_text(json.dumps({
     'configuration_and_certificates_preserved':True,'verified_database_backups':len(backups),
     'same_version_no_op':True,
     'panel_host_metrics_and_dropin_rollback':True,
+    'independent_issuer_include_and_https_route_preserved':True,
 },indent=2)+'\n')
 # The root updater intentionally sets umask 077. This report contains only
 # public test outcomes; allow the unprivileged Actions uploader to read it.

@@ -60,6 +60,14 @@ unset hl_install_code
 
 ## 状态目录与回滚
 
+独立签发服务如与 HL 面板共机，Nginx 路由应放在独立的
+`/etc/nginx/snippets/hl-license-issuer-locations.conf`，仅由管理域名的
+443 server 块 include，不写入受管 `hl-panel-app-locations.conf`。
+全新安装器拒绝覆盖已有站点；系统更新及回滚不重写主站点或该独立 snippet，
+证书续期仅切换证书链接。更新时不要同时修改这些文件，也不要用全新安装器接管旧实例。
+签发服务的数据库集群、端口、数据目录、账号和 systemd 单元由签发服务独立管理，
+HL 更新器不接管它们。
+
 授权身份独立存放在 `/var/lib/hl-panel-license`：
 
 | 文件 | 用途 |
