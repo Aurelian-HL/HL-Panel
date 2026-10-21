@@ -102,6 +102,7 @@ jobs:
           for script in install.sh install-node.sh update.sh update-node.sh deploy/install.sh deploy/install-node.sh deploy/update.sh deploy/enable-domain-tls.sh deploy/configure-reality.sh; do bash -n "$script"; done
           for script in deploy/edge-agent/install.sh deploy/edge-agent/enroll.sh; do sh -n "$script"; done
           python3 -m py_compile deploy/update.py deploy/update-node.py deploy/configure-reality.py tests/install/preserve_update.py
+          python3 tests/install/test_panel_service_launch.py
           python3 -m py_compile tests/install/fresh_install.py tests/install/web_update.py tests/install/web_release_fixture.py tests/install/issuer_nginx_fixture.py
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py

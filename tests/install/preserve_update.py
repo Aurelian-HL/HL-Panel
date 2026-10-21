@@ -169,6 +169,30 @@ assert Path('/opt/hl-panel/current').resolve()==previous
 verify(args.previous_version)
 corrupt=False
 
+# Reproduce the production failure with a real pinned systemd override. The
+# updater must reject it before stopping the old PID or taking a DB backup.
+pin = Path('/etc/systemd/system/hl-panel-control-api.service.d/90-ci-pinned-executable.conf')
+pin.parent.mkdir(parents=True, exist_ok=True)
+assert not pin.exists()
+old_pid = subprocess.check_output(['systemctl','show',update.SERVICE,'--property=MainPID','--value']).strip()
+old_backups = set(Path('/var/backups/hl-panel').iterdir())
+try:
+    pin.write_text('[Service]\nExecStart=\nExecStart='+str(previous/'bin/control-api')+'\n')
+    subprocess.run(['systemctl','daemon-reload'],check=True)
+    try:
+        invoke('--version',args.version)
+        raise AssertionError('Pinned executable accepted')
+    except update.UpdateError as error:
+        assert '当前服务未停止' in str(error)
+    assert subprocess.check_output(['systemctl','show',update.SERVICE,'--property=MainPID','--value']).strip() == old_pid
+    assert set(Path('/var/backups/hl-panel').iterdir()) == old_backups
+    assert Path('/opt/hl-panel/current').resolve() == previous
+    assert usage_schema() == previous_usage_schema
+finally:
+    pin.unlink()
+    subprocess.run(['systemctl','daemon-reload'],check=True)
+verify(args.previous_version)
+
 # The candidate really starts, then fault injection forces the production
 # rollback path to restore PostgreSQL and the old binary.
 real_healthy=update.healthy
@@ -209,6 +233,7 @@ report = Path('preserve-update-result.json')
 report.write_text(json.dumps({
     'previous_version':args.previous_version,'version':args.version,
     'real_postgresql_systemd_nginx':True,'corrupt_archive_rejected_before_stop':True,
+    'pinned_systemd_executable_rejected_before_stop':True,
     'failed_upgrade_restores_database_and_binary':True,'successful_upgrade':True,
     'modified_password_and_session_preserved':True,'device_group_data_preserved':True,
     'configuration_and_certificates_preserved':True,'verified_database_backups':len(backups),

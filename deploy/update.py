@@ -165,16 +165,48 @@ def current_info(origin):
         return json.load(response)
 
 
+def check_service_launch():
+    """Reject stale or pinned systemd commands before taking the panel offline."""
+    try:
+        result = subprocess.run(['systemctl', 'show', SERVICE, '--property=ExecStart',
+                                 '--property=NeedDaemonReload'],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        raise UpdateError('无法检查面板启动配置，当前服务未停止。') from None
+    require(result.returncode == 0, '无法检查面板启动配置，当前服务未停止。')
+    properties = dict(line.split('=', 1) for line in result.stdout.decode().splitlines() if '=' in line)
+    require(properties.get('NeedDaemonReload') == 'no',
+            'systemd 配置尚未重载，当前服务未停止。请先执行 systemctl daemon-reload 后重试更新。')
+    paths = re.findall(r'\{ path=([^ ;]+) ;', properties.get('ExecStart', ''))
+    expected = str(ROOT/'current/bin/control-api')
+    require(paths == [expected],
+            '面板启动命令固定到其他程序或使用自定义启动器，当前服务未停止。'
+            '请检查 '+SERVICE+' 及其覆盖配置，将 ExecStart 的程序路径设为 '+expected+
+            '，保留需要的参数，再执行 systemctl daemon-reload 后重试；更新器不会覆盖自定义启动配置。')
+
+
+def check_running_binary():
+    """The service PID must execute the verified release behind current."""
+    pid = run(['systemctl', 'show', SERVICE, '--property=MainPID', '--value']).decode().strip()
+    require(re.fullmatch(r'[1-9][0-9]*', pid), '面板服务没有有效运行进程')
+    try:
+        matches = (Path('/proc')/pid/'exe').samefile(ROOT/'current/bin/control-api')
+    except OSError:
+        matches = False
+    require(matches, '面板运行程序与当前发行包不一致，请检查 systemd 启动配置')
+
+
 def healthy(origin, version):
     for _ in range(30):
         try:
             if current_info(origin).get('platform_version') == version:
                 run(['systemctl','is-active','--quiet',SERVICE])
+                check_running_binary()
                 return
         except (OSError, ValueError, UpdateError):
             pass
         time.sleep(1)
-    raise UpdateError('新版本启动或版本核验失败')
+    raise UpdateError('新版本启动、版本或运行程序核验失败，请检查面板服务日志和 systemd 启动配置')
 
 
 def digest(path):
@@ -591,6 +623,7 @@ def main():
             print('[HL-panel 更新] 已是目标正式版本，无需更新。')
             return
         require(target_version>version_tuple(old_version),'不允许降级；请使用对应备份中的回滚命令')
+        check_service_launch()
         updater=Path('/usr/local/sbin/hl-panel-update')
         if updater.exists() or updater.is_symlink():
             private_regular(updater)
@@ -617,6 +650,8 @@ def main():
             extract_verified(archive,destination)
             # Run verified candidate logic while the old service still runs.
             check_candidate_license(destination)
+            # Recheck after download/preflight: startup settings may have changed.
+            check_service_launch()
             # Domains, TLS and custom routes remain intact. A bounded subscription
             # location is added below, with its own backup and rollback.
             # Runtime/schema changes are handled by the verified new binaries.
