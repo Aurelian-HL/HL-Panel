@@ -109,14 +109,17 @@ func hasLegacyGOSTService(input deploymentreceipts.Input, ruleID string) bool {
 			continue
 		}
 		matching++
-		if fragment.Engine != agentv1.EngineGOST || !hasGOSTService(fragment.Config, wantService) {
+		if fragment.Engine != agentv1.EngineGOST || !hasGOSTService(fragment.Config, wantService, "tcp") {
 			return false
 		}
 	}
 	return matching == 1
 }
 
-func hasGOSTService(raw json.RawMessage, expected string) bool {
+func hasGOSTService(raw json.RawMessage, expected, protocol string) bool {
+	if protocol != "tcp" && protocol != "udp" {
+		return false
+	}
 	var config struct {
 		Services []struct {
 			Name    string `json:"name"`
@@ -132,16 +135,20 @@ func hasGOSTService(raw json.RawMessage, expected string) bool {
 	if json.Unmarshal(raw, &config) != nil {
 		return false
 	}
+	matched := false
 	for _, service := range config.Services {
-		if service.Name == expected && service.Handler.Type == "tcp" && service.Listener.Type == "tcp" {
+		if service.Name == expected {
+			if matched || service.Handler.Type != protocol || service.Listener.Type != protocol {
+				return false
+			}
 			enableStats, ok := service.Metadata["enableStats"].(bool)
 			if !ok || !enableStats {
 				return false
 			}
-			return true
+			matched = true
 		}
 	}
-	return false
+	return matched
 }
 
 func hasLegacyVLESSInboundTag(input deploymentreceipts.Input, ruleID string) bool {

@@ -48,11 +48,11 @@ func (p appliedRuleMetadataProvider) ResolveRuleUsageMetadataAt(ctx context.Cont
 	}
 	m := match.Usage
 	if m.RuleID != ruleID || !validIdentifier(m.CustomerID) || !validIdentifier(m.EntryGroupID) ||
-		(m.ExitGroupID != "" && !validIdentifier(m.ExitGroupID)) || m.Protocol != "tcp" ||
+		(m.ExitGroupID != "" && !validIdentifier(m.ExitGroupID)) || (m.Protocol != "tcp" && m.Protocol != "udp") ||
 		!validMultiplier(m.EntryMultiplierMicros) || !validMultiplier(m.ExitMultiplierMicros) {
 		return LegacyRuleMetadata{}, fmt.Errorf("%w: invalid compiled usage metadata", faults.ErrValidation)
 	}
-	nativeMatch := match.Engine == agentv1.EngineGOST && hasGOSTService(match.Config, "forward-"+ruleID) ||
+	nativeMatch := match.Engine == agentv1.EngineGOST && hasGOSTService(match.Config, "forward-"+ruleID, m.Protocol) ||
 		match.Engine == agentv1.EngineXray && hasXrayInboundTag(match.Config, "vless-reality-fwd_"+ruleID, forwarding.Rule{
 			ID: ruleID, CustomerID: m.CustomerID, EntryGroupID: m.EntryGroupID, ExitGroupID: m.ExitGroupID, Protocol: forwarding.Protocol(m.Protocol)})
 	if !nativeMatch {
