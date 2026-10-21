@@ -164,7 +164,7 @@ func (s *Store) DesiredNodeConfig(ctx context.Context, id string) (generations.N
 		config  generations.NodeConfigGeneration
 		applied int64
 	}
-	value, err := transact(ctx, s, false, func(state *memoryrepo.Store) (result, error) {
+	value, err := readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) (result, error) {
 		config, applied, err := state.DesiredNodeConfig(ctx, id)
 		return result{config, applied}, err
 	})

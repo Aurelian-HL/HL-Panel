@@ -124,6 +124,9 @@ func (v *ForwardingReadView) ListForwardingRules(ctx context.Context) ([]forward
 func (v *ForwardingReadView) ForwardingRule(ctx context.Context, id string) (forwarding.Rule, error) {
 	return v.state.ForwardingRule(ctx, id)
 }
+func (v *ForwardingReadView) DesiredNodeConfig(ctx context.Context, id string) (generations.NodeConfigGeneration, int64, error) {
+	return v.state.DesiredNodeConfig(ctx, id)
+}
 func (v *ForwardingReadView) GatewayMembershipState(ctx context.Context, id string) (gatewaymembership.State, error) {
 	return v.state.GatewayMembershipState(ctx, id)
 }
