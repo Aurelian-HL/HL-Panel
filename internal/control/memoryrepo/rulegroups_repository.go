@@ -151,6 +151,8 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 	removedAutoRealityKeys := make(map[string]string)
 	removedVLESSBindings := make(map[string]vlessidentity.CredentialRecord)
 	revokedVLESSBindings := make(map[string]vlessidentity.CredentialRecord)
+	previousRuntimeMaterials := make(map[string]vlessruntime.Material)
+	revokedRuntimeMaterials := make(map[string]vlessruntime.Material)
 	revokedVLESSAudits := make([]audit.Event, 0)
 	groups := make([]string, 0, len(request.RuleIDs))
 	for _, id := range request.RuleIDs {
@@ -188,21 +190,72 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		case rulegroups.BatchMoveGroup:
 			item.RuleGroupID = request.RuleGroupID
 		case rulegroups.BatchDelete:
+			// An active reference outside the rule's own pool cannot be retired
+			// by this transaction, even if another rule is selected in the batch.
+			for _, material := range s.vlessRuntimeMaterials {
+				binding := s.vlessBindings[material.BindingID].Binding
+				if material.State == vlessruntime.StateActive && (material.ForwardingRuleID == item.ID || binding.ForwardingRuleID == item.ID) {
+					pool, exists := s.endpointPools[material.EndpointPoolID]
+					if !exists || pool.RuleID != item.ID || material.ForwardingRuleID != item.ID {
+						return rulegroups.BatchResult{}, false, fmt.Errorf("%w: rule has runtime material outside its own endpoint pool", faults.ErrConflict)
+					}
+				}
+			}
+			for _, record := range s.vlessBindings {
+				if record.Binding.State == vlessidentity.StateActive && record.Binding.ForwardingRuleID == item.ID {
+					pool, exists := s.endpointPools[record.Binding.EndpointPoolID]
+					if !exists || pool.RuleID != item.ID {
+						return rulegroups.BatchResult{}, false, fmt.Errorf("%w: rule has an identity outside its own endpoint pool", faults.ErrConflict)
+					}
+				}
+			}
 			for _, pool := range s.endpointPools {
 				if pool.RuleID == item.ID {
-					for _, material := range s.vlessRuntimeMaterials {
-						if material.EndpointPoolID == pool.ID && material.State == vlessruntime.StateActive {
-							return rulegroups.BatchResult{}, false, fmt.Errorf("%w: endpoint pool has active runtime material", faults.ErrConflict)
-						}
+					if adminScoped && pool.OwnerID != adminID {
+						return rulegroups.BatchResult{}, false, fmt.Errorf("%w: endpoint pool belongs to another administrator", faults.ErrConflict)
 					}
 					for _, member := range s.endpointMembers[pool.ID] {
-						if member.ActiveConnections > 0 {
+						if member.ActiveConnections != 0 {
 							return rulegroups.BatchResult{}, false, fmt.Errorf("%w: endpoint pool has active connections", faults.ErrConflict)
 						}
+					}
+					for materialID, material := range s.vlessRuntimeMaterials {
+						if material.EndpointPoolID != pool.ID || material.State != vlessruntime.StateActive {
+							continue
+						}
+						binding, exists := s.vlessBindings[material.BindingID]
+						if material.ID != materialID || material.ForwardingRuleID != item.ID || material.CustomerID != item.CustomerID ||
+							!exists || binding.Binding.ID != material.BindingID || binding.Binding.State != vlessidentity.StateActive ||
+							binding.Binding.ForwardingRuleID != item.ID || binding.Binding.CustomerID != item.CustomerID || binding.Binding.EndpointPoolID != pool.ID ||
+							material.Revision < 1 || material.Revision == math.MaxInt64 {
+							return rulegroups.BatchResult{}, false, fmt.Errorf("%w: endpoint runtime ownership or revision prevents rule deletion", faults.ErrConflict)
+						}
+						candidate := cloneVLESSRuntimeMaterial(material)
+						revokedAt := input.UpdatedAt.UTC()
+						candidate.State = vlessruntime.StateRevoked
+						candidate.Revision++
+						candidate.UpdatedAt, candidate.RevokedAt = revokedAt, &revokedAt
+						candidate.CredentialUUID, candidate.RealityPrivateKey, candidate.NativeConfig = "", "", nil
+						if err := s.validateVLESSRuntimeMaterialLocked(candidate); err != nil {
+							return rulegroups.BatchResult{}, false, fmt.Errorf("%w: runtime material cannot be revoked for rule deletion", faults.ErrConflict)
+						}
+						previousRuntimeMaterials[materialID] = material
+						revokedRuntimeMaterials[materialID] = candidate
+						revocationAudit, err := audit.NewEvent(input.UpdatedAt, event.ActorType, event.ActorID, "vless_runtime.revoke", "vless_runtime_material", materialID, "succeeded", map[string]any{
+							"binding_id": material.BindingID, "node_id": material.NodeID, "revision": candidate.Revision, "reason": "forwarding_rule_deleted",
+						})
+						if err != nil {
+							return rulegroups.BatchResult{}, false, err
+						}
+						revokedVLESSAudits = append(revokedVLESSAudits, revocationAudit)
 					}
 					for bindingID, record := range s.vlessBindings {
 						if record.Binding.EndpointPoolID != pool.ID || record.Binding.State != vlessidentity.StateActive {
 							continue
+						}
+						if record.Binding.ID != bindingID || record.Binding.ForwardingRuleID != item.ID || record.Binding.CustomerID != item.CustomerID ||
+							record.Binding.Revision < 1 || record.Binding.Revision == math.MaxInt64 {
+							return rulegroups.BatchResult{}, false, fmt.Errorf("%w: endpoint identity ownership or revision prevents rule deletion", faults.ErrConflict)
 						}
 						candidate := cloneVLESSCredentialRecord(record)
 						revokedAt := input.UpdatedAt.UTC()
@@ -248,9 +301,11 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		return rulegroups.BatchResult{}, false, err
 	}
 	if request.Operation == rulegroups.BatchDelete {
-		// Active VLESS identities are revoked as part of deleting their owning
-		// forwarding rules. Persist the historical state once before removing
-		// the rules and endpoint pools below.
+		// Commit the staged revocations together with the rule removal. No
+		// material, audit or desired configuration changes during validation.
+		for materialID, material := range revokedRuntimeMaterials {
+			s.vlessRuntimeMaterials[materialID] = material
+		}
 		for bindingID, binding := range revokedVLESSBindings {
 			s.vlessBindings[bindingID] = binding
 		}
@@ -300,6 +355,9 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		}
 		for id, binding := range removedVLESSBindings {
 			s.vlessBindings[id] = binding
+		}
+		for id, material := range previousRuntimeMaterials {
+			s.vlessRuntimeMaterials[id] = material
 		}
 		delete(s.businessIdempotency, key)
 		return rulegroups.BatchResult{}, false, err

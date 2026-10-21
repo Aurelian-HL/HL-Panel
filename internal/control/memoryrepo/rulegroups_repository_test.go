@@ -315,9 +315,8 @@ func TestBatchDeleteRevokesAutomaticVLESSIdentityAndRestoresHistory(t *testing.T
 	ctx := context.Background()
 	now := fixture.rule.UpdatedAt.Add(time.Minute)
 
-	// Deletion is intentionally blocked while a node still has live secret
-	// material. Once that material is revoked, the rule owns the identity
-	// lifecycle and can safely revoke the customer credential with the rule.
+	// Historical material that was already revoked must remain restorable
+	// when deletion also revokes the rule's customer identity.
 	material := fixture.store.vlessRuntimeMaterials[fixture.materialID]
 	material.State = vlessruntime.StateRevoked
 	material.Revision++
@@ -368,15 +367,18 @@ func TestBatchDeleteRevokesAutomaticVLESSIdentityAndRestoresHistory(t *testing.T
 	}
 }
 
-func TestBatchDeleteStillBlocksActiveVLESSRuntimeMaterial(t *testing.T) {
+func TestBatchDeleteStillBlocksActiveVLESSConnections(t *testing.T) {
 	fixture := newVLESSBundleFixture(t, true)
+	member := fixture.store.endpointMembers[fixture.endpointID][fixture.nodeID]
+	member.ActiveConnections = 1
+	fixture.store.endpointMembers[fixture.endpointID][fixture.nodeID] = member
 	request := rulegroups.BatchRequest{
 		Operation:         rulegroups.BatchDelete,
 		RuleIDs:           []string{fixture.rule.ID},
 		ExpectedRevisions: map[string]int64{fixture.rule.ID: fixture.rule.Revision},
 	}
 	if _, _, err := rulegroups.NewService(fixture.store, nil).BatchForAdministrator(context.Background(), "admin", request, "delete-active-vless-rule"); !errors.Is(err, faults.ErrConflict) {
-		t.Fatalf("active VLESS runtime material did not block rule deletion: %v", err)
+		t.Fatalf("active VLESS connections did not block rule deletion: %v", err)
 	}
 	if _, err := fixture.store.ForwardingRule(context.Background(), fixture.rule.ID); err != nil {
 		t.Fatalf("blocked VLESS rule deletion removed the rule: %v", err)
