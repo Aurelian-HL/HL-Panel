@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/hongle/hl-panel/internal/control/announcements"
 	"github.com/hongle/hl-panel/internal/control/auth"
@@ -24,6 +23,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/nodeupdates"
 	"github.com/hongle/hl-panel/internal/control/panelmigration"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/hongle/hl-panel/internal/control/panelruntime"
 	"github.com/hongle/hl-panel/internal/control/panelupdate"
 	"github.com/hongle/hl-panel/internal/control/releases"
@@ -36,6 +36,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/vlessidentity"
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/control/vlesssetup"
+	"github.com/hongle/hl-panel/internal/panellicense"
 )
 
 type PlatformInfo struct {
@@ -63,8 +64,6 @@ type API struct {
 	vlessConnections   *vlessconnection.Service
 	vlessRuntime       *vlessruntime.Service
 	vlessSetup         *vlesssetup.Service
-	vlessSetupOnce     sync.Once
-	vlessSetupSlots    chan struct{}
 	platformInfo       PlatformInfo
 	panelRuntime       *panelruntime.Service
 	usage              usagehttpapi.Service
@@ -72,11 +71,14 @@ type API struct {
 	nezha              *nezhamonitor.Service
 	hostGeo            *hostgeo.Service
 	targetProbe        *targetprobe.Service
+	realityProbe       *targetprobe.RealityService
 	releases           *releases.Service
 	migration          *migrationbackup.Service
 	panelUpdate        *panelupdate.Service
 	automaticMigration *panelmigration.Service
 	licensing          *licensing.Service
+	panelLicense       *panellicense.Client
+	panelLicenseUsage  panelquota.UsageSource
 }
 
 func WithMigrationBackup(service *migrationbackup.Service) Option {
@@ -93,6 +95,10 @@ func WithLicensing(service *licensing.Service) Option {
 
 func WithTargetProbe(service *targetprobe.Service) Option {
 	return func(api *API) { api.targetProbe = service }
+}
+
+func WithRealityProbe(service *targetprobe.RealityService) Option {
+	return func(api *API) { api.realityProbe = service }
 }
 
 func WithNezha(service *nezhamonitor.Service) Option {
@@ -135,6 +141,10 @@ func WithSubscriptions(service *subscriptions.Service) Option {
 	return func(api *API) { api.subscriptions = service }
 }
 
+func WithVLESSSetup(service *vlesssetup.Service) Option {
+	return func(api *API) { api.vlessSetup = service }
+}
+
 func WithVLESSConnections(service *vlessconnection.Service) Option {
 	return func(api *API) { api.vlessConnections = service }
 }
@@ -163,7 +173,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	for _, option := range options {
 		option(api)
 	}
-	if api.groupNetworks != nil && api.endpoints != nil && api.vlessIdentity != nil {
+	if api.vlessSetup == nil && api.groupNetworks != nil && api.endpoints != nil && api.vlessIdentity != nil {
 		api.vlessSetup = vlesssetup.NewService(api.groupNetworks, api.endpoints, api.vlessIdentity, vlesssetup.WithRuleAccess(api.forwarding))
 	}
 	mux := http.NewServeMux()
@@ -192,7 +202,8 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	}
 	mux.HandleFunc("GET /healthz", api.health)
 	mux.HandleFunc("POST /api/v1/auth/login", api.login)
-	if api.licensing != nil {
+	api.registerPanelLicenseRoutes(mux)
+	if api.licensing != nil && api.panelLicense == nil {
 		mux.HandleFunc("GET /api/v1/license", api.requireAdministrator(api.licenseStatus))
 		mux.HandleFunc("POST /api/v1/license/codes", api.requireAdministrator(api.issueLicenseCode))
 		mux.HandleFunc("GET /api/v1/license/codes", api.requireAdministrator(api.listLicenseCodes))

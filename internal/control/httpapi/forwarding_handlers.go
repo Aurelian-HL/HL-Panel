@@ -1,9 +1,7 @@
 package httpapi
 
 import (
-	"context"
 	"net/http"
-	"time"
 
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -67,33 +65,7 @@ func (api *API) saveForwardingRule(w http.ResponseWriter, r *http.Request, sessi
 
 func (api *API) scheduleSavedVLESSRule(administratorID string, item forwarding.Rule) {
 	if api.vlessSetup != nil {
-		// The rule transaction is already committed. Endpoint and identity setup
-		// can involve several snapshot reads and must not hold the operator's
-		// HTTP request open. Run it in the existing reconciliation model and
-		// return the committed pending projection immediately. Ensure is
-		// idempotent, so a process restart or the 15-second reconciler can safely
-		// retry an interrupted attempt.
-		api.vlessSetupOnce.Do(func() { api.vlessSetupSlots = make(chan struct{}, 2) })
-		select {
-		case api.vlessSetupSlots <- struct{}{}:
-			go func() {
-				defer func() { <-api.vlessSetupSlots }()
-				api.reconcileSavedVLESSRule(administratorID, item)
-			}()
-		default:
-			// The periodic reconciler picks up excess work. Never create an
-			// unbounded goroutine backlog while the database is saturated.
-		}
-	}
-}
-
-func (api *API) reconcileSavedVLESSRule(administratorID string, item forwarding.Rule) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := api.vlessSetup.Ensure(ctx, administratorID, item); err != nil {
-		// The committed rule remains visible as pending activation. The periodic
-		// reconciler will retry transient database, endpoint, or node failures.
-		api.logger.Warn("vless forwarding rule remains pending activation", "rule_id", item.ID, "admin_id", administratorID, "error", err)
+		api.vlessSetup.Schedule(administratorID, item, api.logger)
 	}
 }
 

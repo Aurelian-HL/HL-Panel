@@ -5,6 +5,19 @@ import type { DeviceGroup } from './types'
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
 const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_access_token'))
 
+export type RealityTarget = { server_name: string; destination: string }
+export interface RealityProbe extends RealityTarget {
+  compatible: boolean
+  latency_ms: number
+  tls_version?: string
+  key_exchange?: string
+  alpn?: string
+  source: 'control_plane'
+  checked_at: string
+  error_code?: string
+  message?: string
+}
+
 function list<T>(body: unknown): { items: T[] } {
   if (!body || typeof body !== 'object' || !Array.isArray((body as { items?: unknown }).items)) throw new Error('服务返回的数据格式不正确，请刷新后重试')
   return body as { items: T[] }
@@ -16,11 +29,15 @@ function write<T>(path: string, input: unknown, id: string | null, key: string):
 }
 
 export const businessApi = {
+  async realityTargets() { return list<RealityTarget>(await http.request('/forwarding-reality-targets')) },
+  async probeReality(input: RealityTarget, signal?: AbortSignal) { return (await http.request<{ probe: RealityProbe }>('/forwarding-reality-target-probes', { method: 'POST', body: JSON.stringify(input), signal, timeoutMs: 15_000 })).probe },
   async deviceGroups() { return list<DeviceGroup>(await http.request('/device-groups')) },
   async customers() { return list<Customer>(await http.request('/customers')) },
   async saveCustomer(input: CustomerInput, id: string | null, key: string) { return (await write<{ customer: Customer }>('/customers', input, id, key)).customer },
+  async deleteCustomer(id: string, revision: number, key: string) { return http.request<{ replayed: boolean }>(`/customers/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) }) },
   async userGroups() { return list<UserGroup>(await http.request('/user-groups')) },
   async saveUserGroup(input: UserGroupInput, id: string | null, key: string) { return (await write<{ user_group: UserGroup }>('/user-groups', input, id, key)).user_group },
+  async deleteUserGroup(id: string, revision: number, key: string) { return http.request<{ replayed: boolean }>(`/user-groups/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) }) },
   async rules() { return list<ForwardRule>(await http.request('/forwarding-rules')) },
   async forwardingConnection(id: string) { return http.request<ForwardingConnection>(`/forwarding-rules/${encodeURIComponent(id)}/connection`) },
   async vlessIdentities() { return list<VlessIdentity>(await http.request('/vless/identities')) },

@@ -99,7 +99,8 @@ def main():
             listen = port()
             fingerprint = base64.b64encode(os.urandom(32)).decode()
             sensitive.append(fingerprint)
-            env = dict(os.environ, CONTROL_LISTEN_ADDRESS=f'127.0.0.1:{listen}',
+            from license_fixture import seed_license
+            env = dict(os.environ, **seed_license('panel-migration-ci.invalid', directory/'license', owner='postgres'), CONTROL_LISTEN_ADDRESS=f'127.0.0.1:{listen}',
                        CONTROL_TLS_CERT_FILE=str(cert), CONTROL_TLS_KEY_FILE=str(key),
                        CONTROL_DATABASE_URL=database_url,
                        CONTROL_BOOTSTRAP_ADMIN_USERNAME='migration' + str(index),

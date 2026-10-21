@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/endpoints"
@@ -35,6 +36,11 @@ type Service struct {
 	identities       IdentitySource
 	reconcileTimeout time.Duration
 	rules            RuleAccess
+	wake             chan struct{}
+	queueMu          sync.Mutex
+	queue            []string
+	queued           map[string]setupJob
+	workers          int
 }
 
 // RuleAccess verifies delegated management using the durable create actor.
@@ -65,6 +71,8 @@ func NewService(networks NetworkSource, endpointSource EndpointSource, identitie
 		endpoints:        endpointSource,
 		identities:       identities,
 		reconcileTimeout: defaultReconcileTimeout,
+		wake:             make(chan struct{}, 1),
+		queued:           make(map[string]setupJob),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -197,6 +205,7 @@ func (s *Service) Run(ctx context.Context, source RuleSource, logger *slog.Logge
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-s.wake:
 		}
 	}
 }

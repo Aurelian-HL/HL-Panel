@@ -51,6 +51,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/control/vlesssetup"
 	"github.com/hongle/hl-panel/internal/idgen"
+	"github.com/hongle/hl-panel/internal/panellicense"
 )
 
 var platformVersion = "development"
@@ -60,6 +61,13 @@ var errMigrationReload = errors.New("reload migrated panel state")
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if len(os.Args) > 1 {
+		if os.Args[1] == "license" {
+			if err := panelLicenseCommand(os.Args[2:], os.Stdin, os.Stdout); err != nil {
+				logger.Error("license command failed", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
 		if os.Args[1] == "reset-admin-password" && len(os.Args) == 3 {
 			if err := resetAdministratorPassword(os.Args[2], os.Stdin); err != nil {
 				logger.Error("administrator password reset failed", "error", err)
@@ -140,6 +148,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return err
 	}
 	defer closeStore()
+	store.SetPanelQuotaProvider(panelLicenseQuota(configuration.PanelLicense))
 	if durable, ok := store.(*postgressnapshot.Store); ok {
 		migrated, exists, err := durable.MigrationRuntime(context.Background())
 		if err != nil {
@@ -187,7 +196,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		}
 	}
 	customerService := customers.NewService(store, time.Now)
-	forwardingService := forwarding.NewService(store, time.Now, forwarding.WithRealityDefaults(configuration.RealityDefaults), forwarding.WithProtocolProbeEchoPort(configuration.ProtocolProbeEchoPort))
+	forwardingService := forwarding.NewService(store, time.Now, forwarding.WithRealityDefaults(configuration.RealityDefaults), forwarding.WithRealityTargets(forwarding.DefaultRealityTargets()), forwarding.WithProtocolProbeEchoPort(configuration.ProtocolProbeEchoPort))
 	vlessIdentityService, err := vlessidentity.NewService(store, time.Now, nil)
 	if err != nil {
 		return fmt.Errorf("configure VLESS identity service: %w", err)
@@ -208,6 +217,10 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var licenseBackground sync.WaitGroup
+	if configuration.PanelLicense != nil {
+		licenseBackground.Add(1)
+		go func() { defer licenseBackground.Done(); configuration.PanelLicense.Run(shutdownContext) }()
+	}
 	if remoteLicenseIssuer != nil {
 		licenseBackground.Add(1)
 		go func() {
@@ -215,7 +228,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 			runRemoteLicenseRenewal(shutdownContext, licensingService, remoteLicenseIssuer, configuration, remoteLicenseLease, logger)
 		}()
 	}
-	defer licenseBackground.Wait()
+	defer func() { stop(); licenseBackground.Wait() }()
 	var migrationGate sync.RWMutex
 	fence, err := panelmigration.OpenFence("automatic-migration")
 	if err != nil {
@@ -269,17 +282,21 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		httpapi.WithNodeUpdates(nodeupdates.New(store, versionService)),
 		httpapi.WithPanelUpdate(panelupdate.New(authService, auditService, versionService)),
 		httpapi.WithLicensing(licensingService),
+		httpapi.WithPanelLicense(configuration.PanelLicense),
+		httpapi.WithPanelLicenseUsage(store),
 		httpapi.WithBusiness(customerService, forwardingService, groupconfig.NewService(store, time.Now)),
 		httpapi.WithRuleGroups(rulegroups.NewService(store, time.Now)),
 		httpapi.WithSite(siteconfig.NewService(store, time.Now), announcements.NewService(store, time.Now), httpapi.PlatformInfo{Version: platformVersion, BuildTime: platformBuildTime}),
 		httpapi.WithPanelRuntime(panelruntime.NewService(platformVersion, panelruntime.NewSystemdController("hl-panel-control-api.service"), logger, time.Now).WithLogs(panelLogs).WithAudit(auditService).WithStatePath(controlStatePath)),
 		httpapi.WithVLESS(vlessIdentityService, vlessRuntimeService),
+		httpapi.WithVLESSSetup(vlessSetupService),
 		httpapi.WithVLESSConnections(vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService, store)),
 		httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentityService, forwardingService, endpointService, store), time.Now)),
 		httpapi.WithUsage(usageService),
 		httpapi.WithNezha(configuration.Nezha),
 		httpapi.WithHostGeo(hostgeo.New()),
 		httpapi.WithTargetProbe(targetprobe.New(targetprobe.DefaultTimeout)),
+		httpapi.WithRealityProbe(targetprobe.NewReality(targetprobe.DefaultTimeout)),
 	}
 	if durable, ok := store.(*postgressnapshot.Store); ok {
 		directory := strings.TrimSpace(os.Getenv("CONTROL_MIGRATION_BACKUP_DIR"))
@@ -341,6 +358,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 		return fmt.Errorf("configure customer API: %w", err)
 	}
 	handler := mountCustomerRoutes(controlHandler, customerHandler)
+	handler = panellicense.Guard(configuration.PanelLicense, handler)
 	guardedHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/panel/migration/import" {
 			migrationGate.Lock()
@@ -353,7 +371,9 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
 			licenseActive := true
-			if configuration.LicenseEnforce {
+			if configuration.PanelLicense != nil {
+				licenseActive = configuration.PanelLicense.Status("").ManagementAllowed
+			} else if configuration.LicenseEnforce {
 				_, licenseActive, _ = licensingService.CurrentLease(r.Context())
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "version": platformVersion, "migration_isolated": fence.Active(), "license_active": licenseActive})
@@ -367,7 +387,7 @@ func run(logger *slog.Logger, panelLogs *panelruntime.LogStore) error {
 			writeGuardedUnavailable(w, "panel_recovering", "面板正在恢复，请稍后重新登录", "2")
 			return
 		}
-		if configuration.LicenseEnforce && !licenseExempt(r) {
+		if configuration.PanelLicense == nil && configuration.LicenseEnforce && !licenseExempt(r) && !panellicense.OperationAllowed(r) {
 			if _, ok, err := licensingService.CurrentLease(r.Context()); err != nil || !ok {
 				w.Header().Set("Content-Type", "application/json")
 				w.Header().Set("Cache-Control", "no-store")

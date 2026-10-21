@@ -17,14 +17,23 @@ type DeleteInput struct {
 	ExpectedRevision                             int64
 }
 
-// CustomerDeletionRepository atomically checks references and revision, removes
-// sessions, and records the audit and replay result. Deletion never cascades into
-// rules, subscriptions or historical business records.
-type CustomerDeletionRepository interface {
+// DeletionRepository checks references and revision, removes sessions, and
+// records the audit and replay result in one transaction. It never cascades
+// into customer rules, subscriptions or other business records.
+type DeletionRepository interface {
 	DeleteCustomer(context.Context, DeleteInput, audit.Event) (bool, error)
+	DeleteUserGroup(context.Context, DeleteInput, audit.Event) (bool, error)
 }
 
 func (s *Service) DeleteCustomer(ctx context.Context, adminID, id string, request DeleteRequest, key string) (bool, error) {
+	return s.delete(ctx, adminID, id, request, key, "customer")
+}
+
+func (s *Service) DeleteUserGroup(ctx context.Context, adminID, id string, request DeleteRequest, key string) (bool, error) {
+	return s.delete(ctx, adminID, id, request, key, "user_group")
+}
+
+func (s *Service) delete(ctx context.Context, adminID, id string, request DeleteRequest, key, kind string) (bool, error) {
 	if !validID(id) || !validID(adminID) {
 		return false, fmt.Errorf("%w: invalid deletion resource or administrator ID", faults.ErrValidation)
 	}
@@ -38,15 +47,17 @@ func (s *Service) DeleteCustomer(ctx context.Context, adminID, id string, reques
 	if err != nil {
 		return false, err
 	}
-	event, err := audit.NewEvent(s.now().UTC(), "administrator", adminID, "customer.delete", "customer", id, "succeeded", map[string]any{"revision": request.Revision})
+	event, err := audit.NewEvent(s.now().UTC(), "administrator", adminID, kind+".delete", kind, id, "succeeded", map[string]any{"revision": request.Revision})
 	if err != nil {
 		return false, err
 	}
-	repository, ok := s.repository.(CustomerDeletionRepository)
+	repo, ok := s.repository.(DeletionRepository)
 	if !ok {
-		return false, fmt.Errorf("%w: customer deletion is unavailable", faults.ErrConflict)
+		return false, fmt.Errorf("%w: deletion is unavailable", faults.ErrConflict)
 	}
-	return repository.DeleteCustomer(ctx, DeleteInput{
-		ID: id, DeletedBy: adminID, ExpectedRevision: request.Revision, IdempotencyKey: key, RequestSHA256: hash,
-	}, event)
+	input := DeleteInput{ID: id, DeletedBy: adminID, ExpectedRevision: request.Revision, IdempotencyKey: key, RequestSHA256: hash}
+	if kind == "customer" {
+		return repo.DeleteCustomer(ctx, input, event)
+	}
+	return repo.DeleteUserGroup(ctx, input, event)
 }

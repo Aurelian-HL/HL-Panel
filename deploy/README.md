@@ -1,7 +1,9 @@
 # HL-panel 一键全新安装
 
-此流程面向一台全新 Debian 12/Ubuntu x86_64 主机。安装时填写自己的域名，
-或直接回车使用 IP 入口。安装会创建新的 PostgreSQL 空数据库，不导入旧面板、
+此流程面向一台全新 Debian 12/Ubuntu x86_64 主机。授权版安装必须填写自己的管理域名、
+提供 HT 发放的授权码并验证 DNS TXT；域名 A 记录可以稍后生效，期间可使用临时 IP 入口。
+授权的发放、旧面板首次接入、续期与身份备份见[面板域名授权指南](panel-license.md)。
+安装会创建新的 PostgreSQL 空数据库，不导入旧面板、
 旧 NY 或任何备份，也不会修改 DNS、停用网络组件或清理其他应用。
 
 ## 发布与安装
@@ -79,16 +81,12 @@ IP HTTPS 只在这个独立端口设置默认 TLS 站点，可接收不发送 SN
 请在执行命令时传入 `--public-ip <公网IPv4>`。安装器不会把 `hostname -I` 的
 私网地址误报为公网入口。
 
-DNS 生效后，在主机运行：
+### 后续启用域名证书
 
-### 后续绑定域名
-
-若首次安装时未填写域名，先由 root 在 `/etc/hl-panel/domain.conf` 中将
-`DOMAIN` 改为自己的域名，并同步将 `/etc/nginx/sites-available/hl-panel.conf`
-里的 `hl-panel.invalid` 替换为该域名；运行 `nginx -t` 通过后 reload Nginx。
-安装时已填写域名则无需此步骤。
-
-小白操作：运行 `nano /etc/hl-panel/domain.conf`，只修改 `DOMAIN` 的值，保留引号及其他行；按 Ctrl+O、回车保存，Ctrl+X 退出。再运行 `nano /etc/nginx/sites-available/hl-panel.conf`，将其中 `hl-panel.invalid` 改为同一个域名，保存退出。执行 `nginx -t && systemctl reload nginx`，通过后再申请证书。不要修改 IP 端口、私钥路径或其他站点。修改前请复制这两个文件留作备份。
+授权版安装时已经保存管理域名。将该域名的 A 记录指向本机，DNS 生效后，
+在主机运行以下命令申请证书；DNS TXT 授权证明与网站 A 记录是两个独立步骤。
+旧 IP 面板首次接入授权或需要更换管理域名时，先按[授权指南](panel-license.md)处理，
+不要只改 Nginx 域名或删除授权身份。
 
 ```sh
 sudo hl-panel-enable-domain-tls
@@ -175,6 +173,7 @@ bash install-node.sh --version vX.Y.Z --panel-url https://panel.example.com --to
 /opt/hl-panel/                 程序及不可变 release
 /etc/hl-panel/                 数据库连接、服务配置和 TLS 文件
 /var/lib/hl-panel/             私有服务状态（hlpanel:hlpanel，0750）
+/var/lib/hl-panel-license/     独立授权身份与签名缓存（勿复制给其他实例）
 /var/lib/hl-panel-acme/        公共 ACME webroot（root:root，0755）
 hl-panel-control-api.service   控制面 API
 ```
@@ -194,6 +193,11 @@ curl --fail --silent --show-error http://127.0.0.1:8080/healthz
 ## 保留数据更新与回滚
 
 **本节仅更新面板服务器。** 节点更新需 SSH 登录每台节点，使用 `update-node.sh`，不是在面板服务器执行。完整的角色区分、先面板后节点的升级顺序及误执行处理见[面板与节点更新指南](../docs/upgrade-guide.md)。面板网页更新也不会自动升级节点。
+
+首次从旧面板升级到授权版，必须先使用已校验候选包中的 `deploy/setup-panel-license.sh`
+接入域名授权，再执行系统更新，详见[授权指南](panel-license.md)。旧升级器不具备新版预检，
+不能跳过此步骤。后续新版升级器在备份、停止服务前验证签名身份；已绑定但到期或撤销的
+授权仍允许程序升级，不因此恢复管理权限。
 
 首次安装建立空实例；不要用安装器覆盖已有实例。已有实例由 root 运行：
 

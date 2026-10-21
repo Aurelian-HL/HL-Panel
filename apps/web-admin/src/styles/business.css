@@ -21,7 +21,7 @@
 .business-table td, .business-table th { padding: 12px; overflow-wrap: anywhere; }
 .business-table .table-primary, .business-table .table-secondary { white-space: normal; overflow: visible; line-height: 1.6; }
 .customer-table th:first-child { width: 23%; }
-.customer-table th:last-child { width: 82px; }
+.customer-table th:last-child { width: 150px; }
 .business-date { font-size: 12px; color: var(--gray-700); }
 .rule-table th:nth-child(2) { width: 20%; }
 .rule-table th:nth-child(3) { width: 21%; }
@@ -64,6 +64,9 @@
 .form-section h3 { font-size: 14px; color: var(--navy-900); }
 .form-section h3 small { margin-left: 6px; color: var(--gray-500); font-size: 11px; font-weight: 400; }
 .field-help { display: block; color: var(--gray-600); font-size: 11px; font-weight: 400; line-height: 1.7; }
+.reality-probe { padding: 12px; border-radius: 6px; background: var(--gray-50); }
+.reality-probe > .button { justify-self: start; max-width: 100%; white-space: normal; }
+.reality-probe__candidates { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; color: var(--gray-700); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .target-probe-actions { display: flex; justify-content: flex-start; margin-top: 7px; }
 .business-form .field select, .business-form .field input, .business-form .field textarea { min-width: 0; }
 .choice-list { min-width: 0; }
@@ -151,14 +154,14 @@
 .customer-table th:nth-child(4) { width: 140px; }
 .customer-table th:nth-child(5) { width: 105px; }
 .customer-table th:nth-child(6) { width: 92px; }
-.customer-table th:last-child { width: 82px; }
+.customer-table th:last-child { width: 150px; }
 .user-group-table { min-width: 920px; }
 .user-group-table th:first-child { width: 92px; }
 .user-group-table th:nth-child(2) { width: 160px; }
 .user-group-table th:nth-child(3) { width: 90px; }
 .user-group-table th:nth-child(4), .user-group-table th:nth-child(5) { width: 190px; }
 .user-group-table th:nth-child(6) { width: 72px; }
-.user-group-table th:last-child { width: 82px; }
+.user-group-table th:last-child { width: 150px; }
 .rule-table { min-width: 1120px; }
 .rule-table th:nth-child(2) { width: 125px; }
 .rule-table th:nth-child(3) { width: 145px; }
@@ -180,6 +183,8 @@
   .toolbar { align-items: center; flex-direction: row; }
   .business-desktop { display: block; }
   .business-mobile { display: none; }
+  .customer-inventory .business-desktop, .user-group-inventory .business-desktop { display: none; }
+  .customer-inventory .business-mobile, .user-group-inventory .business-mobile { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 14px; }
 }
 
 @media (max-width: 1100px) and (min-width: 761px) {
@@ -225,3 +230,5 @@
   .rule-batch-move { width: 100%; }
   .rule-batch-move select { flex: 1; min-width: 0; }
 }
+
+.business-row-actions .danger-text { color: var(--danger, #b42318); }

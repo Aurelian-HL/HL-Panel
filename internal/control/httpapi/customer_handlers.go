@@ -46,20 +46,6 @@ func (api *API) saveCustomer(w http.ResponseWriter, r *http.Request, session aut
 	writeBusinessResult(w, r, "customer", item, replayed)
 }
 
-func (api *API) deleteCustomer(w http.ResponseWriter, r *http.Request, session auth.Session) {
-	var input customers.DeleteRequest
-	if err := decodeJSON(w, r, &input); err != nil {
-		writeProblem(w, r, err)
-		return
-	}
-	replayed, err := api.customers.DeleteCustomer(r.Context(), session.AdminID, r.PathValue("id"), input, r.Header.Get("Idempotency-Key"))
-	if err != nil {
-		writeProblem(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"replayed": replayed})
-}
-
 func (api *API) listUserGroups(w http.ResponseWriter, r *http.Request, _ auth.Session) {
 	items, err := api.customers.ListUserGroups(r.Context())
 	if err != nil {
@@ -98,4 +84,32 @@ func (api *API) saveUserGroup(w http.ResponseWriter, r *http.Request, session au
 		return
 	}
 	writeBusinessResult(w, r, "user_group", item, replayed)
+}
+
+func (api *API) deleteCustomer(w http.ResponseWriter, r *http.Request, session auth.Session) {
+	api.deleteCustomerResource(w, r, session, false)
+}
+
+func (api *API) deleteUserGroup(w http.ResponseWriter, r *http.Request, session auth.Session) {
+	api.deleteCustomerResource(w, r, session, true)
+}
+
+func (api *API) deleteCustomerResource(w http.ResponseWriter, r *http.Request, session auth.Session, group bool) {
+	var input customers.DeleteRequest
+	if err := decodeJSON(w, r, &input); err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	var replayed bool
+	var err error
+	if group {
+		replayed, err = api.customers.DeleteUserGroup(r.Context(), session.AdminID, r.PathValue("id"), input, r.Header.Get("Idempotency-Key"))
+	} else {
+		replayed, err = api.customers.DeleteCustomer(r.Context(), session.AdminID, r.PathValue("id"), input, r.Header.Get("Idempotency-Key"))
+	}
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"replayed": replayed})
 }

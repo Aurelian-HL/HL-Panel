@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Two real HTTP-triggered upgrades against a published release on a CI VM.
+"""Two real HTTP-triggered upgrades of an isolated signed candidate on a CI VM.
 
 The baseline uses this source with an older build version, installed using the
-existing isolated installer transport. During upgrades nothing is redirected:
-GitHub metadata, tagged updater, assets, SQL, systemd and health checks are real.
+existing isolated installer transport. The baseline-only Go overlay maps the
+release list to fixed loopback metadata. Only fixed GitHub updater metadata,
+tagged updater and archive URLs are mapped to the isolated candidate. HTTP API, Unix root worker,
+SQL, systemd, authorization preflight and health checks execute normally.
 Never run this script against a user's panel.
 """
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -50,11 +53,56 @@ if args.prepare:
             for path in stage.iterdir():
                 output.add(path, arcname=path.name)
         (args.output_directory/'hl-panel-linux-amd64.tar.gz.sha256').write_text(hashlib.sha256(target.read_bytes()).hexdigest()+'  '+target.name+'\n')
-    print('Prepared isolated older build; upgrade will use real published assets')
+    print('Prepared isolated older build; upgrade will use isolated signed assets')
     raise SystemExit(0)
 
 assert os.geteuid() == 0 and os.environ.get('HL_PANEL_DISPOSABLE_INSTALL_TEST') == 'true'
 assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+assert args.archive_directory and os.environ.get('HL_PANEL_LICENSE_FIXTURE_DIR')
+# The real worker has ProtectHome=true and PrivateTmp=true. Keep only the
+# fixed candidate assets outside /home and private /tmp, while preserving
+# those production service protections throughout this acceptance.
+candidate_source = args.archive_directory.resolve()
+fixture_directory = tempfile.TemporaryDirectory(prefix='hl-panel-web-update-', dir='/var/lib')
+atexit.register(fixture_directory.cleanup)
+candidate = Path(fixture_directory.name)
+candidate.chmod(0o700)
+for name in ('hl-panel-linux-amd64.tar.gz', 'hl-panel-linux-amd64.tar.gz.sha256'):
+    source = candidate_source/name
+    target = candidate/name
+    shutil.copyfile(source, target)
+    target.chmod(0o600)
+    assert hashlib.sha256(target.read_bytes()).digest() == hashlib.sha256(source.read_bytes()).digest()
+assert (candidate/'hl-panel-linux-amd64.tar.gz.sha256').read_text().split()[0] == hashlib.sha256(
+    (candidate/'hl-panel-linux-amd64.tar.gz').read_bytes()).hexdigest()
+metadata = {'tag_name':args.version,'draft':False,'prerelease':False,'published_at':'2026-01-01T00:00:00Z',
+            'assets':[{'name':name} for name in ('hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256')]}
+# Inject transport into this disposable installation only, never the archives.
+# Both root worker imports and its child updater receive the same bounded map.
+tagged_script = candidate/'isolated-tagged-updater.py'
+injection = f'''
+_ci_metadata = {json.dumps(metadata).encode()!r}
+_ci_files = {{
+    'https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/{args.version}/deploy/update.py': {str(tagged_script)!r},
+    REPO + '/releases/download/{args.version}/hl-panel-linux-amd64.tar.gz': {str(candidate/'hl-panel-linux-amd64.tar.gz')!r},
+    REPO + '/releases/download/{args.version}/hl-panel-linux-amd64.tar.gz.sha256': {str(candidate/'hl-panel-linux-amd64.tar.gz.sha256')!r},
+}}
+def request(url, limit=2*1024*1024):
+    if url in (API + '/releases/latest', API + '/releases/tags/{args.version}'):
+        return _ci_metadata
+    if url not in _ci_files:
+        raise UpdateError('Unexpected isolated release URL')
+    data = Path(_ci_files[url]).read_bytes()
+    if len(data) > limit:
+        raise UpdateError('Isolated release response too large')
+    return data
+
+'''
+source = (repository/'deploy/update.py').read_text()
+guard = "if __name__=='__main__':"
+assert source.count(guard) == 1
+isolated_source = source.replace(guard, injection+guard)
+tagged_script.write_text(isolated_source)
 base = 'http://127.0.0.1:19991/api/v1'
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -69,10 +117,20 @@ def request(method, route, data=None, token=None, expected=200, identifier=None)
         response = opener.open(req, timeout=25)
     except urllib.error.HTTPError as error:
         response = error
-    assert response.code == expected, f'{method} {route}: HTTP {response.code}, expected {expected}'
     body = response.read()
+    if response.code != expected:
+        # Only expose structured problem codes, never request credentials or
+        # arbitrary response text in public CI logs.
+        try:
+            problem = json.loads(body).get('error', {})
+            code = problem.get('code', 'unknown') if isinstance(problem, dict) else 'unknown'
+        except (ValueError, AttributeError):
+            code = 'invalid_response'
+        raise AssertionError(f'{method} {route}: HTTP {response.code}, expected {expected}; code={code}')
     return json.loads(body) if body else None
 
+from web_release_fixture import WebReleaseFixture
+releases = WebReleaseFixture(args.version)
 assert request('GET', '/public/site-info')['platform_version'] == BASELINE
 session = request('POST', '/auth/login', {'username':'admin', 'password':'123456'})
 token = session['access_token']
@@ -90,9 +148,17 @@ assert request('GET', '/panel/update', token=token)['task'] is None
 def fingerprint():
     return {str(path):hashlib.sha256(path.read_bytes()).hexdigest() for directory in ('/etc/hl-panel', '/etc/nginx') for path in Path(directory).rglob('*') if path.is_file() and not path.is_symlink()}
 
+from issuer_nginx_fixture import IssuerNginxFixture
+issuer_nginx = IssuerNginxFixture()
 protected = fingerprint()
 results = []
 for round_number in (1, 2):
+    Path('/opt/hl-panel/current/deploy/update.py').write_text(isolated_source)
+    versions = request('GET', '/system/version', token=token)
+    assert versions['current_version'] == BASELINE
+    assert any(version['tag'] == args.version and version['can_update'] for version in versions['versions'])
+    for rejected_version in (BASELINE, 'v999.0.0'):
+        request('POST', '/panel/update', {'version':rejected_version, 'administrator_password':password}, token, 400, str(uuid.uuid4()))
     identifier = str(uuid.uuid4())
     started = time.monotonic()
     payload = {'version':args.version, 'administrator_password':password}
@@ -112,7 +178,14 @@ for round_number in (1, 2):
         task = status['task']
         assert task['id'] == identifier
         if task['state'] == 'failed':
-            raise AssertionError('Published web update failed: '+task['message'])
+            # Expose only the updater's deliberately non-secret status lines.
+            # Raw private worker output, configs and credentials stay on the VM.
+            log = Path('/var/lib/hl-panel-update')/(identifier+'.log')
+            if log.is_file() and not log.is_symlink():
+                for line in log.read_text(encoding='utf-8', errors='replace')[-32768:].splitlines():
+                    if line.startswith('[HL-panel 更新] '):
+                        print(line, flush=True)
+            raise AssertionError('Isolated web update failed: '+task['message'])
         if task['state'] == 'succeeded':
             break
         time.sleep(2)
@@ -123,6 +196,7 @@ for round_number in (1, 2):
     request('POST', '/auth/login', {'username':'admin','password':password})
     request('POST', '/auth/login', {'username':'admin','password':'123456'}, expected=401)
     assert fingerprint() == protected
+    issuer_nginx.verify()
     backup = Path(task['backup_directory'])
     assert backup.parent == Path('/var/backups/hl-panel') and (backup/'rollback.sh').is_file()
     subprocess.run(['pg_restore', '--list', str(backup/'database.dump')], stdout=subprocess.DEVNULL, check=True)
@@ -133,8 +207,12 @@ for round_number in (1, 2):
         subprocess.run(['bash', str(backup/'rollback.sh')], check=True)
         assert request('GET', '/public/site-info')['platform_version'] == BASELINE
         assert request('GET', '/device-groups', token=token) == groups
+        assert fingerprint() == protected
+        issuer_nginx.verify()
 
 report = Path('web-update-result.json')
-report.write_text(json.dumps({'real_published_github_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True}, indent=2)+'\n')
+assert releases.requests >= 2
+releases.close()
+report.write_text(json.dumps({'real_published_github_transport':False,'baseline_only_go_release_list_overlay':True,'loopback_release_metadata_requests':releases.requests,'current_and_unlisted_versions_rejected':True,'isolated_signed_candidate_transport':True,'real_http_api_unix_worker_postgresql_systemd':True,'baseline':'source build '+BASELINE,'target':args.version,'rounds':results,'manual_rollback_between_rounds':True,'independent_issuer_include_and_https_route_preserved':True}, indent=2)+'\n')
 report.chmod(0o644)
 print('WEB_UPDATE_ACCEPTED_TWO_ROUNDS')

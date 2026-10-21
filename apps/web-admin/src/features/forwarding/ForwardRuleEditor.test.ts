@@ -1,9 +1,9 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceGroup } from '@/api'
 import type { ForwardRule, GroupNetwork } from '@/api/business'
 
-const mocked = vi.hoisted(() => ({ saveRule: vi.fn() }))
+const mocked = vi.hoisted(() => ({ saveRule: vi.fn(), realityTargets: vi.fn().mockResolvedValue({ items: [] }), probeReality: vi.fn() }))
 vi.mock('@/api/business', () => ({ businessApi: mocked }))
 import ForwardRuleEditor from './ForwardRuleEditor.vue'
 
@@ -38,9 +38,94 @@ async function submit(wrapper: VueWrapper) {
   await flushPromises()
 }
 
-beforeEach(() => { mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValue(rule) })
+beforeEach(() => {
+  mocked.saveRule.mockReset(); mocked.saveRule.mockResolvedValue(rule)
+  mocked.realityTargets.mockReset(); mocked.realityTargets.mockResolvedValue({ items: [] })
+  mocked.probeReality.mockReset(); mocked.probeReality.mockImplementation(async (target) => ({ ...target, compatible: true, latency_ms: 30, tls_version: 'TLS 1.3', key_exchange: 'X25519', source: 'control_plane', checked_at: '2026-10-20T00:00:00Z' }))
+})
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('ForwardRuleEditor', () => {
+  it('pairs random Reality fields, offers another candidate and preserves them on edit', async () => {
+    const pool = [
+      { server_name: 'www.apple.com', destination: 'www.apple.com:443' },
+      { server_name: 'www.cloudflare.com', destination: 'www.cloudflare.com:443' },
+      { server_name: 'www.icloud.com', destination: 'www.icloud.com:443' },
+      { server_name: 'www.amazon.com', destination: 'www.amazon.com:443' },
+    ]
+    mocked.realityTargets.mockResolvedValue({ items: pool })
+    const wrapper = mountEditor()
+    await flushPromises()
+    expect(mocked.realityTargets).not.toHaveBeenCalled()
+    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+    await flushPromises()
+    expect(mocked.probeReality).toHaveBeenCalledTimes(4)
+    const initial = field(wrapper, 'Reality SNI').get('input').element.value
+    expect(pool.map((item) => item.server_name)).toContain(initial)
+    expect(field(wrapper, 'Reality Target').get('input').element.value).toBe(`${initial}:443`)
+    await wrapper.findAll('button').find((item) => item.text().includes('随机更换 Reality 目标'))!.trigger('click')
+    await flushPromises()
+    expect(mocked.probeReality).toHaveBeenCalledTimes(8)
+    const next = field(wrapper, 'Reality SNI').get('input').element.value
+    expect(next).not.toBe(initial)
+    expect(field(wrapper, 'Reality Target').get('input').element.value).toBe(`${next}:443`)
+    wrapper.unmount()
+    mocked.realityTargets.mockClear()
+    const edit = mountEditor({ rule: { ...rule, ingress_protocol: 'vless_reality', reality_server_name: 'existing.example.com', reality_destination: 'existing.example.com:443' } })
+    await flushPromises()
+    expect(mocked.realityTargets).not.toHaveBeenCalled()
+    expect(field(edit, 'Reality SNI').get('input').element.value).toBe('existing.example.com')
+    edit.unmount()
+  })
+  it('debounces manual edits, ignores obsolete responses and permits a retry', async () => {
+    vi.useFakeTimers()
+    const wrapper = mountEditor({ rule: { ...rule, ingress_protocol: 'vless_reality', reality_server_name: 'old.example.test', reality_destination: 'old.example.test:443' } })
+    let resolveOld: (value: unknown) => void = () => {}
+    mocked.probeReality.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    await vi.advanceTimersByTimeAsync(500)
+    expect(mocked.probeReality).toHaveBeenCalledOnce()
+    await field(wrapper, 'Reality Target').get('input').setValue('www.apple.com:443')
+    await field(wrapper, 'Reality SNI').get('input').setValue('www.apple.com')
+    await vi.advanceTimersByTimeAsync(499)
+    expect(mocked.probeReality).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(mocked.probeReality).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('面板检测通过 · 30 ms')
+    resolveOld({ compatible: false, message: '旧目标失败' })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('旧目标失败')
+    mocked.probeReality.mockRejectedValueOnce(new Error('检测暂不可用'))
+    await wrapper.findAll('button').find((item) => item.text() === '复测当前目标')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('检测暂不可用')
+    await wrapper.findAll('button').find((item) => item.text() === '复测当前目标')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('面板检测通过 · 30 ms')
+    expect(wrapper.text()).not.toContain('检测暂不可用')
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mocked.probeReality).toHaveBeenCalledTimes(4)
+  })
+  it('chooses only a passing candidate and keeps manual input while the pool is pending', async () => {
+    const pool = [{ server_name: 'www.apple.com', destination: 'www.apple.com:443' }, { server_name: 'www.amazon.com', destination: 'www.amazon.com:443' }]
+    mocked.realityTargets.mockResolvedValue({ items: pool })
+    mocked.probeReality.mockImplementation(async (target) => ({ ...target, compatible: target.server_name === 'www.apple.com', latency_ms: 20, message: '检测失败' }))
+    const wrapper = mountEditor()
+    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+    await flushPromises()
+    expect(field(wrapper, 'Reality SNI').get('input').element.value).toBe('www.apple.com')
+    const finishes: Array<() => void> = []
+    mocked.probeReality.mockImplementation((target) => new Promise((resolve) => { finishes.push(() => resolve({ ...target, compatible: true })) }))
+    await wrapper.findAll('button').find((item) => item.text().includes('随机更换 Reality 目标'))!.trigger('click')
+    await flushPromises()
+    await field(wrapper, 'Reality SNI').get('input').setValue('manual.example.test')
+    expect(finishes).toHaveLength(2)
+    finishes.forEach((finish) => finish())
+    await flushPromises()
+    expect(field(wrapper, 'Reality SNI').get('input').element.value).toBe('manual.example.test')
+    wrapper.unmount()
+  })
   it('defaults a newly selected TCP exit to QUIC and saves KCP explicitly', async () => {
     const wrapper = mountEditor()
     await populate(wrapper)
@@ -192,12 +277,8 @@ describe('ForwardRuleEditor', () => {
     wrapper.unmount()
   })
 
-  it.each(['tcp', 'udp'] as const)('creates VLESS Reality DIRECT with a fixed %s target', async (protocol) => {
-    const wrapper = mountEditor()
-    await field(wrapper, '名称').get('input').setValue(`固定 ${protocol}`)
-    await field(wrapper, '入口').get('select').setValue('entry-1')
-    await field(wrapper, '接入协议').get('select').setValue('vless_reality')
-    await field(wrapper, 'VLESS 出站').get('select').setValue('DIRECT')
+  it.each(['tcp', 'udp'] as const)('still edits an existing fixed %s target', async (protocol) => {
+    const wrapper = mountEditor({ rule: { ...rule, ingress_protocol: 'vless_reality', vless_outbound_mode: 'DIRECT', vless_flow: 'xtls-rprx-vision' } })
     await field(wrapper, '目标协议').get('select').setValue(protocol)
     await field(wrapper, '目标地址').get('textarea').setValue('192.0.2.50:5300')
     await submit(wrapper)
@@ -212,31 +293,31 @@ describe('ForwardRuleEditor', () => {
     wrapper.unmount()
   })
 
-  it.each([false, true])('preserves an issued DIRECT URI and mode on edit or copy (copy=%s)', async (copy) => {
+  it('preserves an issued DIRECT URI and mode on edit', async () => {
     const issued: ForwardRule = {
       ...rule, ingress_protocol: 'vless_reality', protocol: 'udp',
       vless_outbound_mode: 'DIRECT', vless_flow: '', vless_flow_explicit: true,
       reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443',
       reality_public_key: 'public-key', reality_short_id: '0123456789abcdef',
     }
-    const wrapper = mountEditor({ rule: issued, copy })
+    const wrapper = mountEditor({ rule: issued })
     expect(field(wrapper, 'VLESS 出站').get('select').element.value).toBe('DIRECT')
     expect(field(wrapper, '目标协议').get('select').element.value).toBe('udp')
     expect(field(wrapper, '目标地址').get('textarea').element.value).toBe('192.0.2.10:443')
-    if (!copy) await field(wrapper, '名称').get('input').setValue('仅改名称')
+    await field(wrapper, '名称').get('input').setValue('仅改名称')
     await submit(wrapper)
     expect(mocked.saveRule).toHaveBeenCalledOnce()
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
       vless_outbound_mode: 'DIRECT', protocol: 'udp', vless_flow: '', vless_flow_explicit: true,
       targets: issued.targets, reality_server_name: issued.reality_server_name,
       reality_destination: issued.reality_destination,
-      reality_public_key: copy ? '' : issued.reality_public_key,
-      reality_short_id: copy ? '' : issued.reality_short_id,
+      reality_public_key: issued.reality_public_key,
+      reality_short_id: issued.reality_short_id,
     })
     wrapper.unmount()
   })
 
-  it('does not carry SOCKS5 landing credentials into DIRECT mode', async () => {
+  it('does not offer fixed targets when creating, copying or editing a SOCKS5 rule', async () => {
     const issued: ForwardRule = {
       ...rule, ingress_protocol: 'vless_reality', vless_outbound_mode: 'SOCKS5', targets: [],
       vless_socks5_host: '198.51.100.20', vless_socks5_port: 6019,
@@ -244,17 +325,12 @@ describe('ForwardRuleEditor', () => {
       reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443',
       reality_public_key: 'public-key', reality_short_id: '0123456789abcdef',
     }
-    const wrapper = mountEditor({ rule: issued })
-    await field(wrapper, 'VLESS 出站').get('select').setValue('DIRECT')
-    expect(field(wrapper, '目标地址').get('textarea').element.value).toBe('')
-    await field(wrapper, '目标地址').get('textarea').setValue('192.0.2.10:443')
-    await submit(wrapper)
-    expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({
-      vless_outbound_mode: 'DIRECT', vless_socks5_host: '', vless_socks5_port: 0,
-      vless_socks5_username: '', vless_socks5_password: '',
-      targets: [{ host: '192.0.2.10', port: 443 }],
-    })
-    wrapper.unmount()
+    for (const overrides of [{}, { rule: issued }, { rule: { ...issued, vless_outbound_mode: 'DIRECT' as const }, copy: true }]) {
+      const wrapper = mountEditor(overrides)
+      if (!overrides.rule) await field(wrapper, '接入协议').get('select').setValue('vless_reality')
+      expect(field(wrapper, 'VLESS 出站').findAll('option').map((item) => item.attributes('value'))).toEqual(['SOCKS5'])
+      wrapper.unmount()
+    }
   })
 
   it('keeps the URI flow of a legacy UDP rule during an unrelated edit', async () => {
@@ -275,9 +351,10 @@ describe('ForwardRuleEditor', () => {
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ reality_public_key: 'public-key', reality_short_id: '0123456789abcdef' })
     edit.unmount()
     const copy = mountEditor({ rule: issued, copy: true })
+    await flushPromises()
     await fieldStartingWith(copy, '目标地址').get('textarea').setValue('192.0.2.10:443:landing-user:landing-secret')
     await submit(copy)
-    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ reality_public_key: '', reality_short_id: '', reality_server_name: 'www.example.com', reality_destination: 'www.example.com:443', listen_port: 0, paused: true })
+    expect(mocked.saveRule.mock.calls[1]?.[0]).toMatchObject({ reality_public_key: '', reality_short_id: '', reality_server_name: '', reality_destination: '', listen_port: 0, paused: true })
     expect(mocked.saveRule.mock.calls[1]?.[1]).toBeNull()
     copy.unmount()
   })
@@ -301,6 +378,7 @@ describe('ForwardRuleEditor', () => {
       reality_destination: 'www.example.com:443',
     }
     const copy = mountEditor({ rule: issued, copy: true })
+    await flushPromises()
     expect(fieldStartingWith(copy, '目标地址').get('textarea').element.value).toBe('')
     expect(copy.text()).toContain('上游密码不可读取')
     await submit(copy)
@@ -337,7 +415,7 @@ describe('ForwardRuleEditor', () => {
     expect(mocked.saveRule).not.toHaveBeenCalled()
     expect(edit.text()).toContain('也需要填写对应的 SNI')
     await field(edit, 'Reality SNI').get('input').setValue('other.example.com')
-    expect(edit.text()).toContain('客户需要更新订阅或重新导入节点')
+    expect(edit.text()).toContain('客户需要刷新订阅或重新导入节点')
     await submit(edit)
     expect(mocked.saveRule.mock.calls[0]?.[0]).toMatchObject({ reality_public_key: 'public-key', reality_short_id: '0123456789abcdef', reality_server_name: 'other.example.com', reality_destination: 'other.example.com:443' })
     edit.unmount()

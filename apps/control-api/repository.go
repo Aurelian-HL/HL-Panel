@@ -20,6 +20,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/nezhamonitor"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 	"github.com/hongle/hl-panel/internal/control/nodeupdates"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/hongle/hl-panel/internal/control/postgressnapshot"
 	"github.com/hongle/hl-panel/internal/control/rulegroups"
 	"github.com/hongle/hl-panel/internal/control/siteconfig"
@@ -31,6 +32,8 @@ import (
 )
 
 type controlRepository interface {
+	panelquota.UsageSource
+	SetPanelQuotaProvider(panelquota.Provider)
 	customerIdentityRepositoryProvider
 	nodeupdates.Repository
 	audit.Repository

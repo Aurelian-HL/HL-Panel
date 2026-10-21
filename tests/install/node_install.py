@@ -188,7 +188,8 @@ try:
         secrets.append(password_hash)
         # The captured hash is not a deliverable.
         transcript.pop()
-        environment = dict(os.environ, CONTROL_LISTEN_ADDRESS=f'127.0.0.1:{port}',
+        from license_fixture import seed_license
+        environment = dict(os.environ, **seed_license('node-ci.invalid', work/'license'), CONTROL_LISTEN_ADDRESS=f'127.0.0.1:{port}',
                            CONTROL_TLS_CERT_FILE=str(cert), CONTROL_TLS_KEY_FILE=str(key),
                            CONTROL_ALLOW_VOLATILE_STORE='true', CONTROL_BOOTSTRAP_ADMIN_USERNAME='node.acceptance',
                            CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH=password_hash,

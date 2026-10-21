@@ -45,7 +45,7 @@ type businessFixture struct {
 	customer  customers.Customer
 }
 
-func newBusinessFixture(t *testing.T) businessFixture {
+func newBusinessFixture(t *testing.T, forwardingOptions ...forwarding.ServiceOption) businessFixture {
 	t.Helper()
 	now := time.Now().UTC()
 	clock := func() time.Time { return now }
@@ -62,7 +62,7 @@ func newBusinessFixture(t *testing.T) businessFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := httpapi.New(auth.NewService(store, audit.NewService(store), clock, time.Hour), enrollment.NewService(store, clock, time.Hour), nodes.NewService(store, clock, time.Minute), groups.NewService(store, clock), endpoints.NewService(store, clock), generations.NewService(store, clock), slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithBusiness(customers.NewService(store, clock), forwarding.NewService(store, clock), groupconfig.NewService(store, clock)), httpapi.WithRuleGroups(rulegroups.NewService(store, clock)), httpapi.WithTargetProbe(targetprobe.New(time.Second)), httpapi.WithVLESS(vlessIdentity, vlessRuntime), httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentity, forwarding.NewService(store, clock), endpoints.NewService(store, clock)), clock)))
+	handler := httpapi.New(auth.NewService(store, audit.NewService(store), clock, time.Hour), enrollment.NewService(store, clock, time.Hour), nodes.NewService(store, clock, time.Minute), groups.NewService(store, clock), endpoints.NewService(store, clock), generations.NewService(store, clock), slog.New(slog.NewTextHandler(io.Discard, nil)), httpapi.WithBusiness(customers.NewService(store, clock), forwarding.NewService(store, clock, forwardingOptions...), groupconfig.NewService(store, clock)), httpapi.WithRuleGroups(rulegroups.NewService(store, clock)), httpapi.WithTargetProbe(targetprobe.New(time.Second)), httpapi.WithRealityProbe(targetprobe.NewReality(time.Second)), httpapi.WithVLESS(vlessIdentity, vlessRuntime), httpapi.WithSubscriptions(subscriptions.NewService(store, vlessconnection.NewService(vlessIdentity, forwarding.NewService(store, clock, forwardingOptions...), endpoints.NewService(store, clock)), clock)))
 	var login auth.LoginResult
 	decodeResponse(t, requestJSON(t, handler, http.MethodPost, "/api/v1/auth/login", "", map[string]any{"username": "admin", "password": "isolated-test-administrator"}, http.StatusOK), &login)
 	f := businessFixture{handler: handler, token: login.AccessToken, store: store}

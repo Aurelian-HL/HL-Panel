@@ -3,6 +3,19 @@
 This repository is a clean-room, standalone control plane. It must not depend on
 `ht.hongle.work`, `zf.hongle.work`, NY internals, X-Panel, or 3x-ui at runtime.
 
+### Authorized domain-license exception (2026-10-20)
+
+The user authorized HT-issued domain licensing and coordinated implementation.
+The independent license issuer may use `https://ht.hongle.work` as its public
+URL and issuer ID, with a separate process and PostgreSQL database. HL's license
+client calls only that issuer's versioned contract; forwarding, subscriptions,
+and node operation must not depend on HT business APIs. Expiry restricts
+administrative writes while retaining existing service and renewal access.
+The latest coordinated step is verification-only CI: no release publication,
+production gate cutover, or DNS change without the corresponding authorization.
+HT/issuer production changes belong to its designated owner; HL work must not
+modify those services concurrently. All other isolation rules below still apply.
+
 ## Stack
 
 - Go control plane and edge agent.

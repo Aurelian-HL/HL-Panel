@@ -175,6 +175,11 @@ func (s *Store) RestoreMigration(parent context.Context, input migrationbackup.R
 	if err != nil {
 		return result, err
 	}
+	beforeUsage, _ := current.PanelResourceUsage(ctx)
+	afterUsage, _ := restoredState.PanelResourceUsage(ctx)
+	if err := s.validatePanelGrowth(beforeUsage, afterUsage); err != nil {
+		return result, err
+	}
 	if input.SaveRecovery == nil {
 		return result, errors.New("migration recovery unavailable")
 	}

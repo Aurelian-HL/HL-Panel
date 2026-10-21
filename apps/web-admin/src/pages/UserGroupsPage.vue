@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Pencil, Plus, RefreshCw, Search } from '@lucide/vue'
+import { Pencil, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import type { DeviceGroup } from '@/api'
 import { businessApi, type Customer, type UserGroup } from '@/api/business'
 import StatePanel from '@/components/StatePanel.vue'
 import UserGroupEditor from '@/features/user-groups/UserGroupEditor.vue'
+import DeleteCustomerResourceDialog from '@/features/customers/DeleteCustomerResourceDialog.vue'
 import { toast } from '@/composables/toast'
 import { displayError } from '@/lib/displayFormatters'
 const groups = ref<UserGroup[]>([])
@@ -15,6 +16,7 @@ const error = ref('')
 const query = ref('')
 const editor = ref(false)
 const selected = ref<UserGroup | null>(null)
+const deleting = ref<UserGroup | null>(null)
 const filtered = computed(() => groups.value.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(query.value.trim().toLowerCase())))
 const deviceNames = (ids: string[]) => ids.map((id) => devices.value.find((device) => device.id === id)?.name ?? '设备组不可用').join('、') || '未授权'
 const userCounts = computed(() => {
@@ -29,6 +31,7 @@ async function load(): Promise<void> {
 }
 function open(group: UserGroup | null): void { selected.value = group; editor.value = true }
 async function saved(group: UserGroup): Promise<void> { editor.value = false; toast.success('用户组已保存', group.name); await load() }
+async function deleted(): Promise<void> { deleting.value = null; toast.success('用户组已删除'); await load() }
 onMounted(load)
 </script>
 <template>
@@ -39,7 +42,7 @@ onMounted(load)
     <StatePanel v-else-if="error && !groups.length" state="error" title="用户组加载失败" :message="error" @retry="load" />
     <StatePanel v-else-if="!groups.length" state="empty" title="还没有用户组" message="先创建设备组，再为用户组授予入口组、落地出口组和入口直出权限。" />
     <StatePanel v-else-if="!filtered.length" state="empty" title="没有匹配的用户组" />
-    <div v-else class="business-inventory">
+    <div v-else class="business-inventory user-group-inventory">
       <div class="business-desktop table-wrap"><table class="data-table business-table user-group-table">
         <thead><tr><th>ID</th><th>名称</th><th>用户数量</th><th>入口转发组</th><th>落地出口组</th><th>入口直出</th><th>操作</th></tr></thead>
         <tbody><tr v-for="group in filtered" :key="group.id">
@@ -49,15 +52,17 @@ onMounted(load)
           <td>{{ deviceNames(group.allowed_entry_group_ids) }}</td>
           <td>{{ deviceNames(group.allowed_exit_group_ids) }}</td>
           <td><span class="business-status" :class="{ 'business-status--muted': !group.allow_direct }">{{ group.allow_direct ? '允许' : '禁止' }}</span></td>
-          <td><button class="button button--quiet" @click="open(group)"><Pencil :size="14" />编辑</button></td>
+          <td><div class="business-row-actions"><button class="button button--quiet" @click="open(group)"><Pencil :size="14" />编辑</button><button class="button button--quiet danger-text" @click="deleting = group"><Trash2 :size="14" />删除</button></div></td>
         </tr></tbody>
       </table></div>
       <div class="business-mobile"><article v-for="group in filtered" :key="group.id" class="business-card">
         <header><div><h3>{{ group.name }}</h3><p>{{ userCounts.get(group.id) ?? 0 }} 个用户<span v-if="group.description"> · {{ group.description }}</span></p></div><button class="button button--quiet" @click="open(group)"><Pencil :size="14" />编辑</button></header>
         <dl><div><dt>入口转发组</dt><dd>{{ deviceNames(group.allowed_entry_group_ids) }}</dd></div><div><dt>落地出口组</dt><dd>{{ deviceNames(group.allowed_exit_group_ids) }}</dd></div><div><dt>入口直出</dt><dd>{{ group.allow_direct ? '允许' : '禁止' }}</dd></div><div><dt>ID</dt><dd>{{ group.id }}</dd></div></dl>
+        <footer class="business-row-actions"><button class="button button--quiet danger-text" @click="deleting = group"><Trash2 :size="15" />删除用户组</button></footer>
       </article></div>
     </div>
     <p v-if="error && groups.length" class="inline-warning">刷新失败，保留上次数据：{{ error }}</p>
     <UserGroupEditor v-if="editor" :group="selected" :devices="devices" @close="editor = false" @saved="saved" />
+    <DeleteCustomerResourceDialog v-if="deleting" kind="user-group" :item="deleting" :name="deleting.name" @close="deleting = null" @deleted="deleted" />
   </div>
 </template>

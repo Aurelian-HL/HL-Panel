@@ -99,6 +99,8 @@ os.execv(os.environ['HL_AUTO_CURL'], ['curl', *values])
         shim.chmod(0o700)
         os.environ.update(HL_AUTO_CANDIDATE=str(args.archive_directory.resolve()), HL_AUTO_TAG=args.version,
                           HL_AUTO_CURL=shutil.which('curl'), PATH=str(work)+':'+os.environ['PATH'])
+        from license_fixture import seed_license
+        seed_license(task['domain'], '/var/lib/hl-panel-license')
         assert executor.prepare(task)['state'] == 'prepared'
         assert executor.prepare(task)['state'] == 'prepared', 'Prepare retry changed task identity'
         health = request(executor.API, '/healthz')
@@ -135,7 +137,7 @@ os.execv(os.environ['HL_AUTO_CURL'], ['curl', *values])
             for action in ('apply', 'verify'):
                 command(['runuser', '-u', 'postgres', '--', '/opt/hl-panel/current/bin/usage-migrate', action, '-dsn-file', str(dsn_file)])
             hashed = command([str(binary), 'hash-password'], input=(password+'\n').encode()).decode().strip()
-            env = dict(os.environ, CONTROL_LISTEN_ADDRESS='127.0.0.1:19992', CONTROL_DATABASE_URL=dsn,
+            env = dict(os.environ, **seed_license('migration-source-ci.invalid', source/'license', owner='postgres'), CONTROL_LISTEN_ADDRESS='127.0.0.1:19992', CONTROL_DATABASE_URL=dsn,
                        CONTROL_BOOTSTRAP_ADMIN_USERNAME='migration-source', CONTROL_BOOTSTRAP_ADMIN_PASSWORD_HASH=hashed,
                        CONTROL_CUSTOMER_PASSWORD_FINGERPRINT_KEY_B64=base64.b64encode(os.urandom(32)).decode(),
                        CONTROL_MIGRATION_BACKUP_DIR=str(source/'backups'), CONTROL_PANEL_LOG_FILE=str(source/'panel.log'))

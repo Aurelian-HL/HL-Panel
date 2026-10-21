@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/panelquota"
 )
 
 const maxRequestBytes = 2 << 20
@@ -52,6 +53,8 @@ func writeProblem(writer http.ResponseWriter, _ *http.Request, err error) {
 	code := "internal_error"
 	message := "internal server error"
 	switch {
+	case errors.Is(err, panelquota.ErrExceeded):
+		status, code, message = http.StatusConflict, "panel_quota_exceeded", err.Error()
 	case errors.Is(err, faults.ErrUnavailable):
 		status, code, message = http.StatusServiceUnavailable, "temporarily_unavailable", "服务暂时不可用，请稍后重试"
 		writer.Header().Set("Retry-After", "15")
