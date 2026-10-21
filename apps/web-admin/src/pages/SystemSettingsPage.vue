@@ -6,7 +6,6 @@ import VersionNotice from '@/components/VersionNotice.vue'
 import AnnouncementEditor from '@/features/announcements/AnnouncementEditor.vue'
 import { siteApi } from '@/api/site'
 import type { Announcement, SiteSettings, SiteSettingsInput } from '@/api/siteTypes'
-import PanelLicenseCard from '@/components/PanelLicenseCard.vue'
 import { useMutationKey } from '@/composables/useMutationKey'
 import { toast } from '@/composables/toast'
 import { siteStore } from '@/stores/site'
@@ -78,7 +77,6 @@ onMounted(load)
         </form>
       </section>
 
-      <PanelLicenseCard />
 
       <section class="settings-section announcement-management">
         <header><span class="settings-section__icon"><Megaphone :size="18" /></span><div><h3>站点公告</h3><p>支持生效时间、结束时间和维护级别。</p></div><button class="button button--primary" @click="editor = null"><Plus :size="15" />发布公告</button></header>

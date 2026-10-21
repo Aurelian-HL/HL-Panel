@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import PanelLicenseCard from '@/components/PanelLicenseCard.vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Archive, Cpu, FileText, HardDrive, MemoryStick, Network, Power, RefreshCw, RotateCw, Terminal, Wifi, XCircle, CheckCircle2 } from '@lucide/vue'
 
@@ -178,7 +177,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page-stack overview-page xpanel-page">
-    <PanelLicenseCard />
     <StatePanel v-if="loading && !overview" state="loading" title="正在读取系统状态" />
     <StatePanel v-else-if="errorMessage && !overview" state="error" title="系统状态读取失败" :message="errorMessage" @retry="load" />
     <template v-else-if="overview">

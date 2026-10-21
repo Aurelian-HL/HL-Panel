@@ -15,6 +15,18 @@ const sample: PanelLicenseStatus = { enabled: true, tier: 'licensed', limits: { 
 beforeEach(() => { vi.clearAllMocks(); store.clear(); vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample }) })
 
 describe('Panel license UI', () => {
+  it('offers a contact placeholder without navigating to the issuer', async () => {
+    const wrapper = mount(PanelLicenseCard); await flushPromises()
+    expect(wrapper.find('a').exists()).toBe(false)
+    const help = wrapper.findAll('button').find(b => b.text() === '寻求帮助')!
+    expect(help.attributes('aria-expanded')).toBe('false')
+    await help.trigger('click')
+    expect(wrapper.text()).toContain('联系方式待补充')
+    expect(help.attributes('aria-expanded')).toBe('true')
+    await help.trigger('click')
+    expect(wrapper.text()).not.toContain('联系方式待补充')
+    wrapper.unmount()
+  })
   it('shows automatic registration pending and refreshes without requiring DNS or a code', async () => {
     vi.mocked(panelLicenseApi.status).mockResolvedValue({ ...sample, status: 'unactivated', tier: undefined, license_id: undefined, auto_registration: true, management_allowed: false })
     const wrapper = mount(PanelLicenseCard); await flushPromises()
@@ -105,11 +117,13 @@ describe('Panel license UI', () => {
     vi.mocked(panelLicenseApi.dismiss).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ ...sample, reminder_due: false })
     const wrapper = mount(PanelLicenseReminder, { attachTo: document.body }); await flushPromises()
     expect(wrapper.get('[role=alertdialog]').attributes('aria-modal')).toBe('true')
-    expect(document.activeElement).toBe(wrapper.get('button').element)
-    await wrapper.get('button').trigger('click'); await flushPromises()
+    const dismiss = wrapper.get('button[autofocus]')
+    expect(wrapper.find('a').exists()).toBe(false)
+    expect(document.activeElement).toBe(dismiss.element)
+    await dismiss.trigger('click'); await flushPromises()
     expect(wrapper.get('[role=alert]').text()).toContain('提醒设置未保存')
     expect(wrapper.find('[role=alertdialog]').exists()).toBe(true)
-    await wrapper.get('button').trigger('click'); await flushPromises()
+    await dismiss.trigger('click'); await flushPromises()
     expect(wrapper.find('[role=alertdialog]').exists()).toBe(false); wrapper.unmount()
   })
   it('discards a response from the previous administrator session', async () => {
@@ -132,7 +146,7 @@ describe('Panel license UI', () => {
     let resolve!: (s: PanelLicenseStatus) => void
     vi.mocked(panelLicenseApi.dismiss).mockReturnValueOnce(new Promise(done => { resolve = done }))
     const wrapper = mount(PanelLicenseReminder); await flushPromises()
-    await wrapper.get('button').trigger('click'); store.clear()
+    await wrapper.get('button[autofocus]').trigger('click'); store.clear()
     resolve({ ...sample, reminder_due: false }); await flushPromises()
     expect(store.status.value).toBeNull(); wrapper.unmount()
   })

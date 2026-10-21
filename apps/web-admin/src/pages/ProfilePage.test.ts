@@ -6,6 +6,7 @@ const mocked = vi.hoisted(() => ({
   current: vi.fn(), changePassword: vi.fn(), replace: vi.fn(), logout: vi.fn(), success: vi.fn(),
 }))
 vi.mock('@/api/profile', () => ({ profileApi: { current: mocked.current, changePassword: mocked.changePassword } }))
+vi.mock('@/api/panelLicense', () => ({ panelLicenseApi: { status: vi.fn().mockResolvedValue({ enabled: true, tier: 'licensed', status: 'active', management_allowed: true, domain: 'panel.example.test', expires_at: null }) } }))
 vi.mock('@/stores/auth', () => ({ authStore: {
   user: ref({ id: 'adm-1', username: 'admin', created_at: '2026-10-03T00:00:00Z' }),
   expiresAt: ref('2026-10-03T08:00:00Z'), logout: mocked.logout,
@@ -50,6 +51,9 @@ describe('ProfilePage', () => {
     expect(mocked.current).toHaveBeenCalledOnce()
     expect(wrapper.text()).toContain('admin')
     expect(wrapper.text()).toContain('管理员')
+    expect(wrapper.get('[aria-label="面板域名授权"]').text()).toContain('panel.example.test')
+    expect(wrapper.text()).toContain('永久授权')
+    expect(wrapper.find('a[href*="ht.hongle.work"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

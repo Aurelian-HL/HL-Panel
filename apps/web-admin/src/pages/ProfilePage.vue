@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Eye, EyeOff, KeyRound, UserRound } from '@lucide/vue'
+import { Eye, EyeOff, KeyRound, ShieldCheck, UserRound } from '@lucide/vue'
 
 import { profileApi, type CurrentAdministrator } from '@/api/profile'
 import StatePanel from '@/components/StatePanel.vue'
+import PanelLicenseCard from '@/components/PanelLicenseCard.vue'
 import { toast } from '@/composables/toast'
 import { displayError } from '@/lib/displayFormatters'
 import { authStore } from '@/stores/auth'
@@ -59,7 +60,7 @@ onMounted(load)
 
 <template>
   <div class="page-stack profile-page">
-    <header class="page-heading"><div><h2>个人中心</h2></div></header>
+    <header class="page-heading"><div><h2>个人中心</h2><p>管理账号安全与面板域名授权</p></div></header>
     <section v-if="account?.must_change_password" class="profile-section profile-notice" role="alert" aria-label="首次登录修改密码">
       <header><KeyRound :size="18" /><h3>首次登录，请修改初始密码</h3></header>
       <p>请先在下方修改密码，再使用面板其他功能。新密码需为 8 到 256 个字符；修改后请重新登录。</p>
@@ -68,9 +69,10 @@ onMounted(load)
     <StatePanel v-if="loadError" state="error" title="账号资料加载失败" :message="loadError" @retry="load" />
 
     <div class="profile-grid">
+    <div class="profile-main">
     <section v-if="account" class="profile-section profile-account" aria-label="账号资料">
       <header><UserRound :size="18" /><h3>账号资料</h3></header>
-      <div class="profile-identity"><span class="profile-avatar"><UserRound :size="24" /></span><div><strong>{{ account.username }}</strong><span>管理员</span></div></div>
+      <div class="profile-identity"><span class="profile-avatar"><UserRound :size="24" /></span><div><strong>{{ account.username }}</strong><span>管理员</span></div><span class="profile-session"><ShieldCheck :size="14" />已登录</span></div>
       <dl class="profile-details">
         <div><dt>登录账号</dt><dd>{{ account.username }}</dd></div>
         <div><dt>账号类型</dt><dd>管理员</dd></div>
@@ -78,9 +80,11 @@ onMounted(load)
         <div><dt>当前会话有效期</dt><dd>{{ displayDate(authStore.expiresAt.value ?? undefined) }}</dd></div>
       </dl>
     </section>
+    <PanelLicenseCard />
+    </div>
 
     <section class="profile-section profile-security" aria-label="修改密码">
-      <header><KeyRound :size="18" /><h3>修改密码</h3></header>
+      <header><KeyRound :size="18" /><div><h3>修改密码</h3><p>修改成功后，请使用新密码重新登录</p></div></header>
       <form class="profile-password-form" @submit.prevent="savePassword">
         <label class="field"><span>当前密码</span><input v-model="currentPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="current-password" placeholder="输入当前登录密码" required /></label>
         <label class="field"><span>新密码（8 到 256 个字符）</span><input v-model="newPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="设置新的登录密码" minlength="8" maxlength="256" required /></label>

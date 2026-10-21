@@ -40,6 +40,7 @@ async function main() {
         const respond = (value, code = 200) => route.fulfill({ status: code, contentType: 'application/json', body: JSON.stringify(value) })
         switch (suffix) {
           case '/site-settings': return respond({ settings })
+          case '/auth/me': return respond({ user: { id: 'adm-browser', username: '验收管理员', created_at: '2026-10-20T08:00:00Z', must_change_password: false } })
           case '/announcements': return respond({ items: [] })
           case '/public/site-info': return respond({ settings, announcements: [], platform_version: 'local-verification', build_time: null })
           case '/system/version': return respond({ current_version: 'local-verification', latest_version: 'local-verification', state: 'up_to_date', versions_behind: 0, can_defer: false, attention_required: false })
@@ -83,7 +84,7 @@ async function main() {
         report.screenshots.push(file); report.checks.push({ width: viewport.width, state: name, passed: true, dimensions })
       }
       async function load(value, name) {
-        status = value; state = name; await page.goto(`${origin}/system-settings`, { waitUntil: 'networkidle' }); await card.waitFor()
+        status = value; state = name; await page.goto(`${origin}/userinfo`, { waitUntil: 'networkidle' }); await card.waitFor()
       }
       await load({ ...initial, auto_registration: true }, 'automatic-pending')
       await card.getByText(/正在自动验证免费域名并登记 HT/).waitFor()
@@ -93,6 +94,10 @@ async function main() {
       await card.getByRole('button', { name: '刷新登记状态' }).click()
       await card.getByRole('heading', { name: '免费域名已验证', exact: true }).waitFor()
       await capture('automatic-active')
+      assert.equal(await card.locator('a').count(), 0)
+      await card.getByRole('button', { name: '寻求帮助', exact: true }).click()
+      await card.getByText('联系方式待补充。', { exact: true }).waitFor()
+      await capture('help-placeholder')
       await load({ ...initial }, 'unactivated')
       assert.equal(await card.getByRole('button', { name: '同步授权', exact: true }).isDisabled(), true)
       await capture('unactivated')
@@ -137,7 +142,7 @@ async function main() {
       await capture('reminder-error', dialog)
       await dialog.getByRole('button', { name: '今日不再提醒' }).focus()
       await page.keyboard.press('Tab')
-      assert.equal(await dialog.getByRole('link', { name: '立即支持', exact: true }).evaluate(e => e === document.activeElement), true)
+      assert.equal(await dialog.getByRole('button', { name: '寻求帮助', exact: true }).evaluate(e => e === document.activeElement), true)
       await page.keyboard.press('Shift+Tab')
       assert.equal(await dialog.getByRole('button', { name: '今日不再提醒' }).evaluate(e => e === document.activeElement), true)
       await page.keyboard.press('Escape')

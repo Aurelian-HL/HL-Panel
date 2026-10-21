@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { panelLicenseApi, type LicenseChallenge } from '@/api/panelLicense'
 import { panelLicenseStore as store } from '@/stores/panelLicense'
+import PanelLicenseHelp from './PanelLicenseHelp.vue'
 
 const busy = ref(false)
 const message = ref('')
@@ -41,7 +42,13 @@ onMounted(() => { void store.refresh() })
       <p v-else-if="status.status === 'unactivated' && status.domain">登记将验证安装时配置的域名 {{ status.domain }}，请准备该域名的 DNS 管理权限。</p>
       <p v-if="status.last_error" role="status">{{ status.last_error }}</p>
       <p v-if="store.error.value" role="alert">{{ store.error.value }}；当前显示最近一次读取的状态。</p>
-      <footer><button v-if="status.auto_registration" class="button button--secondary" :disabled="busy" @click="store.refresh">刷新登记状态</button><a class="button button--primary" href="https://ht.hongle.work/" target="_blank" rel="noopener noreferrer">立即支持 / 续期</a><button v-if="status.status === 'unactivated' && !status.license_id && !status.auto_registration" class="button button--secondary" :disabled="busy" @click="action('registerFree')">登记免费域名</button><button class="button button--secondary" :disabled="busy || !status.license_id || status.status === 'unconfigured'" @click="action('sync')">{{ busy ? '处理中…' : '同步授权' }}</button><button class="button button--quiet" :disabled="busy || status.status === 'unconfigured'" @click="togglePaidActivation">{{ showActivation && challenge?.purpose !== 'free-registration' ? '收起激活' : '激活授权码' }}</button></footer>
+      <footer>
+        <button v-if="status.auto_registration" class="button button--secondary" :disabled="busy" @click="store.refresh">刷新登记状态</button>
+        <button v-if="status.status === 'unactivated' && !status.license_id && !status.auto_registration" class="button button--secondary" :disabled="busy" @click="action('registerFree')">登记免费域名</button>
+        <button class="button button--secondary" :disabled="busy || !status.license_id || status.status === 'unconfigured'" @click="action('sync')">{{ busy ? '处理中…' : '同步授权' }}</button>
+        <button class="button button--quiet" :disabled="busy || status.status === 'unconfigured'" @click="togglePaidActivation">{{ showActivation && challenge?.purpose !== 'free-registration' ? '收起激活' : '激活授权码' }}</button>
+        <PanelLicenseHelp />
+      </footer>
       <form v-if="showActivation && challenge?.purpose !== 'free-registration'" class="panel-license-activation" @submit.prevent="action('prepare')"><label class="field"><span>HT 提供的授权码</span><input v-model="code" type="password" autocomplete="off" maxlength="512" required /></label><button class="button button--secondary" :disabled="busy || !code.trim()">获取域名证明</button></form>
       <div v-if="challenge && showActivation" class="panel-license-proof"><p>在域名 DNS 中添加以下 TXT 记录，解析生效后点击验证。证明有效至 {{ date(challenge.expires_at) }}。</p><dl><div><dt>记录名</dt><dd><code>{{ challenge.dns_name }}</code></dd></div><div><dt>TXT 值</dt><dd><code>{{ challenge.dns_value }}</code></dd></div></dl><button type="button" class="button button--primary" :disabled="busy" @click="action('commit')">{{ challenge.purpose === 'free-registration' ? '验证 DNS 并开通免费版' : '验证 DNS 并激活' }}</button><button v-if="challenge.purpose === 'free-registration'" type="button" class="button button--quiet" :disabled="busy" @click="action('registerFree')">重新获取域名证明</button></div>
       <p v-if="message" role="status">{{ message }}</p>
@@ -52,13 +59,14 @@ onMounted(() => { void store.refresh() })
 </template>
 
 <style scoped>
-.panel-license-card { padding: 22px; border: 1px solid #dce3ed; border-radius: 14px; background: #fff; color: #24364e; display: grid; gap: 16px; }
+.panel-license-card { min-width: 0; padding: 24px; border: 1px solid #dce3ed; border-radius: 12px; background: #fff; color: #24364e; display: grid; gap: 20px; }
 .panel-license-card header, .panel-license-card footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.panel-license-card h2 { margin: 4px 0 0; font-size: 21px; }.panel-license-card small, dt { color: #65748a; }
-.panel-license-card dl { display: flex; flex-wrap: wrap; gap: 18px 40px; margin: 0; }.panel-license-card dd { margin: 5px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.panel-license-card h2 { margin: 6px 0 0; font-size: 19px; }.panel-license-card small, dt { color: #65748a; }
+.panel-license-card > dl { padding: 16px; background: #f6f8fb; border-radius: 8px; }
+.panel-license-card dl { display: grid; gap: 16px; margin: 0; }.panel-license-card dl > div { min-width: 0; }.panel-license-card dt { font-size: 12px; }.panel-license-card dd { margin: 5px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .panel-license-card p { margin: 0; line-height: 1.7; font-size: 13px; }.panel-license-card footer { justify-content: flex-start; }
 .panel-license-badge { color: #16724d; background: #e8f5ee; padding: 6px 10px; border-radius: 20px; font-size: 12px; }.panel-license-badge.restricted { color: #895b19; background: #fff1d9; }
 .panel-license-activation, .panel-license-proof { display: grid; gap: 12px; padding: 16px; background: #f5f7fa; border-radius: 10px; }.panel-license-activation button, .panel-license-proof button { justify-self: start; }details { font-size: 12px; color: #65748a; }summary { cursor: pointer; }details p { padding-top: 10px; }
 .panel-license-quota { display: grid; gap: 12px; padding: 16px; background: #f5f7fa; border-radius: 10px; }
-@media(max-width:640px) { .panel-license-card { padding: 16px; }.panel-license-card dl { display: grid; gap: 14px; }.panel-license-card footer { display: grid; grid-template-columns: 1fr 1fr; }.panel-license-card footer a { grid-column: 1 / -1; justify-content: center; } }
+@media(max-width:640px) { .panel-license-card { padding: 18px; gap: 16px; }.panel-license-card dl { gap: 14px; }.panel-license-card footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }.panel-license-card footer > :deep(*) { min-width: 0; }.panel-license-card footer :deep(.button) { width: 100%; justify-content: center; } }
 </style>

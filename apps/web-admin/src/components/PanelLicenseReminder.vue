@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { authStore } from '@/stores/auth'
 import { panelLicenseStore as store } from '@/stores/panelLicense'
 import { panelLicenseApi } from '@/api/panelLicense'
+import PanelLicenseHelp from './PanelLicenseHelp.vue'
 const busy = ref(false)
 const error = ref('')
 const dialog = ref<HTMLElement | null>(null)
@@ -27,7 +28,7 @@ function keyboard(event: KeyboardEvent): void {
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
 }
 watch(due, async (visible) => {
-  if (visible) { previousFocus = document.activeElement as HTMLElement; await nextTick(); dialog.value?.querySelector<HTMLElement>('button')?.focus() }
+  if (visible) { previousFocus = document.activeElement as HTMLElement; await nextTick(); dialog.value?.querySelector<HTMLElement>('[autofocus]')?.focus() }
   else { previousFocus?.focus(); previousFocus = null }
 })
 watch(() => authStore.user.value?.id, (administrator) => {
@@ -44,7 +45,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); previousFocus?.focus() 
       <p id="license-reminder-description">到期时间：{{ new Date(store.status.value?.expires_at || '').toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) }}（北京时间）。感谢您的支持！如觉得对您有帮助，还请继续支持，诚挚感谢。</p>
       <p>到期将限制新增、修改和删除，现有转发、订阅及节点运行继续保留。</p>
       <p v-if="error" role="alert">{{ error }}</p>
-      <footer><a href="https://ht.hongle.work/" target="_blank" rel="noopener noreferrer" class="button button--primary">立即支持</a><button autofocus class="button button--secondary" :disabled="busy" @click="dismiss">{{ busy ? '保存中…' : '今日不再提醒' }}</button></footer>
+      <footer><PanelLicenseHelp /><button autofocus class="button button--primary" :disabled="busy" @click="dismiss">{{ busy ? '保存中…' : '今日不再提醒' }}</button></footer>
     </section>
   </div>
 </template>
