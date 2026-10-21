@@ -52,11 +52,9 @@ func TestDeletionContractJSONRevisionAndIfMatch(t *testing.T) {
 	assertDeletionProblem(t, businessRequest(t, f, http.MethodPost, path, "delete-contract-retry", request, http.StatusConflict), "idempotency_conflict", "")
 }
 
-func TestDeletionContractV127UnsupportedDeleteRoutes(t *testing.T) {
+func TestDeletionContractSingleRuleDeleteRemainsUnsupported(t *testing.T) {
 	f := newBusinessFixture(t)
-	for _, path := range []string{"/api/v1/customers/" + f.customer.ID, "/api/v1/forwarding-rules/example"} {
-		businessRequest(t, f, http.MethodDelete, path, "unsupported-delete-contract", map[string]any{"revision": 1}, http.StatusMethodNotAllowed)
-	}
+	businessRequest(t, f, http.MethodDelete, "/api/v1/forwarding-rules/example", "unsupported-delete-contract", map[string]any{"revision": 1}, http.StatusMethodNotAllowed)
 	if _, err := f.store.Customer(context.Background(), f.customer.ID); err != nil {
 		t.Fatal("an unsupported DELETE route changed its customer")
 	}
