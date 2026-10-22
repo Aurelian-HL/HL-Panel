@@ -22,7 +22,7 @@ async function submit(): Promise<void> {
   error.value = ''
   try {
     await customerAuth.login(username.value.trim(), password.value)
-    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') ? route.query.redirect : '/'
+    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/') && !route.query.redirect.startsWith('//') ? route.query.redirect : '/'
     await router.replace(redirect)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '登录失败'
@@ -35,7 +35,7 @@ async function submit(): Promise<void> {
 <template>
   <main class="login-page">
     <section class="login-box">
-      <header><span class="login-mark"><Network :size="23" /></span><div><strong>{{ siteName }}</strong><small>用户中心</small></div></header>
+      <header><span class="login-mark"><Network :size="23" /></span><div><strong>{{ siteName }}</strong><small>子账号登录</small></div></header>
       <form @submit.prevent="submit">
         <label><span>用户名</span><div class="input-icon"><UserRound :size="16" /><input v-model="username" autocomplete="username" maxlength="128" autofocus required /></div></label>
         <label><span>密码</span><div class="input-icon input-action"><LockKeyhole :size="16" /><input v-model="password" :type="reveal ? 'text' : 'password'" autocomplete="current-password" maxlength="4096" required /><button type="button" :aria-label="reveal ? '隐藏密码' : '显示密码'" :title="reveal ? '隐藏密码' : '显示密码'" @click="reveal = !reveal"><EyeOff v-if="reveal" :size="16" /><Eye v-else :size="16" /></button></div></label>

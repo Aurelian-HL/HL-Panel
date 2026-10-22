@@ -59,7 +59,8 @@ func verticalFixture(t *testing.T) (http.Handler, *memoryrepo.Store, string, str
 		t.Fatal(err)
 	}
 	customer, _, err := customerService.CreateCustomer(ctx, "adm-test", customers.CustomerInput{
-		Username: "member", DisplayName: "测试用户", UserGroupID: userGroup.ID, Password: "customer-password",
+		AccountKind: customers.AccountPanel,
+		Username:    "member", DisplayName: "测试用户", UserGroupID: userGroup.ID, Password: "customer-password",
 		TrafficLimitBytes: 4096, MaxRules: 10, SpeedLimitMbps: 200, IPLimit: 3, ConnectionLimit: 50,
 		IdempotencyKey: "customer-1",
 	})
@@ -183,7 +184,8 @@ func TestCustomerRuleMutationsUseAuthenticatedOwner(t *testing.T) {
 	handler, store, userGroupID, entryID := verticalFixture(t)
 	ctx := context.Background()
 	other, _, err := customers.NewService(store, time.Now).CreateCustomer(ctx, "adm-test", customers.CustomerInput{
-		Username: "other", DisplayName: "另一个用户", UserGroupID: userGroupID,
+		AccountKind: customers.AccountPanel,
+		Username:    "other", DisplayName: "另一个用户", UserGroupID: userGroupID,
 		Password: "other-password", MaxRules: 10, IdempotencyKey: "other-customer",
 	})
 	if err != nil {

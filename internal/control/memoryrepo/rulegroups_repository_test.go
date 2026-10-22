@@ -252,7 +252,7 @@ func TestBatchResumeRejectsInactiveCustomerWithoutPartialWrite(t *testing.T) {
 	second, _, _ := forwardingService.Create(ctx, "admin", request, "second-paused")
 	customer := store.customers[request.CustomerID]
 	customer.Disabled = true
-	store.customers[customer.ID] = customer
+	seedCustomer(store, customer)
 	input := rulegroups.BatchRequest{Operation: rulegroups.BatchResume, RuleIDs: []string{first.ID, second.ID}, ExpectedRevisions: map[string]int64{first.ID: 1, second.ID: 1}}
 	if _, _, err := rulegroups.NewService(store, nil).Batch(ctx, "admin", input, "resume-inactive"); !errors.Is(err, faults.ErrConflict) {
 		t.Fatalf("expected inactive customer conflict, got %v", err)
@@ -471,7 +471,7 @@ func TestLegacyRuleGroupSnapshotLoadsWithoutAssigningOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	var old snapshot
-	if err := json.Unmarshal(raw, &old); err != nil {
+	if err := json.Unmarshal(legacyLoginSnapshot(t, raw), &old); err != nil {
 		t.Fatal(err)
 	}
 	old.Version = ruleGroupOwnershipSnapshotVersion - 1

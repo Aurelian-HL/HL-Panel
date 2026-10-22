@@ -47,7 +47,7 @@ func (r *recordingRepository) SaveUserGroup(_ context.Context, input SaveUserGro
 }
 
 func validCustomerInput() CustomerInput {
-	return CustomerInput{Username: "Customer.A", DisplayName: "张三", UserGroupID: "ugrp_1", Password: "1", IdempotencyKey: "create-customer-1"}
+	return CustomerInput{AccountKind: AccountPanel, Username: "Customer.A", DisplayName: "张三", UserGroupID: "ugrp_1", Password: "1", IdempotencyKey: "create-customer-1"}
 }
 
 func TestCustomerPasswordsAreHashedPreservedAndNeverReturned(t *testing.T) {

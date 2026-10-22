@@ -3,14 +3,29 @@ package httpapi
 import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"net/http"
 )
 
 func (api *API) listCustomers(w http.ResponseWriter, r *http.Request, _ auth.Session) {
+	kind := customers.AccountKind(r.URL.Query().Get("account_kind"))
+	if kind != "" && kind != customers.AccountPanel && kind != customers.AccountService {
+		writeProblem(w, r, faults.ErrValidation)
+		return
+	}
 	items, err := api.customers.ListCustomers(r.Context())
 	if err != nil {
 		writeProblem(w, r, err)
 		return
+	}
+	if kind != "" {
+		filtered := make([]customers.Customer, 0, len(items))
+		for _, item := range items {
+			if item.AccountKind == kind {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

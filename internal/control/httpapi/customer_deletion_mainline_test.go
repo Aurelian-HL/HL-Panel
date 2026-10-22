@@ -26,7 +26,7 @@ func TestMainlineCustomerAndUserGroupDeletionAuthorizationValidationAndReplay(t 
 	if !replay.Replayed || len(f.store.AuditEvents()) != before+1 {
 		t.Fatal("delete replay appended audit or was not replayed")
 	}
-	businessRequest(t, f, http.MethodGet, path, "", nil, http.StatusNotFound)
-	businessRequest(t, f, http.MethodDelete, groupPath, "delete-user-group", groupRequest, http.StatusOK)
-	businessRequest(t, f, http.MethodGet, groupPath, "", nil, http.StatusNotFound)
+	businessRequest(t, f, http.MethodGet, path, "", nil, http.StatusOK)
+	businessRequest(t, f, http.MethodDelete, groupPath, "delete-user-group", groupRequest, http.StatusConflict)
+	businessRequest(t, f, http.MethodGet, groupPath, "", nil, http.StatusOK)
 }

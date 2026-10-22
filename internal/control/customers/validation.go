@@ -45,6 +45,9 @@ func normalizeCustomerInput(input CustomerInput, creating bool) (CustomerInput, 
 }
 
 func normalizeCustomerFields(input CustomerInput, creating bool) (CustomerInput, error) {
+	if input.AccountKind != "" && input.AccountKind != AccountPanel && input.AccountKind != AccountService {
+		return input, fmt.Errorf("%w: account_kind must be panel or service", faults.ErrValidation)
+	}
 	input.Username = strings.ToLower(strings.TrimSpace(input.Username))
 	input.DisplayName = strings.TrimSpace(input.DisplayName)
 	input.UserGroupID = strings.TrimSpace(input.UserGroupID)
@@ -62,7 +65,10 @@ func normalizeCustomerFields(input CustomerInput, creating bool) (CustomerInput,
 	if input.UserGroupID != "" && !validID(input.UserGroupID) {
 		return input, fmt.Errorf("%w: user_group_id must be a valid ID when provided", faults.ErrValidation)
 	}
-	if creating && input.Password == "" || len(input.Password) > 1024 || !utf8.ValidString(input.Password) {
+	if input.AccountKind == AccountService && input.Password != "" {
+		return input, fmt.Errorf("%w: service identities cannot have a login password", faults.ErrValidation)
+	}
+	if creating && input.AccountKind != AccountService && input.Password == "" || len(input.Password) > 1024 || !utf8.ValidString(input.Password) {
 		return input, fmt.Errorf("%w: password is required on create and must be at most 1024 bytes", faults.ErrValidation)
 	}
 	if input.TrafficLimitBytes < 0 || input.MaxRules < 0 || input.MaxRules > 1_000_000 || input.SpeedLimitMbps < 0 || input.SpeedLimitMbps > 10_000_000 || input.IPLimit < 0 || input.IPLimit > 10_000_000 || input.ConnectionLimit < 0 || input.ConnectionLimit > 100_000_000 {

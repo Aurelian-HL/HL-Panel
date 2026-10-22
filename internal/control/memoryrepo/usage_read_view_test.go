@@ -20,7 +20,7 @@ func TestUsageReadViewOwnsDetachedAccountingEvidence(t *testing.T) {
 	generation, _, _ := desiredVLESSBundle(t, f)
 	expiry := time.Now().UTC().Add(time.Hour)
 	sourceExpiry := expiry
-	f.store.customers["usage-customer"] = customers.Customer{ID: "usage-customer", PasswordHash: []byte{1, 2}, ExpiresAt: &sourceExpiry}
+	seedCustomer(f.store, customers.Customer{ID: "usage-customer", PasswordHash: []byte{1, 2}, ExpiresAt: &sourceExpiry})
 	f.store.applyResultsByNode[f.nodeID] = make(map[int64]map[string]generations.ApplyResult)
 	f.store.applyResultsByNode[f.nodeID][generation] = map[string]generations.ApplyResult{"commit": {ID: "receipt", Phase: agentv1.ApplyPhaseCommit}}
 	view := f.store.UsageReadView()
@@ -30,7 +30,7 @@ func TestUsageReadViewOwnsDetachedAccountingEvidence(t *testing.T) {
 		return NodeConfigHistory{}, nil
 	})
 	c := f.store.customers["usage-customer"]
-	c.PasswordHash[0] = 9
+	f.store.panelAccounts[c.ID].PasswordHash[0] = 9
 	*c.ExpiresAt = expiry.Add(time.Hour)
 	f.store.nodeConfigsByNode[f.nodeID][generation].Config[0] = 'x'
 	f.store.applyResultsByNode[f.nodeID][generation]["commit"] = generations.ApplyResult{ID: "uncommitted"}

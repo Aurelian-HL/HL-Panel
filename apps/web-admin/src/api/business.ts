@@ -33,6 +33,7 @@ export const businessApi = {
   async probeReality(input: RealityTarget, signal?: AbortSignal) { return (await http.request<{ probe: RealityProbe }>('/forwarding-reality-target-probes', { method: 'POST', body: JSON.stringify(input), signal, timeoutMs: 15_000 })).probe },
   async deviceGroups() { return list<DeviceGroup>(await http.request('/device-groups')) },
   async customers() { return list<Customer>(await http.request('/customers')) },
+  async panelAccounts() { return list<Customer>(await http.request('/customers?account_kind=panel')) },
   async saveCustomer(input: CustomerInput, id: string | null, key: string) { return (await write<{ customer: Customer }>('/customers', input, id, key)).customer },
   async deleteCustomer(id: string, revision: number, key: string) { return http.request<{ replayed: boolean }>(`/customers/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) }) },
   async userGroups() { return list<UserGroup>(await http.request('/user-groups')) },

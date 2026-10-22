@@ -32,7 +32,8 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 24
+const SnapshotVersion = 25
+const panelAccountsSnapshotVersion = 25
 const importedTrafficSnapshotVersion = 21
 const nativeRuntimeSnapshotVersion = 20
 const importedIdentitySnapshotVersion = 19
@@ -168,6 +169,7 @@ type snapshot struct {
 	ApplyAttemptsByNode     map[string]map[int64]generations.ApplyAttemptState
 	AuditEvents             []audit.Event
 	Customers               map[string]storedCustomer
+	PanelAccounts           map[string]panelAccount
 	UserGroups              map[string]customers.UserGroup
 	GroupNetworks           map[string]groupconfig.GroupNetwork
 	ForwardRules            map[string]forwarding.Rule
@@ -240,8 +242,9 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		RevisionByIdempotency: s.revisionByIdempotency,
 		NodeConfigsByNode:     s.nodeConfigsByNode, NodeConfigsByRevision: s.nodeConfigsByRevision,
 		ApplyResultsByNode: s.applyResultsByNode, ApplyAttemptsByNode: s.applyAttemptsByNode, AuditEvents: s.auditEvents,
-		Customers:  make(map[string]storedCustomer, len(s.customers)),
-		UserGroups: s.userGroups, GroupNetworks: groupNetworks,
+		Customers:     make(map[string]storedCustomer, len(s.customers)),
+		PanelAccounts: s.panelAccounts,
+		UserGroups:    s.userGroups, GroupNetworks: groupNetworks,
 		ReliableUDPTunnels: s.reliableUDPTunnels,
 		ForwardRules:       forwardRules, AutoRealityKeys: s.autoRealityKeys, RuleGroups: s.ruleGroups,
 		VLESSSOCKS5Upstreams: make(map[string]storedVLESSSOCKS5Upstream, len(s.vlessSOCKS5Upstreams)),
@@ -298,7 +301,10 @@ func (s *Store) encodeSnapshot(events *[]audit.Event) ([]byte, error) {
 		}
 	}
 	for id, customer := range s.customers {
-		state.Customers[id] = storedCustomer{Customer: customer, PasswordHash: customer.PasswordHash}
+		if len(customer.PasswordHash) != 0 || customer.AccountKind != "" {
+			return nil, errors.New("service owner contains a login credential")
+		}
+		state.Customers[id] = storedCustomer{Customer: customer}
 	}
 	for key, admin := range s.adminsByUsername {
 		state.Administrators[key] = storedAdministrator(admin)
@@ -457,13 +463,35 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if state.Version < vlessRuntimeSnapshotVersion && len(state.VLESSRuntimeMaterials) > 0 {
 			return nil, errors.New("legacy snapshot contains unexpected VLESS runtime material state")
 		}
+		if state.Version < panelAccountsSnapshotVersion && len(state.PanelAccounts) != 0 {
+			return nil, errors.New("legacy snapshot contains unexpected panel accounts")
+		}
 		for id, stored := range state.Customers {
-			if id != stored.Customer.ID || auth.ValidatePasswordHash(stored.PasswordHash) != nil {
+			if id != stored.Customer.ID {
 				return nil, errors.New("invalid persisted customer identity")
 			}
 			customer := stored.Customer
-			customer.PasswordHash = append([]byte(nil), stored.PasswordHash...)
+			if state.Version < panelAccountsSnapshotVersion {
+				if auth.ValidatePasswordHash(stored.PasswordHash) != nil {
+					return nil, errors.New("invalid legacy customer login credential")
+				}
+				s.panelAccounts[id] = panelAccount{PasswordHash: append([]byte(nil), stored.PasswordHash...)}
+			} else if len(stored.PasswordHash) != 0 || customer.AccountKind != "" {
+				return nil, errors.New("service owner contains a login credential")
+			}
+			customer.PasswordHash, customer.AccountKind = nil, ""
 			s.customers[id] = customer
+		}
+		if state.Version >= panelAccountsSnapshotVersion {
+			if state.PanelAccounts == nil {
+				return nil, errors.New("missing persisted panel accounts")
+			}
+			for id, account := range state.PanelAccounts {
+				if _, exists := s.customers[id]; !exists || auth.ValidatePasswordHash(account.PasswordHash) != nil {
+					return nil, errors.New("invalid persisted panel account")
+				}
+			}
+			s.panelAccounts = state.PanelAccounts
 		}
 		for id, network := range state.GroupNetworks {
 			normalized, err := groupconfig.NormalizeStoredNetwork(network)
@@ -691,8 +719,8 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 		if !validPersistedTokenHash(hash) || session.TokenHash != hash || !validPersistedIdentity(session.ID) || !validPersistedIdentity(session.CustomerID) || session.CreatedAt.IsZero() || !session.ExpiresAt.After(session.CreatedAt) {
 			return nil, errors.New("invalid persisted customer session")
 		}
-		if _, exists := s.customers[session.CustomerID]; !exists {
-			return nil, errors.New("persisted customer session references missing customer")
+		if _, exists := s.panelAccounts[session.CustomerID]; !exists {
+			return nil, errors.New("persisted customer session references missing panel account")
 		}
 		if _, duplicate := customerSessionIDs[session.ID]; duplicate {
 			return nil, errors.New("duplicate persisted customer session identity")

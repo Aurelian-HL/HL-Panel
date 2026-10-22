@@ -30,7 +30,7 @@ func TestConfigurationRead121PausedExpiredRulesHasNoSideEffects(t *testing.T) {
 	c := s.customers["customer"]
 	expired := time.Now().Add(-24 * time.Hour)
 	c.ExpiresAt = &expired
-	s.customers[c.ID] = c
+	seedCustomer(s, c)
 	for i := 0; i < 121; i++ {
 		r, p, b := rule, pool, binding
 		r.ID, r.ListenPort, r.Paused, r.Deployed = fmt.Sprintf("paused-%03d", i), 20000+i, true, false
@@ -75,7 +75,7 @@ func TestConfigurationReadPreservesInactiveStateAndStableIdentity(t *testing.T) 
 			c := s.customers["customer"]
 			at := time.Now().Add(-time.Hour)
 			c.ExpiresAt = &at
-			s.customers[c.ID] = c
+			seedCustomer(s, c)
 		}, "inactive"},
 		{"disabled", func(s *Store) { c := s.customers["customer"]; c.Disabled = true; s.customers[c.ID] = c }, "inactive"},
 		{"quota", func(s *Store) {

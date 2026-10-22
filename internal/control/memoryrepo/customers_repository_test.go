@@ -191,7 +191,7 @@ func TestBlankPasswordEditPreservesConcurrentPasswordReset(t *testing.T) {
 func TestCustomerRepositoryRejectsRevisionOverflowAndMissingMutationIdentity(t *testing.T) {
 	s, item := customerRepositoryFixture(t)
 	item.Revision = math.MaxInt64
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	wrapped := item
 	wrapped.Revision = math.MinInt64
 	input := customerSaveInput(item, "overflow-update")
@@ -220,7 +220,7 @@ func TestCustomerRepositoryRejectsRevisionOverflowAndMissingMutationIdentity(t *
 func TestUserGroupReferencesAndExistingRuleAuthorizationsAreTransactional(t *testing.T) {
 	ctx := context.Background()
 	s, item := customerRepositoryFixture(t)
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	s.forwardRules["rule-1"] = forwarding.Rule{ID: "rule-1", CustomerID: item.ID, EntryGroupID: "entry-1", EgressMode: forwarding.EgressDirect, Paused: true}
 	group := s.userGroups["ugrp-1"]
 	group.Revision = 2

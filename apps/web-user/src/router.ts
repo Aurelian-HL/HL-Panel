@@ -9,7 +9,7 @@ const ProfilePage = () => import('@/pages/ProfilePage.vue')
 const ServicesPage = () => import('@/pages/ServicesPage.vue')
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/login', name: 'login', component: LoginPage, meta: { public: true } },
     {

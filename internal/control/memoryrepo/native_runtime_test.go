@@ -198,6 +198,11 @@ func TestNativeRuleRequiresCurrentSnapshotVersionEvenWithoutMaterial(t *testing.
 	if json.Unmarshal(raw, &doc) != nil {
 		t.Fatal("invalid snapshot")
 	}
+	legacyRaw, _ := json.Marshal(doc)
+	doc = nil
+	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &doc); err != nil {
+		t.Fatal(err)
+	}
 	doc["Version"] = json.RawMessage(`19`)
 	raw, _ = json.Marshal(doc)
 	if _, err := DecodeSnapshot(raw); err == nil || !strings.Contains(err.Error(), "native forwarding rule") {

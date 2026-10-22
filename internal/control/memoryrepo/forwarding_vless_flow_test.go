@@ -53,6 +53,10 @@ func TestExplicitEmptyFlowSurvivesLegacyEditReplayAndRestart(t *testing.T) {
 	if err := json.Unmarshal(raw, &old); err != nil {
 		t.Fatal(err)
 	}
+	legacyRaw, _ := json.Marshal(old)
+	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &old); err != nil {
+		t.Fatal(err)
+	}
 	old["Version"] = json.RawMessage("18")
 	downgrade, err := json.Marshal(old)
 	if err != nil {

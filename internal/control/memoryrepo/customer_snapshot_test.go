@@ -108,7 +108,7 @@ func TestVersionOneSnapshotMigratesIntoWritableBusinessMaps(t *testing.T) {
 
 func TestVersionTwoSnapshotMigratesLegacyDirectPolicy(t *testing.T) {
 	s, item := customerRepositoryFixture(t)
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	s.groupNetworks["entry-1"] = groupconfig.GroupNetwork{GroupID: "entry-1", ConnectHost: "entry.example.test", PortStart: 20000, PortEnd: 21000, AllowedExitGroupIDs: []string{"exit-1"}, AllowDirect: true, TrafficMultiplier: 1, Revision: 1}
 	raw, err := s.EncodeSnapshot()
 	if err != nil {
@@ -116,6 +116,11 @@ func TestVersionTwoSnapshotMigratesLegacyDirectPolicy(t *testing.T) {
 	}
 	var previous map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &previous); err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw, _ := json.Marshal(previous)
+	previous = nil
+	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &previous); err != nil {
 		t.Fatal(err)
 	}
 	previous["Version"] = json.RawMessage("2")
@@ -128,7 +133,7 @@ func TestVersionTwoSnapshotMigratesLegacyDirectPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyRaw, err := json.Marshal(previous)
+	legacyRaw, err = json.Marshal(previous)
 	if err != nil {
 		t.Fatal(err)
 	}

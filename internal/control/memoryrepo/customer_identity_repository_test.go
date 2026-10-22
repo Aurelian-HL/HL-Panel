@@ -22,13 +22,18 @@ import (
 
 func TestVersionFiveSnapshotUpgradesWithEmptyCustomerSessions(t *testing.T) {
 	store, customer := customerRepositoryFixture(t)
-	store.customers[customer.ID] = customer
+	seedCustomer(store, customer)
 	raw, err := store.EncodeSnapshot()
 	if err != nil {
 		t.Fatal(err)
 	}
 	var legacy map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacyRaw, _ := json.Marshal(legacy)
+	legacy = nil
+	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &legacy); err != nil {
 		t.Fatal(err)
 	}
 	legacy["Version"] = json.RawMessage("5")
@@ -61,7 +66,7 @@ func newCustomerIdentityService(t *testing.T, store *Store, now time.Time) *cust
 func TestCustomerIdentitySessionsPasswordChangeAndSnapshotAreIsolated(t *testing.T) {
 	ctx := context.Background()
 	store, customer := customerRepositoryFixture(t)
-	store.customers[customer.ID] = customer
+	seedCustomer(store, customer)
 	now := time.Date(2026, time.October, 3, 1, 0, 0, 0, time.UTC)
 	service := newCustomerIdentityService(t, store, now)
 
@@ -124,10 +129,10 @@ func TestCustomerIdentityProjectsOnlyUsablePublicData(t *testing.T) {
 	store, customer := customerRepositoryFixture(t)
 	customer.TrafficUsedBytes = 1024
 	customer.TrafficLimitBytes = 4096
-	store.customers[customer.ID] = customer
+	seedCustomer(store, customer)
 	other := customer
 	other.ID, other.Username = "cus-other", "other"
-	store.customers[other.ID] = other
+	seedCustomer(store, other)
 	store.groupNetworks["entry-1"] = groupconfig.GroupNetwork{GroupID: "entry-1", ConnectHost: "entry.example.test", PortStart: 20000, PortEnd: 21000, DirectPolicy: groupconfig.DirectPolicyOptional, AllowDirect: true, TrafficMultiplier: 1, Revision: 1}
 	store.forwardRules["rule-own"] = forwarding.Rule{
 		ID: "rule-own", Name: "我的线路", CustomerID: customer.ID, EntryGroupID: "entry-1", EgressMode: forwarding.EgressDirect,
@@ -172,7 +177,7 @@ func TestCustomerIdentityProjectsOnlyUsablePublicData(t *testing.T) {
 func TestCustomerIdentityReturnsOwnReadyVLESSSubscription(t *testing.T) {
 	ctx := context.Background()
 	store, customer := customerRepositoryFixture(t)
-	store.customers[customer.ID] = customer
+	seedCustomer(store, customer)
 	now := time.Date(2026, time.October, 3, 1, 0, 0, 0, time.UTC)
 	proofStore, proof := protocolPublicationFixture(t)
 	rule := proofStore.forwardRules[proof.RuleID]

@@ -68,7 +68,7 @@ func TestSnapshotStandardAndImportedVersionCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc map[string]json.RawMessage
-	if err = json.Unmarshal(raw, &doc); err != nil {
+	if err = json.Unmarshal(legacyLoginSnapshot(t, raw), &doc); err != nil {
 		t.Fatal(err)
 	}
 	for _, version := range []string{"20", "21", "22"} {

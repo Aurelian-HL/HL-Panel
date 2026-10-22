@@ -94,7 +94,7 @@ func TestSubscriptionSnapshotUpgradeRoundtripAndCorruption(t *testing.T) {
 	for _, change := range []func(*customers.Customer){func(c *customers.Customer) { c.Disabled = true }, func(c *customers.Customer) { c.ExpiresAt = &expired }, func(c *customers.Customer) { c.TrafficLimitBytes = 1; c.TrafficUsedBytes = 1 }} {
 		c := customer
 		change(&c)
-		restored.customers[c.ID] = c
+		seedCustomer(restored, c)
 		if _, _, err = reopened.Public(ctx, record.Token); err == nil {
 			t.Fatal("restricted customer feed exposed")
 		}

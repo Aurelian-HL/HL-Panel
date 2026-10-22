@@ -19,7 +19,7 @@ func TestMainlineCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 	for _, relation := range []string{"rule", "owner", "subscription", "identity", "revision"} {
 		t.Run(relation, func(t *testing.T) {
 			s, item := customerRepositoryFixture(t)
-			s.customers[item.ID] = item
+			seedCustomer(s, item)
 			input := customers.DeleteInput{ID: item.ID, DeletedBy: "admin-test", ExpectedRevision: 1, IdempotencyKey: "delete-user", RequestSHA256: "delete-hash"}
 			switch relation {
 			case "rule":
@@ -33,10 +33,18 @@ func TestMainlineCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 			case "revision":
 				input.ExpectedRevision = 2
 			}
-			if _, err := s.DeleteCustomer(context.Background(), input, audit.Event{}); !errors.Is(err, faults.ErrConflict) {
+			var want error
+			if relation == "revision" {
+				want = faults.ErrConflict
+			}
+			if _, err := s.DeleteCustomer(context.Background(), input, audit.Event{}); !errors.Is(err, want) {
 				t.Fatalf("expected reference/revision conflict: %v", err)
 			}
-			if len(s.customers) != 1 || len(s.auditEvents) != 0 || len(s.businessIdempotency) != 0 {
+			wantMutations := 1
+			if want != nil {
+				wantMutations = 0
+			}
+			if len(s.customers) != 1 || len(s.auditEvents) != wantMutations || len(s.businessIdempotency) != wantMutations {
 				t.Fatal("failed delete changed state")
 			}
 		})
@@ -46,7 +54,7 @@ func TestMainlineCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 func TestMainlineCustomerDeletionRevokesSessionsAndPersistsReplay(t *testing.T) {
 	ctx := context.Background()
 	s, item := customerRepositoryFixture(t)
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	s.customerSessions["session"] = customeridentity.Session{CustomerID: item.ID}
 	revokedAt := item.UpdatedAt
 	s.vlessBindings["historical"] = vlessidentity.CredentialRecord{Binding: vlessidentity.Binding{
@@ -58,7 +66,7 @@ func TestMainlineCustomerDeletionRevokesSessionsAndPersistsReplay(t *testing.T) 
 	if replayed, err := service.DeleteCustomer(ctx, "admin-test", item.ID, request, "delete-customer"); err != nil || replayed {
 		t.Fatalf("delete: %v", err)
 	}
-	if len(s.customerSessions) != 0 || len(s.customers) != 0 || len(s.auditEvents) != 1 || s.auditEvents[0].Action != "customer.delete" {
+	if len(s.customerSessions) != 0 || len(s.customers) != 1 || len(s.panelAccounts) != 0 || len(s.auditEvents) != 1 || s.auditEvents[0].Action != "customer.delete" {
 		t.Fatal("customer/session/audit deletion inconsistent")
 	}
 	data, err := s.EncodeSnapshot()
@@ -90,7 +98,7 @@ func TestMainlineUserGroupDeletionReferencesAndReplay(t *testing.T) {
 			input := customers.DeleteInput{ID: item.UserGroupID, DeletedBy: "admin-test", ExpectedRevision: 1, IdempotencyKey: "delete-group", RequestSHA256: "delete-group-hash"}
 			switch relation {
 			case "customer":
-				s.customers[item.ID] = item
+				seedCustomer(s, item)
 			case "device":
 				group := s.deviceGroups["entry-1"]
 				group.UserGroupID = item.UserGroupID

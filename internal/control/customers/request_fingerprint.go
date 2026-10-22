@@ -17,6 +17,11 @@ func requestFingerprint(value any) (string, error) {
 }
 
 func customerRequestFingerprint(actorID, id string, input CustomerInput) (string, error) {
+	// Panel is the historical default. Preserve pre-split request fingerprints
+	// so a retried administrator mutation cannot create a second identity.
+	if input.AccountKind == AccountPanel {
+		input.AccountKind = ""
+	}
 	// A fast SHA of a low-entropy password would make the idempotency record an
 	// easier password-cracking target than PasswordHash. Use the same password
 	// work factor and an actor/key-scoped salt, while remaining stable on retry.

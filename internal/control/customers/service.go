@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/auth"
@@ -46,17 +47,35 @@ func (s *Service) Customer(ctx context.Context, id string) (Customer, error) {
 }
 
 func (s *Service) CreateCustomer(ctx context.Context, adminID string, input CustomerInput) (Customer, bool, error) {
+	// Service provisioning (including older integration callers that supplied
+	// a generated password) must never implicitly grant panel login access.
+	// Keep the old request fingerprint so in-flight retries remain idempotent.
+	legacy := input.AccountKind == ""
+	legacyPassword := input.Password
+	if legacy {
+		if len(input.Password) > 1024 || !utf8.ValidString(input.Password) {
+			return Customer{}, false, fmt.Errorf("%w: invalid legacy provisioning password", faults.ErrValidation)
+		}
+		input.AccountKind, input.Password = AccountService, ""
+	}
 	input, err := normalizeCustomerInput(input, true)
 	if err != nil {
 		return Customer{}, false, err
 	}
-	requestHash, err := customerRequestFingerprint(adminID, "", input)
+	fingerprintInput := input
+	if legacy {
+		fingerprintInput.AccountKind, fingerprintInput.Password = "", legacyPassword
+	}
+	requestHash, err := customerRequestFingerprint(adminID, "", fingerprintInput)
 	if err != nil {
 		return Customer{}, false, err
 	}
-	passwordHash, err := auth.HashPassword(input.Password)
-	if err != nil {
-		return Customer{}, false, err
+	var passwordHash []byte
+	if input.AccountKind == AccountPanel {
+		passwordHash, err = auth.HashPassword(input.Password)
+		if err != nil {
+			return Customer{}, false, err
+		}
 	}
 	id, err := idgen.New("cus")
 	if err != nil {
@@ -81,7 +100,23 @@ func (s *Service) UpdateCustomer(ctx context.Context, adminID, id string, input 
 	if err != nil {
 		return Customer{}, false, err
 	}
-	requestHash, err := customerRequestFingerprint(adminID, id, input)
+	fingerprintInput := input
+	legacyService := input.AccountKind == "" && previous.AccountKind == AccountService
+	if input.AccountKind == "" {
+		input.AccountKind = previous.AccountKind
+	}
+	if legacyService {
+		// Historical provisioning clients may repeat their generated password
+		// during a service update. It is not a request to create a panel login.
+		input.Password = ""
+	}
+	if input.AccountKind != previous.AccountKind || input.AccountKind == AccountService && input.Password != "" {
+		return Customer{}, false, fmt.Errorf("%w: login and service identity kinds cannot be converted by editing", faults.ErrValidation)
+	}
+	if !legacyService {
+		fingerprintInput = input
+	}
+	requestHash, err := customerRequestFingerprint(adminID, id, fingerprintInput)
 	if err != nil {
 		return Customer{}, false, err
 	}
@@ -119,7 +154,8 @@ func (s *Service) saveCustomer(ctx context.Context, adminID string, input Custom
 
 func customerFromInput(input CustomerInput) Customer {
 	return Customer{
-		Username: input.Username, DisplayName: input.DisplayName, UserGroupID: input.UserGroupID,
+		AccountKind: input.AccountKind,
+		Username:    input.Username, DisplayName: input.DisplayName, UserGroupID: input.UserGroupID,
 		Disabled: input.Disabled, ExpiresAt: input.ExpiresAt, TrafficLimitBytes: input.TrafficLimitBytes,
 		MaxRules: input.MaxRules, SpeedLimitMbps: input.SpeedLimitMbps, IPLimit: input.IPLimit,
 		ConnectionLimit: input.ConnectionLimit,

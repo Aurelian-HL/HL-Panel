@@ -75,7 +75,7 @@ func TestProtocolHealthRenewalViewRejectsInvalidDeployment(t *testing.T) {
 		"customer disabled": func(s *Store, _ *gatewaymembership.ProtocolObservation) {
 			c := s.customers["customer"]
 			c.Disabled = true
-			s.customers["customer"] = c
+			seedCustomer(s, c)
 		},
 		"quota exhausted": func(s *Store, _ *gatewaymembership.ProtocolObservation) {
 			r := s.forwardRules["rule"]
@@ -138,7 +138,7 @@ func BenchmarkProtocolHealthRenewalReadView(b *testing.B) {
 	customer.Revision = 1
 	customer.CreatedAt, customer.UpdatedAt = time.Now().UTC(), time.Now().UTC()
 	customer.UserGroupID = "users"
-	s.customers["customer"] = customer
+	seedCustomer(s, customer)
 	s.userGroups["users"] = customers.UserGroup{ID: "users", Name: "users", Revision: 1, AllowedEntryGroupIDs: []string{"group"}, AllowDirect: true, CreatedAt: customer.CreatedAt, UpdatedAt: customer.UpdatedAt}
 	s.groupNetworks["group"] = groupconfig.GroupNetwork{GroupID: "group", Revision: 1, ConnectHost: "entry.example.test", PortStart: 443, PortEnd: 443, AllowDirect: true, TrafficMultiplier: 1}
 	s.revisionByIdempotency["group"] = map[string]string{}

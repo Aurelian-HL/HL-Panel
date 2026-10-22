@@ -26,7 +26,7 @@ func TestUsageCacheRefreshesAcrossWritersRepairsAndDatabaseFailure(t *testing.T)
 	}
 	defer writer.Close()
 	service := customers.NewService(writer, nil)
-	c, _, err := service.CreateCustomer(ctx, admin.ID, customers.CustomerInput{Username: "usage-cache", Password: "isolated-password", IdempotencyKey: "usage-create"})
+	c, _, err := service.CreateCustomer(ctx, admin.ID, customers.CustomerInput{AccountKind: customers.AccountPanel, Username: "usage-cache", Password: "isolated-password", IdempotencyKey: "usage-create"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,6 +35,9 @@ func TestUsageCacheRefreshesAcrossWritersRepairsAndDatabaseFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	cached := reader.readCache.usage
+	if len(first.PasswordHash) == 0 {
+		t.Fatal("panel account credential missing from private projection")
+	}
 	first.PasswordHash[0] ^= 1
 	again, err := reader.Customer(ctx, c.ID)
 	if err != nil || again.PasswordHash[0] == first.PasswordHash[0] || reader.readCache.usage != cached {

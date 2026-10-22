@@ -7,9 +7,6 @@ import (
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/faults"
-	"github.com/hongle/hl-panel/internal/control/forwarding"
-	"github.com/hongle/hl-panel/internal/control/vlessidentity"
-	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
 
 var _ customers.DeletionRepository = (*Store)(nil)
@@ -22,38 +19,19 @@ func (s *Store) DeleteCustomer(_ context.Context, input customers.DeleteInput, e
 		return replayed, err
 	}
 	item, exists := s.customers[input.ID]
-	if !exists {
+	_, hasLogin := s.panelAccounts[input.ID]
+	if !exists || !hasLogin {
 		return false, faults.ErrNotFound
 	}
 	if item.Revision != input.ExpectedRevision {
 		return false, fmt.Errorf("%w: customer changed; reload before deleting", faults.ErrConflict)
 	}
-	for _, rule := range s.forwardRules {
-		if rule.CustomerID == input.ID || (rule.OwnerKind == forwarding.OwnerCustomer && rule.OwnerID == input.ID) {
-			return false, fmt.Errorf("%w: customer has forwarding rules; delete or transfer its rules first", faults.ErrConflict)
-		}
-	}
-	for _, record := range s.subscriptions {
-		if record.Item.CustomerID == input.ID {
-			return false, fmt.Errorf("%w: customer has subscriptions; delete its subscriptions first", faults.ErrConflict)
-		}
-	}
-	for _, record := range s.vlessBindings {
-		// Revoked identities are immutable history and no longer authorize a
-		// customer. Keep them for audit after deleting the account.
-		if record.Binding.CustomerID == input.ID && record.Binding.State != vlessidentity.StateRevoked {
-			return false, fmt.Errorf("%w: customer has VLESS identities; delete their forwarding rules first", faults.ErrConflict)
-		}
-	}
-	for _, material := range s.vlessRuntimeMaterials {
-		if material.CustomerID == input.ID && material.State != vlessruntime.StateRevoked {
-			return false, fmt.Errorf("%w: customer has VLESS runtime material; delete its forwarding rules first", faults.ErrConflict)
-		}
-	}
 	if err := s.recordBusinessLocked(key, input.RequestSHA256, input.ID, true); err != nil {
 		return false, err
 	}
-	delete(s.customers, input.ID)
+	// Retain the service owner and every associated quota, rule and credential.
+	// Login deletion is not a forwarding mutation and must publish no generation.
+	delete(s.panelAccounts, input.ID)
 	for hash, session := range s.customerSessions {
 		if session.CustomerID == input.ID {
 			delete(s.customerSessions, hash)

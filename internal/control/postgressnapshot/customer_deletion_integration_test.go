@@ -21,7 +21,7 @@ func customerDeletionPGFixture(t *testing.T) (*Store, string, string, customers.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	customer, _, err := customers.NewService(s, nil).CreateCustomer(context.Background(), admin.ID, customers.CustomerInput{Username: "delete-test", Password: "disposable-password", IdempotencyKey: "create-delete-user"})
+	customer, _, err := customers.NewService(s, nil).CreateCustomer(context.Background(), admin.ID, customers.CustomerInput{AccountKind: customers.AccountPanel, Username: "delete-test", Password: "disposable-password", IdempotencyKey: "create-delete-user"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestPostgreSQLCustomerDeletionSurvivesRestartAndReplays(t *testing.T) {
 		}
 		tokens = append(tokens, login.AccessToken)
 	}
-	other, _, err := customers.NewService(s, nil).CreateCustomer(ctx, adminID, customers.CustomerInput{Username: "delete-survivor", Password: "disposable-password", IdempotencyKey: "create-delete-survivor"})
+	other, _, err := customers.NewService(s, nil).CreateCustomer(ctx, adminID, customers.CustomerInput{AccountKind: customers.AccountPanel, Username: "delete-survivor", Password: "disposable-password", IdempotencyKey: "create-delete-survivor"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestPostgreSQLCustomerDeletionSurvivesRestartAndReplays(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	if _, err := restarted.Customer(ctx, customer.ID); !errors.Is(err, faults.ErrNotFound) {
+	if owner, err := restarted.Customer(ctx, customer.ID); err != nil || owner.AccountKind != customers.AccountService {
 		t.Fatal("deleted customer returned after restart", err)
 	}
 	for _, token := range tokens {

@@ -29,7 +29,7 @@ async function remove(): Promise<void> {
   <BaseModal :title="`删除${label}`" :description="name" width="small" :close-disabled="busy" @close="emit('close')">
     <div class="delete-confirmation">
       <p>确认删除“{{ name }}”？此操作无法在页面中撤销。</p>
-      <p v-if="kind === 'customer'">有关联规则、订阅或线路身份时，请先处理关联再删除。删除后该账号将立即退出并无法登录。</p>
+      <p v-if="kind === 'customer'">删除后，该子账号将立即退出并无法登录。现有规则、订阅地址和线路配置继续保留并运行。</p>
       <p v-else>请先移出组内用户，并解除设备组、网络授权对该用户组的引用。</p>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </div>

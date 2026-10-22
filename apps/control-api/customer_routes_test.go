@@ -64,7 +64,8 @@ func TestCustomerAndAdministratorSessionsCannotCrossNamespaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := customerService.CreateCustomer(ctx, "adm-cross", customers.CustomerInput{
-		Username: "cross-user", DisplayName: "Cross User", UserGroupID: group.ID,
+		AccountKind: customers.AccountPanel,
+		Username:    "cross-user", DisplayName: "Cross User", UserGroupID: group.ID,
 		Password: "customer-password", IdempotencyKey: "cross-customer-1",
 	}); err != nil {
 		t.Fatal(err)

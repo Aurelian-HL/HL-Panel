@@ -40,7 +40,7 @@ func (r *customerIdentityRepository) CustomerByUsername(_ context.Context, usern
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
 	for _, item := range r.store.customers {
-		if strings.EqualFold(item.Username, username) {
+		if _, exists := r.store.panelAccounts[item.ID]; exists && strings.EqualFold(item.Username, username) {
 			return r.customerRecordLocked(item)
 		}
 	}
@@ -51,13 +51,15 @@ func (r *customerIdentityRepository) CustomerByID(_ context.Context, id string) 
 	r.store.mu.RLock()
 	defer r.store.mu.RUnlock()
 	item, exists := r.store.customers[id]
-	if !exists {
+	_, hasLogin := r.store.panelAccounts[id]
+	if !exists || !hasLogin {
 		return customeridentity.CustomerRecord{}, faults.ErrNotFound
 	}
 	return r.customerRecordLocked(item)
 }
 
 func (r *customerIdentityRepository) customerRecordLocked(item customers.Customer) (customeridentity.CustomerRecord, error) {
+	item = r.store.customerWithLoginLocked(item)
 	if item.UserGroupID == "" {
 		return customeridentity.CustomerRecord{Customer: cloneCustomer(item), UserGroupName: "未分组"}, nil
 	}
@@ -73,6 +75,9 @@ func (r *customerIdentityRepository) CreateSession(_ context.Context, session cu
 	defer r.store.mu.Unlock()
 	if _, exists := r.store.customers[session.CustomerID]; !exists {
 		return faults.ErrNotFound
+	}
+	if _, exists := r.store.panelAccounts[session.CustomerID]; !exists {
+		return faults.ErrUnauthorized
 	}
 	if _, exists := r.store.customerSessions[session.TokenHash]; exists {
 		return faults.ErrConflict
@@ -139,13 +144,16 @@ func (r *customerIdentityRepository) ChangePassword(_ context.Context, input cus
 	if !exists {
 		return false, faults.ErrNotFound
 	}
+	if _, exists := r.store.panelAccounts[input.CustomerID]; !exists {
+		return false, faults.ErrUnauthorized
+	}
 	if item.Revision != input.ExpectedRevision || item.Revision == int64(^uint64(0)>>1) {
 		return false, fmt.Errorf("%w: customer changed; reload before changing password", faults.ErrConflict)
 	}
 	if auth.ValidatePasswordHash(input.PasswordHash) != nil || input.UpdatedAt.IsZero() {
 		return false, fmt.Errorf("%w: invalid password mutation", faults.ErrValidation)
 	}
-	item.PasswordHash = append([]byte(nil), input.PasswordHash...)
+	r.store.panelAccounts[item.ID] = panelAccount{PasswordHash: append([]byte(nil), input.PasswordHash...)}
 	item.Revision++
 	item.UpdatedAt = input.UpdatedAt.UTC()
 	r.store.customers[item.ID] = item

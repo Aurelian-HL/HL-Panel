@@ -9,6 +9,7 @@ export interface UserGroupInput {
 export interface UserGroup extends UserGroupInput { id: string }
 
 export interface CustomerInput {
+	account_kind?: 'panel' | 'service'
   username: string
   display_name: string
   user_group_id: string

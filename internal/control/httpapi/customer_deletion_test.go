@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"testing"
 
+	"bytes"
+	"encoding/json"
+	"errors"
 	"github.com/hongle/hl-panel/internal/control/customeridentity"
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
-	"github.com/hongle/hl-panel/internal/control/rulegroups"
 )
 
 func TestCustomerDeletionHTTPAuthorizationValidationAndReplay(t *testing.T) {
@@ -42,20 +45,55 @@ func TestCustomerDeletionHTTPAuthorizationValidationAndReplay(t *testing.T) {
 	if !result.Replayed || len(f.store.AuditEvents()) != before+1 {
 		t.Fatal("deletion replay appended audit or was not replayed")
 	}
-	businessRequest(t, f, http.MethodGet, path, "", nil, http.StatusNotFound)
+	businessRequest(t, f, http.MethodGet, path, "", nil, http.StatusOK)
 	assertDeletionProblem(t, businessRequest(t, f, http.MethodDelete, path, "delete-customer", customers.DeleteRequest{Revision: request.Revision + 1}, http.StatusConflict), "idempotency_conflict", "")
 	businessRequest(t, f, http.MethodDelete, path, "fresh-delete-customer", request, http.StatusNotFound)
 }
 
-func TestCustomerDeletionHTTPPreservesCustomerUntilRulesRemoved(t *testing.T) {
+func TestCustomerDeletionHTTPPreservesExistingRules(t *testing.T) {
 	f := newBusinessFixture(t)
 	var rule forwarding.Rule
 	decodeBusinessEntity(t, businessRequest(t, f, http.MethodPost, "/api/v1/customers/"+f.customer.ID+"/forwarding-rules", "customer-delete-rule", f.ruleRequest(), http.StatusCreated), "rule", &rule)
+	before, _ := f.store.EncodeSnapshot()
 	path := "/api/v1/customers/" + f.customer.ID
-	request := customers.DeleteRequest{Revision: f.customer.Revision}
-	assertDeletionProblem(t, businessRequest(t, f, http.MethodDelete, path, "customer-delete-retry", request, http.StatusConflict), "conflict", "forwarding rules")
-	businessRequest(t, f, http.MethodGet, path, "", nil, http.StatusOK)
-	businessRequest(t, f, http.MethodPost, "/api/v1/forwarding-rules/batch", "delete-customer-rule", rulegroups.BatchRequest{Operation: rulegroups.BatchDelete, RuleIDs: []string{rule.ID}, ExpectedRevisions: map[string]int64{rule.ID: rule.Revision}}, http.StatusOK)
-	// A failed attempt must not consume the deletion key.
-	businessRequest(t, f, http.MethodDelete, path, "customer-delete-retry", request, http.StatusOK)
+	businessRequest(t, f, http.MethodDelete, path, "customer-delete-retry", customers.DeleteRequest{Revision: f.customer.Revision}, http.StatusOK)
+	after, _ := f.store.EncodeSnapshot()
+	var left, right map[string]json.RawMessage
+	json.Unmarshal(before, &left)
+	json.Unmarshal(after, &right)
+	for _, key := range []string{"Customers", "ForwardRules", "Subscriptions", "VLESSBindings", "VLESSRuntimeMaterials", "NodeConfigsByNode", "Nodes"} {
+		if !bytes.Equal(left[key], right[key]) {
+			t.Fatalf("login deletion changed %s", key)
+		}
+	}
+	var listing struct {
+		Items []customers.Customer `json:"items"`
+	}
+	decodeResponse(t, businessRequest(t, f, http.MethodGet, "/api/v1/customers?account_kind=panel", "", nil, http.StatusOK), &listing)
+	if len(listing.Items) != 0 {
+		t.Fatal("deleted account remains listed")
+	}
+	if _, err := f.store.CustomerIdentityRepository("test").CustomerByUsername(context.Background(), f.customer.Username); !errors.Is(err, faults.ErrNotFound) {
+		t.Fatal("deleted account remains available for login", err)
+	}
+	businessRequest(t, f, http.MethodGet, "/api/v1/forwarding-rules/"+rule.ID, "", nil, http.StatusOK)
+}
+
+func TestLegacyProvisioningIsExcludedFromPanelAccounts(t *testing.T) {
+	f := newBusinessFixture(t)
+	var owner customers.Customer
+	decodeBusinessEntity(t, businessRequest(t, f, http.MethodPost, "/api/v1/customers", "legacy-provision", customers.CustomerInput{Username: "integration-owner", Password: "generated-integration-password"}, http.StatusCreated), "customer", &owner)
+	if owner.AccountKind != customers.AccountService {
+		t.Fatal("provisioning granted a panel login")
+	}
+	var listing struct {
+		Items []customers.Customer `json:"items"`
+	}
+	decodeResponse(t, businessRequest(t, f, http.MethodGet, "/api/v1/customers?account_kind=panel", "", nil, http.StatusOK), &listing)
+	if len(listing.Items) != 1 || listing.Items[0].ID != f.customer.ID {
+		t.Fatal("service owner included in user management")
+	}
+	if _, err := f.store.CustomerIdentityRepository("test").CustomerByUsername(context.Background(), owner.Username); !errors.Is(err, faults.ErrNotFound) {
+		t.Fatal("service owner can log in", err)
+	}
 }

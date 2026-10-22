@@ -66,6 +66,10 @@ func TestVLESSUDPDirectCapabilityRequiresCompatibleAgentAndCore(t *testing.T) {
 }
 
 func newVLESSBundleFixture(t *testing.T, withCapability bool) vlessBundleFixture {
+	return newOwnedVLESSBundleFixture(t, withCapability, "")
+}
+
+func newOwnedVLESSBundleFixture(t *testing.T, withCapability bool, customerID string) vlessBundleFixture {
 	t.Helper()
 	store, request := forwardingRepositoryFixture(t)
 	store.adminsByUsername["vless-admin"] = auth.Administrator{
@@ -118,12 +122,19 @@ func newVLESSBundleFixture(t *testing.T, withCapability bool) vlessBundleFixture
 	request.RealityServerName = "www.example.com"
 	request.RealityPublicKey = publicKey
 	request.RealityShortID = "0123456789abcdef"
-	rule, replayed, err := forwarding.NewService(store, func() time.Time { return now }).CreateForAdministrator(context.Background(), "admin", request, "vless-runtime-rule")
+	service := forwarding.NewService(store, func() time.Time { return now })
+	var rule forwarding.Rule
+	var replayed bool
+	if customerID == "" {
+		rule, replayed, err = service.CreateForAdministrator(context.Background(), "admin", request, "vless-runtime-rule")
+	} else {
+		rule, replayed, err = service.CreateForCustomer(context.Background(), customerID, request, "vless-runtime-rule")
+	}
 	if err != nil || replayed {
 		t.Fatalf("create VLESS rule: replay=%v err=%v", replayed, err)
 	}
 	pool := store.endpointPools[endpointID]
-	pool.OwnerID, pool.RuleID = "admin", rule.ID
+	pool.OwnerID, pool.RuleID = rule.OwnerID, rule.ID
 	store.endpointPools[endpointID] = pool
 	bindingID := "binding-vless"
 	credential := "ed08862b-0b98-4a96-b860-503c97b78f55"

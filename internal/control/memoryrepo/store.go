@@ -66,6 +66,7 @@ type Store struct {
 	applyAttemptsByNode   map[string]map[int64]generations.ApplyAttemptState
 	auditEvents           []audit.Event
 	customers             map[string]customers.Customer
+	panelAccounts         map[string]panelAccount
 	userGroups            map[string]customers.UserGroup
 	groupNetworks         map[string]groupconfig.GroupNetwork
 	forwardRules          map[string]forwarding.Rule
@@ -113,6 +114,7 @@ func New(admin auth.Administrator) *Store {
 		applyAttemptsByNode:   make(map[string]map[int64]generations.ApplyAttemptState),
 		auditEvents:           make([]audit.Event, 0),
 		customers:             make(map[string]customers.Customer),
+		panelAccounts:         make(map[string]panelAccount),
 		userGroups:            make(map[string]customers.UserGroup),
 		groupNetworks:         make(map[string]groupconfig.GroupNetwork),
 		forwardRules:          make(map[string]forwarding.Rule),

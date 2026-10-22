@@ -47,7 +47,7 @@ func TestConnectionReadViewPreservesLiveReadinessAndPermissions(t *testing.T) {
 			c := s.customers["customer"]
 			at := time.Now().Add(-time.Hour)
 			c.ExpiresAt = &at
-			s.customers[c.ID] = c
+			seedCustomer(s, c)
 		},
 		"exhausted quota": func(s *Store) {
 			r := s.forwardRules["rule"]

@@ -11,7 +11,7 @@ import (
 func networkPolicySnapshotFixture(t *testing.T) *Store {
 	t.Helper()
 	s, customer := customerRepositoryFixture(t)
-	s.customers[customer.ID] = customer
+	seedCustomer(s, customer)
 	s.groupNetworks["entry-1"] = groupconfig.GroupNetwork{
 		GroupID: "entry-1", ConnectHost: "entry.example.test", PortStart: 12000, PortEnd: 12002,
 		PortRanges:   []groupconfig.PortRange{{Start: 12000, End: 12000}, {Start: 12002, End: 12002}},

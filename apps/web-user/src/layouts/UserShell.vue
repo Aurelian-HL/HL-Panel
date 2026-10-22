@@ -3,6 +3,7 @@ import { ChevronDown, Home, LogOut, Menu, Moon, Network, Sun, UserRound, X } fro
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { customerApi } from '@/api'
 import { customerAuth } from '@/stores/auth'
 import { customerSite } from '@/stores/site'
 
@@ -18,11 +19,17 @@ const items = [
   { label: '转发规则', path: '/forward_rules', icon: Network },
 ]
 watch(() => route.fullPath, () => { navigationOpen.value = false; accountOpen.value = false })
+watch(customerAuth.isAuthenticated, (authenticated) => {
+  if (!authenticated) void router.replace({ name: 'login', query: { reason: 'expired', redirect: route.fullPath } })
+})
 watch(dark, (value) => {
   document.documentElement.dataset.theme = value ? 'dark' : 'light'
   sessionStorage.setItem('ny_customer_theme', value ? 'dark' : 'light')
 }, { immediate: true })
-onMounted(() => { void customerSite.load().catch(() => undefined) })
+onMounted(() => {
+  void customerSite.load().catch(() => undefined)
+  void customerApi.me().then(customerAuth.updateUser).catch(() => undefined)
+})
 async function logout(): Promise<void> { await customerAuth.logout(); await router.replace('/login') }
 </script>
 

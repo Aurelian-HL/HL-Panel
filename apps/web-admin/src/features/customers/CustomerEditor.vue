@@ -34,6 +34,7 @@ async function save(): Promise<void> {
   const trafficBytes = Math.round(form.traffic_gib * 1024 ** 3)
   if (!Number.isSafeInteger(trafficBytes)) { error.value = '流量额度过大'; return }
   const input: CustomerInput = {
+    account_kind: 'panel',
     username: form.username.trim(), display_name: form.display_name.trim(), user_group_id: form.user_group_id,
     disabled: form.disabled, expires_at: props.customer && form.expires_at === originalExpiry ? props.customer.expires_at : expiry?.toISOString() ?? null,
     traffic_limit_bytes: trafficBytes, max_rules: form.max_rules, speed_limit_mbps: form.speed_limit_mbps,
@@ -53,7 +54,7 @@ async function save(): Promise<void> {
       <label class="field"><span>用户名</span><input v-model="form.username" maxlength="64" required autocomplete="off" /></label>
       <label class="field"><span>{{ customer ? '重置密码' : '初始密码' }}</span><input v-model="form.password" type="password" autocomplete="new-password" :required="!customer" :placeholder="customer ? '留空不修改' : ''" /></label>
       <label class="field"><span>用户组</span><select v-model="form.user_group_id"><option value="">暂不分组（无线路权限）</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
-      <details class="ny-advanced"><summary>高级选项</summary><div class="form-stack">
+      <div class="form-stack">
         <label class="field"><span>备注名称</span><input v-model="form.display_name" maxlength="120" /></label>
         <label class="field"><span>过期时间</span><input v-model="form.expires_at" type="datetime-local" /><small class="field-help">本地时间，留空不限。</small></label>
         <label class="field"><span>状态</span><select v-model="form.disabled"><option :value="false">启用</option><option :value="true">停用</option></select></label>
@@ -62,8 +63,8 @@ async function save(): Promise<void> {
         <label class="field"><span>限速 · Mbps</span><input v-model.number="form.speed_limit_mbps" type="number" min="0" max="10000000" step="1" required /></label>
         <label class="field"><span>IP 数限制</span><input v-model.number="form.ip_limit" type="number" min="0" max="10000000" step="1" required /></label>
         <label class="field"><span>连接数限制</span><input v-model.number="form.connection_limit" type="number" min="0" max="100000000" step="1" required /></label>
-        <small class="field-help">0 表示不限。实时流量与限速尚未启用。</small>
-      </div></details>
+        <small class="field-help">此处管理面板登录子账号；创建或删除子账号不会自动创建、删除规则或订阅。0 表示不限，限额沿用当前服务能力。</small>
+      </div>
       <p v-if="error" class="form-error" role="alert">{{ error }}</p>
     </form>
     <template #footer><button class="button button--secondary" :disabled="busy" @click="emit('close')">取消</button><button class="button button--primary" form="customer-editor" type="submit" :disabled="busy"><LoaderCircle v-if="busy" :size="14" class="spin" />{{ busy ? '保存中' : '确定' }}</button></template>

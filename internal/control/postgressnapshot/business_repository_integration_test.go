@@ -44,11 +44,12 @@ func TestPostgreSQLBusinessRestartReplayAndAuthorizationRollback(t *testing.T) {
 	_, _, err = s.SaveUserGroup(ctx, groupInput, event)
 	require(err)
 	customerService := customers.NewService(s, nil)
-	customerInput := customers.CustomerInput{Username: "business-customer", Password: "isolated-customer-password", UserGroupID: group.ID, MaxRules: 2, IdempotencyKey: "create-customer"}
+	customerInput := customers.CustomerInput{AccountKind: customers.AccountPanel, Username: "business-customer", Password: "isolated-customer-password", UserGroupID: group.ID, MaxRules: 2, IdempotencyKey: "create-customer"}
 	customer, _, err := customerService.CreateCustomer(ctx, admin.ID, customerInput)
 	require(err)
 	privateBefore, err := s.Customer(ctx, customer.ID)
 	require(err)
+	require(auth.ValidatePasswordHash(privateBefore.PasswordHash))
 	ruleInput := forwarding.CreateInput{Rule: forwarding.Rule{ID: "business-rule", Name: "First forwarding rule", CustomerID: customer.ID, EntryGroupID: "entry-business", EgressMode: forwarding.EgressDirect, Protocol: forwarding.ProtocolTCP, Targets: []forwarding.Target{{Host: "127.0.0.1", Port: 18080}}, SelectionPolicy: forwarding.SelectionRoundRobin, Revision: 1, CreatedAt: now, UpdatedAt: now}, IdempotencyKey: "create-rule", RequestSHA256: "rule-request", CreatedBy: admin.ID}
 	rule, _, err := s.CreateForwardingRule(ctx, ruleInput, event)
 	require(err)

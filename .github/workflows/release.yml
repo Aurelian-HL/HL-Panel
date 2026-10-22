@@ -131,6 +131,12 @@ jobs:
           npm run typecheck
           npm test
           npm run build
+      - name: Build web panel subaccounts
+        working-directory: apps/web-user
+        run: |
+          npm ci
+          npm test
+          npm run build
       - name: Build and accept the pinned reliable UDP engine
         env:
           HL_PANEL_ISOLATED_RELIABLE_UDP_TEST: 'true'
@@ -180,6 +186,8 @@ jobs:
           # Real engines and loopback clients, no production services.
           env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" HL_TEST_XRAY_LEGACY_BINARY="$RUNNER_TEMP/xray-legacy/xray" go test -p 1 -v ./internal/agent/runtime ./internal/agent/engine ./internal/control/httpapi ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"
+          mkdir -p "$release/web-admin/account"
+          cp -R apps/web-user/dist/. "$release/web-admin/account/"
           deployment_files=(
             deploy/README.md
             deploy/panel-license.md

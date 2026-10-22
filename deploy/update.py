@@ -48,6 +48,15 @@ MIGRATION_LOCATION = '''location ^~ /api/v1/panel/migration/ {
     include /etc/nginx/snippets/hl-panel-migration-proxy.conf;
     access_log off;
 }'''
+PANEL_ACCOUNT_LOCATION = '''location ^~ /account/ {
+    try_files $uri $uri/ /account/index.html;
+    add_header Cache-Control "no-store" always;
+    include /etc/nginx/snippets/hl-panel-security-headers.conf;
+}'''
+PANEL_ACCOUNT_ASSETS_LOCATION = '''location ^~ /account/assets/ {
+    try_files $uri =404;
+    include /etc/nginx/snippets/hl-panel-security-headers.conf;
+}'''
 
 
 class UpdateError(RuntimeError):
@@ -271,7 +280,8 @@ def subscription_nginx_update(destination, backup):
     private_regular(APP_LOCATIONS)
     current = APP_LOCATIONS.read_text()
     additions = []
-    for location, path in [(SUBSCRIPTION_LOCATION, '/api/v1/public/subscriptions/'), (MIGRATION_LOCATION, '/api/v1/panel/migration/')]:
+    for location, path in [(SUBSCRIPTION_LOCATION, '/api/v1/public/subscriptions/'), (MIGRATION_LOCATION, '/api/v1/panel/migration/'),
+                           (PANEL_ACCOUNT_LOCATION, '/account/'), (PANEL_ACCOUNT_ASSETS_LOCATION, '/account/assets/')]:
         if location in packaged_text and location not in current:
             require(path not in current, '自定义 Nginx 路由已存在；现有配置未覆盖，请核对：'+path)
             additions.append(location)

@@ -23,7 +23,7 @@ func (s *Store) ListCustomers(_ context.Context) ([]customers.Customer, error) {
 	defer s.mu.RUnlock()
 	items := make([]customers.Customer, 0, len(s.customers))
 	for _, item := range s.customers {
-		items = append(items, cloneCustomer(item))
+		items = append(items, s.customerWithLoginLocked(item))
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Username == items[j].Username {
@@ -41,7 +41,7 @@ func (s *Store) Customer(_ context.Context, id string) (customers.Customer, erro
 	if !exists {
 		return customers.Customer{}, faults.ErrNotFound
 	}
-	return cloneCustomer(item), nil
+	return s.customerWithLoginLocked(item), nil
 }
 
 func (s *Store) SaveCustomer(_ context.Context, input customers.SaveCustomerInput, event audit.Event) (customers.Customer, bool, error) {
@@ -57,10 +57,25 @@ func (s *Store) SaveCustomer(_ context.Context, input customers.SaveCustomerInpu
 	key := input.CreatedBy + "\x00" + operation + "\x00" + input.IdempotencyKey
 	var replay customers.Customer
 	if ok, err := s.replayBusinessLocked(key, input.RequestSHA256, &replay); ok || err != nil {
+		if ok && err == nil {
+			if current, exists := s.customers[replay.ID]; exists {
+				replay = s.customerWithLoginLocked(current)
+			}
+		}
 		return replay, ok, err
 	}
 	item := cloneCustomer(input.Customer)
 	previous, exists := s.customers[item.ID]
+	_, hasLogin := s.panelAccounts[item.ID]
+	if item.AccountKind == "" {
+		item.AccountKind = customers.AccountPanel
+		if exists && !hasLogin {
+			item.AccountKind = customers.AccountService
+		}
+	}
+	if exists && (item.AccountKind == customers.AccountPanel) != hasLogin {
+		return customers.Customer{}, false, fmt.Errorf("%w: login identity kind cannot be changed by editing a service owner", faults.ErrConflict)
+	}
 	if input.ExpectedRevision < 0 || input.ExpectedRevision == math.MaxInt64 || item.Revision != input.ExpectedRevision+1 || exists && input.ExpectedRevision == 0 || !exists && input.ExpectedRevision > 0 || exists && previous.Revision != input.ExpectedRevision {
 		return customers.Customer{}, false, fmt.Errorf("%w: customer changed; reload before saving", faults.ErrConflict)
 	}
@@ -91,13 +106,17 @@ func (s *Store) SaveCustomer(_ context.Context, input customers.SaveCustomerInpu
 		// between the service read and this transaction's optimistic update.
 		item.CreatedAt, item.TrafficUsedBytes = previous.CreatedAt, previous.TrafficUsedBytes
 		if !input.PasswordChanged {
-			item.PasswordHash = append([]byte(nil), previous.PasswordHash...)
+			item.PasswordHash = append([]byte(nil), s.panelAccounts[item.ID].PasswordHash...)
 		}
 	} else {
 		item.TrafficUsedBytes = 0
 	}
-	if err := auth.ValidatePasswordHash(item.PasswordHash); err != nil {
-		return customers.Customer{}, false, err
+	if item.AccountKind == customers.AccountPanel {
+		if err := auth.ValidatePasswordHash(item.PasswordHash); err != nil {
+			return customers.Customer{}, false, err
+		}
+	} else if item.AccountKind != customers.AccountService || len(item.PasswordHash) != 0 {
+		return customers.Customer{}, false, fmt.Errorf("%w: invalid service identity or login credential", faults.ErrValidation)
 	}
 	if err := customers.ValidateStoredCustomer(item); err != nil {
 		return customers.Customer{}, false, err
@@ -106,7 +125,12 @@ func (s *Store) SaveCustomer(_ context.Context, input customers.SaveCustomerInpu
 	if err := s.recordBusinessLocked(key, input.RequestSHA256, item.ID, item); err != nil {
 		return customers.Customer{}, false, err
 	}
-	s.customers[item.ID] = cloneCustomer(item)
+	if item.AccountKind == customers.AccountPanel {
+		s.panelAccounts[item.ID] = panelAccount{PasswordHash: append([]byte(nil), item.PasswordHash...)}
+	}
+	stored := cloneCustomer(item)
+	stored.PasswordHash, stored.AccountKind = nil, ""
+	s.customers[item.ID] = stored
 	s.appendAuditLocked(event)
 	return cloneCustomer(item), false, nil
 }

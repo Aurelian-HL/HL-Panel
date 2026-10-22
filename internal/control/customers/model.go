@@ -11,28 +11,35 @@ const (
 	StatusQuotaExhausted Status = "quota_exhausted"
 )
 
-// Customer is an end-user account, never an administrator identity. Usage is
-// reserved for verified accounting ingestion; operator forms cannot write it.
-type Customer struct {
-	ID                string     `json:"id"`
-	Username          string     `json:"username"`
-	DisplayName       string     `json:"display_name"`
-	UserGroupID       string     `json:"user_group_id"`
-	Disabled          bool       `json:"disabled"`
-	ExpiresAt         *time.Time `json:"expires_at"`
-	TrafficLimitBytes int64      `json:"traffic_limit_bytes"`
-	TrafficUsedBytes  int64      `json:"traffic_used_bytes"`
-	MaxRules          int        `json:"max_rules"`
-	SpeedLimitMbps    int        `json:"speed_limit_mbps"`
-	IPLimit           int        `json:"ip_limit"`
-	ConnectionLimit   int        `json:"connection_limit"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	Revision          int64      `json:"revision"`
-	Status            Status     `json:"effective_status"`
-	PasswordHash      []byte     `json:"-"`
-}
+type AccountKind string
 
+const (
+	AccountPanel   AccountKind = "panel"
+	AccountService AccountKind = "service"
+)
+
+// Customer is a durable service owner. Panel login credentials are held
+// separately; deleting login access must never delete its forwarding state.
+type Customer struct {
+	AccountKind       AccountKind `json:"account_kind,omitempty"`
+	ID                string      `json:"id"`
+	Username          string      `json:"username"`
+	DisplayName       string      `json:"display_name"`
+	UserGroupID       string      `json:"user_group_id"`
+	Disabled          bool        `json:"disabled"`
+	ExpiresAt         *time.Time  `json:"expires_at"`
+	TrafficLimitBytes int64       `json:"traffic_limit_bytes"`
+	TrafficUsedBytes  int64       `json:"traffic_used_bytes"`
+	MaxRules          int         `json:"max_rules"`
+	SpeedLimitMbps    int         `json:"speed_limit_mbps"`
+	IPLimit           int         `json:"ip_limit"`
+	ConnectionLimit   int         `json:"connection_limit"`
+	CreatedAt         time.Time   `json:"created_at"`
+	UpdatedAt         time.Time   `json:"updated_at"`
+	Revision          int64       `json:"revision"`
+	Status            Status      `json:"effective_status"`
+	PasswordHash      []byte      `json:"-"`
+}
 
 func (c Customer) EffectiveStatus(now time.Time) Status {
 	if c.Disabled {
@@ -60,19 +67,20 @@ type UserGroup struct {
 }
 
 type CustomerInput struct {
-	Username          string     `json:"username"`
-	DisplayName       string     `json:"display_name"`
-	UserGroupID       string     `json:"user_group_id"`
-	Password          string     `json:"password"`
-	Disabled          bool       `json:"disabled"`
-	ExpiresAt         *time.Time `json:"expires_at"`
-	TrafficLimitBytes int64      `json:"traffic_limit_bytes"`
-	MaxRules          int        `json:"max_rules"`
-	SpeedLimitMbps    int        `json:"speed_limit_mbps"`
-	IPLimit           int        `json:"ip_limit"`
-	ConnectionLimit   int        `json:"connection_limit"`
-	Revision          int64      `json:"revision"`
-	IdempotencyKey    string     `json:"-"`
+	AccountKind       AccountKind `json:"account_kind,omitempty"`
+	Username          string      `json:"username"`
+	DisplayName       string      `json:"display_name"`
+	UserGroupID       string      `json:"user_group_id"`
+	Password          string      `json:"password"`
+	Disabled          bool        `json:"disabled"`
+	ExpiresAt         *time.Time  `json:"expires_at"`
+	TrafficLimitBytes int64       `json:"traffic_limit_bytes"`
+	MaxRules          int         `json:"max_rules"`
+	SpeedLimitMbps    int         `json:"speed_limit_mbps"`
+	IPLimit           int         `json:"ip_limit"`
+	ConnectionLimit   int         `json:"connection_limit"`
+	Revision          int64       `json:"revision"`
+	IdempotencyKey    string      `json:"-"`
 }
 
 type UserGroupInput struct {

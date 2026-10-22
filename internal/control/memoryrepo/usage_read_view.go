@@ -32,7 +32,7 @@ func (s *Store) UsageReadView() *UsageReadView {
 		configs:    make(map[string]map[int64]deploymentreceipts.HistoricalInput, len(s.nodeConfigsByNode)),
 	}
 	for id, c := range s.customers {
-		v.customers[id] = cloneCustomer(c)
+		v.customers[id] = s.customerWithLoginLocked(c)
 	}
 	for id, r := range s.forwardRules {
 		v.rules[id] = forwarding.TrafficState(r)

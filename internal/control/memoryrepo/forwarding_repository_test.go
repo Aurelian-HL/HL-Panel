@@ -19,7 +19,7 @@ import (
 func forwardingRepositoryFixture(t testing.TB) (*Store, forwarding.Request) {
 	t.Helper()
 	s, customer := customerRepositoryFixture(t)
-	s.customers[customer.ID] = customer
+	seedCustomer(s, customer)
 	s.groupNetworks["entry-1"] = groupconfig.GroupNetwork{GroupID: "entry-1", ConnectHost: "entry.example.test", PortStart: 12000, PortEnd: 12009, AllowDirect: true, AllowedExitGroupIDs: []string{"exit-1"}, TrafficMultiplier: 1, Revision: 1}
 	s.groupNetworks["exit-1"] = groupconfig.GroupNetwork{GroupID: "exit-1", DirectPolicy: groupconfig.DirectPolicyDisabled, TrafficMultiplier: 1, Revision: 1}
 	s.nodes["exit-node"] = nodes.Node{ID: "exit-node", Name: "exit-node", CredentialHash: "exit-node-credential-hash"}
@@ -182,7 +182,7 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	s.userGroups[userGroup.ID] = userGroup
 	customer := s.customers[request.CustomerID]
 	customer.MaxRules = 1
-	s.customers[customer.ID] = customer
+	seedCustomer(s, customer)
 	rule, _, err := service.Create(ctx, "admin", request, "first")
 	if err != nil || rule.Deployed || rule.Status != forwarding.StatusPendingActivation {
 		t.Fatalf("honest status: %v", err)
@@ -194,7 +194,7 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	request.Protocol = forwarding.ProtocolTCP
 	request.Revision = rule.Revision
 	customer.Disabled = true
-	s.customers[customer.ID] = customer
+	seedCustomer(s, customer)
 	view, _ := service.Get(ctx, rule.ID)
 	if view.Status != forwarding.StatusCustomerDisabled {
 		t.Fatal("disabled customer was not reflected in rule status")
@@ -216,7 +216,7 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	customer.Disabled = false
 	expires := time.Now().Add(-time.Second)
 	customer.ExpiresAt = &expires
-	s.customers[customer.ID] = customer
+	seedCustomer(s, customer)
 	request.Paused = false
 	request.Revision = paused.Revision
 	if _, _, err := service.Update(ctx, "admin", rule.ID, request, "expired-resume"); !errors.Is(err, faults.ErrConflict) {

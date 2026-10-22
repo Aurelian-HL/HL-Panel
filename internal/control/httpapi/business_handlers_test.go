@@ -72,7 +72,7 @@ func newBusinessFixture(t *testing.T, forwardingOptions ...forwarding.ServiceOpt
 	businessRequest(t, f, http.MethodPut, "/api/v1/group-networks/"+f.entry.ID, "entry-network-initial", putNetwork, http.StatusOK)
 	groupBody := businessRequest(t, f, http.MethodPost, "/api/v1/user-groups", "user-group-initial", customers.UserGroupInput{Name: "测试用户组", AllowedEntryGroupIDs: []string{f.entry.ID}, AllowedExitGroupIDs: []string{f.exit.ID}, AllowDirect: true}, http.StatusCreated)
 	decodeBusinessEntity(t, groupBody, "user_group", &f.userGroup)
-	customerBody := businessRequest(t, f, http.MethodPost, "/api/v1/customers", "customer-initial", customers.CustomerInput{Username: "demo-user", DisplayName: "业务测试客户", UserGroupID: f.userGroup.ID, Password: "12345678", MaxRules: 3, TrafficLimitBytes: 1024}, http.StatusCreated)
+	customerBody := businessRequest(t, f, http.MethodPost, "/api/v1/customers", "customer-initial", customers.CustomerInput{AccountKind: customers.AccountPanel, Username: "demo-user", DisplayName: "业务测试客户", UserGroupID: f.userGroup.ID, Password: "12345678", MaxRules: 3, TrafficLimitBytes: 1024}, http.StatusCreated)
 	decodeBusinessEntity(t, customerBody, "customer", &f.customer)
 	if bytes.Contains(customerBody, []byte("12345678")) || bytes.Contains(customerBody, []byte("password_hash")) {
 		t.Fatal("customer mutation leaked a password")

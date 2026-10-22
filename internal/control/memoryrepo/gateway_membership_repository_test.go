@@ -352,7 +352,7 @@ func TestProtocolHealthAndGatewayRevisionSurviveSnapshotRestore(t *testing.T) {
 	customer := store.customers["customer"]
 	customer.PasswordHash, customer.UserGroupID, customer.Revision = hash, "users", 1
 	customer.CreatedAt, customer.UpdatedAt = admin.CreatedAt, admin.CreatedAt
-	store.customers["customer"] = customer
+	seedCustomer(store, customer)
 	store.userGroups["users"] = customers.UserGroup{ID: "users", Name: "fixture users", Revision: 1,
 		AllowedEntryGroupIDs: []string{"group"}, AllowDirect: true, CreatedAt: admin.CreatedAt, UpdatedAt: admin.CreatedAt}
 	store.groupNetworks["group"] = groupconfig.GroupNetwork{GroupID: "group", ConnectHost: "entry.example.test",
@@ -442,7 +442,7 @@ func TestMarkActivatedRequiresCurrentProtocolAndDeploymentEvidence(t *testing.T)
 		"customer disabled": func(s *Store) {
 			customer := s.customers["customer"]
 			customer.Disabled = true
-			s.customers["customer"] = customer
+			seedCustomer(s, customer)
 		},
 	}
 	for name, change := range cases {

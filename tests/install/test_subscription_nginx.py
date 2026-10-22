@@ -19,7 +19,8 @@ class SubscriptionNginxTests(unittest.TestCase):
             target = root/'release'
             snippet = target/'deploy/nginx/snippets/hl-panel-app-locations.conf'
             snippet.parent.mkdir(parents=True)
-            snippet.write_text(update.SUBSCRIPTION_LOCATION+'\n'+update.MIGRATION_LOCATION)
+            snippet.write_text('\n'.join([update.SUBSCRIPTION_LOCATION, update.MIGRATION_LOCATION,
+                update.PANEL_ACCOUNT_LOCATION, update.PANEL_ACCOUNT_ASSETS_LOCATION]))
             backup = root/'backup'; backup.mkdir()
             update.APP_LOCATIONS = root/'app.conf'
             update.API_PROXY = root/'api.conf'
@@ -43,6 +44,8 @@ class SubscriptionNginxTests(unittest.TestCase):
             update.subscription_nginx_update(target,backup)
             self.assertEqual(len(calls),2)
             self.assertEqual(update.APP_LOCATIONS.read_text().count(update.MIGRATION_LOCATION),1)
+            self.assertEqual(update.APP_LOCATIONS.read_text().count(update.PANEL_ACCOUNT_LOCATION),1)
+            self.assertEqual(update.APP_LOCATIONS.read_text().count(update.PANEL_ACCOUNT_ASSETS_LOCATION),1)
             update.restore_subscription_nginx(backup)
             self.assertFalse(update.MIGRATION_PROXY.exists())
             self.assertEqual(update.APP_LOCATIONS.read_text(),original)
@@ -54,6 +57,21 @@ class SubscriptionNginxTests(unittest.TestCase):
             with self.assertRaises(update.UpdateError):update.subscription_nginx_update(target,backup)
             self.assertEqual(update.APP_LOCATIONS.read_text(),original)
             self.assertFalse(update.MIGRATION_PROXY.exists())
+
+    def test_custom_account_route_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root/'release'
+            snippet = target/'deploy/nginx/snippets/hl-panel-app-locations.conf'
+            snippet.parent.mkdir(parents=True)
+            snippet.write_text(update.PANEL_ACCOUNT_LOCATION)
+            backup = root/'backup'; backup.mkdir()
+            update.APP_LOCATIONS = root/'app.conf'
+            original = 'location /account/ { proxy_pass http://custom; }\n'
+            update.APP_LOCATIONS.write_text(original)
+            with self.assertRaises(update.UpdateError):
+                update.subscription_nginx_update(target, backup)
+            self.assertEqual(update.APP_LOCATIONS.read_text(), original)
 
     def test_host_metrics_dropin_preserves_custom_unit_and_rolls_back(self):
         with tempfile.TemporaryDirectory() as directory:

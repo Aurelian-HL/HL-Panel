@@ -81,6 +81,7 @@ async function submit(): Promise<void> {
           {{ submitting ? '登录中' : '登录' }}
         </button>
       </form>
+      <p class="login-account-entry">获授权的用户请使用 <a href="/account/login">子账号登录</a></p>
     </section>
   </main>
 </template>

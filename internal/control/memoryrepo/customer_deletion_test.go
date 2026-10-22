@@ -21,9 +21,12 @@ func TestCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 	for _, relation := range []string{"rule", "owner", "subscription", "identity", "runtime", "revision", "missing"} {
 		t.Run(relation, func(t *testing.T) {
 			s, item := customerRepositoryFixture(t)
-			s.customers[item.ID] = item
+			seedCustomer(s, item)
 			input := customers.DeleteInput{ID: item.ID, DeletedBy: "admin-test", ExpectedRevision: 1, IdempotencyKey: "delete-user", RequestSHA256: "delete-hash"}
-			want := faults.ErrConflict
+			var want error
+			if relation == "revision" {
+				want = faults.ErrConflict
+			}
 			switch relation {
 			case "rule":
 				s.forwardRules["rule"] = forwarding.Rule{CustomerID: item.ID}
@@ -49,7 +52,7 @@ func TestCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 				t.Fatalf("expected deletion reference/revision rejection: %v", err)
 			}
 			after, err := s.EncodeSnapshot()
-			if err != nil || !bytes.Equal(before, after) {
+			if err != nil || want != nil && !bytes.Equal(before, after) || want == nil && !bytes.Equal(protectedServiceState(t, before), protectedServiceState(t, after)) {
 				t.Fatal("rejected deletion changed business state, sessions, audit or idempotency")
 			}
 		})
@@ -59,10 +62,10 @@ func TestCustomerDeletionReferencesAndRevisionAreAtomic(t *testing.T) {
 func TestCustomerDeletionRevokesSessionsAndRetainsHistoryAfterRestore(t *testing.T) {
 	ctx := context.Background()
 	s, item := customerRepositoryFixture(t)
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	other := item
 	other.ID, other.Username = "other-customer", "other-customer"
-	s.customers[other.ID] = other
+	seedCustomer(s, other)
 	identity, err := customeridentity.NewService(s.CustomerIdentityRepository("test"), nil, customeridentity.Options{PasswordFingerprintKey: []byte("0123456789abcdef0123456789abcdef")})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +98,7 @@ func TestCustomerDeletionRevokesSessionsAndRetainsHistoryAfterRestore(t *testing
 	if replayed, err := service.DeleteCustomer(ctx, "admin-test", item.ID, request, "delete-customer"); err != nil || replayed {
 		t.Fatal("deletion failed", err)
 	}
-	if len(s.customerSessions) != 1 || len(s.customers) != 1 || len(s.auditEvents) != beforeAudits+1 || s.auditEvents[beforeAudits].Action != "customer.delete" {
+	if len(s.customerSessions) != 1 || len(s.customers) != 2 || len(s.panelAccounts) != 1 || len(s.auditEvents) != beforeAudits+1 || s.auditEvents[beforeAudits].Action != "customer.delete" {
 		t.Fatal("customer/session/audit deletion inconsistent")
 	}
 	for _, token := range tokens {
@@ -114,11 +117,15 @@ func TestCustomerDeletionRevokesSessionsAndRetainsHistoryAfterRestore(t *testing
 	if err != nil {
 		t.Fatal("deletion history could not restore", err)
 	}
+	if _, err := newCustomerIdentityService(t, restored, item.CreatedAt).Login(ctx, item.Username, "customer-test-password"); !errors.Is(err, faults.ErrUnauthorized) {
+		t.Fatal("revoked login returned after restart", err)
+	}
 	restoredService := customers.NewService(restored, nil)
+	auditsBeforeReplay := len(restored.auditEvents)
 	if replayed, err := restoredService.DeleteCustomer(ctx, "admin-test", item.ID, request, "delete-customer"); err != nil || !replayed {
 		t.Fatal("persisted deletion replay failed", err)
 	}
-	if len(restored.auditEvents) != beforeAudits+1 || len(restored.vlessBindings) != 1 || len(restored.vlessRuntimeMaterials) != 1 {
+	if len(restored.auditEvents) != auditsBeforeReplay || len(restored.vlessBindings) != 1 || len(restored.vlessRuntimeMaterials) != 1 {
 		t.Fatal("replay changed audit or deleted revoked history")
 	}
 	if _, err := restoredService.DeleteCustomer(ctx, "admin-test", other.ID, request, "delete-customer"); !errors.Is(err, faults.ErrIdempotencyConflict) {
@@ -134,7 +141,7 @@ func TestCustomerDeletionRevokesSessionsAndRetainsHistoryAfterRestore(t *testing
 
 func TestCustomerDeletionValidatesActorRevisionAndKey(t *testing.T) {
 	s, item := customerRepositoryFixture(t)
-	s.customers[item.ID] = item
+	seedCustomer(s, item)
 	for _, test := range []struct {
 		actor, id, key string
 		revision       int64
