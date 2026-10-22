@@ -121,3 +121,21 @@ func (api *API) recordApplyResult(writer http.ResponseWriter, request *http.Requ
 	}
 	writer.WriteHeader(http.StatusNoContent)
 }
+
+func (api *API) recordApplyResults(writer http.ResponseWriter, request *http.Request, node nodes.Node) {
+	var input agentv1.ApplyResultsRequest
+	if err := decodeJSON(writer, request, &input); err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	_, err := api.generations.RecordApplyResults(request.Context(), node.ID, input.Results)
+	if errors.Is(err, generations.ErrApplyBatchUnsupported) {
+		writer.WriteHeader(http.StatusNotImplemented)
+		return
+	}
+	if err != nil {
+		writeProblem(writer, request, err)
+		return
+	}
+	writer.WriteHeader(http.StatusNoContent)
+}

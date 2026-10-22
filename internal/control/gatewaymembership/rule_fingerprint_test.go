@@ -9,7 +9,35 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
+	"github.com/hongle/hl-panel/internal/control/protocolprobe"
 )
+
+func TestObserverBindsProbeCacheToAuthoritativeFragment(t *testing.T) {
+	for _, fragment := range []string{strings.Repeat("a", 64), ""} {
+		state := stateWithVerifiedEvidence()
+		e := state.Deployments["node-1"]
+		e.Status.RuleConfigSHA256 = fragment
+		state.Deployments["node-1"] = e
+		now := time.Now().UTC()
+		observer := NewProtocolObserver(nil, func() time.Time { return now })
+		want := fragment
+		if want == "" {
+			want = e.Status.ConfigSHA256
+		}
+		observer.check = func(_ context.Context, spec protocolprobe.Spec) (time.Time, error) {
+			if spec.EvidenceKey != want || spec.EvidenceKey == "caller-supplied" {
+				t.Fatal("caller controlled probe evidence identity")
+			}
+			return now, nil
+		}
+		config := ProtocolProbeConfig{UUID: "probe-identity", EchoPort: 19090}
+		spec := protocolprobe.Spec{UUID: config.UUID, EchoPort: config.EchoPort, EchoHost: "127.0.0.1",
+			DialHost: state.Members[0].DialHost, DialPort: state.Rule.ListenPort, EvidenceKey: "caller-supplied"}
+		if _, err := observer.observeState(context.Background(), state, config, "node-1", spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
 func stateWithStableRuleEvidence() State {
 	state := stateWithVerifiedEvidence()

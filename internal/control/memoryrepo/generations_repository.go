@@ -96,6 +96,14 @@ func (s *Store) DesiredNodeConfig(_ context.Context, nodeID string) (generations
 func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyResult, event audit.Event) (nodes.Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.recordApplyResultLocked(ctx, result, event, true)
+}
+
+func (s *Store) recordApplyResultLocked(ctx context.Context, result generations.ApplyResult, event audit.Event, recompile bool) (nodes.Node, error) {
+	if err := ctx.Err(); err != nil {
+		return nodes.Node{}, err
+	}
+
 	node, exists := s.nodes[result.NodeID]
 	if !exists || node.DeletedAt != nil {
 		return nodes.Node{}, faults.ErrNotFound
@@ -144,7 +152,7 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 			existing.EngineMode != result.EngineMode || existing.Message != result.Message {
 			return nodes.Node{}, fmt.Errorf("%w: apply phase already recorded with different content", faults.ErrConflict)
 		}
-		if err := s.recompileReliableUDPAfterReceiptLocked(node.ID, result.CreatedAt); err != nil {
+		if err := s.recompileAfterReceiptLocked(node.ID, result, recompile); err != nil {
 			return nodes.Node{}, err
 		}
 		return cloneNode(s.nodes[node.ID]), nil
@@ -186,7 +194,7 @@ func (s *Store) RecordApplyResult(ctx context.Context, result generations.ApplyR
 	}
 	node.UpdatedAt = result.CreatedAt
 	s.nodes[node.ID] = node
-	if err := s.recompileReliableUDPAfterReceiptLocked(node.ID, result.CreatedAt); err != nil {
+	if err := s.recompileAfterReceiptLocked(node.ID, result, recompile); err != nil {
 		s.nodes[node.ID] = previousNode
 		if previousResults == nil {
 			delete(s.applyResultsByNode[result.NodeID], result.Generation)
@@ -211,4 +219,11 @@ func (s *Store) groupRevisionByIDLocked(groupID, revisionID string) generations.
 		}
 	}
 	return generations.GroupRevision{}
+}
+
+func (s *Store) recompileAfterReceiptLocked(nodeID string, result generations.ApplyResult, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	return s.recompileReliableUDPAfterReceiptLocked(nodeID, result.CreatedAt)
 }

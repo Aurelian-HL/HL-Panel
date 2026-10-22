@@ -10,7 +10,7 @@ import (
 var _ deploymentreceipts.Repository = (*Store)(nil)
 
 func (s *Store) RuleNodeDeploymentInput(ctx context.Context, ruleID, nodeID string) (deploymentreceipts.Input, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (deploymentreceipts.Input, error) {
+	return readForwarding(ctx, s, func(state *memoryrepo.ForwardingReadView) (deploymentreceipts.Input, error) {
 		return state.RuleNodeDeploymentInput(ctx, ruleID, nodeID)
 	})
 }

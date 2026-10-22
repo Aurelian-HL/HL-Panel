@@ -3,6 +3,7 @@ package memoryrepo
 import (
 	"encoding/json"
 	"fmt"
+	"iter"
 	"maps"
 	"math"
 	"sort"
@@ -17,6 +18,8 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/importedconfig"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/vlessidentity"
+	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 	"github.com/hongle/hl-panel/internal/idgen"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -32,6 +35,10 @@ import (
 const NodeBundleCompilerRevision = 4
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
+	return s.compileNodeConfigWithRealityKeysLocked(nodeID, now, nil)
+}
+
+func (s *Store) compileNodeConfigWithRealityKeysLocked(nodeID string, now time.Time, keys *compilationRealityKeys) (generations.NodeConfigGeneration, bool, error) {
 	// A tombstone preserves history but must never receive fresh assignments.
 	if node, exists := s.nodes[nodeID]; !exists || node.DeletedAt != nil {
 		return generations.NodeConfigGeneration{}, false, nil
@@ -54,7 +61,7 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 			Config:        cloneRaw(latest.Config),
 		})
 	}
-	forwardingFragments, err := s.compileForwardingFragmentsLocked(nodeID)
+	forwardingFragments, err := s.compileForwardingFragmentsWithRealityKeysLocked(nodeID, keys)
 	if err != nil {
 		return generations.NodeConfigGeneration{}, false, err
 	}
@@ -119,13 +126,9 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 		return generations.NodeConfigGeneration{}, false, nil
 	}
 	sort.Slice(fragments, func(left, right int) bool { return fragments[left].GroupID < fragments[right].GroupID })
-	rawBundle, err := json.Marshal(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: fragments})
+	canonicalBundle, err := canonicalNodeBundle(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: fragments})
 	if err != nil {
 		return generations.NodeConfigGeneration{}, false, fmt.Errorf("compile node bundle: %w", err)
-	}
-	canonicalBundle, err := generations.CanonicalJSON(rawBundle)
-	if err != nil {
-		return generations.NodeConfigGeneration{}, false, err
 	}
 	configHash := generations.SHA256Hex(canonicalBundle)
 	node := s.nodes[nodeID]
@@ -169,6 +172,10 @@ func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generatio
 // the authoritative identity binding and node-local runtime material have
 // passed the relationship checks in vless_runtime_repository.go.
 func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.ConfigurationFragment, error) {
+	return s.compileForwardingFragmentsWithRealityKeysLocked(nodeID, nil)
+}
+
+func (s *Store) compileForwardingFragmentsWithRealityKeysLocked(nodeID string, keys *compilationRealityKeys) ([]agentv1.ConfigurationFragment, error) {
 	groupIDs := make([]string, 0)
 	for groupID, members := range s.membersByGroup {
 		member, exists := members[nodeID]
@@ -181,6 +188,7 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 	if err != nil {
 		return nil, err
 	}
+	var inputs *nodeCompilationInputs
 	for _, groupID := range groupIDs {
 		network, configured := s.groupNetworks[groupID]
 		if !configured || network.ConnectHost == "" {
@@ -195,13 +203,15 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 			// Runtime health controls customer readiness, never desired config.
 			// Recompilation must keep a temporarily unhealthy rule installed so
 			// the protocol observer can verify its recovery.
-			rule := s.forwardingBaseViewLocked(stored)
+			rule := cloneForwardingRule(stored)
+			rule.Connection = nil
+			rule.Status = s.forwardingStatusLocked(stored, time.Now().UTC())
 			if rule.EffectiveIngressProtocol() == forwarding.IngressVLESSReality {
-				// forwardingViewLocked intentionally redacts SOCKS5 credentials;
-				// restore only the non-public username for this internal compiler
-				// call. Password remains in the private upstream side-map.
-				rule.VLESSSOCKS5Username = stored.VLESSSOCKS5Username
-				fragment, ready, err := s.compileVLESSRealityFragmentLocked(nodeID, rule)
+				if inputs == nil {
+					inputs = s.nodeCompilationInputsLocked(nodeID)
+					inputs.realityKeys = keys
+				}
+				fragment, ready, err := s.compileVLESSRealityFragmentWithInputsLocked(nodeID, rule, inputs)
 				if err != nil {
 					return nil, fmt.Errorf("compile VLESS forwarding rule %s: %w", rule.ID, err)
 				}
@@ -265,6 +275,57 @@ func (s *Store) compileForwardingFragmentsLocked(nodeID string) ([]agentv1.Confi
 // used only in the returned bundle; they are never copied into a public rule
 // projection or an audit event.
 func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding.Rule) (agentv1.ConfigurationFragment, bool, error) {
+	return s.compileVLESSRealityFragmentWithInputsLocked(nodeID, rule, nil)
+}
+
+// These indexes live only for this node compilation under the store lock.
+// They skip unrelated records without caching authorization. The optional
+// cryptographic memo belongs to the same lock-held batch; neither can outlive
+// a revoke, key rotation or membership mutation.
+type nodeCompilationInputs struct {
+	bindingsByRule     map[string][]string
+	materialsByBinding map[string][]string
+	realityKeys        *compilationRealityKeys
+}
+
+func (s *Store) nodeCompilationInputsLocked(nodeID string) *nodeCompilationInputs {
+	inputs := &nodeCompilationInputs{
+		bindingsByRule:     make(map[string][]string),
+		materialsByBinding: make(map[string][]string),
+	}
+	for id, binding := range s.vlessBindings {
+		ruleID := binding.Binding.ForwardingRuleID
+		inputs.bindingsByRule[ruleID] = append(inputs.bindingsByRule[ruleID], id)
+	}
+	for id, material := range s.vlessRuntimeMaterials {
+		if material.NodeID == nodeID {
+			inputs.materialsByBinding[material.BindingID] = append(inputs.materialsByBinding[material.BindingID], id)
+		}
+	}
+	return inputs
+}
+
+func (s *Store) compilationBindingsLocked(ids []string) iter.Seq2[string, vlessidentity.CredentialRecord] {
+	return func(yield func(string, vlessidentity.CredentialRecord) bool) {
+		for _, id := range ids {
+			if !yield(id, s.vlessBindings[id]) {
+				return
+			}
+		}
+	}
+}
+
+func (s *Store) compilationMaterialsLocked(ids []string) iter.Seq[vlessruntime.Material] {
+	return func(yield func(vlessruntime.Material) bool) {
+		for _, id := range ids {
+			if !yield(s.vlessRuntimeMaterials[id]) {
+				return
+			}
+		}
+	}
+}
+
+func (s *Store) compileVLESSRealityFragmentWithInputsLocked(nodeID string, rule forwarding.Rule, inputs *nodeCompilationInputs) (agentv1.ConfigurationFragment, bool, error) {
 	if rule.Paused || !forwardingRuleCompilableStatus(rule.Status) ||
 		rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
 		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect ||
@@ -277,11 +338,23 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 	if effectiveSpeed := effectiveVLESSSpeedLimit(s, rule); effectiveSpeed > 0 && !nodeSupportsTCSpeedLimit(s.nodes[nodeID]) {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
-	bindingID, ok := s.activeVLESSBindingIDForRuleLocked(rule)
+	candidates := maps.All(s.vlessBindings)
+	if inputs != nil {
+		candidates = s.compilationBindingsLocked(inputs.bindingsByRule[rule.ID])
+	}
+	bindingID, ok := s.activeVLESSBindingIDFromCandidatesLocked(rule, candidates)
 	if !ok {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
-	material, err := s.runtimeMaterialForNodeLocked(nodeID, bindingID)
+	materials := maps.Values(s.vlessRuntimeMaterials)
+	if inputs != nil {
+		materials = s.compilationMaterialsLocked(inputs.materialsByBinding[bindingID])
+	}
+	var keys *compilationRealityKeys
+	if inputs != nil {
+		keys = inputs.realityKeys
+	}
+	material, err := s.runtimeMaterialFromCandidatesWithRealityKeysLocked(nodeID, bindingID, materials, keys)
 	if err != nil {
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
@@ -366,11 +439,16 @@ func (s *Store) compileVLESSRealityFragmentLocked(nodeID string, rule forwarding
 
 // activeVLESSBindingIDForRuleLocked chooses one authoritative active identity
 // deterministically. Provisioning currently permits one active tuple per
-// customer/rule/endpoint pool; sorting protects bundle reproducibility if a
+// customer/rule/endpoint pool; key ordering protects bundle reproducibility if a
 // future migration temporarily contains more than one endpoint pool.
 func (s *Store) activeVLESSBindingIDForRuleLocked(rule forwarding.Rule) (string, bool) {
-	ids := make([]string, 0)
-	for id, record := range s.vlessBindings {
+	return s.activeVLESSBindingIDFromCandidatesLocked(rule, maps.All(s.vlessBindings))
+}
+
+func (s *Store) activeVLESSBindingIDFromCandidatesLocked(rule forwarding.Rule, candidates iter.Seq2[string, vlessidentity.CredentialRecord]) (string, bool) {
+	var selected string
+	found := false
+	for id, record := range candidates {
 		binding := record.Binding
 		if binding.State != "active" || binding.CustomerID != rule.CustomerID || binding.ForwardingRuleID != rule.ID {
 			continue
@@ -382,13 +460,11 @@ func (s *Store) activeVLESSBindingIDForRuleLocked(rule forwarding.Rule) (string,
 		if err := s.validateVLESSCredentialRecordLocked(record); err != nil {
 			continue
 		}
-		ids = append(ids, id)
+		if !found || id < selected {
+			selected, found = id, true
+		}
 	}
-	if len(ids) == 0 {
-		return "", false
-	}
-	sort.Strings(ids)
-	return ids[0], true
+	return selected, found
 }
 
 func nodeSupportsVLESSReality(node nodes.Node) bool {
@@ -507,8 +583,14 @@ func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time
 		previousNodes[nodeID] = s.nodes[nodeID]
 		previousConfigs[nodeID] = maps.Clone(s.nodeConfigsByNode[nodeID])
 	}
+	// Only a multi-node batch can reuse a key pair. Keep the memo local to
+	// this lock-held call; no result may survive a mutation or rollback.
+	var keys *compilationRealityKeys
+	if len(orderedNodes) > 1 {
+		keys = &compilationRealityKeys{}
+	}
 	for _, nodeID := range orderedNodes {
-		if _, _, err := s.compileNodeConfigLocked(nodeID, now); err != nil {
+		if _, _, err := s.compileNodeConfigWithRealityKeysLocked(nodeID, now, keys); err != nil {
 			for _, rollbackNodeID := range orderedNodes {
 				s.nodes[rollbackNodeID] = previousNodes[rollbackNodeID]
 				if previousConfigs[rollbackNodeID] == nil {

@@ -14,6 +14,7 @@ import (
 type forwardingProjection struct {
 	imported, delegated map[string]map[string]bool
 	summaries           map[string]forwarding.OutboundSummary
+	ruleEndpoints       ruleEndpointPoolIndex
 }
 
 func (s *Store) buildForwardingProjectionLocked() *forwardingProjection {
@@ -28,22 +29,9 @@ func (s *Store) buildForwardingProjectionLocked() *forwardingProjection {
 		}
 		index[ruleID][actor] = true
 	}
-	for _, record := range s.vlessBindings {
-		b := record.Binding
-		r, exists := s.forwardRules[b.ForwardingRuleID]
-		pool, found := s.endpointPools[b.EndpointPoolID]
-		baseline := r.ImportedTraffic
-		actor := pool.OwnerID
-		if !exists || !found || actor == "" || r.VLESSOutboundMode != forwarding.VLESSOutboundNative ||
-			baseline.SourceID == "" || !baseline.Valid() ||
-			(r.OwnerKind != forwarding.OwnerCustomer && !r.IsUnassignedImport() && !(r.OwnerKind == forwarding.OwnerAdministrator && r.OwnerID == actor)) ||
-			pool.RuleID != r.ID || pool.GroupID != r.EntryGroupID || pool.Port != r.ListenPort ||
-			b.CustomerID != r.CustomerID || b.ImportedFrom == nil ||
-			b.ImportedFrom.BatchID != baseline.BatchID || b.ImportedFrom.LineID != baseline.LineID {
-			continue
-		}
+	s.visitImportedManagementLocked(func(r forwarding.Rule, actor string) {
 		grant(p.imported, r.ID, actor)
-	}
+	})
 	for key, mutation := range s.businessIdempotency {
 		actor, rest, ok := strings.Cut(key, "\x00forwarding.create\x00")
 		if !ok || actor == "" || rest == "" {
@@ -82,4 +70,26 @@ func (s *Store) buildForwardingProjectionLocked() *forwardingProjection {
 		p.summaries[id] = summary
 	}
 	return p
+}
+
+// Visit validated structural grants once per publication. Both projections use
+// the same complete provenance checks; no runtime health or mutable grant cache
+// participates in authorization.
+func (s *Store) visitImportedManagementLocked(grant func(forwarding.Rule, string)) {
+	for _, record := range s.vlessBindings {
+		b := record.Binding
+		r, exists := s.forwardRules[b.ForwardingRuleID]
+		pool, found := s.endpointPools[b.EndpointPoolID]
+		baseline := r.ImportedTraffic
+		actor := pool.OwnerID
+		if !exists || !found || r.ID != b.ForwardingRuleID || pool.ID != b.EndpointPoolID || actor == "" || r.VLESSOutboundMode != forwarding.VLESSOutboundNative ||
+			baseline.SourceID == "" || !baseline.Valid() ||
+			(r.OwnerKind != forwarding.OwnerCustomer && !r.IsUnassignedImport() && !(r.OwnerKind == forwarding.OwnerAdministrator && r.OwnerID == actor)) ||
+			pool.RuleID != r.ID || pool.GroupID != r.EntryGroupID || pool.Port != r.ListenPort ||
+			b.CustomerID != r.CustomerID || b.ImportedFrom == nil ||
+			b.ImportedFrom.BatchID != baseline.BatchID || b.ImportedFrom.LineID != baseline.LineID {
+			continue
+		}
+		grant(r, actor)
+	}
 }

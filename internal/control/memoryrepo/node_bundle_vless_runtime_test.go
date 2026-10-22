@@ -65,11 +65,11 @@ func TestVLESSUDPDirectCapabilityRequiresCompatibleAgentAndCore(t *testing.T) {
 	}
 }
 
-func newVLESSBundleFixture(t *testing.T, withCapability bool) vlessBundleFixture {
+func newVLESSBundleFixture(t testing.TB, withCapability bool) vlessBundleFixture {
 	return newOwnedVLESSBundleFixture(t, withCapability, "")
 }
 
-func newOwnedVLESSBundleFixture(t *testing.T, withCapability bool, customerID string) vlessBundleFixture {
+func newOwnedVLESSBundleFixture(t testing.TB, withCapability bool, customerID string) vlessBundleFixture {
 	t.Helper()
 	store, request := forwardingRepositoryFixture(t)
 	store.adminsByUsername["vless-admin"] = auth.Administrator{

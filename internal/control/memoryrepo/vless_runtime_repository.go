@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"iter"
+	"maps"
 	"sort"
 	"strings"
 
@@ -121,11 +123,19 @@ func (s *Store) RuntimeMaterialForNode(_ context.Context, nodeID, bindingID stri
 // node bundle compiler. It never returns a material for a different node,
 // binding, revoked record, or invalid authoritative relationship.
 func (s *Store) runtimeMaterialForNodeLocked(nodeID, bindingID string) (vlessruntime.Material, error) {
+	return s.runtimeMaterialFromCandidatesLocked(nodeID, bindingID, maps.Values(s.vlessRuntimeMaterials))
+}
+
+func (s *Store) runtimeMaterialFromCandidatesLocked(nodeID, bindingID string, candidates iter.Seq[vlessruntime.Material]) (vlessruntime.Material, error) {
+	return s.runtimeMaterialFromCandidatesWithRealityKeysLocked(nodeID, bindingID, candidates, nil)
+}
+
+func (s *Store) runtimeMaterialFromCandidatesWithRealityKeysLocked(nodeID, bindingID string, candidates iter.Seq[vlessruntime.Material], keys *compilationRealityKeys) (vlessruntime.Material, error) {
 	if nodeID == "" || bindingID == "" {
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
 	hasRevokedMaterial := false
-	for _, material := range s.vlessRuntimeMaterials {
+	for material := range candidates {
 		if material.NodeID != nodeID || material.BindingID != bindingID {
 			continue
 		}
@@ -133,7 +143,7 @@ func (s *Store) runtimeMaterialForNodeLocked(nodeID, bindingID string) (vlessrun
 			hasRevokedMaterial = true
 			continue
 		}
-		if err := s.validateVLESSRuntimeMaterialLocked(material); err != nil {
+		if err := s.validateVLESSRuntimeMaterialWithRealityKeysLocked(material, keys); err != nil {
 			return vlessruntime.Material{}, errors.New("invalid persisted VLESS runtime material")
 		}
 		return cloneVLESSRuntimeMaterial(material), nil
@@ -153,7 +163,7 @@ func (s *Store) runtimeMaterialForNodeLocked(nodeID, bindingID string) (vlessrun
 	if rule.VLESSOutboundMode == forwarding.VLESSOutboundNative {
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
-	if privateKey == "" || !vlessruntime.RealityKeyMatchesPublicKey(privateKey, rule.RealityPublicKey) {
+	if privateKey == "" || !keys.matches(privateKey, rule.RealityPublicKey) {
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
 	pool := s.endpointPools[binding.Binding.EndpointPoolID]
@@ -222,6 +232,10 @@ func (s *Store) RevokeRuntimeMaterial(_ context.Context, input vlessruntime.Revo
 // a node can receive a secret. It intentionally returns generic errors so
 // callers cannot use validation failures as a secret-bearing lookup oracle.
 func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Material) error {
+	return s.validateVLESSRuntimeMaterialWithRealityKeysLocked(material, nil)
+}
+
+func (s *Store) validateVLESSRuntimeMaterialWithRealityKeysLocked(material vlessruntime.Material, keys *compilationRealityKeys) error {
 	if material.ID == "" || material.BindingID == "" || material.NodeID == "" || material.CustomerID == "" ||
 		material.ForwardingRuleID == "" || material.EndpointPoolID == "" || !material.State.Valid() || material.Revision < 1 ||
 		material.CreatedAt.IsZero() || material.UpdatedAt.Before(material.CreatedAt) {
@@ -252,7 +266,7 @@ func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Materia
 	rule, exists := s.forwardRules[material.ForwardingRuleID]
 	if !exists || rule.CustomerID != material.CustomerID || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
 		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.EgressMode != forwarding.EgressDirect || rule.IngressReadiness() != forwarding.IngressReady ||
-		rule.RealityPublicKey == "" || !vlessruntime.RealityKeyMatchesPublicKey(material.RealityPrivateKey, rule.RealityPublicKey) {
+		rule.RealityPublicKey == "" || !keys.matches(material.RealityPrivateKey, rule.RealityPublicKey) {
 		return fmt.Errorf("%w: runtime material does not match the ready VLESS Reality rule", faults.ErrConflict)
 	}
 	pool, exists := s.endpointPools[material.EndpointPoolID]

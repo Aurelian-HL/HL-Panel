@@ -94,10 +94,7 @@ func (s *Store) readSnapshot(ctx context.Context, tx *sql.Tx) (*memoryrepo.Store
 			return nil, err
 		}
 	}
-	if err := s.mergeCachedRuleTrafficOverlays(ctx, tx, state); err != nil {
-		return nil, err
-	}
-	if err := s.mergeCachedProtocolHealthOverlays(ctx, tx, state); err != nil {
+	if err := s.mergeCachedForwardingOverlays(ctx, tx, state); err != nil {
 		return nil, err
 	}
 	s.applyHeartbeatTelemetry(state)
@@ -172,21 +169,13 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
 	}
 }
 
-func (s *Store) mergeCachedRuleTrafficOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
-	overlays, err := s.ruleTrafficOverlays(ctx, tx)
+func (s *Store) mergeCachedForwardingOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
+	traffic, health, err := s.forwardingOverlays(ctx, tx)
 	if err != nil {
 		return err
 	}
-	state.MergeRuleTrafficOverlays(overlays)
-	return nil
-}
-
-func (s *Store) mergeCachedProtocolHealthOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
-	overlays, err := s.protocolHealthOverlays(ctx, tx)
-	if err != nil {
-		return err
-	}
-	state.MergeProtocolHealthOverlays(overlays)
+	state.MergeRuleTrafficOverlays(traffic)
+	state.MergeProtocolHealthOverlays(health)
 	return nil
 }
 
@@ -344,10 +333,7 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool, stores ...*Store) (*m
 	}
 	if err == nil {
 		if len(stores) > 0 && stores[0] != nil {
-			err = stores[0].mergeCachedRuleTrafficOverlays(ctx, tx, state)
-			if err == nil {
-				err = stores[0].mergeCachedProtocolHealthOverlays(ctx, tx, state)
-			}
+			err = stores[0].mergeCachedForwardingOverlays(ctx, tx, state)
 		} else {
 			err = mergeRuleTrafficOverlays(ctx, tx, state)
 			if err == nil {

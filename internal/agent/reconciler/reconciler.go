@@ -23,18 +23,18 @@ type ResultReporter interface {
 }
 
 type Reconciler struct {
-	store      *state.AtomicStateStore
-	adapter    engine.EngineAdapter
-	reporter   ResultReporter
-	nodeSecret string
-	now        func() time.Time
-	mu         sync.Mutex
-	receiptMu  sync.Mutex
+	store        *state.AtomicStateStore
+	adapter      engine.EngineAdapter
+	reporter     ResultReporter
+	nodeSecret   string
+	now          func() time.Time
+	mu           sync.Mutex
+	receiptMu    sync.Mutex
+	receiptReady chan struct{}
 }
 
-// Apply result telemetry must never hold the lifecycle lock for the duration
-// of a control-plane request. A slow database or reverse proxy used to leave
-// the engine stuck in "pending" while the desired loop waited for a receipt.
+// Bound synchronous result reporting. Terminal receipts are delivered outside
+// the lifecycle lock; prepare/validate and failure reports retain this budget.
 const applyReportTimeout = 750 * time.Millisecond
 
 func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter ResultReporter, nodeSecret string) (*Reconciler, error) {
@@ -45,11 +45,12 @@ func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter R
 		return nil, errors.New("engine adapter is required")
 	}
 	return &Reconciler{
-		store:      store,
-		adapter:    adapter,
-		reporter:   reporter,
-		nodeSecret: nodeSecret,
-		now:        time.Now,
+		store:        store,
+		adapter:      adapter,
+		reporter:     reporter,
+		nodeSecret:   nodeSecret,
+		now:          time.Now,
+		receiptReady: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -64,9 +65,7 @@ func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfi
 	}
 	// Deliver only after the lifecycle lock is released. A slow control plane
 	// must not hold up a subsequent desired generation or local recovery.
-	if receipts, receiptErr := r.store.PendingApplyReceipts(); receiptErr == nil {
-		r.deliverReceipts(ctx, receipts)
-	}
+	r.deliverReceipts(ctx)
 	return nil
 }
 
@@ -174,9 +173,7 @@ func (r *Reconciler) RestoreApplied(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if receipts, receiptErr := r.store.PendingApplyReceipts(); receiptErr == nil {
-		r.deliverReceipts(ctx, receipts)
-	}
+	r.deliverReceipts(ctx)
 	return nil
 }
 
@@ -235,6 +232,9 @@ func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.D
 		"previous configuration reactivated and verified", r.verifiedReceipts(desired, attemptID), r.now()); err != nil {
 		return err
 	}
+	if !deliver {
+		r.notifyReceipts()
+	}
 	return nil
 }
 
@@ -264,32 +264,80 @@ func (r *Reconciler) flushReceiptsLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, receipt := range receipts {
-		if err := r.reporter.ReportApplyResult(ctx, r.nodeSecret, receipt); err != nil {
-			return err
-		}
-		if err := r.store.AcknowledgeApplyReceipt(receipt); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.deliverPendingReceipts(ctx, receipts)
 }
 
-// deliverReceiptsLocked performs a bounded best-effort delivery after a
-// successful local apply. The durable queue remains authoritative; a failed
-// request is left for FlushReceipts, and a successful request is acknowledged
-// only if it is still at the head of the queue.
-func (r *Reconciler) deliverReceipts(ctx context.Context, receipts []agentv1.ApplyResultRequest) {
-	r.receiptMu.Lock()
-	defer r.receiptMu.Unlock()
-	for _, receipt := range receipts {
-		if err := r.reportReceipt(ctx, receipt); err != nil {
-			return
-		}
-		if err := r.store.AcknowledgeApplyReceipt(receipt); err != nil {
-			return
-		}
+// deliverReceipts performs bounded delivery outside the engine lifecycle lock.
+// Never wait for a background flush: Apply's caller may still hold the usage
+// checkpoint lock. The durable queue and signaled/periodic flush retain delivery on a
+// busy lock or timeout. Re-read under receiptMu to avoid stale acknowledgements.
+func (r *Reconciler) deliverReceipts(ctx context.Context) {
+	if !r.receiptMu.TryLock() {
+		r.notifyReceipts()
+		return
 	}
+	defer r.receiptMu.Unlock()
+	if r.reporter == nil || r.nodeSecret == "" {
+		return
+	}
+	receipts, err := r.store.PendingApplyReceipts()
+	if err != nil {
+		r.notifyReceipts()
+		return
+	}
+	if len(receipts) == 0 {
+		return
+	}
+	// One budget for the entire backlog, rather than one per queued generation.
+	callContext, cancel := context.WithTimeout(ctx, applyReportTimeout)
+	defer cancel()
+	if err := r.deliverPendingReceipts(callContext, receipts); err != nil {
+		r.notifyReceipts()
+	}
+}
+
+// ReceiptReady is a coalesced hint for the single background delivery loop.
+// The durable queue remains authoritative, including after process restart.
+func (r *Reconciler) ReceiptReady() <-chan struct{} { return r.receiptReady }
+
+func (r *Reconciler) notifyReceipts() {
+	select {
+	case r.receiptReady <- struct{}{}:
+	default:
+	}
+}
+
+// BatchResultReporter is optional so existing reporters and older panels keep
+// their single-result behavior during rolling upgrades.
+type BatchResultReporter interface {
+	ReportApplyResults(context.Context, string, []agentv1.ApplyResultRequest) error
+}
+
+func (r *Reconciler) deliverPendingReceipts(ctx context.Context, receipts []agentv1.ApplyResultRequest) error {
+	batch, supportsBatch := r.reporter.(BatchResultReporter)
+	for len(receipts) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		count := 1
+		if supportsBatch && len(receipts) >= 2 && agentv1.IsSuccessfulApplyPair(receipts[:2]) {
+			count = 2
+		}
+		var err error
+		if count == 2 {
+			err = batch.ReportApplyResults(ctx, r.nodeSecret, receipts[:2])
+		} else {
+			err = r.reporter.ReportApplyResult(ctx, r.nodeSecret, receipts[0])
+		}
+		if err != nil {
+			return err
+		}
+		if err := r.store.AcknowledgeApplyReceipts(receipts[:count]); err != nil {
+			return err
+		}
+		receipts = receipts[count:]
+	}
+	return nil
 }
 
 // FlushReceipts retries durable terminal receipts even when the control plane

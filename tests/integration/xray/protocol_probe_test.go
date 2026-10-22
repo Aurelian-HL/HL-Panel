@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,7 @@ func TestProtocolProbeRealRealityVisionEchoLoopback(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = echoListener.Close() })
+	var challenges atomic.Int64
 	go func() {
 		for {
 			conn, err := echoListener.Accept()
@@ -56,6 +58,7 @@ func TestProtocolProbeRealRealityVisionEchoLoopback(t *testing.T) {
 				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 				challenge := make([]byte, 32)
 				if _, err := io.ReadFull(conn, challenge); err == nil {
+					challenges.Add(1)
 					_, _ = conn.Write(challenge)
 				}
 			}()
@@ -77,13 +80,26 @@ func TestProtocolProbeRealRealityVisionEchoLoopback(t *testing.T) {
 	}
 	startXray(t, binary, privateConfig(t, serverConfig), localAddress(frontPort))
 	spec := protocolprobe.Spec{
-		XrayBinary: binary, DialHost: "127.0.0.1", DialPort: frontPort,
+		EvidenceKey: "isolated-rule-fragment-one",
+		XrayBinary:  binary, DialHost: "127.0.0.1", DialPort: frontPort,
 		UUID: uuid, ServerName: "localhost", PublicKey: publicKey, ShortID: "01234567",
 		EchoHost: "127.0.0.1", EchoPort: echoListener.Addr().(*net.TCPAddr).Port,
 	}
 	verifiedAt, err := protocolprobe.Check(context.Background(), spec)
 	if err != nil || verifiedAt.IsZero() {
 		t.Fatalf("real Reality Vision echo probe failed: %v", err)
+	}
+	if got := challenges.Load(); got != 1 {
+		t.Fatalf("first probe performed %d challenges, want 1", got)
+	}
+	cachedAt, err := protocolprobe.Check(context.Background(), spec)
+	if err != nil || !cachedAt.Equal(verifiedAt) || challenges.Load() != 1 {
+		t.Fatal("unchanged rule repeated its challenge or renewed the cached timestamp", err)
+	}
+	spec.EvidenceKey = "isolated-rule-fragment-two"
+	nextAt, err := protocolprobe.Check(context.Background(), spec)
+	if err != nil || !nextAt.After(verifiedAt) || challenges.Load() != 2 {
+		t.Fatal("changed rule reused old protocol evidence", err)
 	}
 	spec.UUID = "615db532-728a-4a34-8353-873b34d12de2"
 	if _, err := protocolprobe.Check(context.Background(), spec); err == nil {

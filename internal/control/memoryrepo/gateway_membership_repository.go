@@ -120,6 +120,16 @@ func (s *Store) endpointPoolIDForRuleLocked(ruleID string) (string, error) {
 	if ruleID == "" {
 		return "", faults.ErrValidation
 	}
+	if s.forwardingProjection != nil {
+		entry := s.forwardingProjection.ruleEndpoints.lookup(s.endpointPools, ruleID)
+		if entry.ambiguous {
+			return "", fmt.Errorf("%w: forwarding rule %q has multiple endpoint pools", faults.ErrConflict, ruleID)
+		}
+		if entry.id == "" {
+			return "", faults.ErrNotFound
+		}
+		return entry.id, nil
+	}
 	poolID := ""
 	for id, pool := range s.endpointPools {
 		if pool.RuleID != ruleID {
@@ -137,35 +147,52 @@ func (s *Store) endpointPoolIDForRuleLocked(ruleID string) (string, error) {
 }
 
 func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.ProtocolObservation) error {
+	poolID, member, err := s.validateProtocolHealthLocked(observation)
+	if err != nil {
+		return err
+	}
+	s.recordProtocolHealthLocked(observation, poolID, member)
+	return nil
+}
+
+// Validation is read-only. Renewal projections use this same evidence check
+// before detaching the maps that an accepted proof will update.
+func (s *Store) validateProtocolHealthLocked(observation gatewaymembership.ProtocolObservation) (string, endpoints.EndpointPoolMember, error) {
 	if observation.RuleID == "" || observation.NodeID == "" || observation.RuleRevision < 1 ||
 		observation.NodeConfigGeneration < 1 || len(observation.ConfigSHA256) != 64 ||
 		observation.VerifiedAt.IsZero() || !observation.LeaseExpiresAt.After(observation.VerifiedAt) ||
 		observation.LeaseExpiresAt.After(observation.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
-		return faults.ErrValidation
+		return "", endpoints.EndpointPoolMember{}, faults.ErrValidation
 	}
 	poolID, err := s.endpointPoolIDForRuleLocked(observation.RuleID)
 	if err != nil {
-		return err
+		return "", endpoints.EndpointPoolMember{}, err
 	}
 	members := s.endpointMembers[poolID]
 	member, exists := members[observation.NodeID]
 	if !exists || member.PoolID != poolID || member.GroupID == "" || member.State != endpoints.CandidateEligible || member.Weight < 1 {
-		return faults.ErrNotFound
+		return "", endpoints.EndpointPoolMember{}, faults.ErrNotFound
 	}
 	if member.DialHost == "" {
-		return faults.ErrValidation
+		return "", endpoints.EndpointPoolMember{}, faults.ErrValidation
 	}
 	input, err := s.ruleNodeDeploymentInputBorrowedLocked(observation.RuleID, observation.NodeID)
 	if err != nil {
-		return err
+		return "", endpoints.EndpointPoolMember{}, err
 	}
 	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input)}
 	if !observation.MatchesCurrentDeployment(s.endpointPools[poolID], input.Rule, member, evidence, time.Now().UTC()) {
-		return faults.ErrValidation
+		return "", endpoints.EndpointPoolMember{}, faults.ErrValidation
 	}
 	if previous, exists := s.protocolHealth[poolID][observation.NodeID]; exists && !observation.CanReplace(previous) {
-		return faults.ErrConflict
+		return "", endpoints.EndpointPoolMember{}, faults.ErrConflict
 	}
+	return poolID, member, nil
+}
+
+// Requires a proof just accepted by validateProtocolHealthLocked against the
+// same state, under its lock or on a private renewal scratch state.
+func (s *Store) recordProtocolHealthLocked(observation gatewaymembership.ProtocolObservation, poolID string, member endpoints.EndpointPoolMember) {
 	if s.protocolHealth[poolID] == nil {
 		s.protocolHealth[poolID] = make(map[string]gatewaymembership.ProtocolObservation)
 	}
@@ -174,9 +201,8 @@ func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.Protoc
 	member.LastHealthAt = &verifiedAt
 	member.LastHealthReason = "protocol_probe"
 	member.UpdatedAt = verifiedAt
-	members[observation.NodeID] = member
+	s.endpointMembers[poolID][observation.NodeID] = member
 	s.gatewayMutationRevision++
-	return nil
 }
 
 func (s *Store) ConfigureProtocolProbe(_ context.Context, ruleID string, config gatewaymembership.ProtocolProbeConfig) error {

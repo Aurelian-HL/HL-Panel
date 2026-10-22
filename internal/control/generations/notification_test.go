@@ -47,6 +47,18 @@ func TestDeploymentNotificationRequiresDurableVerifiedGeneration(t *testing.T) {
 	}
 }
 
+func TestApplyBatchRequiresAtomicRepository(t *testing.T) {
+	commit := agentv1.ApplyResultRequest{Generation: 2, AttemptID: strings.Repeat("b", 32), ConfigSHA256: strings.Repeat("a", 64),
+		Phase: agentv1.ApplyPhaseCommit, Status: agentv1.ApplyStatusSucceeded, EngineMode: "xray"}
+	verify := commit
+	verify.Phase = agentv1.ApplyPhaseVerify
+	notified := false
+	s := NewService(receiptRepository{}, nil, WithDeploymentNotification(func(string) { notified = true }))
+	if _, err := s.RecordApplyResults(context.Background(), "node", []agentv1.ApplyResultRequest{commit, verify}); !errors.Is(err, ErrApplyBatchUnsupported) || notified {
+		t.Fatal("non-atomic repository accepted batch or notified", err)
+	}
+}
+
 func TestChangeSignalsCoalesceAndRegisterNextGeneration(t *testing.T) {
 	var signals ChangeSignals
 	a, b := signals.ForNode("one"), signals.ForNode("two")

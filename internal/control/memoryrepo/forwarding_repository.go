@@ -659,14 +659,9 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 }
 
 func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
-	customer := s.customers[item.CustomerID]
 	item = cloneForwardingRule(item)
 	item.Connection = nil // Live observations never enter configuration or revisions.
-	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}
-	if item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport() {
-		availability = forwarding.CustomerAvailability{Enabled: s.hasNonCustomerSubjectLocked(item)}
-	}
-	item.Status = forwarding.DeriveStatus(item, availability, time.Now().UTC())
+	item.Status = s.forwardingStatusLocked(item, time.Now().UTC())
 	// A VLESS Reality rule remains visibly pending until every active member of
 	// its entry group has a matching node-local runtime material record. Public
 	// projections never expose the UUID or private key; they only carry this
@@ -700,6 +695,20 @@ func (s *Store) forwardingBaseViewLocked(item forwarding.Rule) forwarding.Rule {
 		}
 	}
 	return item
+}
+
+// Configuration compilers need lifecycle enforcement, not the public readiness
+// explanation or native outbound summary. In particular, deriving that public
+// explanation checks every member's runtime key, duplicating validation for
+// other nodes on every compilation. Node-local compilation still performs its
+// complete authoritative binding, capability and secret checks.
+func (s *Store) forwardingStatusLocked(item forwarding.Rule, now time.Time) forwarding.Status {
+	customer := s.customers[item.CustomerID]
+	availability := forwarding.CustomerAvailability{Enabled: !customer.Disabled, ExpiresAt: customer.ExpiresAt, TrafficLimitBytes: customer.TrafficLimitBytes, UsedTrafficBytes: customer.TrafficUsedBytes}
+	if item.OwnerKind == forwarding.OwnerAdministrator || item.IsUnassignedImport() {
+		availability = forwarding.CustomerAvailability{Enabled: s.hasNonCustomerSubjectLocked(item)}
+	}
+	return forwarding.DeriveStatus(item, availability, now)
 }
 
 func (s *Store) hasAdministratorSubjectLocked(rule forwarding.Rule) bool {

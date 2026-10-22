@@ -2,6 +2,7 @@ package memoryrepo
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
@@ -14,7 +15,8 @@ import (
 // reader can be attached to it. Results retain the normal repository cloning
 // and session-expiry semantics.
 type IdentityReadView struct {
-	state *Store
+	state      *Store
+	groupCount int
 }
 
 func (s *Store) IdentityReadView() *IdentityReadView {
@@ -38,7 +40,7 @@ func (s *Store) IdentityReadView() *IdentityReadView {
 	for hash, id := range s.nodesByCredential {
 		state.nodesByCredential[hash] = id
 	}
-	return &IdentityReadView{state: state}
+	return &IdentityReadView{state: state, groupCount: len(s.deviceGroups)}
 }
 
 func (v *IdentityReadView) AdministratorByUsername(ctx context.Context, username string) (auth.Administrator, error) {
@@ -59,6 +61,24 @@ func (v *IdentityReadView) NodeByCredentialHash(ctx context.Context, hash string
 
 func (v *IdentityReadView) ListNodes(ctx context.Context) ([]nodes.Node, error) {
 	return v.state.ListNodes(ctx)
+}
+
+func (v *IdentityReadView) ControlForNode(ctx context.Context, id string) (nodes.ControlCommandResult, error) {
+	return v.state.ControlForNode(ctx, id)
+}
+
+func (v *IdentityReadView) ListNezhaBindings(ctx context.Context) (map[string]uint64, error) {
+	return v.state.ListNezhaBindings(ctx)
+}
+
+// Liveness remains request-time data. Merge only identity-matched telemetry
+// into private node entries; it cannot change commands or applied generations.
+func (v *IdentityReadView) Overview(ctx context.Context, now time.Time, onlineFor time.Duration, telemetry []nodes.Node) (nodes.Overview, error) {
+	state := &Store{nodes: maps.Clone(v.state.nodes)}
+	state.MergeHeartbeatTelemetry(telemetry)
+	result, err := state.Overview(ctx, now, onlineFor)
+	result.GroupCount = v.groupCount
+	return result, err
 }
 
 // PreviewHeartbeatTelemetry updates detached one-node state. It never mutates

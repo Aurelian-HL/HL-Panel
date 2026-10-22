@@ -115,6 +115,13 @@ func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeC
 	if err != nil || host == "" || spec.DialHost != host || spec.DialPort != rule.ListenPort || !loopbackHost(spec.EchoHost) {
 		return ProtocolObservation{}, ErrProtocolObservationTarget
 	}
+	// An unrelated bundle generation must not invalidate every existing rule,
+	// but changed rule content must prove connectivity again. Use the trusted
+	// receipt fingerprint, never a caller-provided evidence key.
+	spec.EvidenceKey = receipt.Status.RuleConfigSHA256
+	if spec.EvidenceKey == "" {
+		spec.EvidenceKey = receipt.Status.ConfigSHA256
+	}
 	verifiedAt, err := o.check(ctx, spec)
 	if err != nil {
 		return ProtocolObservation{}, err

@@ -63,24 +63,32 @@ func (s *Store) ruleTrafficOverlays(ctx context.Context, tx *sql.Tx) ([]memoryre
 	if err != nil {
 		return nil, err
 	}
+	return s.ruleTrafficOverlaysAtRevision(ctx, tx, revision)
+}
+
+func (s *Store) ruleTrafficOverlaysAtRevision(ctx context.Context, tx *sql.Tx, revision int64) ([]memoryrepo.RuleTrafficOverlay, error) {
 	s.projectionMu.RLock()
-	if s.projections.ruleTraffic != nil && s.projections.ruleTrafficRevision == revision {
-		items := append([]memoryrepo.RuleTrafficOverlay{}, s.projections.ruleTraffic...)
-		s.projectionMu.RUnlock()
-		return items, nil
-	}
+	cached, cachedRevision := s.projections.ruleTraffic, s.projections.ruleTrafficRevision
 	s.projectionMu.RUnlock()
+	// Published slices are immutable and replaced as a whole. Keep their header
+	// under the lock, then copy outside it so large reads do not block refreshes.
+	if cached != nil && cachedRevision == revision {
+		return append([]memoryrepo.RuleTrafficOverlay{}, cached...), nil
+	}
 	items, err := readRuleTrafficOverlays(ctx, tx, "")
 	if err != nil {
 		return nil, err
 	}
+	if cached != nil && cachedRevision > revision {
+		return items, nil
+	}
+	// SQL already returned a private slice for this caller. Publish just one
+	// detached copy; copying the cache back again would duplicate that work.
+	cached = append([]memoryrepo.RuleTrafficOverlay{}, items...)
 	s.projectionMu.Lock()
 	if s.projections.ruleTraffic == nil || s.projections.ruleTrafficRevision < revision {
 		s.projections.ruleTrafficRevision = revision
-		s.projections.ruleTraffic = append([]memoryrepo.RuleTrafficOverlay{}, items...)
-	}
-	if s.projections.ruleTrafficRevision == revision {
-		items = append([]memoryrepo.RuleTrafficOverlay{}, s.projections.ruleTraffic...)
+		s.projections.ruleTraffic = cached
 	}
 	s.projectionMu.Unlock()
 	return items, nil
@@ -91,25 +99,51 @@ func (s *Store) protocolHealthOverlays(ctx context.Context, tx *sql.Tx) ([]gatew
 	if err != nil {
 		return nil, err
 	}
+	return s.protocolHealthOverlaysAtRevision(ctx, tx, revision)
+}
+
+func (s *Store) protocolHealthOverlaysAtRevision(ctx context.Context, tx *sql.Tx, revision int64) ([]gatewaymembership.ProtocolObservation, error) {
 	s.projectionMu.RLock()
-	if s.projections.health != nil && s.projections.healthRevision == revision {
-		items := append([]gatewaymembership.ProtocolObservation{}, s.projections.health...)
-		s.projectionMu.RUnlock()
-		return items, nil
-	}
+	cached, cachedRevision := s.projections.health, s.projections.healthRevision
 	s.projectionMu.RUnlock()
+	if cached != nil && cachedRevision == revision {
+		return append([]gatewaymembership.ProtocolObservation{}, cached...), nil
+	}
 	items, err := readProtocolHealthOverlays(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
+	if cached != nil && cachedRevision > revision {
+		return items, nil
+	}
+	cached = append([]gatewaymembership.ProtocolObservation{}, items...)
 	s.projectionMu.Lock()
 	if s.projections.health == nil || s.projections.healthRevision < revision {
 		s.projections.healthRevision = revision
-		s.projections.health = append([]gatewaymembership.ProtocolObservation{}, items...)
-	}
-	if s.projections.healthRevision == revision {
-		items = append([]gatewaymembership.ProtocolObservation{}, s.projections.health...)
+		s.projections.health = cached
 	}
 	s.projectionMu.Unlock()
 	return items, nil
+}
+
+// Read both invalidation markers in one statement, within the caller's
+// transaction. Missing markers fail closed even when a cache is populated.
+// These helpers remain private: a revision from another transaction could
+// otherwise associate a cached projection with the wrong database snapshot.
+func (s *Store) forwardingOverlays(ctx context.Context, tx *sql.Tx) ([]memoryrepo.RuleTrafficOverlay, []gatewaymembership.ProtocolObservation, error) {
+	var trafficRevision, healthRevision int64
+	if err := tx.QueryRowContext(ctx, `SELECT
+        (SELECT revision FROM hl_panel_projection_revisions WHERE projection=$1),
+        (SELECT revision FROM hl_panel_projection_revisions WHERE projection=$2)`, ruleTrafficProjection, healthProjection).Scan(&trafficRevision, &healthRevision); err != nil {
+		return nil, nil, errors.New("projection revisions read failed")
+	}
+	traffic, err := s.ruleTrafficOverlaysAtRevision(ctx, tx, trafficRevision)
+	if err != nil {
+		return nil, nil, err
+	}
+	health, err := s.protocolHealthOverlaysAtRevision(ctx, tx, healthRevision)
+	if err != nil {
+		return nil, nil, err
+	}
+	return traffic, health, nil
 }

@@ -635,24 +635,6 @@ func (a *Agent) controlLoop(ctx context.Context) error {
 	return runPeriodic(ctx, interval, backoff, a.ControlOnce, func(err error) { a.logger.Warn("control command failed", "error", err) })
 }
 
-func (a *Agent) receiptLoop(ctx context.Context) error {
-	interval := a.cfg.DesiredPollInterval.Duration()
-	if interval <= 0 || interval > 5*time.Second {
-		interval = 5 * time.Second
-	}
-	settings := a.cfg.Backoff
-	if settings.Maximum.Duration() <= 0 || settings.Maximum.Duration() > heartbeatRetryMaximum {
-		settings.Maximum = config.Duration(heartbeatRetryMaximum)
-	}
-	if settings.Initial.Duration() <= 0 || settings.Initial.Duration() > settings.Maximum.Duration() {
-		settings.Initial = settings.Maximum
-	}
-	backoff := reconciler.NewBackoff(settings)
-	return runPeriodic(ctx, interval, backoff, func(callContext context.Context) error {
-		return a.reconciler.FlushReceipts(callContext)
-	}, func(err error) { a.logger.Warn("apply receipt delivery failed", "error", err) })
-}
-
 func (a *Agent) usageLoop(ctx context.Context) error {
 	interval := a.cfg.UsageReportInterval.Duration()
 	if interval <= 0 {

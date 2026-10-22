@@ -400,6 +400,11 @@ func TestEnsureAppliedRecoversLocallyAndLeavesLiveProcessAlone(t *testing.T) {
 	if len(reporter.results) != 0 {
 		t.Fatal("local recovery contacted control plane")
 	}
+	select {
+	case <-r.ReceiptReady():
+	default:
+		t.Fatal("local recovery did not wake deferred receipt delivery")
+	}
 	current, err := store.Load()
 	if err != nil || len(current.PendingReceipts) != 2 {
 		t.Fatalf("local recovery lost durable receipts: %v", err)

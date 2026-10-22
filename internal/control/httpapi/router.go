@@ -272,6 +272,7 @@ func New(authService *auth.Service, enrollmentService *enrollment.Service, nodeS
 	mux.HandleFunc("GET /api/v1/agent/desired", api.requireNode(api.desiredNodeConfig))
 	mux.HandleFunc("GET /api/v1/agent/desired-watch", api.requireNode(api.watchDesiredNodeConfig))
 	mux.HandleFunc("POST /api/v1/agent/apply-results", api.requireNode(api.recordApplyResult))
+	mux.HandleFunc("POST /api/v1/agent/apply-results/batch", api.requireNode(api.recordApplyResults))
 	if api.vlessIdentity != nil {
 		mux.HandleFunc("GET /api/v1/vless/identities", api.requireAdministrator(api.listVLESSIdentities))
 		mux.HandleFunc("GET /api/v1/vless/identities/{id}/connection", api.requireAdministrator(api.getVLESSIdentityConnection))

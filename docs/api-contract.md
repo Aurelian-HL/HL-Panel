@@ -395,6 +395,26 @@ config hash, and a bounded sanitized message. Accepted phases are `prepare`,
 `validate`, `commit`, `verify`, and `rollback`; accepted final statuses are
 `succeeded`, `failed`, and `rolled_back`.
 
+### `POST /agent/apply-results/batch`
+
+Authenticated by the same node credential. Body: `{ "results": [...] }`, with
+exactly two ordinary apply-result objects: successful `commit` followed by
+successful `verify`. Both must have the same positive `generation`, nonempty
+`apply_attempt_id`, `config_hash`, and matching `engine_mode`. All ordinary
+field validation, assigned-generation checks, and stale-attempt rejection apply.
+The node ID comes only from authentication; body-supplied node IDs are rejected.
+
+Both phases and their two audit events persist atomically. A conflict or failed
+database commit persists neither phase from the batch and emits no deployment
+notification. Successful persistence returns `204`; identical replay is
+idempotent. A repository without atomic batch support returns `501`.
+
+Agents retain both terminal receipts durably until successful acknowledgement.
+Only `404`, `405`, or `501` enables sequential legacy endpoint fallback; other
+errors retain the queue for retry. A partial legacy success retries the same
+pair, relying on phase idempotency. Prepare, validate, failure, and rollback
+reports retain the single-result endpoint.
+
 ## Required Semantics
 
 - Enrollment tokens are random, expire, are single-use, and are stored hashed.

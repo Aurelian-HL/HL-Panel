@@ -34,11 +34,18 @@ func (s *Store) UsageReadView() *UsageReadView {
 	for id, c := range s.customers {
 		v.customers[id] = s.customerWithLoginLocked(c)
 	}
+	importedAdministrator := false
 	for id, r := range s.forwardRules {
 		v.rules[id] = forwarding.TrafficState(r)
-		if r.IsUnassignedImport() || r.OwnerKind == forwarding.OwnerAdministrator && s.importedRuleManagedByLocked(r, r.OwnerID) && s.hasAdministratorSubjectLocked(r) {
+		if r.IsUnassignedImport() {
 			v.unassigned[r.CustomerID] = true
+		} else if r.OwnerKind == forwarding.OwnerAdministrator && r.OwnerID != "" &&
+			r.VLESSOutboundMode == forwarding.VLESSOutboundNative && r.ImportedTraffic.SourceID != "" && len(r.CustomerID) <= 128 {
+			importedAdministrator = true
 		}
+	}
+	if importedAdministrator {
+		s.addImportedAdministratorUsageSubjectsLocked(v.unassigned)
 	}
 	for nodeID, configs := range s.nodeConfigsByNode {
 		v.configs[nodeID] = make(map[int64]deploymentreceipts.HistoricalInput, len(configs))
@@ -48,6 +55,23 @@ func (s *Store) UsageReadView() *UsageReadView {
 		}
 	}
 	return v
+}
+
+// Keep the temporary administrator index out of the ordinary constructor's
+// stack frame; unassigned and customer-owned views need no import index.
+func (s *Store) addImportedAdministratorUsageSubjectsLocked(subjects map[string]bool) {
+	admins := make(map[string]bool, len(s.adminsByUsername))
+	for _, admin := range s.adminsByUsername {
+		admins[admin.ID] = true
+	}
+	// A validated import already proves the alternate subject accepted by
+	// hasAdministratorSubjectLocked. Preserve its admin-existence and length
+	// checks without rescanning every pool and binding for every rule.
+	s.visitImportedManagementLocked(func(r forwarding.Rule, actor string) {
+		if r.OwnerKind == forwarding.OwnerAdministrator && r.OwnerID == actor && admins[actor] && len(r.CustomerID) <= 128 {
+			subjects[r.CustomerID] = true
+		}
+	})
 }
 
 // UsageInput detaches historical evidence, including confidential config bytes.

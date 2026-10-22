@@ -86,6 +86,9 @@ var startXray = startXrayProcess
 // caller must separately authenticate and bind any resulting observation to a
 // rule revision and applied node configuration before publishing health.
 func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
+	if err := ctx.Err(); err != nil {
+		return time.Time{}, err
+	}
 	if err := spec.validate(); err != nil {
 		return time.Time{}, err
 	}
@@ -98,8 +101,12 @@ func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 		(runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
 		return time.Time{}, ErrInvalidSpec
 	}
-	cacheKey := probeCacheKey(spec, binary, info)
+	validationKey := probeCacheKey(spec, binary, info)
+	cacheKey := probeEvidenceKey(validationKey, spec.EvidenceKey)
 	if cachedAt, ok := cachedProbeSuccess(cacheKey, time.Now().UTC()); ok {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
 		verifiedAt = cachedAt
 		return verifiedAt, nil
 	}
@@ -107,6 +114,9 @@ func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 	if !owner {
 		select {
 		case <-flight.done:
+			if err := ctx.Err(); err != nil {
+				return time.Time{}, err
+			}
 			return flight.verifiedAt, flight.err
 		case <-ctx.Done():
 			return time.Time{}, ctx.Err()
@@ -118,6 +128,9 @@ func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 	// The owner may have waited while another caller populated the cache just
 	// before it acquired the flight. Avoid starting a second Xray process.
 	if verifiedAt, ok := cachedProbeSuccess(cacheKey, time.Now().UTC()); ok {
+		if err := ctx.Err(); err != nil {
+			return time.Time{}, err
+		}
 		return verifiedAt, nil
 	}
 	select {
@@ -149,11 +162,11 @@ func Check(ctx context.Context, spec Spec) (verifiedAt time.Time, err error) {
 		if err := os.WriteFile(configPath, config, 0o600); err != nil {
 			return time.Time{}, ErrUnhealthy
 		}
-		if shouldValidateXray(cacheKey, time.Now().UTC()) {
+		if shouldValidateXray(validationKey, time.Now().UTC()) {
 			if err := validateXray(ctx, binary, configPath); err != nil {
 				return time.Time{}, ErrUnhealthy
 			}
-			rememberXrayValidation(cacheKey, time.Now().UTC())
+			rememberXrayValidation(validationKey, time.Now().UTC())
 		}
 		process, err := startXray(ctx, binary, configPath)
 		if err != nil {
@@ -224,9 +237,12 @@ func cachedProbeSuccess(key [sha256.Size]byte, now time.Time) (time.Time, bool) 
 		}
 		return time.Time{}, false
 	}
-	// Treat the cached validation as fresh for the current health lease. The
-	// cache is bounded to a short window and keyed by all connection material.
-	return now, true
+	// Reuse the actual challenge time; reading a cache must not renew a lease.
+	return entry.verifiedAt, true
+}
+
+func probeEvidenceKey(validationKey [sha256.Size]byte, evidence string) [sha256.Size]byte {
+	return sha256.Sum256(append(validationKey[:], []byte(evidence)...))
 }
 
 func rememberProbeSuccess(key [sha256.Size]byte, verifiedAt time.Time) {

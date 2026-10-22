@@ -16,6 +16,10 @@ import (
 
 // Reproduce a shared group with 42 rules and 28 nodes without production data.
 func scaledProtocolRenewalFixture(t testing.TB) (*ForwardingReadView, []gatewaymembership.ProtocolObservation) {
+	return sizedProtocolRenewalFixture(t, 42, 28)
+}
+
+func sizedProtocolRenewalFixture(t testing.TB, ruleCount, nodeCount int) (*ForwardingReadView, []gatewaymembership.ProtocolObservation) {
 	t.Helper()
 	s, proof := protocolPublicationFixture(t)
 	rule, pool, node := s.forwardRules["rule"], s.endpointPools["pool"], s.nodes["node"]
@@ -23,7 +27,7 @@ func scaledProtocolRenewalFixture(t testing.TB) (*ForwardingReadView, []gatewaym
 	attempt := s.applyAttemptsByNode["node"][1]
 	var bundle agentv1.ConfigurationBundle
 	bundle.SchemaVersion = 1
-	for i := 0; i < 42; i++ {
+	for i := 0; i < ruleCount; i++ {
 		id := fmt.Sprintf("rule-%02d", i)
 		r := rule
 		r.ID, r.Deployed, r.ListenPort = id, true, 10000+i
@@ -46,7 +50,7 @@ func scaledProtocolRenewalFixture(t testing.TB) (*ForwardingReadView, []gatewaym
 	}
 	config.Config, config.ConfigSHA256 = raw, generations.SHA256Hex(raw)
 	var proofs []gatewaymembership.ProtocolObservation
-	for i := 0; i < 28; i++ {
+	for i := 0; i < nodeCount; i++ {
 		id := fmt.Sprintf("node-%02d", i)
 		n := node
 		n.ID = id

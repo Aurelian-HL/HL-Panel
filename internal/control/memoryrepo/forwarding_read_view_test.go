@@ -7,10 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
 	"github.com/hongle/hl-panel/internal/control/generations"
+	"github.com/hongle/hl-panel/internal/control/groupconfig"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
 func TestForwardingReadViewDetachedAndRechecksEvidence(t *testing.T) {
@@ -129,6 +132,12 @@ func TestDeploymentInputPublicConfigAndAttemptMapsAreDetached(t *testing.T) {
 	a := s.applyAttemptsByNode["node"][1]
 	a.SeenIDs = map[string]bool{"original": true}
 	s.applyAttemptsByNode["node"][1] = a
+	s.groupNetworks["group"] = groupconfig.GroupNetwork{GroupID: "group", ConnectHost: "127.0.0.1", PortStart: 443, PortEnd: 443,
+		PortRanges: []groupconfig.PortRange{{Start: 443, End: 443}}, AllowedExitGroupIDs: []string{"exit"}}
+	rule := s.forwardRules["rule"]
+	rule.ExitGroupID = "exit"
+	s.forwardRules["rule"] = rule
+	s.groupNetworks["exit"] = groupconfig.GroupNetwork{GroupID: "exit", AllowedEntryGroupIDs: []string{"group"}}
 	view := s.ForwardingReadView()
 	s.nodeConfigsByNode["node"][2] = s.nodeConfigsByNode["node"][1]
 	if len(view.state.nodeConfigsByNode["node"]) != 1 {
@@ -138,18 +147,55 @@ func TestDeploymentInputPublicConfigAndAttemptMapsAreDetached(t *testing.T) {
 	if view.state.applyAttemptsByNode["node"][1].SeenIDs["leak"] {
 		t.Fatal("attempt map shared with source")
 	}
-	first, err := s.RuleNodeDeploymentInput(ctx, "rule", "node")
+	for name, read := range map[string]func(context.Context, string, string) (deploymentreceipts.Input, error){
+		"repository": s.RuleNodeDeploymentInput, "projection": view.RuleNodeDeploymentInput,
+	} {
+		t.Run(name, func(t *testing.T) {
+			first, err := read(ctx, "rule", "node")
+			if err != nil {
+				t.Fatal(err)
+			}
+			first.CurrentConfig.Config[0] ^= 1
+			first.Node.Resources["nested"].(map[string]any)["cpu"] = float64(999)
+			first.EntryNetwork.AllowedExitGroupIDs[0] = "changed"
+			first.EntryNetwork.PortRanges[0].Start = 1
+			first.ExitNetwork.AllowedEntryGroupIDs[0] = "changed"
+			delete(first.ApplyResults, agentv1.ApplyPhaseVerify)
+			again, err := read(ctx, "rule", "node")
+			if err != nil || generations.SHA256Hex(again.CurrentConfig.Config) != again.CurrentConfig.ConfigSHA256 {
+				t.Fatal("public caller changed authoritative config", err)
+			}
+			if again.Node.Resources["nested"].(map[string]any)["cpu"] != float64(1) || again.EntryNetwork.AllowedExitGroupIDs[0] != "exit" ||
+				again.EntryNetwork.PortRanges[0].Start != 443 || again.ExitNetwork.AllowedEntryGroupIDs[0] != "group" || len(again.ApplyResults) != 2 {
+				t.Fatal("public caller changed authoritative nested inputs")
+			}
+		})
+	}
+}
+
+func TestDeploymentReadViewPreservesAppliedFallbackAndInvalidation(t *testing.T) {
+	s, _ := protocolPublicationFixture(t)
+	n := s.nodes["node"]
+	n.DesiredGeneration = 2
+	s.nodes["node"] = n
+	config := cloneNodeConfig(s.nodeConfigsByNode["node"][1])
+	config.Generation = 2
+	s.nodeConfigsByNode["node"][2] = config
+	s.applyAttemptsByNode["node"][2] = generations.ApplyAttemptState{CurrentID: "next", Invalidated: true}
+	want, err := s.RuleNodeDeploymentInput(context.Background(), "rule", "node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.CurrentConfig.Config[0] ^= 1
-	first.Node.Resources["nested"].(map[string]any)["cpu"] = float64(999)
-	again, err := s.RuleNodeDeploymentInput(ctx, "rule", "node")
-	if err != nil || generations.SHA256Hex(again.CurrentConfig.Config) != again.CurrentConfig.ConfigSHA256 {
-		t.Fatal("public caller changed authoritative config", err)
+	view := s.ForwardingReadView()
+	got, err := view.RuleNodeDeploymentInput(context.Background(), "rule", "node")
+	if err != nil || !reflect.DeepEqual(got, want) || got.AppliedConfig == nil || !got.AttemptInvalidated {
+		t.Fatal("projection lost applied fallback or invalidation", err)
 	}
-	if again.Node.Resources["nested"].(map[string]any)["cpu"] != float64(1) {
-		t.Fatal("public caller changed authoritative node resources")
+	got.AppliedConfig.Config[0] ^= 1
+	delete(got.AppliedResults, agentv1.ApplyPhaseCommit)
+	again, err := view.RuleNodeDeploymentInput(context.Background(), "rule", "node")
+	if err != nil || !reflect.DeepEqual(again, want) {
+		t.Fatal("caller mutated applied fallback", err)
 	}
 }
 

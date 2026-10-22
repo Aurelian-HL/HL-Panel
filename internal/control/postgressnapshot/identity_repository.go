@@ -128,7 +128,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]nodes.Node, error) {
 }
 
 func (s *Store) ListNezhaBindings(ctx context.Context) (map[string]uint64, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (map[string]uint64, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (map[string]uint64, error) {
 		return state.ListNezhaBindings(ctx)
 	})
 }
@@ -175,7 +175,9 @@ func (s *Store) UpdateHeartbeat(ctx context.Context, id string, heartbeat nodes.
 }
 
 func (s *Store) Overview(ctx context.Context, now time.Time, onlineFor time.Duration) (nodes.Overview, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.Overview, error) { return state.Overview(ctx, now, onlineFor) })
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.Overview, error) {
+		return state.Overview(ctx, now, onlineFor, s.heartbeatTelemetrySamples())
+	})
 }
 
 func (s *Store) RequestControl(ctx context.Context, input nodes.ControlCommandInput, event audit.Event) (nodes.ControlCommandResult, bool, error) {
@@ -190,7 +192,7 @@ func (s *Store) RequestControl(ctx context.Context, input nodes.ControlCommandIn
 	return v.value, v.replayed, err
 }
 func (s *Store) ControlForNode(ctx context.Context, nodeID string) (nodes.ControlCommandResult, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (nodes.ControlCommandResult, error) {
+	return readIdentity(ctx, s, func(state *memoryrepo.IdentityReadView) (nodes.ControlCommandResult, error) {
 		return state.ControlForNode(ctx, nodeID)
 	})
 }

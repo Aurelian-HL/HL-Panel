@@ -95,44 +95,59 @@ func (s *Service) DesiredNodeConfig(ctx context.Context, nodeID string) (NodeCon
 }
 
 func (s *Service) RecordApplyResult(ctx context.Context, nodeID string, generation int64, phase agentv1.ApplyPhase, status agentv1.ApplyStatus, configSHA256, engineMode, message, attemptID string) (nodes.Node, error) {
+	result, event, err := s.prepareApplyResult(ctx, nodeID, generation, phase, status, configSHA256, engineMode, message, attemptID)
+	if err != nil {
+		return nodes.Node{}, err
+	}
+	node, err := s.repository.RecordApplyResult(ctx, result, event)
+	if err == nil && phase == agentv1.ApplyPhaseVerify && status == agentv1.ApplyStatusSucceeded && node.AppliedGeneration >= generation && s.onDeployment != nil {
+		s.onDeployment(nodeID)
+	}
+	return node, err
+}
+
+func (s *Service) prepareApplyResult(ctx context.Context, nodeID string, generation int64, phase agentv1.ApplyPhase, status agentv1.ApplyStatus, configSHA256, engineMode, message, attemptID string) (ApplyResult, audit.Event, error) {
+	if err := ctx.Err(); err != nil {
+		return ApplyResult{}, audit.Event{}, err
+	}
 	if generation <= 0 {
-		return nodes.Node{}, fmt.Errorf("%w: generation must be positive", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: generation must be positive", faults.ErrValidation)
 	}
 	if !validPhase(phase) {
-		return nodes.Node{}, fmt.Errorf("%w: invalid phase", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: invalid phase", faults.ErrValidation)
 	}
 	if !validStatus(status) {
-		return nodes.Node{}, fmt.Errorf("%w: invalid status", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: invalid status", faults.ErrValidation)
 	}
 	if !validSHA256(configSHA256) {
-		return nodes.Node{}, fmt.Errorf("%w: config_hash must be a lowercase SHA-256 value", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: config_hash must be a lowercase SHA-256 value", faults.ErrValidation)
 	}
 	if attemptID != "" && !validAttemptID(attemptID) {
-		return nodes.Node{}, fmt.Errorf("%w: apply_attempt_id must be 32 lowercase hexadecimal characters", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: apply_attempt_id must be 32 lowercase hexadecimal characters", faults.ErrValidation)
 	}
 	if engineMode != "" && attemptID == "" {
-		return nodes.Node{}, fmt.Errorf("%w: engine_mode requires apply_attempt_id", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: engine_mode requires apply_attempt_id", faults.ErrValidation)
 	}
 	if engineMode != "" && engineMode != "gost" && engineMode != "xray" && engineMode != "mixed" {
-		return nodes.Node{}, fmt.Errorf("%w: invalid engine_mode", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: invalid engine_mode", faults.ErrValidation)
 	}
 	if (phase != agentv1.ApplyPhaseCommit && phase != agentv1.ApplyPhaseVerify || status != agentv1.ApplyStatusSucceeded) && engineMode != "" {
-		return nodes.Node{}, fmt.Errorf("%w: engine_mode requires a successful commit or verify", faults.ErrValidation)
+		return ApplyResult{}, audit.Event{}, fmt.Errorf("%w: engine_mode requires a successful commit or verify", faults.ErrValidation)
 	}
 	message = sanitizeMessage(message, 1024)
 	now := s.now().UTC()
 	id, err := idgen.New("ares")
 	if err != nil {
-		return nodes.Node{}, err
+		return ApplyResult{}, audit.Event{}, err
 	}
 	event, err := audit.NewEvent(now, "node", nodeID, "node_config.apply_result", "node_config_generation", fmt.Sprintf("%s:%d", nodeID, generation), "succeeded", map[string]any{
 		"phase":  phase,
 		"status": status,
 	})
 	if err != nil {
-		return nodes.Node{}, err
+		return ApplyResult{}, audit.Event{}, err
 	}
-	node, err := s.repository.RecordApplyResult(ctx, ApplyResult{
+	return ApplyResult{
 		ID:           id,
 		NodeID:       nodeID,
 		Generation:   generation,
@@ -143,11 +158,7 @@ func (s *Service) RecordApplyResult(ctx context.Context, nodeID string, generati
 		EngineMode:   engineMode,
 		Message:      message,
 		CreatedAt:    now,
-	}, event)
-	if err == nil && phase == agentv1.ApplyPhaseVerify && status == agentv1.ApplyStatusSucceeded && node.AppliedGeneration >= generation && s.onDeployment != nil {
-		s.onDeployment(nodeID)
-	}
-	return node, err
+	}, event, nil
 }
 
 func validAttemptID(value string) bool {

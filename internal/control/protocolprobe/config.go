@@ -33,6 +33,9 @@ type Spec struct {
 	ShortID      string
 	EchoHost     string
 	EchoPort     int
+	// EvidenceKey binds cached connectivity to the deployed rule fragment.
+	// It is not part of the client configuration or its static validation.
+	EvidenceKey string
 }
 
 // EffectiveFlow retains the historical Vision default for older callers.

@@ -54,6 +54,18 @@ func TestForwardingProjectionDelegatedOwnership(t *testing.T) {
 			t.Fatalf("delegated authorization changed for %q", actor)
 		}
 	}
+	// The derived grant must be detached from retry-response bytes. A damaged
+	// or removed source record revokes fresh views without changing older ones.
+	raw[0] = '!'
+	if f.store.ForwardingReadView().state.delegatedRuleManagedByLocked(r, "admin") {
+		t.Fatal("damaged creation record granted access")
+	}
+	delete(f.store.businessIdempotency, "admin\x00forwarding.create\x00synthetic")
+	if !view.WithOverlays(1, nil, nil, nil).state.delegatedRuleManagedByLocked(r, "admin") {
+		t.Fatal("source retry-response mutation reached immutable grant")
+	}
+	raw, _ = json.Marshal(r)
+	f.store.businessIdempotency["admin\x00forwarding.create\x00synthetic"] = businessMutation{ResourceID: r.ID, Result: raw}
 	r.CustomerID = "different-customer"
 	f.store.forwardRules[r.ID] = r
 	if f.store.ForwardingReadView().state.delegatedRuleManagedByLocked(r, "admin") {

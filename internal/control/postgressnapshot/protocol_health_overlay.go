@@ -75,11 +75,7 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 	if err != nil {
 		return nil, err
 	}
-	traffic, err := s.ruleTrafficOverlays(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	health, err := s.protocolHealthOverlays(ctx, tx)
+	traffic, health, err := s.forwardingOverlays(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -107,18 +103,8 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 		return transact(parent, s, true, apply)
 	}
 	if changed {
-		for i, observation := range observations {
-			if results[i] != nil {
-				continue
-			}
-			raw, err := json.Marshal(observation)
-			if err != nil {
-				return nil, errors.New("protocol health projection encode failed")
-			}
-			if _, err = tx.ExecContext(ctx, `INSERT INTO hl_panel_protocol_health(rule_id,node_id,payload) VALUES($1,$2,$3)
-                ON CONFLICT(rule_id,node_id) DO UPDATE SET payload=excluded.payload`, observation.RuleID, observation.NodeID, raw); err != nil {
-				return nil, errors.New("protocol health projection write failed")
-			}
+		if err = writeProtocolHealthOverlays(ctx, tx, observations, results); err != nil {
+			return nil, err
 		}
 		if err = tx.QueryRowContext(ctx, `UPDATE nyvp_control_snapshots SET revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true RETURNING revision,xmin::text`).Scan(&cached.revision, &cached.transactionID); err != nil {
 			return nil, errors.New("protocol health revision write failed")

@@ -14,9 +14,11 @@ import (
 )
 
 // ForwardingReadView holds detached, immutable inputs, not cached activation
-// results. It exposes no Store, mutation, history reader or runtime secret API.
-// Every request gets private overlay maps and derives readiness at the current
-// time using the ordinary repository checks.
+// results. It exposes no Store, mutation or history reader. Desired config and
+// protocol probe reads are internal confidential APIs; public rule reads keep
+// the ordinary credential redaction.
+// Every request detaches the maps its overlays change and derives readiness at
+// the current time using the ordinary repository checks.
 type ForwardingReadView struct{ state *Store }
 
 func (s *Store) ForwardingReadView() *ForwardingReadView {
@@ -25,10 +27,12 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 	state := &Store{
 		persistenceRevision:     s.persistenceRevision,
 		gatewayMutationRevision: s.gatewayMutationRevision + uint64(len(s.auditEvents)),
-		businessIdempotency:     cloneViewMap(s.businessIdempotency, func(m businessMutation) businessMutation { m.Result = append([]byte(nil), m.Result...); return m }),
-		adminsByUsername:        cloneViewMap(s.adminsByUsername, cloneAdministrator),
-		customers:               cloneViewMap(s.customers, cloneCustomer),
-		groupNetworks:           cloneViewMap(s.groupNetworks, cloneGroupNetwork),
+		// Derive grants under the source lock; the detached index contains no
+		// mutation payloads. Read paths need these grants, not retry responses.
+		forwardingProjection: s.buildForwardingProjectionLocked(),
+		adminsByUsername:     cloneViewMap(s.adminsByUsername, cloneAdministrator),
+		customers:            cloneViewMap(s.customers, cloneCustomer),
+		groupNetworks:        cloneViewMap(s.groupNetworks, cloneGroupNetwork),
 		membersByGroup: cloneViewMap(s.membersByGroup, func(m map[string]groups.Member) map[string]groups.Member {
 			return cloneViewMap(m, cloneGroupMember)
 		}),
@@ -54,7 +58,6 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 			return attempt
 		}),
 	}
-	state.forwardingProjection = state.buildForwardingProjectionLocked()
 	var configs []generations.NodeConfigGeneration
 	for _, byGeneration := range state.nodeConfigsByNode {
 		for _, config := range byGeneration {
@@ -75,6 +78,11 @@ func hotViewGenerations[V any](nodesByID map[string]nodes.Node, input map[string
 		generations := make(map[int64]V, 2)
 		for _, generation := range []int64{node.DesiredGeneration, node.AppliedGeneration} {
 			if generation <= 0 {
+				continue
+			}
+			// Desired and applied normally coincide. Copy their confidential
+			// payload and evidence once, retaining both when a rollout is pending.
+			if _, copied := generations[generation]; copied {
 				continue
 			}
 			if value, ok := input[id][generation]; ok {
@@ -100,12 +108,46 @@ func cloneViewMap[K comparable, V any](input map[K]V, clone func(V) V) map[K]V {
 // overlay merge methods belong to this request. Returned repository DTOs retain
 // their ordinary defensive copies; no caller can mutate the cached inputs.
 func (v *ForwardingReadView) WithOverlays(revision uint64, traffic []RuleTrafficOverlay, health []gatewaymembership.ProtocolObservation, telemetry []nodes.Node) *ForwardingReadView {
+	state := v.sharedOverlayState(revision)
+	if len(traffic) > 0 {
+		state.forwardRules = maps.Clone(state.forwardRules)
+		state.MergeRuleTrafficOverlays(traffic)
+	}
+	if len(health) > 0 {
+		var privatePools map[string]bool
+		// This private shell has not escaped. Detach only after a committed
+		// observation passes restoration ordering, immediately before writing.
+		state.mergeProtocolHealthOverlaysLocked(health, func(poolID string) {
+			if privatePools == nil {
+				state.endpointMembers = maps.Clone(state.endpointMembers)
+				state.protocolHealth = maps.Clone(state.protocolHealth)
+				if state.protocolHealth == nil {
+					state.protocolHealth = make(map[string]map[string]gatewaymembership.ProtocolObservation)
+				}
+				privatePools = make(map[string]bool)
+			}
+			if !privatePools[poolID] {
+				state.endpointMembers[poolID] = maps.Clone(state.endpointMembers[poolID])
+				state.protocolHealth[poolID] = maps.Clone(state.protocolHealth[poolID])
+				privatePools[poolID] = true
+			}
+		})
+	}
+	if len(telemetry) > 0 {
+		state.nodes = maps.Clone(state.nodes)
+		state.MergeHeartbeatTelemetry(telemetry)
+	}
+	return &ForwardingReadView{state: state}
+}
+
+// The returned shell borrows immutable inputs. Each caller must detach every
+// map it writes before invoking a mutation; it must never escape as a Store.
+func (v *ForwardingReadView) sharedOverlayState(revision uint64) *Store {
 	base := v.state
-	state := &Store{
+	return &Store{
 		persistenceRevision: revision, gatewayMutationRevision: base.gatewayMutationRevision,
 		forwardingProjection: base.forwardingProjection,
 		receiptEvaluator:     base.receiptEvaluator,
-		businessIdempotency:  base.businessIdempotency,
 		adminsByUsername:     base.adminsByUsername, customers: base.customers,
 		groupNetworks: base.groupNetworks, membersByGroup: base.membersByGroup,
 		endpointPools: base.endpointPools, protocolProbes: base.protocolProbes,
@@ -113,18 +155,9 @@ func (v *ForwardingReadView) WithOverlays(revision uint64, traffic []RuleTraffic
 		vlessRuntimeMaterials: base.vlessRuntimeMaterials,
 		nodeConfigsByNode:     base.nodeConfigsByNode, applyResultsByNode: base.applyResultsByNode,
 		applyAttemptsByNode: base.applyAttemptsByNode,
-		nodes:               maps.Clone(base.nodes), forwardRules: maps.Clone(base.forwardRules),
-		endpointMembers: cloneViewMap(base.endpointMembers, func(m map[string]endpoints.EndpointPoolMember) map[string]endpoints.EndpointPoolMember {
-			return maps.Clone(m)
-		}),
-		protocolHealth: cloneViewMap(base.protocolHealth, func(m map[string]gatewaymembership.ProtocolObservation) map[string]gatewaymembership.ProtocolObservation {
-			return maps.Clone(m)
-		}),
+		nodes:               base.nodes, forwardRules: base.forwardRules,
+		endpointMembers: base.endpointMembers, protocolHealth: base.protocolHealth,
 	}
-	state.MergeRuleTrafficOverlays(traffic)
-	state.MergeProtocolHealthOverlays(health)
-	state.MergeHeartbeatTelemetry(telemetry)
-	return &ForwardingReadView{state: state}
 }
 
 func (v *ForwardingReadView) ListForwardingRules(ctx context.Context) ([]forwarding.Rule, error) {
@@ -146,6 +179,14 @@ func (v *ForwardingReadView) ProtocolProbeStates(ctx context.Context) ([]gateway
 	return v.state.ProtocolProbeStates(ctx)
 }
 
+func (v *ForwardingReadView) ProtocolProbeConfig(ctx context.Context, id string) (gatewaymembership.ProtocolProbeConfig, error) {
+	return v.state.ProtocolProbeConfig(ctx, id)
+}
+
+func (v *ForwardingReadView) RuleNodeDeploymentInput(ctx context.Context, ruleID, nodeID string) (deploymentreceipts.Input, error) {
+	return v.state.RuleNodeDeploymentInput(ctx, ruleID, nodeID)
+}
+
 func (v *ForwardingReadView) ListManagedForwardingRules(ctx context.Context, adminID string) ([]forwarding.Rule, error) {
 	return v.state.ListManagedForwardingRules(ctx, adminID)
 }
@@ -161,7 +202,11 @@ func (v *ForwardingReadView) CheckProtocolHealthRenewal(ctx context.Context, obs
 	if err = ctx.Err(); err != nil {
 		return nil, false, false, err
 	}
-	state := v.WithOverlays(v.state.persistenceRevision, nil, nil, nil).state
+	// Publication changes only these two maps and the local mutation revision.
+	// Detach the outer maps and each pool only after a proof passes
+	// the ordinary validation. Nodes, rules and unrelated pools stay read-only.
+	state := v.sharedOverlayState(v.state.persistenceRevision)
+	var privatePools map[string]bool
 	for _, observation := range observations {
 		if err = ctx.Err(); err != nil {
 			return nil, false, false, err
@@ -170,7 +215,7 @@ func (v *ForwardingReadView) CheckProtocolHealthRenewal(ctx context.Context, obs
 		// public projection clears Deployed when a lease expires; consulting
 		// it here would turn ordinary recovery/renewal into a full snapshot
 		// rewrite and evaluate every group member for each observation.
-		// PublishProtocolHealth below still checks all current proof bindings.
+		// Shared validation below still checks all current proof bindings.
 		if rule, exists := state.forwardRules[observation.RuleID]; exists && !rule.Deployed {
 			needsActivation = true
 		}
@@ -180,7 +225,21 @@ func (v *ForwardingReadView) CheckProtocolHealthRenewal(ctx context.Context, obs
 		if err = ctx.Err(); err != nil {
 			return nil, false, false, err
 		}
-		results[i] = state.PublishProtocolHealth(ctx, observation)
+		poolID, member, proofErr := state.validateProtocolHealthLocked(observation)
+		results[i] = proofErr
+		if proofErr == nil {
+			if privatePools == nil {
+				state.endpointMembers = maps.Clone(state.endpointMembers)
+				state.protocolHealth = maps.Clone(state.protocolHealth)
+				privatePools = make(map[string]bool)
+			}
+			if !privatePools[poolID] {
+				state.endpointMembers[poolID] = maps.Clone(state.endpointMembers[poolID])
+				state.protocolHealth[poolID] = maps.Clone(state.protocolHealth[poolID])
+				privatePools[poolID] = true
+			}
+			state.recordProtocolHealthLocked(observation, poolID, member)
+		}
 		changed = changed || results[i] == nil
 	}
 	return results, changed, needsActivation, nil

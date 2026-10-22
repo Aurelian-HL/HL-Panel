@@ -93,16 +93,26 @@ func (s *AtomicStateStore) PendingApplyReceipts() ([]agentv1.ApplyResultRequest,
 }
 
 func (s *AtomicStateStore) AcknowledgeApplyReceipt(receipt agentv1.ApplyResultRequest) error {
+	return s.AcknowledgeApplyReceipts([]agentv1.ApplyResultRequest{receipt})
+}
+
+// AcknowledgeApplyReceipts removes an exact queue prefix in one durable write.
+func (s *AtomicStateStore) AcknowledgeApplyReceipts(receipts []agentv1.ApplyResultRequest) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := s.loadUnlocked()
 	if err != nil {
 		return err
 	}
-	if len(current.PendingReceipts) == 0 || current.PendingReceipts[0] != receipt {
+	if len(receipts) == 0 || len(current.PendingReceipts) < len(receipts) {
 		return errors.New("pending apply receipt changed before acknowledgement")
 	}
-	current.PendingReceipts = append([]agentv1.ApplyResultRequest(nil), current.PendingReceipts[1:]...)
+	for i, receipt := range receipts {
+		if current.PendingReceipts[i] != receipt {
+			return errors.New("pending apply receipt changed before acknowledgement")
+		}
+	}
+	current.PendingReceipts = append([]agentv1.ApplyResultRequest(nil), current.PendingReceipts[len(receipts):]...)
 	return s.saveUnlocked(current)
 }
 

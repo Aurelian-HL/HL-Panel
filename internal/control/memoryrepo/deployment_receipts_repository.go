@@ -29,6 +29,14 @@ func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deployment
 	}
 	if err == nil {
 		input.Node = cloneNode(input.Node)
+		if input.EntryNetwork != nil {
+			copy := cloneGroupNetwork(*input.EntryNetwork)
+			input.EntryNetwork = &copy
+		}
+		if input.ExitNetwork != nil {
+			copy := cloneGroupNetwork(*input.ExitNetwork)
+			input.ExitNetwork = &copy
+		}
 	}
 	return input, err
 }

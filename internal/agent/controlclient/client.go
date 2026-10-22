@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
@@ -37,8 +38,9 @@ func (e *HTTPError) Error() string {
 }
 
 type Client struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	baseURL               *url.URL
+	httpClient            *http.Client
+	applyBatchUnsupported atomic.Bool
 }
 
 func New(controlPlaneURL string, httpClient *http.Client) (*Client, error) {

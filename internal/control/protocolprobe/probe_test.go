@@ -247,20 +247,52 @@ func TestCheckRetriesWhenXrayExitsBeforeBindingPort(t *testing.T) {
 		t.Fatalf("Check() = (%v, %v), attempts=%d; want successful second attempt", verified, err, attempts)
 	}
 	second, err := Check(ctx, spec)
-	if err != nil || second.IsZero() || attempts != 2 {
+	if err != nil || !second.Equal(verified) || attempts != 2 {
 		t.Fatalf("cached Check() = (%v, %v), attempts=%d; want no new Xray process", second, err, attempts)
+	}
+	// A changed deployed fragment requires fresh network evidence while the
+	// identical generated client config still reuses static validation.
+	spec.EvidenceKey = "changed-deployed-fragment"
+	if _, err := Check(ctx, spec); err != nil || attempts != 3 || validations != 1 {
+		t.Fatalf("changed evidence: err=%v starts=%d validations=%d", err, attempts, validations)
 	}
 	// Expiring connectivity must run a real connection again, while unchanged
 	// static configuration can reuse its separate validation result.
 	successCache.Lock()
 	clear(successCache.entries)
 	successCache.Unlock()
-	if _, err := Check(ctx, spec); err != nil || attempts != 3 || validations != 1 {
+	if _, err := Check(ctx, spec); err != nil || attempts != 4 || validations != 1 {
 		t.Fatalf("renewed connection: err=%v starts=%d validations=%d", err, attempts, validations)
 	}
 	spec.DialPort++
-	if _, err := Check(ctx, spec); err != nil || attempts != 4 || validations != 2 {
+	if _, err := Check(ctx, spec); err != nil || attempts != 5 || validations != 2 {
 		t.Fatalf("changed endpoint: err=%v starts=%d validations=%d", err, attempts, validations)
+	}
+}
+
+func TestCachedProbeDoesNotRenewChallengeOrAcceptCanceledContext(t *testing.T) {
+	resetProbeCacheForTests()
+	t.Cleanup(resetProbeCacheForTests)
+	spec := validSpec()
+	spec.XrayBinary = os.Args[0]
+	info, err := os.Lstat(spec.XrayBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := probeEvidenceKey(probeCacheKey(spec, spec.XrayBinary, info), spec.EvidenceKey)
+	verified := time.Now().UTC().Add(-20 * time.Second)
+	rememberProbeSuccess(key, verified)
+	got, err := Check(context.Background(), spec)
+	if err != nil || !got.Equal(verified) {
+		t.Fatalf("cached challenge time changed: %v %v", got, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, err := Check(ctx, spec); !errors.Is(err, context.Canceled) || !got.IsZero() {
+		t.Fatalf("canceled check reused success: %v %v", got, err)
+	}
+	if got, ok := cachedProbeSuccess(key, verified.Add(successfulProbeCacheTTL)); ok || !got.IsZero() {
+		t.Fatal("expired evidence reused")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/faults"
+	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/nodes"
 )
 
@@ -80,4 +81,60 @@ func TestIdentityReadViewDetachesSecretsTelemetryAndExpiry(t *testing.T) {
 		}()
 	}
 	workers.Wait()
+}
+
+func TestIdentityReadViewControlBindingsAndOverview(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	old := now.Add(-time.Hour)
+	s := New(auth.Administrator{ID: "admin", Username: "admin"})
+	s.deviceGroups["group"] = groups.DeviceGroup{ID: "group"}
+	s.nodes["node"] = nodes.Node{ID: "node", CredentialHash: "current", NezhaServerID: 42,
+		LastHeartbeatAt: &old, DesiredGeneration: 2, AppliedGeneration: 1, LastApplyStatus: "failed",
+		ControlCommandID: "command", ControlCommand: "restart", ControlCommandStatus: "pending", ControlCommandUpdatedAt: &old}
+	s.nodes["deleted"] = nodes.Node{ID: "deleted", NezhaServerID: 99, DeletedAt: &now}
+	view := s.IdentityReadView()
+	delete(s.nodes, "node")
+	delete(s.deviceGroups, "group")
+	bindings, err := view.ListNezhaBindings(ctx)
+	if err != nil || len(bindings) != 1 || bindings["node"] != 42 {
+		t.Fatal("binding projection changed", err)
+	}
+	bindings["node"] = 7
+	again, err := view.ListNezhaBindings(ctx)
+	if err != nil || again["node"] != 42 {
+		t.Fatal("binding result mutated projection", err)
+	}
+	for _, id := range []string{"deleted", "missing"} {
+		if _, err := view.ControlForNode(ctx, id); !errors.Is(err, faults.ErrNotFound) {
+			t.Fatal("control allowed unavailable node", err)
+		}
+	}
+	command, err := view.ControlForNode(ctx, "node")
+	if err != nil || command.CommandID != "command" || !command.UpdatedAt.Equal(old) {
+		t.Fatal("durable command lost", err)
+	}
+	wrong := nodes.Node{ID: "node", CredentialHash: "revoked", LastHeartbeatAt: &now}
+	overview, err := view.Overview(ctx, now, time.Minute, []nodes.Node{wrong})
+	if err != nil || overview.NodeCount != 1 || overview.GroupCount != 1 || overview.OnlineNodeCount != 0 {
+		t.Fatal("wrong identity or deleted node affected overview", err)
+	}
+	sample := nodes.Node{ID: "node", CredentialHash: "current", LastHeartbeatAt: &now,
+		AppliedGeneration: 2, LastApplyStatus: "succeeded", ControlCommandID: "forged"}
+	overview, err = view.Overview(ctx, now, time.Minute, []nodes.Node{sample})
+	if err != nil || overview.OnlineNodeCount != 1 || overview.SyncingNodeCount != 1 || overview.FailedApplyCount != 1 {
+		t.Fatal("telemetry replaced durable deployment evidence", err)
+	}
+	command, err = view.ControlForNode(ctx, "node")
+	if err != nil || command.CommandID != "command" {
+		t.Fatal("telemetry changed command", err)
+	}
+	overview, err = view.Overview(ctx, now.Add(2*time.Minute), time.Minute, []nodes.Node{sample})
+	if err != nil || overview.OnlineNodeCount != 0 {
+		t.Fatal("overview cached online status beyond heartbeat expiry", err)
+	}
+	overview, err = view.Overview(ctx, now, time.Minute, nil)
+	if err != nil || overview.OnlineNodeCount != 0 {
+		t.Fatal("request telemetry contaminated immutable projection", err)
+	}
 }

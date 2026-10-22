@@ -12,3 +12,9 @@ type Repository interface {
 	DesiredNodeConfig(context.Context, string) (NodeConfigGeneration, int64, error)
 	RecordApplyResult(context.Context, ApplyResult, audit.Event) (nodes.Node, error)
 }
+
+// ApplyResultBatchRepository commits both success receipts atomically. Older
+// repositories may continue implementing only Repository.
+type ApplyResultBatchRepository interface {
+	RecordApplyResults(context.Context, []ApplyResult, []audit.Event) (nodes.Node, error)
+}

@@ -33,7 +33,7 @@ func (s *Store) PublishProtocolHealth(ctx context.Context, observation gatewayme
 }
 
 func (s *Store) ProtocolProbeConfig(ctx context.Context, ruleID string) (gatewaymembership.ProtocolProbeConfig, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) (gatewaymembership.ProtocolProbeConfig, error) {
+	return readConfiguration(ctx, s, func(state *memoryrepo.ForwardingReadView) (gatewaymembership.ProtocolProbeConfig, error) {
 		return state.ProtocolProbeConfig(ctx, ruleID)
 	})
 }

@@ -9,6 +9,13 @@ import "github.com/hongle/hl-panel/internal/control/gatewaymembership"
 func (s *Store) MergeProtocolHealthOverlays(observations []gatewaymembership.ProtocolObservation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.mergeProtocolHealthOverlaysLocked(observations, nil)
+}
+
+// beforeWrite lets an unpublished read-view shell detach shared maps only for
+// pools this merge will write. Authoritative stores already own their maps and
+// call this under their write lock without a callback.
+func (s *Store) mergeProtocolHealthOverlaysLocked(observations []gatewaymembership.ProtocolObservation, beforeWrite func(poolID string)) {
 	for _, observation := range observations {
 		poolID, err := s.endpointPoolIDForRuleLocked(observation.RuleID)
 		if err != nil {
@@ -20,6 +27,12 @@ func (s *Store) MergeProtocolHealthOverlays(observations []gatewaymembership.Pro
 		}
 		if previous, exists := s.protocolHealth[poolID][observation.NodeID]; exists && !observation.CanReplace(previous) {
 			continue
+		}
+		if beforeWrite != nil {
+			beforeWrite(poolID)
+		}
+		if s.protocolHealth == nil {
+			s.protocolHealth = make(map[string]map[string]gatewaymembership.ProtocolObservation)
 		}
 		if s.protocolHealth[poolID] == nil {
 			s.protocolHealth[poolID] = make(map[string]gatewaymembership.ProtocolObservation)
