@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
@@ -54,6 +55,13 @@ func (s *Store) ForwardingReadView() *ForwardingReadView {
 		}),
 	}
 	state.forwardingProjection = state.buildForwardingProjectionLocked()
+	var configs []generations.NodeConfigGeneration
+	for _, byGeneration := range state.nodeConfigsByNode {
+		for _, config := range byGeneration {
+			configs = append(configs, config)
+		}
+	}
+	state.receiptEvaluator = deploymentreceipts.NewEvaluator(configs)
 	return &ForwardingReadView{state: state}
 }
 
@@ -96,6 +104,7 @@ func (v *ForwardingReadView) WithOverlays(revision uint64, traffic []RuleTraffic
 	state := &Store{
 		persistenceRevision: revision, gatewayMutationRevision: base.gatewayMutationRevision,
 		forwardingProjection: base.forwardingProjection,
+		receiptEvaluator:     base.receiptEvaluator,
 		businessIdempotency:  base.businessIdempotency,
 		adminsByUsername:     base.adminsByUsername, customers: base.customers,
 		groupNetworks: base.groupNetworks, membersByGroup: base.membersByGroup,

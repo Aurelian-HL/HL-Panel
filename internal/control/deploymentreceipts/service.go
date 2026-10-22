@@ -24,7 +24,11 @@ func (s *Service) ForRuleNode(ctx context.Context, ruleID, nodeID string) (Statu
 // node bundle and that an explicit real-engine verify receipt matched it. It
 // does not establish reachability, client authentication, or protocol health.
 func Evaluate(input Input) Status {
-	status := evaluateCurrent(input)
+	return evaluate(input, nil)
+}
+
+func evaluate(input Input, evaluator *Evaluator) Status {
+	status := evaluateCurrent(input, evaluator)
 	if status.ReceiptVerified || input.AttemptInvalidated || input.AppliedConfig == nil ||
 		input.Node.AppliedGeneration <= 0 || input.Node.AppliedGeneration >= input.Node.DesiredGeneration ||
 		status.RuleConfigSHA256 == "" {
@@ -40,14 +44,14 @@ func Evaluate(input Input) Status {
 	applied.CurrentAttemptID = input.AppliedAttemptID
 	applied.AttemptInvalidated = input.AppliedInvalidated
 	applied.ApplyResults = input.AppliedResults
-	previous := evaluateCurrent(applied)
+	previous := evaluateCurrent(applied, evaluator)
 	if previous.ReceiptVerified && previous.RuleConfigSHA256 == status.RuleConfigSHA256 {
 		return previous
 	}
 	return status
 }
 
-func evaluateCurrent(input Input) Status {
+func evaluateCurrent(input Input, evaluator *Evaluator) Status {
 	status := Status{RuleID: input.Rule.ID, NodeID: input.Node.ID, Reason: ReasonConfigMissing}
 	if input.Rule.Paused ||
 		(input.Rule.Status != forwarding.StatusPendingActivation && input.Rule.Status != forwarding.StatusActive) ||
@@ -66,11 +70,7 @@ func evaluateCurrent(input Input) Status {
 	}
 	status.NodeConfigGeneration = config.Generation
 	status.ConfigSHA256 = config.ConfigSHA256
-	if !validBundleHash(config) {
-		status.Reason = ReasonConfigInvalid
-		return status
-	}
-	bundle, ok := currentBundleIndexes.get(config.ConfigSHA256, config.Config)
+	bundle, ok := evaluator.bundle(config)
 	if !ok {
 		status.Reason = ReasonConfigInvalid
 		return status

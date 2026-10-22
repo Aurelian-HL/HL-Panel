@@ -57,7 +57,10 @@ let trafficLoadEpoch = 0
 let visibleTrafficInFlight: Promise<void> | null = null
 let trafficReloadPending = false
 let active = false
-const trafficRefreshIntervals = { foreground: 1000, background: 10000 }
+// This request recomputes the complete inventory. Keep automatic refresh bounded
+// across open tabs; save/toggle actions still update immediately. Connection
+// presentation retains its separate five-minute sampling window.
+const trafficRefreshIntervals = { foreground: 10000, background: 60000 }
 const ready = computed(() => !loading.value && !error.value)
 function isUnauthorized(cause: unknown): boolean { return cause instanceof ApiError && cause.status === 401 }
 function invalidateSession(): void {

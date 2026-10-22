@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 )
 
@@ -86,7 +85,7 @@ func (s *Store) ruleConnectionLocked(rule forwarding.Rule, now time.Time) *forwa
 		// A matching real-engine receipt prevents another process using the same
 		// local port from making a pending/unapplied rule appear online.
 		input, err := s.ruleNodeDeploymentInputBorrowedLocked(rule.ID, nodeID)
-		if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
+		if err != nil || !s.evaluateDeploymentLocked(input).ReceiptVerified {
 			result.PendingNodes++
 			continue
 		}

@@ -3,7 +3,6 @@ package memoryrepo
 import (
 	"context"
 	"fmt"
-	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"maps"
 	"slices"
 	"sort"
@@ -63,7 +62,7 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 		if err != nil {
 			continue
 		}
-		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input)}
 		if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
 			ready = true
 			break
@@ -636,7 +635,7 @@ func (s *Store) forwardingDeploymentViewLocked(item forwarding.Rule) forwarding.
 				break
 			}
 			input, err := s.ruleNodeDeploymentInputBorrowedLocked(item.ID, nodeID)
-			if err != nil || !deploymentreceipts.Evaluate(input).ReceiptVerified {
+			if err != nil || !s.evaluateDeploymentLocked(input).ReceiptVerified {
 				deployed = false
 				break
 			}

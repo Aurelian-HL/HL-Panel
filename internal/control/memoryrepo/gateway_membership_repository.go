@@ -3,7 +3,6 @@ package memoryrepo
 import (
 	"context"
 	"fmt"
-	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"maps"
 	"sort"
 	"time"
@@ -76,7 +75,7 @@ func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.S
 		input, err := s.ruleNodeDeploymentInputBorrowedLocked(state.Rule.ID, member.NodeID)
 		if err == nil {
 			state.Deployments[member.NodeID] = gatewaymembership.DeploymentEvidence{
-				RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input),
+				RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input),
 			}
 		}
 	}
@@ -160,7 +159,7 @@ func (s *Store) publishProtocolHealthLocked(observation gatewaymembership.Protoc
 	if err != nil {
 		return err
 	}
-	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: deploymentreceipts.Evaluate(input)}
+	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input)}
 	if !observation.MatchesCurrentDeployment(s.endpointPools[poolID], input.Rule, member, evidence, time.Now().UTC()) {
 		return faults.ErrValidation
 	}

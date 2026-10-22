@@ -123,6 +123,9 @@ func TestForwardingReadViewPrivateOverlaysAndReturnedDTOs(t *testing.T) {
 func TestDeploymentInputPublicConfigAndAttemptMapsAreDetached(t *testing.T) {
 	s, _ := protocolPublicationFixture(t)
 	ctx := context.Background()
+	node := s.nodes["node"]
+	node.Resources = map[string]any{"nested": map[string]any{"cpu": float64(1)}}
+	s.nodes["node"] = node
 	a := s.applyAttemptsByNode["node"][1]
 	a.SeenIDs = map[string]bool{"original": true}
 	s.applyAttemptsByNode["node"][1] = a
@@ -140,9 +143,13 @@ func TestDeploymentInputPublicConfigAndAttemptMapsAreDetached(t *testing.T) {
 		t.Fatal(err)
 	}
 	first.CurrentConfig.Config[0] ^= 1
+	first.Node.Resources["nested"].(map[string]any)["cpu"] = float64(999)
 	again, err := s.RuleNodeDeploymentInput(ctx, "rule", "node")
 	if err != nil || generations.SHA256Hex(again.CurrentConfig.Config) != again.CurrentConfig.ConfigSHA256 {
 		t.Fatal("public caller changed authoritative config", err)
+	}
+	if again.Node.Resources["nested"].(map[string]any)["cpu"] != float64(1) {
+		t.Fatal("public caller changed authoritative node resources")
 	}
 }
 

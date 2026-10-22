@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 	"github.com/hongle/hl-panel/internal/control/panelquota"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/sync/singleflight"
 )
 
 const operationTimeout = 10 * time.Second
@@ -48,6 +50,7 @@ type Store struct {
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
 	readCache      snapshotReadCache
+	readBuild      singleflight.Group
 	heartbeatMu    sync.Mutex
 	heartbeats     map[string]heartbeatPersistence
 	telemetryMu    sync.RWMutex
@@ -125,26 +128,48 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
 		// identity is checked even when a request only needs authentication.
 		return cached, nil, nil
 	}
-	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
-	if err != nil {
-		return snapshotReadCache{}, nil, err
+	// Concurrent readers of one MVCC row share only the immutable projection
+	// build. A mutable transaction store is never shared between callers.
+	var private *memoryrepo.Store
+	key := fmt.Sprintf("%d/%d/%s", next.version, next.revision, next.transactionID)
+	building := s.readBuild.DoChan(key, func() (any, error) {
+		s.readMu.Lock()
+		current := s.readCache
+		s.readMu.Unlock()
+		if current.payload != nil && current.version == next.version && current.revision == next.revision && current.transactionID == next.transactionID {
+			return current, nil
+		}
+		state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
+		if err != nil {
+			return nil, err
+		}
+		next.payload = raw
+		next.identities = state.IdentityReadView()
+		next.usage = state.UsageReadView()
+		next.forwarding = state.ForwardingReadView()
+		private = state
+		// Do not let a slower transaction publish an older snapshot over a newer
+		// committed one. Equal revisions with a different xmin are external
+		// repairs; the first reader that observes the replacement wins.
+		s.readMu.Lock()
+		current = s.readCache
+		if current.payload == nil || next.revision > current.revision ||
+			(next.revision == current.revision && next.transactionID == current.transactionID) ||
+			(next.revision == current.revision && current.transactionID == cached.transactionID) {
+			s.readCache = next
+		}
+		s.readMu.Unlock()
+		return next, nil
+	})
+	select {
+	case <-ctx.Done():
+		return snapshotReadCache{}, nil, ctx.Err()
+	case result := <-building:
+		if result.Err != nil {
+			return snapshotReadCache{}, nil, result.Err
+		}
+		return result.Val.(snapshotReadCache), private, nil
 	}
-	next.payload = raw
-	next.identities = state.IdentityReadView()
-	next.usage = state.UsageReadView()
-	next.forwarding = state.ForwardingReadView()
-	// Do not let a slower transaction publish an older snapshot over a newer
-	// committed one. Equal revisions with a different xmin are external
-	// repairs; the first reader that observes the replacement wins.
-	s.readMu.Lock()
-	current := s.readCache
-	if current.payload == nil || next.revision > current.revision ||
-		(next.revision == current.revision && next.transactionID == current.transactionID) ||
-		(next.revision == current.revision && current.transactionID == cached.transactionID) {
-		s.readCache = next
-	}
-	s.readMu.Unlock()
-	return next, state, nil
 }
 
 func (s *Store) mergeCachedRuleTrafficOverlays(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) error {
@@ -300,22 +325,24 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 }
 
 func readState(ctx context.Context, tx *sql.Tx, lock bool, stores ...*Store) (*memoryrepo.Store, error) {
-	query := `SELECT format_version, revision, payload FROM nyvp_control_snapshots WHERE singleton = true`
+	var state *memoryrepo.Store
+	var err error
 	if lock {
-		query += ` FOR UPDATE`
+		// Decode before taking the shared business row lock. The locked MVCC
+		// identity must still match before this private state can be mutated.
+		prepared, prepareErr := prepareSnapshotWrite(ctx, tx)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		state, err = lockSnapshotWrite(ctx, tx, prepared)
+	} else {
+		prepared, prepareErr := prepareSnapshotWrite(ctx, tx)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		state = prepared.state
 	}
-	var version int
-	var revision int64
-	var raw []byte
-	if err := tx.QueryRowContext(ctx, query).Scan(&version, &revision, &raw); err != nil {
-		return nil, errors.New("PostgreSQL snapshot read failed")
-	}
-	if !memoryrepo.SupportsSnapshotVersion(version) {
-		return nil, errors.New("unsupported PostgreSQL snapshot version")
-	}
-	state, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
 	if err == nil {
-		state.SetPersistenceRevision(uint64(revision))
 		if len(stores) > 0 && stores[0] != nil {
 			err = stores[0].mergeCachedRuleTrafficOverlays(ctx, tx, state)
 			if err == nil {

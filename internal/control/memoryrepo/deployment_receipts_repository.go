@@ -27,6 +27,9 @@ func (s *Store) ruleNodeDeploymentInputLocked(ruleID, nodeID string) (deployment
 		copy := cloneNodeConfig(*input.AppliedConfig)
 		input.AppliedConfig = &copy
 	}
+	if err == nil {
+		input.Node = cloneNode(input.Node)
+	}
 	return input, err
 }
 
@@ -44,7 +47,7 @@ func (s *Store) ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID string) (de
 	}
 	input := deploymentreceipts.Input{
 		Rule:         cloneForwardingRule(s.forwardingBaseViewLocked(rule)),
-		Node:         cloneNode(node),
+		Node:         node, // Borrowed under s.mu; exported repository results clone above.
 		ActiveMember: memberExists && member.RetiredAt == nil,
 		ApplyResults: make(map[agentv1.ApplyPhase]generations.ApplyResult),
 	}
@@ -86,4 +89,11 @@ func (s *Store) ruleNodeDeploymentInputBorrowedLocked(ruleID, nodeID string) (de
 		}
 	}
 	return input, nil
+}
+
+func (s *Store) evaluateDeploymentLocked(input deploymentreceipts.Input) deploymentreceipts.Status {
+	if s.receiptEvaluator != nil {
+		return s.receiptEvaluator.Evaluate(input)
+	}
+	return deploymentreceipts.Evaluate(input)
 }

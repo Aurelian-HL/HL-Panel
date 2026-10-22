@@ -8,6 +8,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/customeridentity"
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/deploymentreceipts"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/enrollment"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -32,6 +33,8 @@ type Store struct {
 	panelQuota panelquota.Provider
 	// Present only on immutable read projections; authoritative writes never cache authorization.
 	forwardingProjection *forwardingProjection
+	// Structural evidence for detached immutable forwarding views only.
+	receiptEvaluator *deploymentreceipts.Evaluator
 
 	mu                      sync.RWMutex
 	desiredChanges          generations.ChangeSignals

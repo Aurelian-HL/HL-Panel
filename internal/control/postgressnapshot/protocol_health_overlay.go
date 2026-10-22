@@ -65,11 +65,13 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 		return nil, errors.New("protocol health transaction unavailable")
 	}
 	defer tx.Rollback()
-	var revision int64
-	if err = tx.QueryRowContext(ctx, `SELECT revision FROM nyvp_control_snapshots WHERE singleton=true FOR UPDATE`).Scan(&revision); err != nil {
-		return nil, errors.New("protocol health snapshot lock failed")
-	}
+	// Build a cold immutable view before locking the business row. Once the
+	// lock is acquired, revalidate its identity before checking any proof.
 	cached, _, err := s.validatedReadSnapshot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	cached, err = s.lockReadSnapshot(ctx, tx, cached)
 	if err != nil {
 		return nil, err
 	}

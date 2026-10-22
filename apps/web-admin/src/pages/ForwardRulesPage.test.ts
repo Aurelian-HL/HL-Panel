@@ -399,7 +399,7 @@ describe('ForwardRulesPage', () => {
       await flushPromises()
       expect(mockedUsage.query.mock.calls.map(([request]) => request.scope_id)).toEqual(['rule-missing'])
 
-      vi.advanceTimersByTime(2_000)
+      vi.advanceTimersByTime(10_000)
       await flushPromises()
       expect(mocked.rules).toHaveBeenCalledTimes(2)
       expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-cached': 110 })
@@ -442,10 +442,10 @@ describe('ForwardRulesPage', () => {
     try {
       await flushPromises()
       expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 300 })
-      vi.advanceTimersByTime(2_000)
+      vi.advanceTimersByTime(10_000)
       await flushPromises()
       expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 400 })
-      vi.advanceTimersByTime(2_000)
+      vi.advanceTimersByTime(10_000)
       await flushPromises()
       expect(wrapper.getComponent(ForwardRuleInventory).props('trafficByRule')).toEqual({ 'rule-monthly': 0 })
       expect(mocked.rules).toHaveBeenCalledTimes(3)
@@ -469,7 +469,7 @@ describe('ForwardRulesPage', () => {
     const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
     try {
       await flushPromises()
-      vi.advanceTimersByTime(2_000)
+      vi.advanceTimersByTime(10_000)
       await flushPromises()
       await wrapper.findAll('.page-heading button').find((button) => button.text().includes('刷新'))!.trigger('click')
       await flushPromises()
