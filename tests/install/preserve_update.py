@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import ssl
 import subprocess
 import tarfile
 import tempfile
@@ -24,6 +25,10 @@ repository = Path(__file__).resolve().parents[2]
 archive = Path(args.archive_directory).resolve()
 base = 'http://127.0.0.1:19991/api/v1'
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# Port 19991 belongs to the API. Static pages are served by the separately
+# configured Nginx HTTPS listener using this disposable VM's self-signed cert.
+nginx_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=ssl._create_unverified_context()))
 
 def request(method, route, data=None, token=None, expected=200):
     headers = {'Content-Type': 'application/json'}
@@ -162,8 +167,9 @@ def verify(version):
     if version == args.version:
         # Exercise the new SPA route through the real Nginx listener. Keep the
         # byte-for-byte preservation check above for every unrelated config.
-        with opener.open('http://127.0.0.1:19991/account/login', timeout=20) as response:
+        with nginx_opener.open('https://127.0.0.1:19443/account/login', timeout=20) as response:
             assert response.code == 200
+            assert response.headers.get('Server', '').startswith('nginx')
             assert b'<div id="app"></div>' in response.read()
             assert response.headers.get('Cache-Control') == 'no-store'
     subprocess.run(['nginx','-t'],check=True)
