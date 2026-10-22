@@ -140,7 +140,9 @@ def verify(version):
             assert metric in resources, 'Host metrics missing after update: ' + metric
         original = (previous/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
         candidate = (repository/'deploy/nginx/snippets/hl-panel-app-locations.conf').read_text()
-        additions = [location for location in (update.SUBSCRIPTION_LOCATION, update.MIGRATION_LOCATION) if location in candidate and location not in original]
+        managed_locations = (update.SUBSCRIPTION_LOCATION, update.MIGRATION_LOCATION,
+                             update.PANEL_ACCOUNT_LOCATION, update.PANEL_ACCOUNT_ASSETS_LOCATION)
+        additions = [location for location in managed_locations if location in candidate and location not in original]
         if additions:
             expected[str(locations)] = hashlib.sha256((original.rstrip()+'\n\n'+'\n\n'.join(additions)+'\n').encode()).hexdigest()
         if update.MIGRATION_LOCATION in additions:
@@ -154,7 +156,16 @@ def verify(version):
             expected['/etc/systemd/system/'+name] = hashlib.sha256((repository/'deploy/systemd'/name).read_bytes()).hexdigest()
         web = request('GET', '/panel/update', token=token)
         assert web['available'] is True and web['task'] is None
-    assert fingerprint()==expected,'Configuration changed beyond explicitly managed locations, metrics and update units'
+    actual = fingerprint()
+    unexpected = sorted(name for name in set(actual) | set(expected) if actual.get(name) != expected.get(name))
+    assert not unexpected, 'Configuration changed beyond explicitly managed locations, metrics and update units: ' + ', '.join(unexpected)
+    if version == args.version:
+        # Exercise the new SPA route through the real Nginx listener. Keep the
+        # byte-for-byte preservation check above for every unrelated config.
+        with opener.open('http://127.0.0.1:19991/account/login', timeout=20) as response:
+            assert response.code == 200
+            assert b'<div id="app"></div>' in response.read()
+            assert response.headers.get('Cache-Control') == 'no-store'
     subprocess.run(['nginx','-t'],check=True)
     issuer_nginx.verify()
 
@@ -240,6 +251,7 @@ report.write_text(json.dumps({
     'same_version_no_op':True,
     'panel_host_metrics_and_dropin_rollback':True,
     'independent_issuer_include_and_https_route_preserved':True,
+    'panel_subaccount_route_added_and_served':True,
 },indent=2)+'\n')
 # The root updater intentionally sets umask 077. This report contains only
 # public test outcomes; allow the unprivileged Actions uploader to read it.
