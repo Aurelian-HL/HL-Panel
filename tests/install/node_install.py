@@ -408,7 +408,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             xray_config = {'log':{'loglevel':'warning','access':'none'},
                 'inbounds':[{'tag':'loopback-socks','listen':'127.0.0.1','port':socks_port,'protocol':'socks',
                              'settings':{'auth':'noauth','udp':False}}],
-                'outbounds':[{'tag':'direct','protocol':'freedom'}]}
+                'outbounds':[{'tag':'direct','protocol':'freedom'}],
+                # Match panel-generated routing: live handler removal must not
+                # depend on Xray's implicit first-outbound ordering.
+                'routing':{'rules':[{'type':'field','inboundTag':['loopback-socks'],
+                                     'outboundTag':'direct'}]}}
             request('POST',f"/device-groups/{second['id']}/generations",
                     {'engine':'xray','config':xray_config,'idempotency_key':'installed-xray'},201)
 
