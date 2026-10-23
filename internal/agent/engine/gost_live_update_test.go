@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,12 +19,69 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
+func TestGOSTRealLiveMutationResponseContract(t *testing.T) {
+	f := newGOSTUpdateFixture(t)
+	initial := f.prepare(gostUpdateRule{id: 1, port: f.ports[0]})
+	f.apply(initial)
+	raw, err := os.ReadFile(initial.adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct{ Services []json.RawMessage }
+	if err := json.Unmarshal(raw, &config); err != nil || len(config.Services) != 1 {
+		t.Fatal("missing isolated service")
+	}
+	for _, method := range []string{http.MethodDelete, http.MethodPost} {
+		path, body := "/config/services/forward-1", ""
+		if method == http.MethodPost {
+			path, body = "/config/services", string(config.Services[0])
+		}
+		req, err := http.NewRequestWithContext(f.ctx, method, "http://"+f.a.api.Addr+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth(f.a.api.Auth.Username, f.a.api.Auth.Password)
+		req.Header.Set("Content-Type", "application/json")
+		client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 3 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result map[string]json.RawMessage
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		_ = resp.Body.Close()
+		client.CloseIdleConnections()
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatal("invalid isolated mutation response")
+		}
+		var code *int
+		var msg string
+		if len(result["code"]) != 0 && json.Unmarshal(result["code"], &code) != nil || json.Unmarshal(result["msg"], &msg) != nil || code != nil && *code != 0 || code == nil && msg != "OK" {
+			t.Fatal("unrecognized isolated mutation acknowledgement")
+		}
+		t.Logf("%s: recognized engine success acknowledgement", method)
+	}
+	// Exercise the production parser against the same actual engine responses.
+	if _, err := f.r.ExecGOSTRunner.GOSTAPI(f.ctx, f.a.api, http.MethodDelete, "/config/services/forward-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.r.ExecGOSTRunner.GOSTAPI(f.ctx, f.a.api, http.MethodPost, "/config/services", config.Services[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitGOSTServiceReady(f.ctx, f.r, f.a.api, "forward-1"); err != nil {
+		t.Fatal(err)
+	}
+	c := f.dial(f.ports[0], 'A')
+	_ = c.Close()
+}
+
 // Mutate the real engine before reporting an error: compensation must handle
 // partial success, not just failures that left runtime untouched.
 type gostUpdateFaultRunner struct {
 	*ExecGOSTRunner
 	fail                             string
 	uncertain, failUndo, undoBlocked bool
+	after                            func(string, string, []byte)
 }
 
 func (r *gostUpdateFaultRunner) GOSTAPI(ctx context.Context, api *gostLocalAPI, method, path string, body []byte) ([]byte, error) {
@@ -31,6 +89,9 @@ func (r *gostUpdateFaultRunner) GOSTAPI(ctx context.Context, api *gostLocalAPI, 
 		return nil, errors.New("injected compensation read failure")
 	}
 	raw, err := r.ExecGOSTRunner.GOSTAPI(ctx, api, method, path, body)
+	if err == nil && r.after != nil {
+		r.after(method, path, body)
+	}
 	if err == nil && r.fail == method+" "+path {
 		r.fail = ""
 		r.undoBlocked = r.failUndo
@@ -73,6 +134,52 @@ func TestGOSTRealLiveUncertainFailureKeepsExistingStreamAndBlocksChanges(t *test
 			}
 		})
 	}
+}
+
+func TestGOSTRealLiveUncertainStateRecoversAfterProcessExit(t *testing.T) {
+	f := newGOSTUpdateFixture(t)
+	changed, stable := gostUpdateRule{id: 1, port: f.ports[0]}, gostUpdateRule{id: 2, port: f.ports[1]}
+	initial := f.prepare(changed, stable)
+	f.apply(initial)
+	original, epoch := f.a.process, f.a.CounterEpoch()
+	stream := f.dial(stable.port, 'A')
+	changed.port, changed.target = f.ports[2], 1
+	candidate := f.prepare(changed, stable)
+	f.r.fail, f.r.uncertain = "POST /config/services", true
+	if err := f.a.Commit(f.ctx, candidate); !errors.Is(err, ErrLiveStateUncertain) || f.r.fail != "" {
+		t.Fatalf("uncertain mutation not exercised: %v", err)
+	}
+	if err := gostUpdateExchange(stream, 'A'); err != nil {
+		t.Fatalf("unrelated stream failed before process exit: %v", err)
+	}
+	if err := f.a.LiveUpdateError(); !errors.Is(err, ErrLiveStateUncertain) {
+		t.Fatalf("live uncertainty guard missing: %v", err)
+	}
+	if f.a.process != original || f.a.CounterEpoch() != epoch {
+		t.Fatal("uncertain mutation replaced the live process")
+	}
+	// This is an isolated process-exit fault, not a production recovery action.
+	// Existing sockets cannot survive the actual core exit; verify new traffic
+	// after reactivation rather than claiming continuous service across it.
+	if err := original.Stop(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if original.Running() {
+		t.Fatal("isolated process did not exit")
+	}
+	if err := f.a.LiveUpdateError(); err != nil {
+		t.Fatalf("dead process remained blocked from recovery: %v", err)
+	}
+	f.apply(initial)
+	if f.a.process == original || f.a.CounterEpoch() != epoch+1 {
+		t.Fatal("recovery did not establish one new process epoch")
+	}
+	if err := f.a.LiveUpdateError(); err != nil {
+		t.Fatalf("recovered process retained uncertain state: %v", err)
+	}
+	_ = f.dial(f.ports[0], 'A').Close()
+	_ = f.dial(stable.port, 'A').Close()
+	f.closed(changed.port)
 }
 
 type gostUpdateRule struct {
@@ -348,6 +455,47 @@ func TestGOSTRealLivePartialFailurePreservesStream(t *testing.T) {
 			f.dial(changed.port, 'B')
 		})
 	}
+}
+
+func TestGOSTRealLiveEarlyFailurePreservesUnattemptedChangedService(t *testing.T) {
+	f := newGOSTUpdateFixture(t)
+	first, later, stable := gostUpdateRule{id: 1, port: f.ports[0]}, gostUpdateRule{id: 2, port: f.ports[1]}, gostUpdateRule{id: 3, port: f.ports[2]}
+	initial := f.prepare(first, later, stable)
+	f.apply(initial)
+	defer f.monitor(f.dial(later.port, 'A'))()
+	defer f.monitor(f.dial(stable.port, 'A'))()
+	first.target, later.target = 1, 1
+	candidate := f.prepare(first, later, stable)
+	f.r.fail = "DELETE /config/services/forward-1"
+	var checkpoints int
+	f.r.after = func(method, path string, body []byte) {
+		if method == "DELETE" && path == "/config/services/forward-2" || method == "POST" && path == "/config/services" && gostObjectName(body) == "forward-2" {
+			t.Fatal("unattempted changed service was rebuilt during compensation")
+		}
+		for _, port := range []int{later.port, stable.port} {
+			c, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+			if err != nil {
+				t.Fatal("untouched listener interrupted", err)
+			}
+			err = gostUpdateExchange(c, 'A')
+			_ = c.Close()
+			if err != nil {
+				t.Fatal("untouched forwarding interrupted", err)
+			}
+			checkpoints++
+		}
+	}
+	if err := f.a.Commit(f.ctx, candidate); !errors.Is(err, ErrGOSTLiveUpdate) {
+		t.Fatalf("error=%v", err)
+	}
+	if f.r.fail != "" || checkpoints == 0 {
+		t.Fatal("fault/checkpoints not exercised")
+	}
+	if err := f.a.Verify(f.ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	f.dial(first.port, 'A')
+	t.Logf("fresh sessions with complete replies: %d", checkpoints)
 }
 
 func TestGOSTRealLiveReliableChainUpdateAndPartialFailure(t *testing.T) {

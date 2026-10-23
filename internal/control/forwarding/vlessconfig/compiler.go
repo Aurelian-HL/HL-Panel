@@ -20,6 +20,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/serviceaddress"
+	"github.com/hongle/hl-panel/internal/xrayconfig"
 )
 
 var (
@@ -233,7 +234,11 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		"outbounds": outbounds,
 		"routing":   map[string]any{"rules": routes},
 	}
-	return json.Marshal(config)
+	raw, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	return xrayconfig.VersionLeafOutbounds(raw)
 }
 
 // statsTag keeps the human-readable rule prefix while carrying the exact

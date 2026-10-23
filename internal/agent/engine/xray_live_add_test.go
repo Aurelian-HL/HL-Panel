@@ -479,6 +479,7 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 type liveAPITestRunner struct {
 	recordingXrayRunner
 	tags            map[string]bool
+	outTags         map[string]bool
 	calls           []string
 	fail            string
 	uncertain       bool
@@ -489,8 +490,20 @@ type liveAPITestRunner struct {
 func (r *liveAPITestRunner) API(_ context.Context, _ string, operation string, doc []byte) ([]byte, error) {
 	r.calls = append(r.calls, operation)
 	var document map[string][]json.RawMessage
-	if operation == "adi" || operation == "rmi" {
+	if operation == "adi" || operation == "rmi" || operation == "ado" || operation == "rmo" {
 		_ = json.Unmarshal(doc, &document)
+	}
+	if operation == "ado" || operation == "rmo" {
+		if r.outTags == nil {
+			r.outTags = map[string]bool{}
+		}
+		for _, out := range document["outbounds"] {
+			if operation == "ado" {
+				r.outTags[xrayEntryTag(out)] = true
+			} else {
+				delete(r.outTags, xrayEntryTag(out))
+			}
+		}
 	}
 	if operation == "adi" {
 		for _, in := range document["inbounds"] {
@@ -512,15 +525,19 @@ func (r *liveAPITestRunner) API(_ context.Context, _ string, operation string, d
 		}
 		return nil, errors.New("secret-not-for-logs")
 	}
-	if operation == "lsi" {
+	if operation == "lsi" || operation == "lso" {
 		if r.badCompensation {
 			return []byte(`{}`), nil
 		}
+		key, tags := "inbounds", r.tags
+		if operation == "lso" {
+			key, tags = "outbounds", r.outTags
+		}
 		in := []map[string]string{}
-		for tag := range r.tags {
+		for tag := range tags {
 			in = append(in, map[string]string{"tag": tag})
 		}
-		return json.Marshal(map[string]any{"inbounds": in})
+		return json.Marshal(map[string]any{key: in})
 	}
 	return nil, nil
 }

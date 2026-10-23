@@ -131,6 +131,89 @@ func TestGOSTLiveAdditionFailureRestoresLKG(t *testing.T) {
 		})
 	}
 }
+
+type gostAdditionAbsenceRunner struct {
+	liveGOSTRunner
+	response        []byte
+	deleted, absent bool
+}
+
+func (r *gostAdditionAbsenceRunner) GOSTAPI(ctx context.Context, api *gostLocalAPI, method, path string, body []byte) ([]byte, error) {
+	if path == "/config/services/forward-b" {
+		if method == http.MethodDelete {
+			r.deleted = true
+			if r.absent {
+				delete(r.objects, path)
+			}
+		}
+		if method == http.MethodGet && r.deleted {
+			r.calls = append(r.calls, method+" "+path)
+			return r.response, nil
+		}
+	}
+	return r.liveGOSTRunner.GOSTAPI(ctx, api, method, path, body)
+}
+
+func TestGOSTAdditionCompensationRequiresExplicitAbsence(t *testing.T) {
+	for _, tt := range []struct {
+		name, response string
+		absent         bool
+	}{
+		{name: "missing data", response: `{}`},
+		{name: "success without data", response: `{"code":0}`},
+		{name: "null response", response: `null`},
+		{name: "malformed response", response: `{"data":`},
+		{name: "service still present", response: `{"data":{}}`},
+		{name: "confirmed absence", response: `{"data":null}`, absent: true},
+		{name: "formatted absence", response: "{\"data\": \n null }", absent: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &gostAdditionAbsenceRunner{
+				liveGOSTRunner: liveGOSTRunner{objects: map[string]bool{}, fail: map[string]error{}, state: "failed"},
+				response:       []byte(tt.response), absent: tt.absent,
+			}
+			a := newTestGOSTAdapter(t, r, true)
+			first := livePrepared(t, a, 1, false)
+			if err := a.Commit(context.Background(), first); err != nil {
+				t.Fatal(err)
+			}
+			original, epoch := a.process, a.CounterEpoch()
+			before, err := os.ReadFile(a.activePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.fail["DELETE /config/services/forward-b"] = ErrGOSTLiveUpdate
+			second := livePrepared(t, a, 2, true)
+			err = a.Commit(context.Background(), second)
+			if !errors.Is(err, ErrGOSTLiveUpdate) || errors.Is(err, ErrLiveStateUncertain) != !tt.absent {
+				t.Fatalf("commit=%v; explicitly absent=%v", err, tt.absent)
+			}
+			if err := a.Verify(context.Background(), first); (err == nil) != tt.absent || !tt.absent && !errors.Is(err, ErrLiveStateUncertain) {
+				t.Fatalf("verify=%v; explicitly absent=%v", err, tt.absent)
+			}
+			if !tt.absent {
+				calls := len(r.calls)
+				if err := a.Commit(context.Background(), second); !errors.Is(err, ErrLiveStateUncertain) {
+					t.Fatalf("uncertain state allowed another commit: %v", err)
+				}
+				if err := a.Rollback(context.Background(), &first); !errors.Is(err, ErrLiveStateUncertain) {
+					t.Fatalf("uncertain state allowed rollback: %v", err)
+				}
+				if len(r.calls) != calls || !r.objects["/config/services/forward-b"] {
+					t.Fatal("uncertain state performed further mutations or lost retained candidate")
+				}
+			}
+			after, err := os.ReadFile(a.activePath)
+			if err != nil || !bytes.Equal(before, after) || a.processConfigSHA256 != sha256.Sum256(before) {
+				t.Fatalf("changed last-known-good file/hash: %v", err)
+			}
+			if a.process != original || !original.Running() || a.CounterEpoch() != epoch || len(r.processes) != 1 || r.processes[0].stopCount != 0 {
+				t.Fatal("absence verification stopped or replaced the running core")
+			}
+		})
+	}
+}
+
 func TestGOSTLiveAdditionFileFailureCompensatesWithoutRestart(t *testing.T) {
 	r := &liveGOSTRunner{objects: map[string]bool{}}
 	a := newTestGOSTAdapter(t, r, true)
@@ -252,5 +335,126 @@ func TestGOSTAPIIsLoopbackAuthenticatedAndBounded(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("unexpected HTTP calls %d", calls)
+	}
+}
+
+func TestGOSTAPIMutationRequiresExplicitSuccess(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		for _, test := range []struct {
+			name string
+			body string
+			want error
+		}{
+			{"success", `{"code":0}`, nil},
+			{"gost success", `{"code":null,"msg":"OK"}`, nil},
+			{"message success", `{"msg":"OK"}`, nil},
+			{"rejected", `{"code":40001}`, ErrGOSTLiveUpdate},
+			{"rejection wins over message", `{"code":40001,"msg":"OK"}`, ErrGOSTLiveUpdate},
+			{"missing code", `{}`, errGOSTAPIUncertain},
+			{"null envelope", `null`, errGOSTAPIUncertain},
+			{"null code", `{"code":null}`, errGOSTAPIUncertain},
+			{"data without code", `{"data":null}`, errGOSTAPIUncertain},
+			{"unknown message", `{"msg":"pending"}`, errGOSTAPIUncertain},
+			{"wrong code type", `{"code":"0"}`, errGOSTAPIUncertain},
+			{"malformed", `{`, errGOSTAPIUncertain},
+		} {
+			t.Run(method+"/"+test.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					_, _ = w.Write([]byte(test.body))
+				}))
+				defer server.Close()
+				api := &gostLocalAPI{Addr: strings.TrimPrefix(server.URL, "http://")}
+				path := "/config/services"
+				if method == http.MethodDelete {
+					path += "/test-service"
+				}
+				_, err := (&ExecGOSTRunner{}).GOSTAPI(context.Background(), api, method, path, nil)
+				if !errors.Is(err, test.want) {
+					t.Fatalf("error = %v, want %v", err, test.want)
+				}
+			})
+		}
+	}
+}
+
+func TestGOSTAPIReadAllowsDataWithoutCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(`{"data":null}`))
+	}))
+	defer server.Close()
+	api := &gostLocalAPI{Addr: strings.TrimPrefix(server.URL, "http://")}
+	if _, err := (&ExecGOSTRunner{}).GOSTAPI(context.Background(), api, http.MethodGet, "/config/services/test-service", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type gostAcknowledgementRunner struct {
+	liveGOSTRunner
+	responseAPI *gostLocalAPI
+}
+
+func (r *gostAcknowledgementRunner) GOSTAPI(ctx context.Context, api *gostLocalAPI, method, path string, body []byte) ([]byte, error) {
+	raw, err := r.liveGOSTRunner.GOSTAPI(ctx, api, method, path, body)
+	if err == nil && method != http.MethodGet {
+		// Model a completed mutation whose HTTP response has no acknowledgement.
+		return (&ExecGOSTRunner{}).GOSTAPI(ctx, r.responseAPI, method, path, body)
+	}
+	return raw, err
+}
+
+func TestGOSTUnacknowledgedMutationDoesNotAdvanceAppliedState(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodDelete} {
+		for _, response := range []string{`{}`, `null`, `{"code":null}`, `{"data":null}`} {
+			t.Run(method+"/"+response, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					_, _ = w.Write([]byte(response))
+				}))
+				defer server.Close()
+				r := &gostAcknowledgementRunner{
+					liveGOSTRunner: liveGOSTRunner{objects: map[string]bool{}},
+					responseAPI:    &gostLocalAPI{Addr: strings.TrimPrefix(server.URL, "http://")},
+				}
+				a := newTestGOSTAdapter(t, r, true)
+				initial := livePrepared(t, a, 1, method == http.MethodDelete)
+				if err := a.Commit(context.Background(), initial); err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.ReadFile(a.activePath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var config struct{ Services []json.RawMessage }
+				if err := json.Unmarshal(before, &config); err != nil {
+					t.Fatal(err)
+				}
+				for _, service := range config.Services {
+					r.objects["/config/services/"+gostObjectName(service)] = true
+				}
+				next := livePrepared(t, a, 2, method == http.MethodPost)
+				if err := a.Commit(context.Background(), next); !errors.Is(err, ErrLiveStateUncertain) {
+					t.Fatalf("unacknowledged mutation accepted: %v", err)
+				}
+				after, err := os.ReadFile(a.activePath)
+				if err != nil || !bytes.Equal(before, after) || a.processConfigSHA256 != sha256.Sum256(before) {
+					t.Fatal("unacknowledged configuration advanced applied state")
+				}
+				if !r.objects["/config/services/forward-a"] || r.objects["/config/services/forward-b"] != (method == http.MethodPost) {
+					t.Fatal("fault did not model the completed target mutation with unrelated service preserved")
+				}
+				calls := len(r.calls)
+				for _, op := range []func() error{
+					func() error { return a.Commit(context.Background(), next) },
+					func() error { return a.Rollback(context.Background(), &initial) },
+					func() error { return a.Verify(context.Background(), initial) },
+				} {
+					if err := op(); !errors.Is(err, ErrLiveStateUncertain) {
+						t.Fatalf("uncertain state accepted: %v", err)
+					}
+				}
+				if len(r.calls) != calls || len(r.processes) != 1 || r.processes[0].stopCount != 0 {
+					t.Fatal("uncertain completion caused more mutations or a restart")
+				}
+			})
+		}
 	}
 }

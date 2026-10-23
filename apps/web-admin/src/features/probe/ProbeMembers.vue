@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { BadgeCheck, Eye, Settings2, Trash2 } from '@lucide/vue'
+import { BadgeCheck, Eye, Pencil, Settings2, Trash2 } from '@lucide/vue'
 
 import type { ProbeMember, ProbeUpstreamStatus } from '@/api/probe'
 import type { DeviceGroupMember } from '@/api'
@@ -9,10 +9,14 @@ import { formatDateTime } from '@/lib/displayFormatters'
 import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, formatUptime, hasLiveProbeReading, measuredPercent, monitorStatus, probeReadingState } from './format'
 import ProbeMetricBar from './ProbeMetricBar.vue'
 import NodeUpdateDialog from '@/features/nodes/NodeUpdateDialog.vue'
+import type { ProbeRemarks } from './remarks'
 const updateNodeId = ref<string | null>(null)
 
-const props = withDefaults(defineProps<{ items: ProbeMember[]; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { groupMembers: () => [], unassigned: false })
-const emit = defineEmits<{ editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember] }>()
+const props = withDefaults(defineProps<{ items: ProbeMember[]; remarks?: ProbeRemarks; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { remarks: () => ({}), groupMembers: () => [], unassigned: false })
+const emit = defineEmits<{ editRemark: [member: ProbeMember]; editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember] }>()
+const remark = (member: ProbeMember) => Object.hasOwn(props.remarks, member.node_id) ? props.remarks[member.node_id] : ''
+const displayAddress = (member: ProbeMember) => remark(member) || collected(member.ipv4 || member.ipv6)
+const addressTitle = (member: ProbeMember) => [remark(member), `IPv4 · ${collected(member.ipv4)}`, member.ipv6 ? `IPv6 · ${member.ipv6}` : ''].filter(Boolean).join('\n')
 const groupMember = (nodeId: string) => props.groupMembers.find((member) => member.node_id === nodeId && !member.retired_at)
 const selectedId = ref<string | null>(null)
 const selected = computed(() => props.items.find((item) => item.node_id === selectedId.value) ?? null)
@@ -77,12 +81,12 @@ const uptimeDetails = (member: ProbeMember) => [
   <div class="probe-inventory">
     <div class="table-wrap probe-table-wrap">
       <table class="data-table probe-table">
-        <thead><tr><th>状态</th><th>主机属地</th><th>主机 IP</th><th>速率</th><th>开机时长</th><th>流量</th><th>CPU</th><th>内存</th><th>存储</th><th>操作</th></tr></thead>
+        <thead><tr><th>状态</th><th>主机属地</th><th>主机 IP / 备注</th><th>速率</th><th>开机时长</th><th>流量</th><th>CPU</th><th>内存</th><th>存储</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="member in items" :key="member.node_id">
             <td><span class="probe-status probe-status--icon" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`" :aria-label="`状态：${monitorStatus(member, upstreamStatus, now).text}`" :aria-describedby="hoveredId === member.node_id ? 'probe-status-tooltip' : undefined" tabindex="0" @mouseenter="showStatus(member, $event)" @mouseleave="hideStatus" @focus="showStatus(member, $event)" @blur="hideStatus"><BadgeCheck v-if="monitorStatus(member, upstreamStatus, now).text === '在线'" :size="17" /><span :class="{ 'sr-only': monitorStatus(member, upstreamStatus, now).text === '在线' }">{{ monitorStatus(member, upstreamStatus, now).text }}</span></span></td>
             <td><span class="probe-region" :title="`主机 GeoIP：${collected(member.country_code)}`"><img v-if="countryFlag(member.country_code)" class="probe-region__flag" :src="countryFlag(member.country_code)" alt="" />{{ member.country_code?.toUpperCase() || '未采集' }}</span></td>
-            <td class="probe-address"><span :title="`IPv4 · ${collected(member.ipv4)}`">{{ collected(member.ipv4) }}</span><small v-if="member.ipv6" :title="`IPv6 · ${member.ipv6}`">v6 {{ member.ipv6 }}</small></td>
+            <td class="probe-address"><div class="probe-host-label"><span :title="addressTitle(member)">{{ displayAddress(member) }}</span><button type="button" class="probe-remark-button" :aria-label="`编辑${member.ipv4 || member.ipv6 || nodeName(member)}备注`" title="编辑本地备注" @click="emit('editRemark', member)"><Pencil :size="13" /></button></div><small v-if="member.ipv6 && !remark(member)" :title="`IPv6 · ${member.ipv6}`">v6 {{ member.ipv6 }}</small></td>
             <td class="probe-measure-pair"><div class="probe-rate-hover" tabindex="0" :aria-describedby="rateHoveredId === member.node_id ? 'probe-rate-tooltip' : undefined" @mouseenter="showRate(member, $event)" @mouseleave="hideRate" @focus="showRate(member, $event)" @blur="hideRate"><span>↑ {{ formatRate(metric(member, 'net_out_speed_bytes_per_second')) }}</span><span>↓ {{ formatRate(metric(member, 'net_in_speed_bytes_per_second')) }}</span></div></td>
             <td><span :title="uptimeDetails(member)">{{ formatUptime(metric(member, 'uptime_seconds')) }}</span></td>
             <td class="probe-measure-pair"><span>↑ {{ formatBytes(metric(member, 'net_out_transfer_bytes')) }}</span><span>↓ {{ formatBytes(metric(member, 'net_in_transfer_bytes')) }}</span></td>
@@ -111,7 +115,7 @@ const uptimeDetails = (member: ProbeMember) => [
 
     <div class="probe-mobile-list">
       <article v-for="member in items" :key="member.node_id" class="probe-mobile-item">
-        <header><strong>{{ collected(member.ipv4) }}</strong><span class="probe-status" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`">{{ monitorStatus(member, upstreamStatus, now).text }}</span></header>
+        <header><div class="probe-host-label"><strong :title="addressTitle(member)">{{ displayAddress(member) }}</strong><button type="button" class="probe-remark-button" :aria-label="`编辑${member.ipv4 || member.ipv6 || nodeName(member)}备注`" title="编辑本地备注" @click="emit('editRemark', member)"><Pencil :size="14" /></button></div><span class="probe-status" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`">{{ monitorStatus(member, upstreamStatus, now).text }}</span></header>
         <div class="probe-mobile-item__body">
           <dl class="probe-mobile-facts"><div><dt>主机 IPv6</dt><dd>{{ collected(member.ipv6) }}</dd></div><div><dt>主机 GeoIP</dt><dd><span class="probe-region"><img v-if="countryFlag(member.country_code)" class="probe-region__flag" :src="countryFlag(member.country_code)" alt="" />{{ member.country_code?.toUpperCase() || '未采集' }}</span></dd></div><div><dt>线路出口 IP</dt><dd>未验证</dd></div><div><dt>开机时长</dt><dd>{{ formatUptime(metric(member, 'uptime_seconds')) }}</dd></div></dl>
           <div class="probe-mobile-network"><div><span>下行</span><strong>{{ formatRate(metric(member, 'net_in_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_in_transfer_bytes')) }}</small></div><div><span>上行</span><strong>{{ formatRate(metric(member, 'net_out_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_out_transfer_bytes')) }}</small></div></div>

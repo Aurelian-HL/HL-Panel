@@ -15,6 +15,49 @@ func nativeOptions(p importedconfig.NativeProfile) importedconfig.NativeOptions 
 	return importedconfig.NativeOptions{RuleID: "rule-one", CustomerID: "customer-one", EntryGroupID: "group-one", UUID: p.UUID, PrivateKey: p.PrivateKey, ListenAddress: "127.0.0.1", ListenPort: p.Port}
 }
 
+func TestNativeEgressEditVersionsOnlyChangedOutbound(t *testing.T) {
+	archive := testfixture.Document()
+	archive["config"].(map[string]any)["outbounds"].([]any)[0] = map[string]any{
+		"tag": "direct", "protocol": "socks", "settings": map[string]any{
+			"servers": []any{map[string]any{"address": "landing.example.test", "port": 1080}},
+		},
+	}
+	archiveRaw, _ := json.Marshal(archive)
+	p, err := importedconfig.PrepareNative(archiveRaw, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := nativeOptions(p)
+	opts.ProbeUUID, opts.EchoPort = "615db532-728a-4a34-8353-873b34d12de2", 31998
+	compile := func(raw []byte) map[string]json.RawMessage {
+		t.Helper()
+		compiled, err := importedconfig.CompileNativeFragment(raw, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]json.RawMessage
+		if err := json.Unmarshal(compiled, &doc); err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	old := compile(p.Config)
+	var material map[string]any
+	_ = json.Unmarshal(p.Config, &material)
+	material["outbounds"].([]any)[0].(map[string]any)["settings"].(map[string]any)["servers"].([]any)[0].(map[string]any)["port"] = 1081
+	raw, _ := json.Marshal(material)
+	next := compile(raw)
+	if string(old["inbounds"]) != string(next["inbounds"]) {
+		t.Fatal("native egress change altered listener or customer identity")
+	}
+	var before, after []map[string]any
+	_ = json.Unmarshal(old["outbounds"], &before)
+	_ = json.Unmarshal(next["outbounds"], &after)
+	if before[0]["tag"] == after[0]["tag"] || !reflect.DeepEqual(before[1], after[1]) {
+		t.Fatal("native outbound version did not isolate changed egress")
+	}
+}
+
 func TestNativeFragmentPreservesCredentialsAndScopesRoutes(t *testing.T) {
 	a := nativeFixture()
 	c := a["config"].(map[string]any)

@@ -3,17 +3,20 @@ package vlessconfig
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"regexp"
 	"testing"
 
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 )
 
-// These hashes come from the v0.1.115 compiler. A changed TCP fragment can
-// increment a node's desired generation and interrupt an existing connection.
+// These hashes come from the v0.1.115 compiler. Only content-versioned outbound
+// tags and their route references may differ; handshake and listener settings
+// must still satisfy the historical byte-for-byte regression contract.
 func TestLegacyTCPConfigHashesUnchanged(t *testing.T) {
 	cases := []struct {
 		name, flow, mode, hash string
-		probe                 bool
+		probe                  bool
 	}{
 		{"vision_direct", "xtls-rprx-vision", "direct", "da069dc16cdfe931ac38020e2066d2131c049d2feacc944b1d34a4d763c777c7", false},
 		{"vision_direct_probe", "xtls-rprx-vision", "direct", "9e015efef71240a0f76021d84f50a4133c18c3ffd95dbb78dd321549832e3da9", true},
@@ -53,10 +56,44 @@ func TestLegacyTCPConfigHashesUnchanged(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sum := sha256.Sum256(raw)
+			sum := sha256.Sum256(withoutOutboundVersions(t, raw))
 			if got := hex.EncodeToString(sum[:]); got != tc.hash {
 				t.Fatalf("v0.1.115 TCP config hash changed: got %s, want %s", got, tc.hash)
 			}
 		})
 	}
+}
+
+func withoutOutboundVersions(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	pattern := regexp.MustCompile(`-v[0-9a-f]{32}(--|$)`)
+	tags := map[string]string{}
+	for _, value := range doc["outbounds"].([]any) {
+		out := value.(map[string]any)
+		tag := out["tag"].(string)
+		matches := pattern.FindAllStringIndex(tag, -1)
+		if len(matches) != 1 {
+			t.Fatal("expected exactly one outbound content version")
+		}
+		legacy := pattern.ReplaceAllString(tag, "$1")
+		tags[tag] = legacy
+		out["tag"] = legacy
+	}
+	for _, value := range doc["routing"].(map[string]any)["rules"].([]any) {
+		route := value.(map[string]any)
+		legacy, ok := tags[route["outboundTag"].(string)]
+		if !ok {
+			t.Fatal("route did not reference a content-versioned outbound")
+		}
+		route["outboundTag"] = legacy
+	}
+	result, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
 }

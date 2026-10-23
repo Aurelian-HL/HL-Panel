@@ -124,6 +124,14 @@ func (a *MixedProcessAdapter) CommitValidated(ctx context.Context, prepared Prep
 }
 
 func (a *MixedProcessAdapter) commitValidated(ctx context.Context, prepared PreparedConfiguration) error {
+	previous := a.lastGoodSnapshot()
+	// A fresh wrapper may contain an already serving component without a
+	// complete rollback snapshot. Starting its other component could fail and
+	// compensate through Rollback(nil), stopping the survivor. Refuse before
+	// touching either engine; a genuinely cold first activation remains valid.
+	if previous == nil && a.HasLiveProcess() {
+		return ErrLiveUpdateRequiresMaintenance
+	}
 	if part, ok := prepared.components[agentv1.EngineXray]; ok {
 		if err := a.xray.checkLiveChange(ctx, part); err != nil {
 			return err
@@ -138,7 +146,6 @@ func (a *MixedProcessAdapter) commitValidated(ctx context.Context, prepared Prep
 	} else if a.gost.HasLiveProcess() {
 		return ErrLiveUpdateRequiresMaintenance
 	}
-	previous := a.lastGoodSnapshot()
 	a.mu.Lock()
 	if err := ctx.Err(); err != nil {
 		a.mu.Unlock()

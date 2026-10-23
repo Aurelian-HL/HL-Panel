@@ -13,11 +13,18 @@ type updateAPIRunner struct {
 	recordingXrayRunner
 	in, out            map[string]json.RawMessage
 	fail               string
+	calls              []string
 	uncertain, badUndo bool
+	failBefore         bool
 	after              func()
 }
 
 func (r *updateAPIRunner) API(_ context.Context, _ string, operation string, doc []byte) ([]byte, error) {
+	r.calls = append(r.calls, operation)
+	if r.failBefore && r.fail == operation {
+		r.fail = ""
+		return nil, ErrXrayLiveUpdate
+	}
 	if operation == "lsi" || operation == "lso" {
 		if r.badUndo && r.fail == "" {
 			return []byte(`{}`), nil
@@ -58,6 +65,79 @@ func (r *updateAPIRunner) API(_ context.Context, _ string, operation string, doc
 		return nil, ErrXrayLiveUpdate
 	}
 	return nil, nil
+}
+
+func TestXrayFailureCompensatesOnlyAttemptedStages(t *testing.T) {
+	for _, operation := range []string{"rmi", "ado", "adrules", "adi", "rmo"} {
+		for _, before := range []bool{false, true} {
+			name := operation + "/after"
+			if before {
+				name = operation + "/before"
+			}
+			t.Run(name, func(t *testing.T) {
+				r := &updateAPIRunner{in: map[string]json.RawMessage{}, out: map[string]json.RawMessage{}}
+				a := newTestXrayAdapter(t, r, true)
+				old := orderedLivePrepared(t, a, 1, orderedLiveRule("a", "old-in", "old-out", 18080), orderedLiveRule("z", "steady-in", "steady-out", 18081))
+				next := orderedLivePrepared(t, a, 2, orderedLiveRule("a", "old-in", "next-out", 18082), orderedLiveRule("z", "steady-in", "steady-out", 18081))
+				if err := a.Commit(context.Background(), old); err != nil {
+					t.Fatal(err)
+				}
+				raw, _ := os.ReadFile(old.adapterPath)
+				var native map[string][]json.RawMessage
+				// Only handler fields are arrays; ignore the other document fields.
+				var document map[string]json.RawMessage
+				if err := json.Unmarshal(raw, &document); err != nil {
+					t.Fatal(err)
+				}
+				native = map[string][]json.RawMessage{}
+				for key, entries := range map[string]map[string]json.RawMessage{"inbounds": r.in, "outbounds": r.out} {
+					var nativeEntries []json.RawMessage
+					if err := json.Unmarshal(document[key], &nativeEntries); err != nil {
+						t.Fatal(err)
+					}
+					for _, entry := range nativeEntries {
+						entries[xrayEntryTag(entry)] = entry
+					}
+					native[key] = append([]json.RawMessage{}, nativeEntries...)
+				}
+				r.fail, r.failBefore = operation, before
+				if err := a.Commit(context.Background(), next); !errors.Is(err, ErrXrayLiveUpdate) {
+					t.Fatalf("error=%v", err)
+				}
+				if r.fail != "" {
+					t.Fatal("fault not exercised")
+				}
+				counts := map[string]int{}
+				for _, call := range r.calls {
+					counts[call]++
+				}
+				if operation == "rmi" || operation == "ado" {
+					if counts["rmi"] != 1 || counts["adrules"] != 0 {
+						t.Fatalf("unattempted listener/router replaced: %v", r.calls)
+					}
+				}
+				if operation == "rmi" && counts["lso"] != 0 {
+					t.Fatalf("untouched outbounds queried: %v", r.calls)
+				}
+				for key, entries := range map[string]map[string]json.RawMessage{"inbounds": r.in, "outbounds": r.out} {
+					if len(entries) != len(native[key]) {
+						t.Fatalf("%s size=%d want=%d", key, len(entries), len(native[key]))
+					}
+					for _, entry := range native[key] {
+						if !sameXrayJSON(entries[xrayEntryTag(entry)], entry) {
+							t.Fatalf("%s not restored", key)
+						}
+					}
+				}
+				if err := a.Verify(context.Background(), old); err != nil {
+					t.Fatal(err)
+				}
+				if len(r.starts) != 1 || r.processes[0].stopCount != 0 {
+					t.Fatal("failure restarted process")
+				}
+			})
+		}
+	}
 }
 
 func TestXrayLiveChangeRecoveryBoundaries(t *testing.T) {
@@ -126,6 +206,13 @@ func TestXrayLiveChangeRecoveryBoundaries(t *testing.T) {
 			if len(r.starts) != 1 || r.processes[0].stopCount != 0 || r.in["steady-in"] == nil || r.out["steady-out"] == nil {
 				t.Fatal("failure recovery disturbed unrelated handler or process")
 			}
+			if stage == "confirmed" || stage == "rollback" {
+				for _, operation := range r.calls {
+					if operation == "adrules" {
+						t.Fatal("unchanged routing was globally reloaded during compensation")
+					}
+				}
+			}
 		})
 	}
 }
@@ -175,5 +262,36 @@ func TestXrayLivePlannerRejectsGlobalAndAmbiguousRoutingChanges(t *testing.T) {
 				t.Fatal("unsafe plan accepted")
 			}
 		})
+	}
+}
+
+func TestSameTagOutboundReplacementKeepsLastGoodProcess(t *testing.T) {
+	r := &updateAPIRunner{in: map[string]json.RawMessage{}, out: map[string]json.RawMessage{}}
+	a := newTestXrayAdapter(t, r, true)
+	oldRule := orderedLiveRule("a", "old-in", "old-out", 18080)
+	old := orderedLivePrepared(t, a, 1, oldRule)
+	var edited map[string]any
+	if err := json.Unmarshal(oldRule.Config, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited["outbounds"].([]any)[0].(map[string]any)["settings"] = map[string]any{"redirect": "127.0.0.1:19000"}
+	oldRule.Config, _ = json.Marshal(edited)
+	next := orderedLivePrepared(t, a, 2, oldRule)
+	before, _ := os.ReadFile(old.adapterPath)
+	after, _ := os.ReadFile(next.adapterPath)
+	if _, ok := planXrayLiveChanges(before, after); ok {
+		t.Fatal("remove-before-add replacement accepted")
+	}
+	if err := a.Commit(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Commit(context.Background(), next); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+		t.Fatalf("unsafe edit not refused: %v", err)
+	}
+	if err := a.Verify(context.Background(), old); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.starts) != 1 || r.processes[0].stopCount != 0 {
+		t.Fatal("refusal restarted the last-good process")
 	}
 }

@@ -89,13 +89,22 @@ func (r *ExecGOSTRunner) GOSTAPI(ctx context.Context, api *gostLocalAPI, method,
 		return nil, errGOSTAPIUncertain
 	}
 	var result struct {
-		Code int `json:"code"`
+		Code *int   `json:"code"`
+		Msg  string `json:"msg"`
 	}
 	if json.Unmarshal(raw, &result) != nil {
 		return nil, errGOSTAPIUncertain
 	}
-	if response.StatusCode != http.StatusOK || result.Code != 0 {
+	if response.StatusCode != http.StatusOK || result.Code != nil && *result.Code != 0 {
 		return nil, ErrGOSTLiveUpdate
+	}
+	// Mutation completion needs an explicit acknowledgement. A missing/null
+	// code without the engine's success message must not advance the running
+	// configuration hash. GOST 3.3.1 returns {"code":null,"msg":"OK"}.
+	// Read endpoints may legitimately return only a data envelope; callers
+	// separately validate the state represented by that data.
+	if (method == http.MethodPost || method == http.MethodDelete) && result.Code == nil && result.Msg != "OK" {
+		return nil, errGOSTAPIUncertain
 	}
 	return raw, nil
 }
@@ -280,7 +289,8 @@ func (a *GOSTProcessAdapter) tryAddGOSTLiveLocked(ctx context.Context, previous,
 				var result struct {
 					Data json.RawMessage `json:"data"`
 				}
-				if getErr != nil || json.Unmarshal(raw, &result) != nil || len(result.Data) > 0 && !bytes.Equal(result.Data, []byte("null")) {
+				// A successful envelope without data does not prove absence.
+				if getErr != nil || json.Unmarshal(raw, &result) != nil || !bytes.Equal(bytes.TrimSpace(result.Data), []byte("null")) {
 					uncertain = true
 					break
 				}

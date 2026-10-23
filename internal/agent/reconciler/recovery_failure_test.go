@@ -342,3 +342,67 @@ func TestPostCommitRecoveryFailureStillCleansUp(t *testing.T) {
 		})
 	}
 }
+
+// A lost journal is not evidence that the owned data plane is empty. Refuse
+// activation before a failure can reach Rollback(nil) and stop that survivor.
+func TestApplyWithoutRollbackRecordPreservesLiveProcess(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(map[bool]string{false: "partial-mixed", true: "fully-live"}[running], func(t *testing.T) {
+			dir := t.TempDir()
+			store := state.NewAtomicStateStore(dir+"/state.json", dir+"/configurations")
+			file, err := engine.NewDryRunFileAdapter(dir+"/staging/config.json", dir+"/active/config.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			live := &partiallyLiveAdapter{recordingLiveAdapter: &recordingLiveAdapter{
+				DryRunFileAdapter: file, running: running,
+			}, survivor: true}
+			adapter := &survivingRecoveryAdapter{partiallyLiveAdapter: live, failVerify: true}
+			reporter := &recordingReporter{}
+			r, err := New(store, adapter, reporter, "test-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired := testDesired(2, `{"schema_version":1,"fragments":[]}`)
+			for i := 0; i < 2; i++ {
+				if err := r.Apply(context.Background(), desired); !errors.Is(err, engine.ErrLiveUpdateRequiresMaintenance) {
+					t.Fatalf("missing rollback record was not rejected before activation: %v", err)
+				}
+			}
+			if !live.survivor || live.running != running || live.rollbacks != 0 || live.commits != 0 {
+				t.Fatalf("lost journal interrupted owned process: %#v", live)
+			}
+			current, err := store.Load()
+			if err != nil || current.Pending != nil || current.Applied != nil || current.LastApplyStatus != agentv1.ApplyStatusFailed {
+				t.Fatalf("refusal attested an unapplied generation: %#v, %v", current, err)
+			}
+			for _, result := range reporter.results {
+				if result.Phase == agentv1.ApplyPhaseRollback ||
+					(result.Phase == agentv1.ApplyPhaseCommit || result.Phase == agentv1.ApplyPhaseVerify) && result.Status == agentv1.ApplyStatusSucceeded {
+					t.Fatal("refused activation reported rollback or success")
+				}
+			}
+		})
+	}
+}
+
+func TestFirstApplyWithoutLiveProcessStillCleansFailedActivation(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewAtomicStateStore(dir+"/state.json", dir+"/configurations")
+	file, err := engine.NewDryRunFileAdapter(dir+"/staging/config.json", dir+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := &partiallyLiveAdapter{recordingLiveAdapter: &recordingLiveAdapter{DryRunFileAdapter: file}}
+	adapter := &survivingRecoveryAdapter{partiallyLiveAdapter: live, failVerify: true}
+	r, err := New(store, adapter, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Apply(context.Background(), testDesired(1, `{"schema_version":1,"fragments":[]}`)); err == nil || errors.Is(err, engine.ErrLiveUpdateRequiresMaintenance) {
+		t.Fatalf("first activation did not exercise verification failure: %v", err)
+	}
+	if live.commits != 1 || live.rollbacks != 1 || live.running {
+		t.Fatalf("unverified first activation not cleaned up: %#v", live)
+	}
+}

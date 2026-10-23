@@ -20,6 +20,14 @@ type xrayLiveChanges struct {
 	previousRouting, candidateRouting json.RawMessage
 }
 
+// Record attempts before each RPC: a confirmed error can follow partial
+// application. Later stages must never be inferred from the complete plan.
+type xrayMutationProgress struct {
+	inboundRemovalAttempted, outboundAdditionAttempted bool
+	routingAttempted, inboundAdditionAttempted         bool
+	outboundRemovalAttempted                           bool
+}
+
 func xrayChangedEntries(before, after json.RawMessage) (xrayHandlerChanges, bool) {
 	var previous, candidate []json.RawMessage
 	if json.Unmarshal(before, &previous) != nil || json.Unmarshal(after, &candidate) != nil {
@@ -90,6 +98,18 @@ func planXrayLiveChanges(previous, candidate []byte) (xrayLiveChanges, bool) {
 	delta.outbounds, ok = xrayChangedEntries(before["outbounds"], after["outbounds"])
 	if !ok {
 		return xrayLiveChanges{}, false
+	}
+	// AddHandler cannot replace an existing tag. Removing a same-tag outbound
+	// first leaves surviving listeners without an egress. Managed compilers
+	// assign content versions; legacy/custom same-tag edits require maintenance.
+	removedOut := make(map[string]bool, len(delta.outbounds.removed))
+	for _, entry := range delta.outbounds.removed {
+		removedOut[xrayEntryTag(entry)] = true
+	}
+	for _, entry := range delta.outbounds.added {
+		if removedOut[xrayEntryTag(entry)] {
+			return xrayLiveChanges{}, false
+		}
 	}
 	for _, changes := range []xrayHandlerChanges{delta.inbounds, delta.outbounds} {
 		for _, entries := range [][]json.RawMessage{changes.removed, changes.added} {
@@ -163,7 +183,8 @@ func (a *XrayProcessAdapter) tryUpdateXrayLiveLocked(ctx context.Context, previo
 	if _, err := xrayListedTags(callCtx, api, a.statsAPIAddress, "lsi", "inbounds"); err != nil {
 		return true, ErrXrayLiveUpdate
 	}
-	err := a.applyXrayLiveChanges(callCtx, api, delta)
+	var progress xrayMutationProgress
+	err := a.applyXrayLiveChanges(callCtx, api, delta, &progress)
 	if err == nil && !a.process.Running() {
 		err = ErrXrayNotRunning
 	}
@@ -178,7 +199,7 @@ func (a *XrayProcessAdapter) tryUpdateXrayLiveLocked(ctx context.Context, previo
 	// A deadline can leave a late RPC in flight. Block further mutations on
 	// that process; confirmed failures restore only touched handlers.
 	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() ||
-		a.undoXrayLiveChanges(context.WithoutCancel(ctx), api, delta) != nil {
+		a.undoXrayLiveChanges(context.WithoutCancel(ctx), api, delta, progress) != nil {
 		if recoveryErr := a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previous); recoveryErr != nil {
 			return true, errors.Join(ErrXrayLiveUpdate, recoveryErr)
 		}
@@ -192,48 +213,35 @@ func (a *XrayProcessAdapter) tryUpdateXrayLiveLocked(ctx context.Context, previo
 	return true, ErrXrayLiveUpdate
 }
 
-func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayAPIRunner, delta xrayLiveChanges) error {
-	call := func(operation, key string, entries []json.RawMessage) error {
+func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayAPIRunner, delta xrayLiveChanges, progress *xrayMutationProgress) error {
+	call := func(operation, key string, entries []json.RawMessage, attempted *bool) error {
 		if len(entries) == 0 {
 			return nil
 		}
+		*attempted = true
 		_, err := api.API(ctx, a.statsAPIAddress, operation, xrayAPIDocument(key, entries))
 		return err
 	}
 	// Close changed/deleted listeners before removing their routing. Other
 	// listeners and established sessions retain the same process and handlers.
-	if err := call("rmi", "inbounds", delta.inbounds.removed); err != nil {
+	if err := call("rmi", "inbounds", delta.inbounds.removed, &progress.inboundRemovalAttempted); err != nil {
 		return err
 	}
-	// Replace outbounds with the same tag; defer obsolete outbounds until after
-	// the new routing is installed, so no surviving listener loses its route.
-	added := map[string]bool{}
-	for _, entry := range delta.outbounds.added {
-		added[xrayEntryTag(entry)] = true
-	}
-	var replaced, obsolete []json.RawMessage
-	for _, entry := range delta.outbounds.removed {
-		if added[xrayEntryTag(entry)] {
-			replaced = append(replaced, entry)
-		} else {
-			obsolete = append(obsolete, entry)
-		}
-	}
-	if err := call("rmo", "outbounds", replaced); err != nil {
-		return err
-	}
-	if err := call("ado", "outbounds", delta.outbounds.added); err != nil {
+	// Distinct content tags allow make-before-break: both destinations exist
+	// while routing switches. The planner rejects same-tag replacements.
+	if err := call("ado", "outbounds", delta.outbounds.added, &progress.outboundAdditionAttempted); err != nil {
 		return err
 	}
 	if !sameXrayJSON(delta.previousRouting, delta.candidateRouting) {
+		progress.routingAttempted = true
 		if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.candidateRouting)); err != nil {
 			return err
 		}
 	}
-	if err := call("adi", "inbounds", delta.inbounds.added); err != nil {
+	if err := call("adi", "inbounds", delta.inbounds.added, &progress.inboundAdditionAttempted); err != nil {
 		return err
 	}
-	return call("rmo", "outbounds", obsolete)
+	return call("rmo", "outbounds", delta.outbounds.removed, &progress.outboundRemovalAttempted)
 }
 
 func xrayListedTags(ctx context.Context, api xrayAPIRunner, address, operation, key string) (map[string]bool, error) {
@@ -256,17 +264,36 @@ func xrayListedTags(ctx context.Context, api xrayAPIRunner, address, operation, 
 	return tags, nil
 }
 
-func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAPIRunner, delta xrayLiveChanges) error {
+func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAPIRunner, delta xrayLiveChanges, progress xrayMutationProgress) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	// Read actual tags: CLI mutations can fail after applying a subset.
-	in, err := xrayListedTags(ctx, api, a.statsAPIAddress, "lsi", "inbounds")
-	if err != nil {
-		return err
+	if !progress.inboundRemovalAttempted {
+		delta.inbounds.removed = nil
 	}
-	out, err := xrayListedTags(ctx, api, a.statsAPIAddress, "lso", "outbounds")
-	if err != nil {
-		return err
+	if !progress.inboundAdditionAttempted {
+		delta.inbounds.added = nil
+	}
+	if !progress.outboundRemovalAttempted {
+		delta.outbounds.removed = nil
+	}
+	if !progress.outboundAdditionAttempted {
+		delta.outbounds.added = nil
+	}
+	// Query only attempted handler families. In particular, a rejected rmi
+	// must not remove the still-live old handler as a candidate with the same tag.
+	var in, out map[string]bool
+	var err error
+	if len(delta.inbounds.removed)+len(delta.inbounds.added) != 0 {
+		in, err = xrayListedTags(ctx, api, a.statsAPIAddress, "lsi", "inbounds")
+		if err != nil {
+			return err
+		}
+	}
+	if len(delta.outbounds.removed)+len(delta.outbounds.added) != 0 {
+		out, err = xrayListedTags(ctx, api, a.statsAPIAddress, "lso", "outbounds")
+		if err != nil {
+			return err
+		}
 	}
 	remove := func(operation, key string, entries []json.RawMessage, present map[string]bool) error {
 		for _, entry := range entries {
@@ -297,13 +324,20 @@ func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAP
 	if err := remove("rmi", "inbounds", delta.inbounds.added, in); err != nil {
 		return err
 	}
-	if err := remove("rmo", "outbounds", delta.outbounds.added, out); err != nil {
-		return err
-	}
+	// Compensation must also make-before-break. Candidate routes may already
+	// serve live listeners after partial success: restore old handlers and
+	// routing before retiring any candidate outbound.
 	if err := add("ado", "outbounds", delta.outbounds.removed, out); err != nil {
 		return err
 	}
-	if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.previousRouting)); err != nil {
+	// Routing that was not changed by this transaction needs no replacement.
+	// Avoid exposing unrelated traffic to an unnecessary global router reload.
+	if progress.routingAttempted {
+		if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.previousRouting)); err != nil {
+			return err
+		}
+	}
+	if err := remove("rmo", "outbounds", delta.outbounds.added, out); err != nil {
 		return err
 	}
 	return add("adi", "inbounds", delta.inbounds.removed, in)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
+	"github.com/hongle/hl-panel/internal/xrayconfig"
 )
 
 // NativeProfile is confidential in-process migration material, never an HTTP
@@ -187,7 +188,11 @@ func CompileNativeFragment(raw []byte, opts NativeOptions) ([]byte, error) {
 	config["routing"], _ = json.Marshal(routing)
 	// Logging is owned by the agent's merged configuration.
 	delete(config, "log")
-	return json.Marshal(config)
+	compiled, err := json.Marshal(config)
+	if err != nil {
+		return nil, err
+	}
+	return xrayconfig.VersionLeafOutbounds(compiled)
 }
 
 func mustJSON(value any) json.RawMessage { raw, _ := json.Marshal(value); return raw }

@@ -60,7 +60,7 @@ onMounted(load)
 
 <template>
   <div class="page-stack profile-page">
-    <header class="page-heading"><div><h2>个人中心</h2><p>管理账号安全与面板域名授权</p></div></header>
+    <header class="page-heading"><div><h2>个人中心</h2><p>在这里管理你的账号、安全设置与域名授权</p></div></header>
     <section v-if="account?.must_change_password" class="profile-section profile-notice" role="alert" aria-label="首次登录修改密码">
       <header><KeyRound :size="18" /><h3>首次登录，请修改初始密码</h3></header>
       <p>请先在下方修改密码，再使用面板其他功能。新密码需为 8 到 256 个字符；修改后请重新登录。</p>
@@ -68,31 +68,45 @@ onMounted(load)
     <StatePanel v-if="loading && !account" state="loading" title="正在读取账号资料" />
     <StatePanel v-if="loadError" state="error" title="账号资料加载失败" :message="loadError" @retry="load" />
 
-    <div class="profile-grid">
-    <div class="profile-main">
-    <section v-if="account" class="profile-section profile-account" aria-label="账号资料">
-      <header><UserRound :size="18" /><h3>账号资料</h3></header>
-      <div class="profile-identity"><span class="profile-avatar"><UserRound :size="24" /></span><div><strong>{{ account.username }}</strong><span>管理员</span></div><span class="profile-session"><ShieldCheck :size="14" />已登录</span></div>
-      <dl class="profile-details">
-        <div><dt>登录账号</dt><dd>{{ account.username }}</dd></div>
-        <div><dt>账号类型</dt><dd>管理员</dd></div>
-        <div><dt>创建时间</dt><dd>{{ displayDate(account.created_at) }}</dd></div>
-        <div><dt>当前会话有效期</dt><dd>{{ displayDate(authStore.expiresAt.value ?? undefined) }}</dd></div>
-      </dl>
-    </section>
-    <PanelLicenseCard />
-    </div>
+    <div class="profile-sections">
+      <section v-if="account" class="profile-section profile-account" aria-label="账号资料">
+        <div class="profile-identity">
+          <span class="profile-avatar"><UserRound :size="27" :stroke-width="1.6" /></span>
+          <div class="profile-identity-copy">
+            <span class="profile-eyebrow">账号资料</span>
+            <strong>{{ account.username }}</strong>
+            <div class="profile-identity-tags"><span>管理员</span><span class="profile-session"><ShieldCheck :size="13" />已登录</span></div>
+          </div>
+        </div>
+        <dl class="profile-details">
+          <div><dt>创建时间</dt><dd>{{ displayDate(account.created_at) }}</dd></div>
+          <div><dt>当前会话有效期</dt><dd>{{ displayDate(authStore.expiresAt.value ?? undefined) }}</dd></div>
+        </dl>
+      </section>
 
-    <section class="profile-section profile-security" aria-label="修改密码">
-      <header><KeyRound :size="18" /><div><h3>修改密码</h3><p>修改成功后，请使用新密码重新登录</p></div></header>
-      <form class="profile-password-form" @submit.prevent="savePassword">
-        <label class="field"><span>当前密码</span><input v-model="currentPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="current-password" placeholder="输入当前登录密码" required /></label>
-        <label class="field"><span>新密码（8 到 256 个字符）</span><input v-model="newPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="设置新的登录密码" minlength="8" maxlength="256" required /></label>
-        <label class="field"><span>确认新密码</span><input v-model="confirmPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="再次输入新密码" required /></label>
-        <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
-        <footer><button class="profile-visibility" type="button" :aria-label="showPasswords ? '隐藏密码' : '显示密码'" @click="showPasswords = !showPasswords"><EyeOff v-if="showPasswords" :size="16" /><Eye v-else :size="16" />{{ showPasswords ? '隐藏密码' : '显示密码' }}</button><button class="button button--primary" type="submit" :disabled="saving">{{ saving ? '保存中' : '修改密码' }}</button></footer>
-      </form>
-    </section>
+      <PanelLicenseCard />
+
+      <section class="profile-section profile-security" aria-label="修改密码">
+        <header class="profile-section-heading">
+          <span class="profile-section-icon"><KeyRound :size="20" :stroke-width="1.7" /></span>
+          <div><h3>账号安全</h3><p>修改登录密码，保护你的面板账号</p></div>
+        </header>
+        <form class="profile-password-form" @submit.prevent="savePassword">
+          <div class="profile-password-fields">
+            <label class="field"><span>当前密码</span><input v-model="currentPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="current-password" placeholder="输入当前登录密码" required /></label>
+            <label class="field"><span>新密码 <small>8–256 个字符</small></span><input v-model="newPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="设置新的登录密码" minlength="8" maxlength="256" required /></label>
+            <label class="field"><span>确认新密码</span><input v-model="confirmPassword" :type="showPasswords ? 'text' : 'password'" autocomplete="new-password" placeholder="再次输入新密码" required /></label>
+          </div>
+          <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+          <footer>
+            <div class="profile-password-note"><ShieldCheck :size="15" /><span>修改成功后，需使用新密码重新登录</span></div>
+            <div class="profile-password-actions">
+              <button class="profile-visibility" type="button" :aria-label="showPasswords ? '隐藏密码' : '显示密码'" :aria-pressed="showPasswords" @click="showPasswords = !showPasswords"><EyeOff v-if="showPasswords" :size="16" /><Eye v-else :size="16" />{{ showPasswords ? '隐藏密码' : '显示密码' }}</button>
+              <button class="button button--primary" type="submit" :disabled="saving">{{ saving ? '保存中' : '修改密码' }}</button>
+            </div>
+          </footer>
+        </form>
+      </section>
     </div>
   </div>
 </template>

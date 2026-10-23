@@ -259,3 +259,96 @@ func TestMixedAdapterReplaysCompleteBundleAfterRestart(t *testing.T) {
 		t.Fatalf("restarted bundle not fully active: %v, mode=%q", err, restarted.ActiveEngineMode())
 	}
 }
+
+func TestMixedAdapterWithoutRollbackRecordPreservesServingComponents(t *testing.T) {
+	for _, liveEngine := range []agentv1.Engine{agentv1.EngineXray, agentv1.EngineGOST} {
+		for _, validated := range []bool{false, true} {
+			name := string(liveEngine) + "/commit"
+			if validated {
+				name += "-validated"
+			}
+			t.Run(name, func(t *testing.T) {
+				ctx := context.Background()
+				xr, gr := &recordingXrayRunner{}, &recordingGOSTRunner{}
+				xray, gost := newTestXrayAdapter(t, xr, true), newTestGOSTAdapter(t, gr, true)
+				fragments := mixedFragments("serving-xray", "serving-gost")
+				var serving EngineAdapter
+				var servingFragments []agentv1.ConfigurationFragment
+				if liveEngine == agentv1.EngineXray {
+					serving, servingFragments = xray, fragments[:1]
+				} else {
+					serving, servingFragments = gost, fragments[1:]
+				}
+				initial, err := serving.Prepare(ctx, testDesired(t, 1, servingFragments))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := serving.Commit(ctx, initial); err != nil {
+					t.Fatal(err)
+				}
+				// A newly constructed wrapper has no complete rollback snapshot.
+				// Failure of its cold component must not stop the already live one.
+				adapter, err := NewMixedProcessAdapter(xray, gost)
+				if err != nil {
+					t.Fatal(err)
+				}
+				candidate, err := adapter.Prepare(ctx, testDesired(t, 2, fragments))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := adapter.Validate(ctx, candidate); err != nil {
+					t.Fatal(err)
+				}
+				if liveEngine == agentv1.EngineXray {
+					gr.startErrors = []error{errors.New("cold GOST start failed")}
+				} else {
+					xr.startErrors = []error{errors.New("cold Xray start failed")}
+				}
+				for attempt := 0; attempt < 2; attempt++ {
+					if validated {
+						err = adapter.CommitValidated(ctx, candidate)
+					} else {
+						err = adapter.Commit(ctx, candidate)
+					}
+					if err := serving.Verify(ctx, initial); err != nil {
+						t.Fatalf("serving component lost after refusal: %v", err)
+					}
+					if !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+						t.Fatalf("untrusted mixed recovery was not refused: %v", err)
+					}
+				}
+				if adapter.lastGoodSnapshot() != nil || adapter.ActiveEngineMode() != "" {
+					t.Fatal("refusal falsely attested a complete mixed configuration")
+				}
+				if liveEngine == agentv1.EngineXray {
+					if len(xr.starts) != 1 || xr.processes[0].stopCount != 0 || len(gr.startErrors) != 1 || len(gr.processes) != 0 {
+						t.Fatal("mixed recovery modified a component before obtaining rollback state")
+					}
+				} else if len(gr.processes) != 1 || gr.processes[0].stopCount != 0 || len(xr.starts) != 0 || len(xr.startErrors) != 1 {
+					t.Fatal("mixed recovery modified a component before obtaining rollback state")
+				}
+			})
+		}
+	}
+}
+
+func TestMixedAdapterColdActivationStillCleansFailedStart(t *testing.T) {
+	ctx := context.Background()
+	xr, gr := &recordingXrayRunner{}, &recordingGOSTRunner{}
+	adapter, err := NewMixedProcessAdapter(newTestXrayAdapter(t, xr, true), newTestGOSTAdapter(t, gr, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := adapter.Prepare(ctx, testDesired(t, 1, mixedFragments("cold-xray", "cold-gost")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("cold GOST start failed")
+	gr.startErrors = []error{cause}
+	if err := adapter.Commit(ctx, candidate); !errors.Is(err, ErrGOSTStart) {
+		t.Fatalf("cold activation failure was lost: %v", err)
+	}
+	if len(xr.processes) != 1 || xr.processes[0].stopCount != 1 || adapter.HasLiveProcess() || adapter.lastGoodSnapshot() != nil {
+		t.Fatal("unverified cold activation was not cleaned up")
+	}
+}

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { BadgeCheck, RefreshCw, KeyRound } from '@lucide/vue'
 import { panelLicenseApi, type LicenseChallenge } from '@/api/panelLicense'
 import { panelLicenseStore as store } from '@/stores/panelLicense'
 import PanelLicenseHelp from './PanelLicenseHelp.vue'
@@ -34,7 +35,10 @@ onMounted(() => { void store.refresh() })
 <template>
   <section v-if="status?.enabled || store.error.value" class="panel-license-card" aria-label="面板域名授权">
     <template v-if="status?.enabled">
-      <header><div><small>面板域名授权 · {{ isFree ? '免费版' : status.tier === 'licensed' ? '正式授权' : '待登记' }}</small><h2>{{ isFree && status.status === 'active' ? '免费域名已验证' : labels[status.status] || status.status }}</h2></div><span class="panel-license-badge" :class="{ restricted: !status.management_allowed }">{{ status.management_allowed ? isFree ? '按免费额度管理' : '可正常管理' : '新增、修改和删除受限' }}</span></header>
+      <header>
+        <div class="panel-license-heading"><span class="panel-license-icon"><BadgeCheck :size="21" :stroke-width="1.7" /></span><div><small>面板域名授权 · {{ isFree ? '免费版' : status.tier === 'licensed' ? '正式授权' : '待登记' }}</small><h2>{{ isFree && status.status === 'active' ? '免费域名已验证' : labels[status.status] || status.status }}</h2></div></div>
+        <span class="panel-license-badge" :class="{ restricted: !status.management_allowed }"><span aria-hidden="true"></span>{{ status.management_allowed ? isFree ? '按免费额度管理' : '可正常管理' : '新增、修改和删除受限' }}</span>
+      </header>
       <dl><div><dt>授权域名</dt><dd>{{ status.domain || '待配置' }}</dd></div><div><dt>{{ isFree ? '使用期限' : '到期时间（北京时间）' }}</dt><dd>{{ status.status === 'upgrade_required' ? '同步后显示' : ['unactivated', 'unconfigured'].includes(status.status) ? '验证后显示' : status.expires_at ? date(status.expires_at) : isFree ? '免费使用，需保持域名校验有效' : '永久授权' }}</dd></div><div><dt>最近同步</dt><dd>{{ date(status.checked_at) }}</dd></div></dl>
       <div v-if="isFree" class="panel-license-quota"><strong>整个面板共享免费额度</strong><dl><div><dt>设备组</dt><dd>{{ status.usage?.device_groups ?? '—' }} / {{ status.limits?.device_groups ?? '—' }} 个</dd></div><div><dt>规则</dt><dd>{{ status.usage?.rules ?? '—' }} / {{ status.limits?.rules ?? '—' }} 条</dd></div></dl><p>所有客户、所有协议合计，停用规则也计数；删除后释放额度。</p><p v-if="status.usage_unavailable || !status.usage" role="status">当前用量暂未读到，请稍后刷新；新增时仍由服务端校验。</p><p v-if="overQuota" role="status">当前已有内容超过免费额度，继续保留运行；可维护和删除，新增前请升级授权。</p></div>
       <p v-if="!status.management_allowed">现有转发、订阅和节点运行继续保留。{{ status.status === 'unconfigured' ? '请先由服务器管理员接入授权配置。' : status.auto_registration ? '正在自动验证免费域名并登记 HT，完成后自动恢复管理。' : status.status === 'unactivated' ? '请登记并验证免费域名，或激活 HT 授权码以开启管理。' : '续期或恢复授权校验后，点击同步即可恢复管理。' }}</p>
@@ -45,8 +49,8 @@ onMounted(() => { void store.refresh() })
       <footer>
         <button v-if="status.auto_registration" class="button button--secondary" :disabled="busy" @click="store.refresh">刷新登记状态</button>
         <button v-if="status.status === 'unactivated' && !status.license_id && !status.auto_registration" class="button button--secondary" :disabled="busy" @click="action('registerFree')">登记免费域名</button>
-        <button class="button button--secondary" :disabled="busy || !status.license_id || status.status === 'unconfigured'" @click="action('sync')">{{ busy ? '处理中…' : '同步授权' }}</button>
-        <button class="button button--quiet" :disabled="busy || status.status === 'unconfigured'" @click="togglePaidActivation">{{ showActivation && challenge?.purpose !== 'free-registration' ? '收起激活' : '激活授权码' }}</button>
+        <button class="button button--secondary" :disabled="busy || !status.license_id || status.status === 'unconfigured'" @click="action('sync')"><RefreshCw :size="14" />{{ busy ? '处理中…' : '同步授权' }}</button>
+        <button class="button button--quiet" :disabled="busy || status.status === 'unconfigured'" @click="togglePaidActivation"><KeyRound :size="14" />{{ showActivation && challenge?.purpose !== 'free-registration' ? '收起激活' : '激活授权码' }}</button>
         <PanelLicenseHelp />
       </footer>
       <form v-if="showActivation && challenge?.purpose !== 'free-registration'" class="panel-license-activation" @submit.prevent="action('prepare')"><label class="field"><span>HT 提供的授权码</span><input v-model="code" type="password" autocomplete="off" maxlength="512" required /></label><button class="button button--secondary" :disabled="busy || !code.trim()">获取域名证明</button></form>
@@ -59,14 +63,50 @@ onMounted(() => { void store.refresh() })
 </template>
 
 <style scoped>
-.panel-license-card { min-width: 0; padding: 24px; border: 1px solid #dce3ed; border-radius: 12px; background: #fff; color: #24364e; display: grid; gap: 20px; }
-.panel-license-card header, .panel-license-card footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.panel-license-card h2 { margin: 6px 0 0; font-size: 19px; }.panel-license-card small, dt { color: #65748a; }
-.panel-license-card > dl { padding: 16px; background: #f6f8fb; border-radius: 8px; }
-.panel-license-card dl { display: grid; gap: 16px; margin: 0; }.panel-license-card dl > div { min-width: 0; }.panel-license-card dt { font-size: 12px; }.panel-license-card dd { margin: 5px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.panel-license-card p { margin: 0; line-height: 1.7; font-size: 13px; }.panel-license-card footer { justify-content: flex-start; }
-.panel-license-badge { color: #16724d; background: #e8f5ee; padding: 6px 10px; border-radius: 20px; font-size: 12px; }.panel-license-badge.restricted { color: #895b19; background: #fff1d9; }
-.panel-license-activation, .panel-license-proof { display: grid; gap: 12px; padding: 16px; background: #f5f7fa; border-radius: 10px; }.panel-license-activation button, .panel-license-proof button { justify-self: start; }details { font-size: 12px; color: #65748a; }summary { cursor: pointer; }details p { padding-top: 10px; }
-.panel-license-quota { display: grid; gap: 12px; padding: 16px; background: #f5f7fa; border-radius: 10px; }
-@media(max-width:640px) { .panel-license-card { padding: 18px; gap: 16px; }.panel-license-card dl { gap: 14px; }.panel-license-card footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }.panel-license-card footer > :deep(*) { min-width: 0; }.panel-license-card footer :deep(.button) { width: 100%; justify-content: center; } }
+.panel-license-card { display: grid; min-width: 0; gap: 20px; padding: 24px 26px 20px; border: 1px solid #dfe5ed; border-radius: 14px; background: #fff; color: #24364e; box-shadow: 0 2px 5px rgb(25 45 72 / 2%); }
+.panel-license-card header, .panel-license-card footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.panel-license-heading { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.panel-license-heading > div { min-width: 0; }
+.panel-license-icon { display: grid; width: 42px; height: 42px; flex: 0 0 42px; place-items: center; border: 1px solid #eee5d3; border-radius: 11px; color: #9a7a3d; background: #fbf8f1; }
+.panel-license-card h2 { margin: 3px 0 0; font-size: 16px; font-weight: 600; line-height: 1.5; }
+.panel-license-card small { color: #718096; font-size: 11px; }
+.panel-license-card > dl { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; padding: 20px; border: 1px solid #edf0f5; border-radius: 9px; background: #f8fafc; }
+.panel-license-card dl { display: grid; gap: 16px; margin: 0; }
+.panel-license-card dl > div { min-width: 0; }
+.panel-license-card dt { color: #718096; font-size: 12px; }
+.panel-license-card dd { margin: 8px 0 0; color: #34465e; font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.panel-license-card p { margin: 0; line-height: 1.8; font-size: 12px; }
+.panel-license-card footer { justify-content: flex-start; gap: 10px; }
+.panel-license-card footer :deep(.license-help) { margin-left: auto; }
+.panel-license-card footer :deep(.button) { gap: 7px; }
+.panel-license-badge { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 10px; border: 1px solid #dbece3; border-radius: 6px; background: #f0f8f4; color: #287053; font-size: 11px; }
+.panel-license-badge > span { width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; }
+.panel-license-badge.restricted { border-color: #efdfbd; background: #fff8eb; color: #946f2e; }
+.panel-license-activation, .panel-license-proof { display: grid; gap: 14px; padding: 18px; border: 1px solid #e6ebf1; border-radius: 9px; background: #f8fafc; }
+.panel-license-activation { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
+.panel-license-activation input { min-height: 40px; }
+.panel-license-activation button, .panel-license-proof button { justify-self: start; max-width: 100%; }
+.panel-license-proof code { font-size: 12px; overflow-wrap: anywhere; }
+.panel-license-card details { padding-top: 15px; border-top: 1px solid #edf0f5; color: #7a8798; font-size: 11px; }
+.panel-license-card summary { width: fit-content; max-width: 100%; cursor: pointer; }
+.panel-license-card details p { padding-top: 12px; }
+.panel-license-quota { display: grid; gap: 12px; padding: 18px; border: 1px solid #e6ebf1; border-radius: 9px; background: #f8fafc; }
+.panel-license-quota strong { font-size: 13px; font-weight: 500; }
+.panel-license-quota dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media(max-width:1100px) { .panel-license-card > dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }.panel-license-card > dl > div:first-child { grid-column: 1 / -1; } }
+@media(max-width:760px) {
+  .panel-license-card { gap: 18px; padding: 20px; border-radius: 12px; }
+  .panel-license-heading { gap: 11px; }
+  .panel-license-card header { align-items: flex-start; }
+  .panel-license-card > dl { grid-template-columns: 1fr; gap: 18px; padding: 16px; }
+  .panel-license-card > dl > div { display: grid; gap: 6px; }
+  .panel-license-card dd { margin-top: 0; }
+  .panel-license-card footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .panel-license-card footer > :deep(*) { min-width: 0; }
+  .panel-license-card footer :deep(.license-help) { grid-column: 1 / -1; margin-left: 0; }
+  .panel-license-card footer :deep(.button) { width: 100%; justify-content: center; }
+  .panel-license-card footer :deep(.license-help-placeholder) { font-size: 11px; }
+  .panel-license-activation { grid-template-columns: 1fr; }
+  .panel-license-activation, .panel-license-proof { padding: 14px; }
+}
 </style>

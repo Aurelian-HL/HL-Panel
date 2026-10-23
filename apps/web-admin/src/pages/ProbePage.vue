@@ -4,12 +4,14 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, type DeviceGroup, type DeviceGroupMember } from '@/api'
 import { probeApi, type ProbeGroupResponse, type ProbeMember } from '@/api/probe'
 import StatePanel from '@/components/StatePanel.vue'
+import BaseModal from '@/components/BaseModal.vue'
 import DeleteNodeDialog from '@/features/nodes/DeleteNodeDialog.vue'
 import ProbeMembers from '@/features/probe/ProbeMembers.vue'
 import MemberWeightDialog from '@/features/groups/MemberWeightDialog.vue'
 import { formatRate, hasLiveProbeReading, monitorStatus } from '@/features/probe/format'
 import { displayError } from '@/lib/displayFormatters'
 import { serverNow } from '@/lib/serverClock'
+import { loadProbeRemarks, probeRemarkMaxLength, probeRemarksStorageKey, saveProbeRemark } from '@/features/probe/remarks'
 
 type StatusFilter = 'all' | 'online' | 'offline'
 const groups = ref<DeviceGroup[]>([])
@@ -30,6 +32,30 @@ const groupMembersError = ref('')
 const editingMember = ref<DeviceGroupMember | null>(null)
 const deletingNode = ref<ProbeMember | null>(null)
 const deletingUnassigned = ref(false)
+const remarks = ref(loadProbeRemarks())
+const editingRemark = ref<ProbeMember | null>(null)
+const remarkDraft = ref('')
+const remarkError = ref('')
+function editRemark(member: ProbeMember): void {
+  remarks.value = loadProbeRemarks()
+  editingRemark.value = member
+  remarkDraft.value = remarks.value[member.node_id] ?? ''
+  remarkError.value = ''
+}
+function saveRemark(): void {
+  if (!editingRemark.value) return
+  try {
+    remarks.value = saveProbeRemark(editingRemark.value.node_id, remarkDraft.value)
+    editingRemark.value = null
+  } catch {
+    remarkError.value = remarkDraft.value.trim().length > probeRemarkMaxLength
+      ? '备注最多 80 个字符。'
+      : '未能保存备注，请允许浏览器保存本站数据后重试。'
+  }
+}
+function onRemarksStorage(event: StorageEvent): void {
+  if (event.key === probeRemarksStorageKey || event.key === null) remarks.value = loadProbeRemarks()
+}
 function askDelete(member: ProbeMember, unassigned = false): void {
   deletingNode.value = member
   deletingUnassigned.value = unassigned
@@ -238,6 +264,7 @@ function onOnline(): void { onVisibilityChange() }
 
 onMounted(() => {
   active = true
+  window.addEventListener('storage', onRemarksStorage)
   document.addEventListener('visibilitychange', onVisibilityChange)
   window.addEventListener('online', onOnline)
   void loadMonitoring()
@@ -247,6 +274,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   active = false
+  window.removeEventListener('storage', onRemarksStorage)
   requestId++
   memberRequestId++
   groupRequestId++
@@ -284,15 +312,15 @@ onUnmounted(() => {
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">
-        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="pagedMembers" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
+        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="pagedMembers" :remarks="remarks" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
         <div v-else class="probe-sections">
           <section v-for="section in groupedMembers" :key="section.group.id" class="probe-section" :aria-label="`${section.group.name}探针`">
             <header class="probe-section__heading"><span class="probe-section__name">{{ section.group.name }}</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(section.items, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(section.items, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="section.items" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
+            <ProbeMembers :items="section.items" :remarks="remarks" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
           </section>
           <section v-if="ungroupedMembers.length" class="probe-section" aria-label="未入组机器探针">
             <header class="probe-section__heading"><span class="probe-section__name">未入组机器</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(ungroupedMembers, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(ungroupedMembers, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="ungroupedMembers" unassigned :upstream-status="upstreamStatus" :now="now" @delete-node="askDelete($event, true)" />
+            <ProbeMembers :items="ungroupedMembers" :remarks="remarks" unassigned :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @delete-node="askDelete($event, true)" />
           </section>
         </div>
       </template>
@@ -307,5 +335,14 @@ onUnmounted(() => {
     </template>
     <DeleteNodeDialog v-if="deletingNode" :node-id="deletingNode.node_id" :unassigned="deletingUnassigned" :label="[deletingNode.name, deletingNode.ipv4 || deletingNode.node_id].filter(Boolean).join(' · ')" @close="deletingNode = null; deletingUnassigned = false" @deleted="nodeDeleted" />
     <MemberWeightDialog v-if="editingMember" :member="editingMember" :label="[members.find((item) => item.node_id === editingMember?.node_id)?.name || editingMember.node_id, members.find((item) => item.node_id === editingMember?.node_id)?.ipv4 || editingMember.dial_host].filter(Boolean).join(' · ')" @close="editingMember = null" @saved="weightSaved" />
+    <BaseModal v-if="editingRemark" title="设备备注" description="仅保存在当前浏览器，填写后替代列表中的 IP 显示。" width="small" @close="editingRemark = null">
+      <form class="form-stack" @submit.prevent="saveRemark">
+        <div class="probe-remark-host"><span>真实主机地址</span><strong>{{ editingRemark.ipv4 || editingRemark.ipv6 || '未采集' }}</strong></div>
+        <label class="field"><span>显示备注 <small>选填，最多 80 个字符</small></span><input v-model="remarkDraft" :maxlength="probeRemarkMaxLength" placeholder="例如：香港主力 · 01" aria-describedby="probe-remark-hint" /></label>
+        <p id="probe-remark-hint" class="field-hint">清空并保存即可恢复 IP 显示，不影响节点连接和转发。</p>
+        <p v-if="remarkError" class="form-error" role="alert">{{ remarkError }}</p>
+        <div class="probe-refresh-dialog__actions"><button class="button button--secondary" type="button" @click="editingRemark = null">取消</button><button class="button button--primary" type="submit">保存备注</button></div>
+      </form>
+    </BaseModal>
   </div>
 </template>

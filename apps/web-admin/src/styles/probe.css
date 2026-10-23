@@ -52,6 +52,14 @@
 .probe-address { line-height: 1.6; overflow-wrap: anywhere; }
 .probe-address > span { display: block; white-space: nowrap; }
 .probe-address small { display: block; color: var(--gray-500); font-size: 10px; }
+.probe-host-label { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.probe-host-label > span, .probe-host-label > strong { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.probe-remark-button { display: inline-flex; flex: 0 0 26px; align-items: center; justify-content: center; width: 26px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--gray-500); cursor: pointer; }
+.probe-remark-button:hover { background: #eaf2fb; color: var(--ny-blue); }
+.probe-remark-button:focus-visible { outline: 2px solid var(--ny-blue); outline-offset: 2px; }
+.probe-remark-host { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid var(--ny-border); border-radius: 6px; background: #f6f8fb; overflow-wrap: anywhere; }
+.probe-remark-host span { color: var(--gray-600); font-size: 12px; }
+.probe-remark-host strong { color: var(--gray-900); font-size: 13px; font-weight: 600; }
 .probe-region { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; color: #394252; white-space: nowrap; }
 .probe-region__flag { display: block; width: 22px; height: 16px; flex: 0 0 22px; object-fit: cover; border: 1px solid #d7dce3; border-radius: 2px; }
 .probe-measure-pair { line-height: 1.55; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -108,6 +116,7 @@
   .probe-mobile-item { min-width: 0; padding: 13px; border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; }
   .probe-mobile-item header, .probe-mobile-item footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .probe-mobile-item header strong { color: var(--gray-900); font-size: 13px; }
+  .probe-mobile-item .probe-remark-button { flex-basis: 32px; width: 32px; height: 34px; }
   .probe-mobile-item__body { display: grid; gap: 13px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--ny-border); }
   .probe-mobile-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; }
   .probe-mobile-facts > div { min-width: 0; }

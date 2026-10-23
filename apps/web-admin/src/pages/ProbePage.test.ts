@@ -8,10 +8,12 @@ vi.mock('@/api', () => ({ api: { deleteNode: mocked.deleteNode, getDeviceGroups:
 vi.mock('@/api/probe', () => ({ probeApi: { getGroup: mocked.getGroup, getInventory: mocked.getInventory } }))
 
 import ProbePage from './ProbePage.vue'
+import { probeRemarksStorageKey } from '@/features/probe/remarks'
 
 beforeEach(() => {
   mocked.deleteNode.mockReset().mockResolvedValue({ node_id: 'offline-native', replayed: false })
   localStorage.removeItem('hl_probe_refresh_intervals_v1')
+  localStorage.removeItem(probeRemarksStorageKey)
   mocked.getDeviceGroups.mockReset().mockResolvedValue({ items: probeGroups })
   mocked.getGroup.mockReset().mockResolvedValue(completeProbeSample)
   mocked.getInventory.mockReset().mockResolvedValue(completeProbeSample)
@@ -20,6 +22,62 @@ beforeEach(() => {
 })
 
 describe('ProbePage', () => {
+  it('persists display-only remarks across group changes and remounts, then restores IP when cleared', async () => {
+    const originalSample = JSON.stringify(completeProbeSample)
+    const options = { global: { stubs: { teleport: true } } }
+    let wrapper = mount(ProbePage, options)
+    await flushPromises()
+    await wrapper.get('.probe-remark-button').trigger('click')
+    await wrapper.get('input[placeholder="例如：香港主力 · 01"]').setValue('  香港主力  ')
+    await wrapper.get('.modal form').trigger('submit')
+    expect(wrapper.get('.probe-address .probe-host-label').text()).toBe('香港主力')
+    expect(wrapper.get('.probe-mobile-item header').text()).toContain('香港主力')
+    expect(wrapper.get('.probe-address .probe-host-label span').attributes('title')).toContain(completeProbeSample.items[0]!.ipv4)
+    expect(wrapper.find('.probe-address small').exists()).toBe(false)
+    expect(JSON.parse(localStorage.getItem(probeRemarksStorageKey)!)).toEqual({ 'node-gz-1': '香港主力' })
+    await wrapper.get('.probe-group-select select').setValue('group-gz')
+    await flushPromises()
+    expect(wrapper.get('.probe-address .probe-host-label').text()).toBe('香港主力')
+    wrapper.unmount()
+    wrapper = mount(ProbePage, options)
+    await flushPromises()
+    expect(wrapper.get('.probe-address .probe-host-label').text()).toBe('香港主力')
+    await wrapper.get('[aria-label="查看广州电信入口监测详情"]').trigger('click')
+    expect(wrapper.get('.probe-details__facts').text()).toContain(completeProbeSample.items[0]!.ipv4)
+    await wrapper.get('[aria-label="关闭对话框"]').trigger('click')
+    await wrapper.get('.probe-remark-button').trigger('click')
+    await wrapper.get('.modal input').setValue('')
+    await wrapper.get('.modal form').trigger('submit')
+    expect(wrapper.get('.probe-address .probe-host-label').text()).toBe(completeProbeSample.items[0]!.ipv4)
+    expect(JSON.parse(localStorage.getItem(probeRemarksStorageKey)!)).toEqual({})
+    expect(JSON.stringify(completeProbeSample)).toBe(originalSample)
+    expect(mocked.updateDeviceGroupMemberWeight).not.toHaveBeenCalled()
+    expect(mocked.deleteNode).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('cancels remark edits and keeps the previous display when browser storage rejects a save', async () => {
+    localStorage.setItem(probeRemarksStorageKey, JSON.stringify({ 'node-gz-1': '原备注' }))
+    const wrapper = mount(ProbePage, { global: { stubs: { teleport: true } } })
+    await flushPromises()
+    await wrapper.get('.probe-remark-button').trigger('click')
+    await wrapper.get('.modal input').setValue('已取消')
+    await wrapper.findAll('.modal button').find(button => button.text() === '取消')!.trigger('click')
+    expect(wrapper.get('.probe-address .probe-host-label').text()).toBe('原备注')
+    await wrapper.get('.probe-remark-button').trigger('click')
+    await wrapper.get('.modal input').setValue('不能保存')
+    const storage = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    try {
+      await wrapper.get('.modal form').trigger('submit')
+      expect(wrapper.get('[role="alert"]').text()).toContain('未能保存备注')
+      expect(wrapper.get('.probe-address .probe-host-label').text()).toBe('原备注')
+      expect(wrapper.get<HTMLInputElement>('.modal input').element.value).toBe('不能保存')
+    } finally {
+      storage.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
   it('bounds membership requests and stops queued work after leaving the page', async () => {
     mocked.getDeviceGroups.mockResolvedValue({ items: Array.from({ length: 12 }, (_, index) => ({ ...probeGroups[0], id: `group-${index}` })) })
     const finishes: Array<(value: { items: [] }) => void> = []

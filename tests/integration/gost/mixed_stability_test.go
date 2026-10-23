@@ -258,6 +258,43 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 			if err != nil || adapter.ActiveEngineMode() != "" {
 				t.Fatalf("partial failure not established: %v", err)
 			}
+			// A fresh wrapper has no complete rollback snapshot even though one
+			// real engine is still forwarding. Refuse before starting the missing
+			// engine; preserve both this exact socket and fresh forwarding sessions.
+			unjournaled, err := engine.NewMixedProcessAdapter(xray, gost)
+			if err != nil {
+				t.Fatal(err)
+			}
+			untrusted, err := unjournaled.Prepare(ctx, desired)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := unjournaled.Validate(ctx, untrusted); err != nil {
+				t.Fatal(err)
+			}
+			for attempt := 0; attempt < 3; attempt++ {
+				if err := unjournaled.CommitValidated(ctx, untrusted); !errors.Is(err, engine.ErrLiveUpdateRequiresMaintenance) {
+					t.Fatalf("unjournaled mixed activation was not refused: %v", err)
+				}
+				checkStream()
+				fresh, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+				if err != nil {
+					t.Fatalf("refusal blocked a fresh forwarding session: %v", err)
+				}
+				_ = fresh.SetDeadline(time.Now().Add(2 * time.Second))
+				payload := "fresh-session-after-refusal"
+				_, writeErr := io.WriteString(fresh, payload)
+				response := make([]byte, len(payload))
+				_, readErr := io.ReadFull(fresh, response)
+				_ = fresh.Close()
+				if writeErr != nil || readErr != nil || string(response) != payload {
+					t.Fatalf("fresh forwarding failed: write=%v read=%v", writeErr, readErr)
+				}
+			}
+			if changed == "xray" && xray.HasLiveProcess() || changed == "gost" && gost.HasLiveProcess() {
+				t.Fatal("refused activation started the missing engine")
+			}
+			t.Log("three unjournaled activations refused; original socket and three fresh sessions forwarded")
 			fault := &recoveryFaultAdapter{MixedProcessAdapter: adapter}
 			r, err := reconciler.New(store, fault, nil, "")
 			if err != nil {

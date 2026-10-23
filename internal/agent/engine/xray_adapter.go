@@ -355,7 +355,11 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 		if api, ok := a.runner.(xrayAPIRunner); ok && exists && a.autoStart && a.process != nil &&
 			a.process.Running() && a.processConfigSHA256 == sha256.Sum256(active) {
 			if delta, eligible := planXrayAdditions(previousBytes, active); eligible {
-				if err := a.undoXrayAdditions(ctx, api, delta); err == nil {
+				// This reverses an already committed addition: every stage ran.
+				if err := a.undoXrayAdditions(ctx, api, delta, xrayMutationProgress{
+					outboundAdditionAttempted: len(delta.outbounds) != 0,
+					routingAttempted:          true, inboundAdditionAttempted: true,
+				}); err == nil {
 					if err := writeFileAtomic(a.activePath, previousBytes, 0o600); err == nil {
 						a.processConfigSHA256 = sha256.Sum256(previousBytes)
 						return nil

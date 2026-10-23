@@ -14,6 +14,7 @@ import (
 
 	"github.com/hongle/hl-panel/internal/agent/engine"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
+	"github.com/hongle/hl-panel/internal/xrayconfig"
 )
 
 // Faults are injected after a real RPC, exercising partial success and actual
@@ -21,14 +22,25 @@ import (
 type updateFaultRunner struct {
 	*engine.ExecXrayRunner
 	fail                  string
+	reject                string
+	calls                 []string
 	failUndo, undoBlocked bool
+	after                 func(string)
 }
 
 func (r *updateFaultRunner) API(ctx context.Context, address, operation string, doc []byte) ([]byte, error) {
+	r.calls = append(r.calls, operation)
+	if r.reject == operation {
+		r.reject = ""
+		return nil, errors.New("injected confirmed rejection before RPC")
+	}
 	if r.undoBlocked && (operation == "lsi" || operation == "lso") {
 		return nil, errors.New("injected compensation read failure")
 	}
 	raw, err := r.ExecXrayRunner.API(ctx, address, operation, doc)
+	if err == nil && r.after != nil {
+		r.after(operation)
+	}
 	if err == nil && r.fail == operation {
 		r.fail = ""
 		r.undoBlocked = r.failUndo
@@ -84,6 +96,7 @@ type liveUpdateFixture struct {
 	ports      [4]int
 	targets    [2]int
 	generation agentv1.NodeConfigGeneration
+	legacyTags bool
 }
 
 func newLiveUpdateFixture(t *testing.T) *liveUpdateFixture {
@@ -164,6 +177,13 @@ func (f *liveUpdateFixture) prepare(rules ...updateRule) engine.PreparedConfigur
 		routes = append(routes, map[string]any{"type": "field", "inboundTag": []string{inTag}, "outboundTag": fmt.Sprintf("out-%d", route)})
 	}
 	data, _ := json.Marshal(map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": in, "outbounds": out, "routing": map[string]any{"rules": routes}})
+	if len(out) > 0 && !f.legacyTags {
+		var err error
+		data, err = xrayconfig.VersionLeafOutbounds(data)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+	}
 	p, err := f.a.Prepare(f.ctx, adapterDesired(f.t, f.generation, []agentv1.ConfigurationFragment{{GroupID: "independent", GroupRevision: 1, Engine: agentv1.EngineXray, Config: data}}))
 	if err != nil {
 		f.t.Fatal(err)
@@ -287,7 +307,7 @@ func TestXrayLiveDeleteDisableEditAndRollbackPreserveStream(t *testing.T) {
 	apply(f.prepare(edited, stable))
 	f.closed(middle.port)
 	f.dial(edited.port, 'B')
-	// Replace an outbound with the same tag, then change only routing.
+	// Replace an outbound through content versions, then change only routing.
 	edited.redirect = 1
 	apply(f.prepare(edited, stable))
 	f.dial(edited.port, 'A')

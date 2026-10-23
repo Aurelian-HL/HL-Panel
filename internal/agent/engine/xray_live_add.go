@@ -237,13 +237,17 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 	callContext, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	var err error
+	var progress xrayMutationProgress
 	if len(delta.outbounds) != 0 {
+		progress.outboundAdditionAttempted = true
 		_, err = api.API(callContext, a.statsAPIAddress, "ado", xrayAPIDocument("outbounds", delta.outbounds))
 	}
 	if err == nil {
+		progress.routingAttempted = true
 		_, err = api.API(callContext, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.candidateRouting))
 	}
 	if err == nil {
+		progress.inboundAdditionAttempted = true
 		_, err = api.API(callContext, a.statsAPIAddress, "adi", xrayAPIDocument("inbounds", delta.inbounds))
 	}
 	if err == nil && !a.process.Running() {
@@ -258,7 +262,7 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 		return true, nil
 	}
 	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() ||
-		a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta) != nil {
+		a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta, progress) != nil {
 		if recoveryErr := a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previous); recoveryErr != nil {
 			return true, errors.Join(ErrXrayLiveUpdate, recoveryErr)
 		}
@@ -271,47 +275,14 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 	return true, ErrXrayLiveUpdate
 }
 
-// Removal first closes only newly added listeners. Existing listeners and
-// sessions are untouched. Query tags because AddInbound can partially succeed
-// or be applied before its caller times out; removing an absent inbound errors.
-func (a *XrayProcessAdapter) undoXrayAdditions(ctx context.Context, api xrayAPIRunner, delta xrayAdditions) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	raw, err := api.API(ctx, a.statsAPIAddress, "lsi", nil)
-	if err != nil {
-		return ErrXrayLiveUpdate
-	}
-	var listed struct {
-		Inbounds []json.RawMessage `json:"inbounds"`
-	}
-	if json.Unmarshal(raw, &listed) != nil || listed.Inbounds == nil {
-		return ErrXrayLiveUpdate
-	}
-	present := map[string]bool{}
-	for _, inbound := range listed.Inbounds {
-		tag := xrayEntryTag(inbound)
-		if tag == "" {
-			return ErrXrayLiveUpdate
-		}
-		present[tag] = true
-	}
-	for _, inbound := range delta.inbounds {
-		if !present[xrayEntryTag(inbound)] {
-			continue
-		}
-		if _, err := api.API(ctx, a.statsAPIAddress, "rmi", xrayAPIDocument("inbounds", []json.RawMessage{inbound})); err != nil {
-			return ErrXrayLiveUpdate
-		}
-	}
-	if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.previousRouting)); err != nil {
-		return ErrXrayLiveUpdate
-	}
-	if len(delta.outbounds) != 0 {
-		if _, err := api.API(ctx, a.statsAPIAddress, "rmo", xrayAPIDocument("outbounds", delta.outbounds)); err != nil {
-			return ErrXrayLiveUpdate
-		}
-	}
-	return nil
+// Use the same bounded compensation as edits, including actual tag queries
+// for partial additions. A failed early stage cannot reload untouched routing.
+func (a *XrayProcessAdapter) undoXrayAdditions(ctx context.Context, api xrayAPIRunner, delta xrayAdditions, progress xrayMutationProgress) error {
+	return a.undoXrayLiveChanges(ctx, api, xrayLiveChanges{
+		inbounds:        xrayHandlerChanges{added: delta.inbounds},
+		outbounds:       xrayHandlerChanges{added: delta.outbounds},
+		previousRouting: delta.previousRouting, candidateRouting: delta.candidateRouting,
+	}, progress)
 }
 
 func (a *XrayProcessAdapter) recoverLivePreviousLocked(ctx context.Context, previous []byte) error {

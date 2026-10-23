@@ -14,6 +14,8 @@ import (
 type gostObjectChanges struct{ removed, added []json.RawMessage }
 type gostLiveChanges struct{ chains, services gostObjectChanges }
 
+type gostMutationProgress struct{ chains, services map[string]bool }
+
 func gostChangedObjects(before, after json.RawMessage) (gostObjectChanges, bool) {
 	index := func(raw json.RawMessage) ([]json.RawMessage, map[string]json.RawMessage, bool) {
 		items := []json.RawMessage{}
@@ -116,7 +118,8 @@ func (a *GOSTProcessAdapter) tryUpdateGOSTLiveLocked(ctx context.Context, previo
 	if _, err := runner.GOSTAPI(callCtx, a.api, http.MethodGet, "/config/services", nil); err != nil {
 		return true, ErrGOSTLiveUpdate
 	}
-	err := a.applyGOSTLiveChanges(callCtx, runner, delta)
+	progress := gostMutationProgress{chains: map[string]bool{}, services: map[string]bool{}}
+	err := a.applyGOSTLiveChanges(callCtx, runner, delta, progress)
 	if err == nil && !a.process.Running() {
 		err = ErrGOSTNotRunning
 	}
@@ -128,7 +131,7 @@ func (a *GOSTProcessAdapter) tryUpdateGOSTLiveLocked(ctx context.Context, previo
 		a.processConfigSHA256 = sha256.Sum256(candidate)
 		return true, nil
 	}
-	if errors.Is(err, errGOSTAPIUncertain) || !a.process.Running() || a.undoGOSTLiveChanges(context.WithoutCancel(ctx), runner, delta) != nil {
+	if errors.Is(err, errGOSTAPIUncertain) || !a.process.Running() || a.undoGOSTLiveChanges(context.WithoutCancel(ctx), runner, delta, progress) != nil {
 		if restoreErr := a.recoverGOSTLivePreviousLocked(context.WithoutCancel(ctx), previous); restoreErr != nil {
 			return true, errors.Join(ErrGOSTLiveUpdate, restoreErr)
 		}
@@ -141,22 +144,26 @@ func (a *GOSTProcessAdapter) tryUpdateGOSTLiveLocked(ctx context.Context, previo
 	return true, ErrGOSTLiveUpdate
 }
 
-func (a *GOSTProcessAdapter) applyGOSTLiveChanges(ctx context.Context, runner gostAPIRunner, delta gostLiveChanges) error {
+func (a *GOSTProcessAdapter) applyGOSTLiveChanges(ctx context.Context, runner gostAPIRunner, delta gostLiveChanges, progress gostMutationProgress) error {
 	for _, part := range []struct {
-		kind  string
-		items []json.RawMessage
-	}{{"services", delta.services.removed}, {"chains", delta.chains.removed}} {
+		kind    string
+		items   []json.RawMessage
+		touched map[string]bool
+	}{{"services", delta.services.removed, progress.services}, {"chains", delta.chains.removed, progress.chains}} {
 		for _, item := range part.items {
+			part.touched[gostObjectName(item)] = true
 			if _, err := runner.GOSTAPI(ctx, a.api, http.MethodDelete, "/config/"+part.kind+"/"+url.PathEscape(gostObjectName(item)), nil); err != nil {
 				return err
 			}
 		}
 	}
 	for _, part := range []struct {
-		kind  string
-		items []json.RawMessage
-	}{{"chains", delta.chains.added}, {"services", delta.services.added}} {
+		kind    string
+		items   []json.RawMessage
+		touched map[string]bool
+	}{{"chains", delta.chains.added, progress.chains}, {"services", delta.services.added, progress.services}} {
 		for _, item := range part.items {
+			part.touched[gostObjectName(item)] = true
 			if _, err := runner.GOSTAPI(ctx, a.api, http.MethodPost, "/config/"+part.kind, item); err != nil {
 				return err
 			}
@@ -170,7 +177,7 @@ func (a *GOSTProcessAdapter) applyGOSTLiveChanges(ctx context.Context, runner go
 	return nil
 }
 
-func (a *GOSTProcessAdapter) undoGOSTLiveChanges(ctx context.Context, runner gostAPIRunner, delta gostLiveChanges) error {
+func (a *GOSTProcessAdapter) undoGOSTLiveChanges(ctx context.Context, runner gostAPIRunner, delta gostLiveChanges, progress gostMutationProgress) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	present := func(kind string, item json.RawMessage) (bool, error) {
@@ -185,15 +192,16 @@ func (a *GOSTProcessAdapter) undoGOSTLiveChanges(ctx context.Context, runner gos
 		return !bytes.Equal(result.Data, []byte("null")), nil
 	}
 	// Include both old and candidate names: a DELETE/POST can apply partially.
-	// Recreate only objects in the delta; untouched listeners retain sessions.
+	// Recreate only attempted objects; later entries in the plan retain sessions.
 	for _, part := range []struct {
 		kind    string
 		changes gostObjectChanges
-	}{{"services", delta.services}, {"chains", delta.chains}} {
+		touched map[string]bool
+	}{{"services", delta.services, progress.services}, {"chains", delta.chains, progress.chains}} {
 		seen := map[string]bool{}
 		for _, item := range append(append([]json.RawMessage{}, part.changes.added...), part.changes.removed...) {
 			name := gostObjectName(item)
-			if seen[name] {
+			if seen[name] || !part.touched[name] {
 				continue
 			}
 			seen[name] = true
@@ -209,10 +217,14 @@ func (a *GOSTProcessAdapter) undoGOSTLiveChanges(ctx context.Context, runner gos
 		}
 	}
 	for _, part := range []struct {
-		kind  string
-		items []json.RawMessage
-	}{{"chains", delta.chains.removed}, {"services", delta.services.removed}} {
+		kind    string
+		items   []json.RawMessage
+		touched map[string]bool
+	}{{"chains", delta.chains.removed, progress.chains}, {"services", delta.services.removed, progress.services}} {
 		for _, item := range part.items {
+			if !part.touched[gostObjectName(item)] {
+				continue
+			}
 			if _, err := runner.GOSTAPI(ctx, a.api, http.MethodPost, "/config/"+part.kind, item); err != nil {
 				return err
 			}

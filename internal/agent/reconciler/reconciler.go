@@ -130,6 +130,18 @@ func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNod
 	}
 	r.report(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, agentv1.ApplyStatusSucceeded, "configuration validated")
 
+	// Missing durable state does not imply an empty data plane. Without a
+	// rollback target, a later Commit/Verify failure would call Rollback(nil)
+	// and stop an already serving process, including a partial mixed engine.
+	// Refuse before activation; first installs with no live process still use
+	// the normal cleanup contract for an unverified newly started process.
+	if previousPrepared == nil {
+		if live, ok := r.adapter.(interface{ HasLiveProcess() bool }); ok && live.HasLiveProcess() {
+			err := fmt.Errorf("last-known-good rollback record missing: %w", engine.ErrLiveUpdateRequiresMaintenance)
+			return r.fail(ctx, desired, attemptID, nil, agentv1.ApplyPhaseCommit, err)
+		}
+	}
+
 	if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
 		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseCommit, err)
 	}

@@ -113,3 +113,43 @@ func TestGOSTLiveChangeRecoveryBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestGOSTFailureDoesNotCompensateUnattemptedServices(t *testing.T) {
+	r := &gostRecoveryRunner{liveGOSTRunner: liveGOSTRunner{objects: map[string]bool{}}}
+	a := newTestGOSTAdapter(t, r, true)
+	initial := livePrepared(t, a, 1, true)
+	if err := a.Commit(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+	r.objects["/config/services/forward-a"] = true
+	r.objects["/config/services/forward-b"] = true
+	next, err := a.Prepare(context.Background(), testDesired(t, 2, []agentv1.ConfigurationFragment{
+		gostFragment("a", strings.ReplaceAll(gostServiceA, "18081", "18083")),
+		gostFragment("b", strings.ReplaceAll(strings.ReplaceAll(gostServiceA, "forward-a", "forward-b"), "18081", "18084")),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.calls = nil
+	r.fault = "DELETE /config/services/forward-a"
+	if err := a.Commit(context.Background(), next); !errors.Is(err, ErrGOSTLiveUpdate) {
+		t.Fatalf("error=%v", err)
+	}
+	if r.fault != "" {
+		t.Fatal("fault not exercised")
+	}
+	for _, call := range r.calls {
+		if strings.Contains(call, "forward-b") {
+			t.Fatalf("unattempted service touched: %v", r.calls)
+		}
+	}
+	if !r.objects["/config/services/forward-a"] || !r.objects["/config/services/forward-b"] {
+		t.Fatal("previous services not restored")
+	}
+	if err := a.Verify(context.Background(), initial); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.processes) != 1 || r.processes[0].stopCount != 0 {
+		t.Fatal("failure restarted process")
+	}
+}

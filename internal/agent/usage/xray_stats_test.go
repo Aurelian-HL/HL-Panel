@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,31 @@ func statsResponse(tag string, uplink, downlink int64) *xraystatsproto.QueryStat
 func usageWindow() CollectionWindow {
 	start := time.Unix(100, 0).UTC()
 	return CollectionWindow{StartedAt: start, EndedAt: start.Add(time.Second)}
+}
+
+func TestContentVersionedOutboundsKeepAccountingIdentity(t *testing.T) {
+	tag := statsTagForTest(t)
+	sep := strings.Index(tag, "--")
+	old := "socks-rule-1" + tag[sep:]
+	next := "socks-rule-1-v0123456789abcdef0123456789abcdef" + tag[sep:]
+	for _, includeInbound := range []bool{false, true} {
+		increments := map[string]int64{
+			"outbound>>>" + old + ">>>traffic>>>uplink":    10,
+			"outbound>>>" + old + ">>>traffic>>>downlink":  20,
+			"outbound>>>" + next + ">>>traffic>>>uplink":   30,
+			"outbound>>>" + next + ">>>traffic>>>downlink": 40,
+		}
+		want := int64(100)
+		if includeInbound {
+			increments["inbound>>>"+tag+">>>traffic>>>uplink"] = 50
+			increments["inbound>>>"+tag+">>>traffic>>>downlink"] = 70
+			want = 120
+		}
+		deltas := buildXrayDeltas(nil, increments, usageWindow().EndedAt)
+		if len(deltas) != 1 || deltas[0].RuleID != "rule-1" || deltas[0].CustomerID != "customer-1" || deltas[0].RuleActualBytes != want || deltas[0].CustomerActualBytes != want {
+			t.Fatalf("versioned egress accounting with inbound=%v: %#v", includeInbound, deltas)
+		}
+	}
 }
 
 func TestXrayStatsSourceUsesCumulativeDeltasAndBaseline(t *testing.T) {
