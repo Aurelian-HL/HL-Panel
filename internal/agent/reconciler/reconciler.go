@@ -78,6 +78,13 @@ func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNod
 	if err != nil {
 		return fmt.Errorf("load agent state: %w", err)
 	}
+	// Do not repeat staging, validation or mutations while a live transaction
+	// is uncertain. A dead process clears this guard so recovery remains possible.
+	if live, ok := r.adapter.(interface{ LiveUpdateError() error }); ok {
+		if err := live.LiveUpdateError(); err != nil {
+			return err
+		}
+	}
 	if current.Applied != nil && current.Applied.Generation == desired.Generation && current.Applied.Engine == desired.Engine && current.Applied.ConfigSHA256 == strings.ToLower(strings.TrimSpace(desired.ConfigSHA256)) {
 		if process, ok := r.adapter.(interface {
 			RequiresLiveProcess() bool
@@ -208,6 +215,11 @@ func (r *Reconciler) EnsureApplied(ctx context.Context) (bool, error) {
 }
 
 func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.DesiredNodeConfig, deliver bool) error {
+	if live, ok := r.adapter.(interface{ LiveUpdateError() error }); ok {
+		if err := live.LiveUpdateError(); err != nil {
+			return err
+		}
+	}
 	if err := r.store.ClearApplyReceipts(); err != nil {
 		return fmt.Errorf("clear previous process receipts: %w", err)
 	}
@@ -356,8 +368,11 @@ func (r *Reconciler) restoreFailed(ctx context.Context, desired agentv1.DesiredN
 	// Prepare and Validate only stage/check files. A mixed adapter may still
 	// have a healthy component serving existing sessions while another exited.
 	// Rolling back to nil before Commit would stop that healthy component too.
-	// Retain cleanup once activation has actually been attempted.
-	if phase == agentv1.ApplyPhaseCommit || phase == agentv1.ApplyPhaseVerify {
+	// A failed recovery must not stop a surviving owned component, including
+	// when a new component started but subsequent verification failed.
+	live, ownsLive := r.adapter.(interface{ HasLiveProcess() bool })
+	preserve := ownsLive && live.HasLiveProcess()
+	if (phase == agentv1.ApplyPhaseCommit || phase == agentv1.ApplyPhaseVerify) && !preserve && !engine.PreservesLiveProcess(cause) {
 		if err := r.adapter.Rollback(context.WithoutCancel(ctx), nil); err != nil {
 			message = sanitizeMessage(message + "; rollback failed: " + err.Error())
 		}
@@ -372,13 +387,23 @@ func (r *Reconciler) restoreFailed(ctx context.Context, desired agentv1.DesiredN
 func (r *Reconciler) fail(ctx context.Context, desired agentv1.DesiredNodeConfig, attemptID string, previous *engine.PreparedConfiguration, phase agentv1.ApplyPhase, applyErr error) error {
 	message := sanitizeMessage(applyErr.Error())
 	r.report(ctx, desired, attemptID, phase, agentv1.ApplyStatusFailed, message)
+	if phase == agentv1.ApplyPhasePrepare || phase == agentv1.ApplyPhaseValidate || engine.PreservesLiveProcess(applyErr) {
+		// Staging and validation have not mutated the running engine. Do not
+		// invoke rollback APIs (especially Rollback(nil) without an LKG) for
+		// a rejected document or a temporary local filesystem failure.
+		// The adapter deliberately retained the live process. In particular an
+		// uncertain RPC must not become a successful rollback based on file
+		// equality, or a Rollback(nil) that stops healthy mixed components.
+		_, _ = r.store.Abort(phase, agentv1.ApplyStatusFailed, message, r.now())
+		return applyErr
+	}
 	// A canceled control-plane request must not cancel local safety recovery.
 	rollbackErr := r.adapter.Rollback(context.WithoutCancel(ctx), previous)
 	if rollbackErr != nil {
 		message = sanitizeMessage(fmt.Sprintf("%s; rollback failed: %s", message, rollbackErr))
 		_, _ = r.store.Abort(agentv1.ApplyPhaseRollback, agentv1.ApplyStatusFailed, message, r.now())
 		r.report(ctx, desired, attemptID, agentv1.ApplyPhaseRollback, agentv1.ApplyStatusFailed, message)
-		return fmt.Errorf("%w; rollback failed: %v", applyErr, rollbackErr)
+		return fmt.Errorf("%w; rollback failed: %w", applyErr, rollbackErr)
 	}
 	_, _ = r.store.Abort(agentv1.ApplyPhaseRollback, agentv1.ApplyStatusRolledBack, message, r.now())
 	r.report(ctx, desired, attemptID, agentv1.ApplyPhaseRollback, agentv1.ApplyStatusRolledBack, "previous configuration restored")

@@ -14,8 +14,8 @@ import (
 
 // MixedProcessAdapter applies a complete node generation to two independently
 // owned processes. It reports live only when both are running. Cross-process
-// activation cannot be atomic; the reconciler restores the previous complete
-// generation whenever a commit or verification fails.
+// activation cannot be atomic. Compensation uses live APIs; an unsafe or
+// uncertain change preserves existing processes and reports failure.
 type MixedProcessAdapter struct {
 	xray       *XrayProcessAdapter
 	gost       *GOSTProcessAdapter
@@ -47,7 +47,11 @@ func (a *MixedProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desir
 				fragments = append(fragments, fragment)
 			}
 		}
-		if len(fragments) == 0 {
+		// Remove the last listener through the same live API. Keep an already
+		// running empty engine idle, so the next rule does not need a new process.
+		live := engine == agentv1.EngineXray && a.xray.ActiveEngineMode() != "" ||
+			engine == agentv1.EngineGOST && a.gost.ActiveEngineMode() != ""
+		if len(fragments) == 0 && !live {
 			continue
 		}
 		config, err := json.Marshal(agentv1.ConfigurationBundle{SchemaVersion: BundleSchemaVersion, Fragments: fragments})
@@ -120,6 +124,20 @@ func (a *MixedProcessAdapter) CommitValidated(ctx context.Context, prepared Prep
 }
 
 func (a *MixedProcessAdapter) commitValidated(ctx context.Context, prepared PreparedConfiguration) error {
+	if part, ok := prepared.components[agentv1.EngineXray]; ok {
+		if err := a.xray.checkLiveChange(ctx, part); err != nil {
+			return err
+		}
+	} else if a.xray.HasLiveProcess() {
+		return ErrLiveUpdateRequiresMaintenance
+	}
+	if part, ok := prepared.components[agentv1.EngineGOST]; ok {
+		if err := a.gost.checkLiveChange(ctx, part); err != nil {
+			return err
+		}
+	} else if a.gost.HasLiveProcess() {
+		return ErrLiveUpdateRequiresMaintenance
+	}
 	previous := a.lastGoodSnapshot()
 	a.mu.Lock()
 	if err := ctx.Err(); err != nil {
@@ -134,15 +152,11 @@ func (a *MixedProcessAdapter) commitValidated(ctx context.Context, prepared Prep
 		if err := a.xray.CommitValidated(ctx, part); err != nil {
 			return a.compensateCommitFailure(ctx, previous, "xray", err)
 		}
-	} else if err := a.xray.Rollback(ctx, nil); err != nil {
-		return a.compensateCommitFailure(ctx, previous, "stop obsolete xray component", err)
 	}
 	if part, ok := prepared.components[agentv1.EngineGOST]; ok {
 		if err := a.gost.CommitValidated(ctx, part); err != nil {
 			return a.compensateCommitFailure(ctx, previous, "gost", err)
 		}
-	} else if err := a.gost.Rollback(ctx, nil); err != nil {
-		return a.compensateCommitFailure(ctx, previous, "stop obsolete gost component", err)
 	}
 	a.mu.Lock()
 	_, a.expectXray = prepared.components[agentv1.EngineXray]
@@ -162,7 +176,7 @@ func (a *MixedProcessAdapter) compensateCommitFailure(ctx context.Context, previ
 	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), engineValidationTimeout)
 	defer cancel()
 	if err := a.Rollback(rollbackCtx, previous); err != nil {
-		return fmt.Errorf("commit %s component: %w; compensation rollback failed: %v", component, cause, err)
+		return fmt.Errorf("commit %s component: %w; compensation rollback failed: %w", component, cause, err)
 	}
 	return fmt.Errorf("commit %s component: %w; previous configuration restored", component, cause)
 }
@@ -198,6 +212,18 @@ func (a *MixedProcessAdapter) Rollback(ctx context.Context, previous *PreparedCo
 		if err := a.checkOwner(*previous); err != nil {
 			return err
 		}
+		// A rollback target prepared before an engine first started may omit
+		// that engine. Rebuild only missing live parts as empty configurations,
+		// removing their listeners without stopping the now-owned process.
+		_, hasXray := previous.components[agentv1.EngineXray]
+		_, hasGOST := previous.components[agentv1.EngineGOST]
+		if !hasXray && a.xray.HasLiveProcess() || !hasGOST && a.gost.HasLiveProcess() {
+			expanded, err := a.Prepare(ctx, previous.DesiredNodeConfig())
+			if err != nil {
+				return errors.Join(ErrLiveUpdateRequiresMaintenance, err)
+			}
+			previous = &expanded
+		}
 	}
 	a.mu.Lock()
 	a.expectXray, a.expectGOST = false, false
@@ -221,8 +247,8 @@ func (a *MixedProcessAdapter) Rollback(ctx context.Context, previous *PreparedCo
 		} else {
 			err = a.gost.Rollback(ctx, component)
 		}
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("restore %s component: %w", engine, err)
+		if err != nil {
+			firstErr = errors.Join(firstErr, fmt.Errorf("restore %s component: %w", engine, err))
 		}
 	}
 	if firstErr == nil && previous != nil {

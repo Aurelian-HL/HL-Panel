@@ -455,6 +455,18 @@ func TestXrayRealLeadingRealityUDPRulePreservesOpenConnection(t *testing.T) {
 		t.Fatalf("VLESS Reality UDP echo failed: bytes=%d error=%v", n, err)
 	}
 	exchange(oldConn, "udp-active")
+	// Ordinary desired-config deletion must use the live path as well; testing
+	// rollback alone previously hid the restart on customer rule deletion.
+	if err := a.CommitValidated(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if a.process.(*execXrayProcess).PID() != pid || a.CounterEpoch() != epoch {
+		t.Fatal("deleting Reality UDP rule restarted Xray")
+	}
+	exchange(oldConn, "rule-deleted")
+	if err := a.CommitValidated(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.Rollback(context.Background(), &first); err != nil {
 		t.Fatal(err)
 	}
@@ -576,17 +588,14 @@ func TestXrayLiveFailureRestoresPreviousConfiguration(t *testing.T) {
 			if !errors.Is(err, ErrXrayLiveUpdate) || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("error = %v", err)
 			}
-			if err := a.Verify(context.Background(), first); err != nil {
-				t.Fatal(err)
+			blocked := stage == "uncertain" || stage == "bad compensation" || stage == "disk"
+			if verifyErr := a.Verify(context.Background(), first); (verifyErr != nil) != blocked || blocked && !errors.Is(verifyErr, ErrLiveStateUncertain) {
+				t.Fatalf("verify=%v blocked=%v", verifyErr, blocked)
 			}
-			wantStarts := 1
-			if stage == "uncertain" || stage == "bad compensation" {
-				wantStarts = 2
+			if len(r.starts) != 1 || r.processes[0].stopCount != 0 {
+				t.Fatal("failed addition restarted the process")
 			}
-			if len(r.starts) != wantStarts {
-				t.Fatalf("process starts = %d, want %d", len(r.starts), wantStarts)
-			}
-			if wantStarts == 1 && (r.tags["new-in"] || !r.tags["old-in"]) {
+			if !blocked && (r.tags["new-in"] || !r.tags["old-in"]) {
 				t.Fatal("partial API addition not compensated")
 			}
 		})

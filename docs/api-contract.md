@@ -415,6 +415,17 @@ errors retain the queue for retry. A partial legacy success retries the same
 pair, relying on phase idempotency. Prepare, validate, failure, and rollback
 reports retain the single-result endpoint.
 
+## Administrator service-owner deletion
+
+`DELETE /api/v1/service-owners/{id}` requires an administrator session,
+`Idempotency-Key` and JSON `{"revision": N}`. It deletes only an unreferenced
+service owner without a panel login. Remaining login, rule, subscription or
+non-revoked VLESS references return `409`; exact success replay returns `200`
+with `{"replayed":true}`. Deletion, audit and replay persist atomically and
+publish no node generation. `DELETE /customers/{id}` separately revokes panel
+login only. See [deletion contract](deletion-contract-20261021.md) for status
+codes, reference checks and interrupted-workflow handling.
+
 ## Required Semantics
 
 - Enrollment tokens are random, expire, are single-use, and are stored hashed.

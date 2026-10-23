@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -18,7 +19,7 @@ func mixedFragments(xrayTag, gostName string) []agentv1.ConfigurationFragment {
 	}
 }
 
-func TestMixedAdapterRestoresBothEnginesAfterSecondStartFails(t *testing.T) {
+func TestMixedAdapterRecoversExitedSecondEngineAfterStartFails(t *testing.T) {
 	ctx := context.Background()
 	xrayRunner := &recordingXrayRunner{}
 	gostRunner := &recordingGOSTRunner{}
@@ -39,11 +40,12 @@ func TestMixedAdapterRestoresBothEnginesAfterSecondStartFails(t *testing.T) {
 	if err := adapter.Verify(ctx, first); err != nil || adapter.ActiveEngineMode() != "mixed" {
 		t.Fatalf("first generation was not fully active: %v, mode=%q", err, adapter.ActiveEngineMode())
 	}
-	second, err := adapter.Prepare(ctx, testDesired(t, 2, mixedFragments("xray-two", "forward-two")))
+	second, err := adapter.Prepare(ctx, testDesired(t, 2, mixedFragments("xray-one", "forward-one")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	gostRunner.startErrors = []error{errors.New("second process failed")}
+	gostRunner.processes[0].setRunning(false)
 	if err := adapter.Commit(ctx, second); err == nil {
 		t.Fatal("second engine failure was accepted")
 	}
@@ -52,6 +54,9 @@ func TestMixedAdapterRestoresBothEnginesAfterSecondStartFails(t *testing.T) {
 	}
 	if err := adapter.Verify(ctx, first); err != nil || adapter.ActiveEngineMode() != "mixed" {
 		t.Fatalf("previous complete generation not restored: %v, mode=%q", err, adapter.ActiveEngineMode())
+	}
+	if len(gostRunner.startErrors) != 0 || len(xrayRunner.starts) != 1 || xrayRunner.processes[0].stopCount != 0 {
+		t.Fatal("start failure was not exercised or surviving Xray was restarted")
 	}
 }
 
@@ -81,7 +86,7 @@ func TestMixedAdapterValidatedCommitSkipsDuplicateValidationAndRestoresLastGood(
 		t.Fatalf("first generation was not fully active: %v, mode=%q", err, adapter.ActiveEngineMode())
 	}
 
-	second, err := adapter.Prepare(ctx, testDesired(t, 2, mixedFragments("xray-two", "forward-two")))
+	second, err := adapter.Prepare(ctx, testDesired(t, 2, mixedFragments("xray-one", "forward-one")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +97,7 @@ func TestMixedAdapterValidatedCommitSkipsDuplicateValidationAndRestoresLastGood(
 		t.Fatalf("second generation validation calls: xray=%d gost=%d, want 2 each", len(xrayRunner.tests), len(gostRunner.tests))
 	}
 	gostRunner.startErrors = []error{errors.New("second process failed")}
+	gostRunner.processes[0].setRunning(false)
 	if err := adapter.CommitValidated(ctx, second); err == nil {
 		t.Fatal("second engine failure was accepted")
 	}
@@ -103,6 +109,9 @@ func TestMixedAdapterValidatedCommitSkipsDuplicateValidationAndRestoresLastGood(
 	}
 	if err := adapter.Verify(ctx, first); err != nil {
 		t.Fatalf("previous complete generation not restored: %v", err)
+	}
+	if len(gostRunner.startErrors) != 0 || len(xrayRunner.starts) != 1 || xrayRunner.processes[0].stopCount != 0 {
+		t.Fatal("start failure was not exercised or surviving Xray was restarted")
 	}
 }
 
@@ -165,13 +174,48 @@ func TestMixedAdapterRejectsObsoleteProcessForSingleEngineBundle(t *testing.T) {
 			if mode := adapter.ActiveEngineMode(); mode != "" {
 				t.Fatalf("obsolete process produced valid mode %q", mode)
 			}
-			if err := adapter.Rollback(ctx, &prepared); err != nil {
-				t.Fatal(err)
+			if err := adapter.Commit(ctx, prepared); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+				t.Fatalf("stale prepared bundle accepted: %v", err)
 			}
-			if err := adapter.Verify(ctx, prepared); err != nil {
-				t.Fatalf("single-engine bundle not restored: %v", err)
+			if err := adapter.Rollback(ctx, &prepared); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+				t.Fatalf("unknown running configuration was replaced: %v", err)
+			}
+			if !xray.HasLiveProcess() || !gost.HasLiveProcess() {
+				t.Fatal("missing component caused a process stop")
 			}
 		})
+	}
+}
+
+func TestMixedCompensationPreservesAllRollbackErrors(t *testing.T) {
+	ctx := context.Background()
+	xr, gr := &recordingXrayRunner{}, &recordingGOSTRunner{}
+	x, g := newTestXrayAdapter(t, xr, true), newTestGOSTAdapter(t, gr, true)
+	a, err := NewMixedProcessAdapter(x, g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := a.Prepare(ctx, testDesired(t, 1, mixedFragments("one", "one")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Commit(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	// The first rollback fails validation; the second has uncertain runtime.
+	// Neither the aggregate nor the compensation wrapper may discard the latter.
+	xp := p.components[agentv1.EngineXray]
+	if err := os.WriteFile(xp.adapterPath, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	g.liveStateUncertain = true
+	cause := errors.New("second component commit failed")
+	err = a.compensateCommitFailure(ctx, &p, "gost", cause)
+	if !errors.Is(err, cause) || !errors.Is(err, ErrConfigurationHash) || !errors.Is(err, ErrLiveStateUncertain) {
+		t.Fatalf("lost a causal error: %v", err)
+	}
+	if xr.processes[0].stopCount != 0 || gr.processes[0].stopCount != 0 {
+		t.Fatal("compensation stopped a live process")
 	}
 }
 

@@ -18,11 +18,11 @@ import (
 
 func TestXrayProcessAdapterLifecycleAndRollback(t *testing.T) {
 	t.Parallel()
-	runner := &recordingXrayRunner{}
+	runner := &updateAPIRunner{in: map[string]json.RawMessage{}, out: map[string]json.RawMessage{}}
 	adapter := newTestXrayAdapter(t, runner, true)
 	first := xrayDesired(t, 1, []agentv1.ConfigurationFragment{{
 		GroupID: "group-a", GroupRevision: 1, Engine: agentv1.EngineXray,
-		Config: json.RawMessage(`{"log":{"loglevel":"warning"},"inbounds":[{"tag":"in-a","listen":"127.0.0.1","port":18081,"protocol":"vless"}],"outbounds":[{"tag":"out-a","protocol":"freedom"}]}`),
+		Config: json.RawMessage(`{"inbounds":[{"tag":"in-a","listen":"127.0.0.1","port":18081,"protocol":"vless"}],"outbounds":[{"tag":"out-a","protocol":"freedom"}],"routing":{"rules":[{"type":"field","inboundTag":["in-a"],"outboundTag":"out-a"}]}}`),
 	}})
 	preparedFirst, err := adapter.Prepare(context.Background(), first)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestXrayProcessAdapterLifecycleAndRollback(t *testing.T) {
 
 	second := xrayDesired(t, 2, []agentv1.ConfigurationFragment{{
 		GroupID: "group-b", GroupRevision: 1, Engine: agentv1.EngineXray,
-		Config: json.RawMessage(`{"inbounds":[{"tag":"in-b","listen":"127.0.0.1","port":18082,"protocol":"vless"}],"outbounds":[{"tag":"out-b","protocol":"freedom"}]}`),
+		Config: json.RawMessage(`{"inbounds":[{"tag":"in-b","listen":"127.0.0.1","port":18082,"protocol":"vless"}],"outbounds":[{"tag":"out-b","protocol":"freedom"}],"routing":{"rules":[{"type":"field","inboundTag":["in-b"],"outboundTag":"out-b"}]}}`),
 	}})
 	preparedSecond, err := adapter.Prepare(context.Background(), second)
 	if err != nil {
@@ -55,8 +55,8 @@ func TestXrayProcessAdapterLifecycleAndRollback(t *testing.T) {
 	if err := adapter.Verify(context.Background(), preparedSecond); err != nil {
 		t.Fatalf("Verify(second) error = %v", err)
 	}
-	if runner.processes[0].stopCount != 1 {
-		t.Fatalf("first process stop count = %d, want 1", runner.processes[0].stopCount)
+	if runner.processes[0].stopCount != 0 || len(runner.starts) != 1 {
+		t.Fatal("rule replacement restarted process")
 	}
 
 	if err := adapter.Rollback(context.Background(), &preparedFirst); err != nil {
@@ -154,7 +154,7 @@ func TestXrayProcessAdapterValidationDoesNotEchoSecretsAndDetectsTampering(t *te
 	}
 }
 
-func TestXrayProcessAdapterStartFailureRestoresPreviousProcessAndFile(t *testing.T) {
+func TestXrayProcessAdapterUnsupportedUpdatePreservesPreviousProcessAndFile(t *testing.T) {
 	t.Parallel()
 	runner := &recordingXrayRunner{}
 	adapter := newTestXrayAdapter(t, runner, true)
@@ -178,17 +178,17 @@ func TestXrayProcessAdapterStartFailureRestoresPreviousProcessAndFile(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Commit(context.Background(), preparedSecond); !errors.Is(err, ErrXrayStart) {
-		t.Fatalf("Commit(second) error = %v, want ErrXrayStart", err)
+	if err := adapter.Commit(context.Background(), preparedSecond); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+		t.Fatalf("Commit(second) error = %v, want maintenance refusal", err)
 	}
 	if err := adapter.Verify(context.Background(), preparedFirst); err != nil {
 		t.Fatalf("Verify(previous after failed start) error = %v", err)
 	}
-	if runner.processes[0].stopCount != 1 {
-		t.Fatalf("previous process stop count = %d, want 1", runner.processes[0].stopCount)
+	if runner.processes[0].stopCount != 0 {
+		t.Fatalf("previous process stop count = %d, want 0", runner.processes[0].stopCount)
 	}
-	if len(runner.processes) != 2 {
-		t.Fatalf("process starts = %d, want candidate failure plus previous restart", len(runner.processes))
+	if len(runner.processes) != 1 {
+		t.Fatalf("process starts = %d, want original process only", len(runner.processes))
 	}
 }
 

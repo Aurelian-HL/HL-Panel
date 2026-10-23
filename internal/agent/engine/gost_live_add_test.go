@@ -96,13 +96,13 @@ func TestGOSTLiveAdditionFailureRestoresLKG(t *testing.T) {
 		name, at string
 		err      error
 		state    string
-		restart  bool
+		blocked  bool
 	}{
 		{name: "rejected post", at: "POST /config/services", err: ErrGOSTLiveUpdate},
-		{name: "unknown post completion", at: "POST /config/services", err: errGOSTAPIUncertain, restart: true},
+		{name: "unknown post completion", at: "POST /config/services", err: errGOSTAPIUncertain, blocked: true},
 		{name: "failed readiness", state: "failed"},
-		{name: "failed compensation", at: "DELETE /config/services/forward-b", err: ErrGOSTLiveUpdate, state: "failed", restart: true},
-		{name: "unknown delete completion", at: "DELETE /config/services/forward-b", err: errGOSTAPIUncertain, state: "failed", restart: true},
+		{name: "failed compensation", at: "DELETE /config/services/forward-b", err: ErrGOSTLiveUpdate, state: "failed", blocked: true},
+		{name: "unknown delete completion", at: "DELETE /config/services/forward-b", err: errGOSTAPIUncertain, state: "failed", blocked: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r := &liveGOSTRunner{objects: map[string]bool{}, fail: map[string]error{}, state: tt.state}
@@ -122,11 +122,11 @@ func TestGOSTLiveAdditionFailureRestoresLKG(t *testing.T) {
 			if !bytes.Equal(before, after) || a.processConfigSHA256 != sha256.Sum256(before) {
 				t.Fatal("LKG file/hash changed")
 			}
-			if err := a.Verify(context.Background(), first); err != nil {
-				t.Fatal(err)
+			if err := a.Verify(context.Background(), first); (err != nil) != tt.blocked || tt.blocked && !errors.Is(err, ErrLiveStateUncertain) {
+				t.Fatalf("verify=%v blocked=%v", err, tt.blocked)
 			}
-			if (a.process != original) != tt.restart || original.Running() == tt.restart {
-				t.Fatal("unexpected process replacement or incomplete fencing")
+			if a.process != original || !original.Running() || r.processes[0].stopCount != 0 {
+				t.Fatal("failure recovery replaced the process")
 			}
 		})
 	}
@@ -155,8 +155,8 @@ func TestGOSTLiveAdditionFileFailureCompensatesWithoutRestart(t *testing.T) {
 	if !applied || !errors.Is(err, ErrGOSTLiveUpdate) || a.process != original || !original.Running() || r.objects["/config/services/forward-b"] {
 		t.Fatal("file failure failed to compensate live additions")
 	}
-	if err := a.Verify(context.Background(), first); err != nil {
-		t.Fatal(err)
+	if err := a.Verify(context.Background(), first); !errors.Is(err, ErrLiveStateUncertain) {
+		t.Fatalf("failed file recovery falsely attested: %v", err)
 	}
 }
 

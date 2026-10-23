@@ -194,7 +194,7 @@ func TestReconcilerReportsOrderedSuccessfulPhases(t *testing.T) {
 	}
 }
 
-func TestReconcilerValidationFailureRollsBackLastKnownGood(t *testing.T) {
+func TestReconcilerInvalidEnginePreservesLastKnownGood(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	store := state.NewAtomicStateStore(directory+"/state.json", directory+"/configurations")
@@ -227,8 +227,8 @@ func TestReconcilerValidationFailureRollsBackLastKnownGood(t *testing.T) {
 		t.Fatalf("state after rollback = %#v", current)
 	}
 	last := reporter.results[len(reporter.results)-1]
-	if last.Phase != agentv1.ApplyPhaseRollback || last.Status != agentv1.ApplyStatusRolledBack {
-		t.Fatalf("last report = %#v, want rolled back", last)
+	if last.Phase != agentv1.ApplyPhasePrepare || last.Status != agentv1.ApplyStatusFailed {
+		t.Fatalf("last report = %#v, want invalid engine rejected before mutation", last)
 	}
 }
 

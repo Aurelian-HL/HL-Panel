@@ -35,6 +35,7 @@ type GOSTProcessAdapter struct {
 	process             GOSTProcess
 	processStartedAt    time.Time
 	processConfigSHA256 [sha256.Size]byte
+	liveStateUncertain  bool
 	api                 *gostLocalAPI
 }
 
@@ -143,6 +144,9 @@ func (a *GOSTProcessAdapter) commitValidatedLocked(ctx context.Context, prepared
 	}
 	oldProcess := a.process
 	oldRunning := oldProcess != nil && oldProcess.Running()
+	if oldRunning && a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	// Keep sessions on an unchanged owned process. Compare its recorded native
 	// config as well as the file, which may have been edited externally.
 	if previousExists && bytes.Equal(previous, candidate) &&
@@ -153,17 +157,14 @@ func (a *GOSTProcessAdapter) commitValidatedLocked(ctx context.Context, prepared
 		if applied, err := a.tryAddGOSTLiveLocked(ctx, previous, candidate); applied {
 			return err
 		}
+		if applied, err := a.tryUpdateGOSTLiveLocked(ctx, previous, candidate); applied {
+			return err
+		}
 	}
 	if a.autoStart && oldRunning {
-		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
-			return fmt.Errorf("stop previous gost process: %w", err)
-		}
-		a.process = nil
+		return ErrLiveUpdateRequiresMaintenance
 	}
 	if err := writeFileAtomic(a.activePath, candidate, 0o600); err != nil {
-		if a.autoStart && oldRunning {
-			_ = a.restartPrevious(context.WithoutCancel(ctx), previousExists)
-		}
 		return fmt.Errorf("activate gost configuration: %w", err)
 	}
 	if a.autoStart {
@@ -185,6 +186,9 @@ func (a *GOSTProcessAdapter) Verify(ctx context.Context, prepared PreparedConfig
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	if err := a.checkOwner(prepared); err != nil {
 		return err
 	}
@@ -198,6 +202,9 @@ func (a *GOSTProcessAdapter) Verify(ctx context.Context, prepared PreparedConfig
 	}
 	if a.autoStart && (a.process == nil || !a.process.Running()) {
 		return ErrGOSTNotRunning
+	}
+	if a.autoStart && a.processConfigSHA256 != sha256.Sum256(expected) {
+		return ErrConfigurationHash
 	}
 	return nil
 }
@@ -244,6 +251,9 @@ func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var data []byte
+	if previous != nil && a.process != nil && a.process.Running() && a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	if previous != nil {
 		// A rejected rollback must not terminate the current healthy process.
 		if err := a.verifyStaged(*previous); err != nil {
@@ -266,9 +276,18 @@ func (a *GOSTProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 			if applied, err := a.tryRollbackGOSTLiveLocked(ctx, active, data); applied {
 				return err
 			}
+			if applied, err := a.tryUpdateGOSTLiveLocked(ctx, active, data); applied {
+				if err == nil {
+					return nil
+				}
+				return err
+			}
 		}
 	}
 	if a.autoStart && a.process != nil && a.process.Running() {
+		if previous != nil {
+			return ErrLiveUpdateRequiresMaintenance
+		}
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop gost process for rollback: %w", err)
 		}
@@ -297,7 +316,9 @@ func (a *GOSTProcessAdapter) Close(ctx context.Context) error {
 		return nil
 	}
 	err := a.process.Stop(ctx)
-	a.process = nil
+	if err == nil {
+		a.process = nil
+	}
 	return err
 }
 
@@ -344,6 +365,7 @@ func (a *GOSTProcessAdapter) startLocked(ctx context.Context, path string) (GOST
 		return nil, ErrGOSTStart
 	}
 	a.counterEpoch++
+	a.liveStateUncertain = false
 	a.processStartedAt = time.Now().UTC()
 	a.processConfigSHA256 = sha256.Sum256(data)
 	return process, nil

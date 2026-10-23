@@ -1,0 +1,107 @@
+name: Rule deletion and live engine stability
+
+on:
+  push:
+    branches: [main, 'fix/rule-deletion-live-*']
+    paths:
+      - '.github/workflows/rule-deletion-live.yml'
+      - 'internal/agent/**'
+      - 'internal/control/**'
+      - 'tests/integration/gost/**'
+      - 'tests/integration/xray/**'
+      - 'deploy/reliable-udp-engine/**'
+      - 'deploy/reliable_udp_engine.py'
+      - 'deploy/fetch-node-engines.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: nyvp_live_delete_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nyvp_live_delete_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build the pinned engines without changing their versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 deploy/reliable_udp_engine.py "$RUNNER_TEMP/udp-release" | tee udp-build.json
+          manifest_sha=$(sha256sum "$RUNNER_TEMP/udp-release/bundle/manifest.json" | cut -d' ' -f1)
+          python3 deploy/fetch-node-engines.py "$RUNNER_TEMP/live-engines" --gost-bundle "$RUNNER_TEMP/udp-release/bundle" --gost-manifest-sha256 "$manifest_sha"
+          cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$RUNNER_TEMP/live-engines/bin/gost"
+          "$RUNNER_TEMP/live-engines/bin/xray" version | tee xray-version.log
+          "$RUNNER_TEMP/live-engines/bin/gost" -V | tee gost-version.log
+      - name: Run real engine sessions and durable owner deletion on loopback
+        shell: bash
+        env:
+          NYVP_TEST_POSTGRES_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/nyvp_live_delete_test?sslmode=disable
+          NYVP_TEST_POSTGRES_ALLOW_MUTATION: 'true'
+        run: |
+          set -euo pipefail
+          export NYVP_XRAY_BINARY="$RUNNER_TEMP/live-engines/bin/xray"
+          export NYVP_XRAY_EXPECTED_VERSION=26.7.28
+          export NYVP_GOST_BINARY="$RUNNER_TEMP/live-engines/bin/gost"
+          go test -p 1 -json -count=1 -timeout=10m ./internal/agent/engine ./internal/control/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./tests/integration/xray ./tests/integration/gost -run 'TestGOSTRealLive|TestMixedEngineUpdatePreservesExistingOtherEngineConnection|TestXrayLive|TestServiceOwnerDeletion|TestPostgreSQLServiceOwner' | tee live-delete.jsonl
+      - name: Require actual execution including all reliable UDP chain cases
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          events = [json.loads(line) for line in Path('live-delete.jsonl').read_text().splitlines()]
+          skipped = [e for e in events if e.get('Action') == 'skip']
+          if skipped:
+              raise SystemExit('Required live deletion acceptance skipped: ' + repr([(e['Package'], e.get('Test')) for e in skipped]))
+          passed = {e.get('Test') for e in events if e.get('Action') == 'pass'}
+          required = {
+              'TestGOSTRealLiveReliableChainUpdateAndPartialFailure/success',
+              'TestGOSTRealLiveReliableChainUpdateAndPartialFailure/DELETE_/config/chains/tunnel-1',
+              'TestGOSTRealLiveReliableChainUpdateAndPartialFailure/POST_/config/chains',
+              'TestMixedEngineUpdatePreservesExistingOtherEngineConnection',
+              'TestXrayLiveDeleteDisableEditAndRollbackPreserveStream',
+              'TestXrayLiveCompensationFailureKeepsExistingStreamAndBlocksChanges',
+              'TestServiceOwnerDeletionAfterRuleBatchPreservesOtherCustomer',
+              'TestServiceOwnerDeletionAfterRuleWithdrawalPublishesNoExtraGeneration',
+              'TestPostgreSQLServiceOwnerDeletionFormat25RestartAndCommitRollback',
+          }
+          missing = sorted(required - passed)
+          if missing:
+              raise SystemExit('Required acceptance did not pass: ' + repr(missing))
+          print('Required live sessions, UDP failure compensation and owner deletion all executed and passed.')
+          PY
+      - name: Race and recovery checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test -race -count=1 ./internal/agent/engine ./internal/agent/reconciler ./internal/agent/runtime | tee recovery-race.log
+          go test -race -count=1 ./internal/control/memoryrepo ./internal/control/httpapi -run TestServiceOwnerDeletion | tee owner-race.log
+          go vet ./...
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rule-deletion-live-evidence
+          path: |
+            udp-build.json
+            xray-version.log
+            gost-version.log
+            live-delete.jsonl
+            recovery-race.log
+            owner-race.log

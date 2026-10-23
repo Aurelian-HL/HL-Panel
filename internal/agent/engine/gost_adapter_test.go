@@ -145,7 +145,7 @@ func TestCompileGOSTBundleRejectsUDPAndTunnelOnSamePort(t *testing.T) {
 }
 
 func TestGOSTProcessAdapterLifecycleRollbackAndExplicitStart(t *testing.T) {
-	runner := &recordingGOSTRunner{}
+	runner := &liveGOSTRunner{objects: map[string]bool{}}
 	adapter := newTestGOSTAdapter(t, runner, true)
 	first, err := adapter.Prepare(context.Background(), testDesired(t, 1, []agentv1.ConfigurationFragment{gostFragment("a", gostServiceA)}))
 	if err != nil {
@@ -171,8 +171,8 @@ func TestGOSTProcessAdapterLifecycleRollbackAndExplicitStart(t *testing.T) {
 	if err := adapter.Verify(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
-	if runner.processes[0].Running() || len(runner.processes) != 2 {
-		t.Fatal("previous process was not replaced")
+	if !runner.processes[0].Running() || len(runner.processes) != 1 {
+		t.Fatal("rule replacement restarted process")
 	}
 	if err := adapter.Rollback(context.Background(), &first); err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestGOSTProcessAdapterLifecycleRollbackAndExplicitStart(t *testing.T) {
 	if err := adapter.Verify(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Close(context.Background()); err != nil || runner.processes[2].Running() {
+	if err := adapter.Close(context.Background()); err != nil || runner.processes[0].Running() {
 		t.Fatalf("Close() error = %v", err)
 	}
 	if err := adapter.Rollback(context.Background(), nil); err != nil {
@@ -204,7 +204,7 @@ func TestGOSTProcessAdapterLifecycleRollbackAndExplicitStart(t *testing.T) {
 	}
 }
 
-func TestGOSTProcessAdapterStartFailureRestoresPrevious(t *testing.T) {
+func TestGOSTProcessAdapterUnsupportedUpdatePreservesPrevious(t *testing.T) {
 	runner := &recordingGOSTRunner{}
 	adapter := newTestGOSTAdapter(t, runner, true)
 	first, err := adapter.Prepare(context.Background(), testDesired(t, 1, []agentv1.ConfigurationFragment{gostFragment("a", gostServiceA)}))
@@ -224,14 +224,14 @@ func TestGOSTProcessAdapterStartFailureRestoresPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Commit(context.Background(), second); !errors.Is(err, ErrGOSTStart) {
+	if err := adapter.Commit(context.Background(), second); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
 		t.Fatalf("Commit(second) error = %v", err)
 	}
 	if err := adapter.Verify(context.Background(), first); err != nil {
 		t.Fatalf("last-known-good process not restored: %v", err)
 	}
 	active, err := os.ReadFile(adapter.activePath)
-	if err != nil || !bytes.Equal(active, previous) || len(runner.processes) != 2 {
+	if err != nil || !bytes.Equal(active, previous) || len(runner.processes) != 1 || runner.processes[0].stopCount != 0 {
 		t.Fatalf("last-known-good file/process not restored: err=%v starts=%d", err, len(runner.processes))
 	}
 }
@@ -313,12 +313,16 @@ func (r *recordingGOSTRunner) Start(context.Context, string) (GOSTProcess, error
 }
 
 type recordingGOSTProcess struct {
-	mu      sync.Mutex
-	running bool
+	mu        sync.Mutex
+	running   bool
+	stopCount int
 }
 
 func (p *recordingGOSTProcess) Stop(context.Context) error {
-	p.setRunning(false)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.running = false
+	p.stopCount++
 	return nil
 }
 

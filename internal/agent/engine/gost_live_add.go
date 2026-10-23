@@ -119,12 +119,13 @@ func (a *GOSTProcessAdapter) tryRollbackGOSTLiveLocked(ctx context.Context, acti
 	}{{"services", delta.services}, {"chains", delta.chains}} {
 		for i := len(part.items) - 1; i >= 0; i-- {
 			if _, err := runner.GOSTAPI(callCtx, a.api, http.MethodDelete, "/config/"+part.kind+"/"+url.PathEscape(gostObjectName(part.items[i])), nil); err != nil {
-				return false, nil // The full rollback stops this process, fencing late requests.
+				return true, errors.Join(ErrGOSTLiveUpdate, a.recoverGOSTLivePreviousLocked(context.WithoutCancel(ctx), previous))
 			}
 		}
 	}
 	if err := writeFileAtomic(a.activePath, previous, 0o600); err != nil {
-		return false, nil
+		a.liveStateUncertain = true
+		return true, errors.Join(ErrGOSTLiveUpdate, ErrLiveStateUncertain)
 	}
 	a.processConfigSHA256 = sha256.Sum256(previous)
 	return true, nil
@@ -133,7 +134,8 @@ func (a *GOSTProcessAdapter) tryRollbackGOSTLiveLocked(ctx context.Context, acti
 type gostAdditions struct{ chains, services []json.RawMessage }
 
 // Preserve every existing named object and every global setting. Edits and
-// removals retain the full apply path; adding a chain cannot reroute old services.
+// removals are evaluated by the general live-change planner. Adding a chain
+// cannot reroute old services.
 func planGOSTAdditions(previous, candidate []byte) (gostAdditions, bool) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(previous, &before) != nil || json.Unmarshal(candidate, &after) != nil {
@@ -249,6 +251,9 @@ func (a *GOSTProcessAdapter) tryAddGOSTLiveLocked(ctx context.Context, previous,
 			break
 		}
 	}
+	if applyErr == nil && !a.process.Running() {
+		applyErr = ErrGOSTNotRunning
+	}
 	if applyErr == nil {
 		fileAttempted = true
 		applyErr = writeFileAtomic(a.activePath, candidate, 0o600)
@@ -257,8 +262,8 @@ func (a *GOSTProcessAdapter) tryAddGOSTLiveLocked(ctx context.Context, previous,
 			return true, nil
 		}
 	}
-	// An incomplete HTTP mutation might finish after compensation. In that rare
-	// case stop the owning process before restoring LKG, never attest success.
+	// An incomplete HTTP mutation might finish after compensation. Preserve the
+	// process and block subsequent mutations rather than racing that late write.
 	recoveryCtx, recoveryCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer recoveryCancel()
 	if !uncertain {
@@ -282,22 +287,16 @@ func (a *GOSTProcessAdapter) tryAddGOSTLiveLocked(ctx context.Context, previous,
 			}
 		}
 	}
-	if uncertain {
-		if err := a.process.Stop(recoveryCtx); err != nil {
-			return true, ErrGOSTLiveUpdate
-		}
-		a.process = nil
-		if err := writeFileAtomic(a.activePath, previous, 0o600); err != nil {
-			return true, ErrGOSTLiveUpdate
-		}
-		if err := a.restartPrevious(recoveryCtx, true); err != nil {
-			return true, ErrGOSTLiveUpdate
+	if uncertain || !a.process.Running() {
+		if err := a.recoverGOSTLivePreviousLocked(recoveryCtx, previous); err != nil {
+			return true, errors.Join(ErrGOSTLiveUpdate, err)
 		}
 	} else if fileAttempted {
 		// Atomic replacement may succeed before chmod or directory fsync fails.
 		// Restore the complete file as well as compensating the live API.
 		if err := writeFileAtomic(a.activePath, previous, 0o600); err != nil {
-			return true, ErrGOSTLiveUpdate
+			a.liveStateUncertain = true
+			return true, errors.Join(ErrGOSTLiveUpdate, ErrLiveStateUncertain)
 		}
 	}
 	return true, ErrGOSTLiveUpdate

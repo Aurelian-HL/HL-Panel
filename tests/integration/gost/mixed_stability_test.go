@@ -118,9 +118,15 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 				t.Helper()
 				fragments := []agentv1.ConfigurationFragment{
 					{GroupID: "xray", GroupRevision: 1, Engine: agentv1.EngineXray,
-						Config: json.RawMessage(fmt.Sprintf(`{"log":{"loglevel":"none"},"inbounds":[{"tag":%q,"listen":"127.0.0.1","port":%d,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":%d,"network":"tcp"}}],"outbounds":[{"protocol":"freedom","settings":{"finalRules":[{"network":"tcp","ip":["127.0.0.1/32"],"port":"%d","action":"allow"}]}}]}`, xrayName, xrayPort, targetPort, targetPort))},
+						Config: json.RawMessage(fmt.Sprintf(`{"log":{"loglevel":"none"},"policy":{"levels":{"0":{"handshake":4}}},"inbounds":[{"tag":%q,"listen":"127.0.0.1","port":%d,"protocol":"dokodemo-door","settings":{"address":"127.0.0.1","port":%d,"network":"tcp"}}],"outbounds":[{"tag":"xray-out","protocol":"freedom","settings":{"finalRules":[{"network":"tcp","ip":["127.0.0.1/32"],"port":"%d","action":"allow"}]}}],"routing":{"domainStrategy":"AsIs","rules":[{"type":"field","inboundTag":[%q],"outboundTag":"xray-out"}]}}`, xrayName, xrayPort, targetPort, targetPort, xrayName))},
 					{GroupID: "gost", GroupRevision: 1, Engine: agentv1.EngineGOST,
 						Config: json.RawMessage(fmt.Sprintf(`{"services":[{"name":%q,"addr":"127.0.0.1:%d","handler":{"type":"tcp"},"listener":{"type":"tcp"},"metadata":{"enableStats":true},"forwarder":{"nodes":[{"name":"echo","addr":"127.0.0.1:%d"}],"selector":{"strategy":"round","maxFails":1,"failTimeout":30000000000}}}]}`, gostName, gostPort, targetPort))},
+				}
+				if xrayName == "" {
+					fragments = fragments[1:]
+				}
+				if gostName == "" {
+					fragments = fragments[:len(fragments)-1]
 				}
 				data, err := json.Marshal(agentv1.ConfigurationBundle{SchemaVersion: 1, Fragments: fragments})
 				if err != nil {
@@ -142,6 +148,8 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 				port, epoch = xrayPort, xray.CounterEpoch
 			}
 			initialEpoch := epoch()
+			xrayPID, gostPID := xray.RuntimeMetrics().PID, gost.RuntimeMetrics().PID
+			xrayEpoch, gostEpoch := xray.CounterEpoch(), gost.CounterEpoch()
 			var connection net.Conn
 			deadline := time.Now().Add(5 * time.Second)
 			for time.Now().Before(deadline) {
@@ -190,6 +198,47 @@ func TestMixedEngineUpdatePreservesExistingOtherEngineConnection(t *testing.T) {
 					t.Fatal(err)
 				}
 				checkStream()
+			}
+			// Remove the final rule of one engine through the live API, retain
+			// its idle process, then restore it without touching the other socket.
+			xrayName, gostName := "xray-one", "gost-one"
+			if changed == "xray" {
+				xrayName = ""
+			} else {
+				gostName = ""
+			}
+			empty := prepare(5, xrayName, gostName)
+			if err := adapter.Commit(ctx, empty); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Verify(ctx, empty); err != nil {
+				t.Fatal(err)
+			}
+			checkStream()
+			removedPort := xrayPort
+			if changed == "gost" {
+				removedPort = gostPort
+			}
+			if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", removedPort), 100*time.Millisecond); err == nil {
+				c.Close()
+				t.Fatal("empty component retained its customer listener")
+			}
+			// A repeated delivery must retain the same local idle projection.
+			repeated := prepare(6, xrayName, gostName)
+			if err := adapter.Commit(ctx, repeated); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Verify(ctx, repeated); err != nil {
+				t.Fatal(err)
+			}
+			checkStream()
+			if err := adapter.Rollback(ctx, &first); err != nil {
+				t.Fatal(err)
+			}
+			checkStream()
+			if xray.RuntimeMetrics().PID != xrayPID || gost.RuntimeMetrics().PID != gostPID ||
+				xray.CounterEpoch() != xrayEpoch || gost.CounterEpoch() != gostEpoch {
+				t.Fatal("deleting/restoring the last component rule replaced a process")
 			}
 			// The changed engine exits; a temporary recovery staging/validation
 			// error must leave the other engine and this exact TCP session alive.

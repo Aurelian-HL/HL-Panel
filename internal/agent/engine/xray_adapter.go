@@ -79,6 +79,7 @@ type XrayProcessAdapter struct {
 	process             XrayProcess
 	processStartedAt    time.Time
 	processConfigSHA256 [sha256.Size]byte
+	liveStateUncertain  bool
 }
 
 // NewXrayProcessAdapter constructs an adapter rooted at private absolute
@@ -136,6 +137,11 @@ func (a *XrayProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desire
 	prepared, err := parseDesired(desired)
 	if err != nil {
 		return PreparedConfiguration{}, err
+	}
+	if len(prepared.Bundle.Fragments) == 0 {
+		if err := a.preserveIdleSettings(&prepared); err != nil {
+			return PreparedConfiguration{}, err
+		}
 	}
 	native, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
@@ -216,6 +222,9 @@ func (a *XrayProcessAdapter) commitValidatedLocked(ctx context.Context, prepared
 	}
 	oldProcess := a.process
 	oldRunning := oldProcess != nil && oldProcess.Running()
+	if oldRunning && a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	// A complete node generation may only change another engine or metadata.
 	// Preserve existing sessions and the counter epoch when this owned process
 	// already runs the validated native document. File equality alone cannot
@@ -228,17 +237,14 @@ func (a *XrayProcessAdapter) commitValidatedLocked(ctx context.Context, prepared
 		if handled, err := a.tryAddLiveLocked(ctx, previous, candidate); handled {
 			return err
 		}
+		if handled, err := a.tryUpdateXrayLiveLocked(ctx, previous, candidate); handled {
+			return err
+		}
 	}
 	if a.autoStart && oldRunning {
-		if err := oldProcess.Stop(context.WithoutCancel(ctx)); err != nil {
-			return fmt.Errorf("stop previous xray process: %w", err)
-		}
-		a.process = nil
+		return ErrLiveUpdateRequiresMaintenance
 	}
 	if err := writeFileAtomic(a.activePath, candidate, 0o600); err != nil {
-		if a.autoStart && oldRunning {
-			_ = a.restartPrevious(context.WithoutCancel(ctx), previousExists)
-		}
 		return fmt.Errorf("activate xray configuration: %w", err)
 	}
 	if a.autoStart {
@@ -263,6 +269,9 @@ func (a *XrayProcessAdapter) Verify(ctx context.Context, prepared PreparedConfig
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	if err := a.checkOwner(prepared); err != nil {
 		return err
 	}
@@ -319,6 +328,9 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var previousBytes []byte
+	if previous != nil && a.process != nil && a.process.Running() && a.liveStateUncertain {
+		return ErrLiveStateUncertain
+	}
 	if previous != nil {
 		// Validate the rollback before touching a healthy running process.
 		if err := a.checkOwner(*previous); err != nil {
@@ -352,8 +364,21 @@ func (a *XrayProcessAdapter) Rollback(ctx context.Context, previous *PreparedCon
 				return a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previousBytes)
 			}
 		}
+		if exists {
+			if handled, err := a.tryUpdateXrayLiveLocked(ctx, active, previousBytes); handled {
+				if err == nil {
+					return nil
+				}
+				// A failed reverse patch has not restored the rollback target.
+				// Never replace a live process to force the transaction through.
+				return err
+			}
+		}
 	}
 	if a.autoStart && a.process != nil && a.process.Running() {
+		if previous != nil {
+			return ErrLiveUpdateRequiresMaintenance
+		}
 		if err := a.process.Stop(context.WithoutCancel(ctx)); err != nil {
 			return fmt.Errorf("stop xray process for rollback: %w", err)
 		}
@@ -387,7 +412,9 @@ func (a *XrayProcessAdapter) Close(ctx context.Context) error {
 		return nil
 	}
 	err := a.process.Stop(ctx)
-	a.process = nil
+	if err == nil {
+		a.process = nil
+	}
 	return err
 }
 
@@ -430,6 +457,9 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 	if !bytes.Equal(data, expected) {
 		return ErrConfigurationHash
 	}
+	if a.autoStart && a.process != nil && a.process.Running() && a.processConfigSHA256 != sha256.Sum256(expected) {
+		return ErrConfigurationHash
+	}
 	return nil
 }
 
@@ -450,6 +480,7 @@ func (a *XrayProcessAdapter) startLocked(ctx context.Context, path string) (Xray
 		return nil, ErrXrayStart
 	}
 	a.counterEpoch++
+	a.liveStateUncertain = false
 	a.processStartedAt = time.Now().UTC()
 	a.processConfigSHA256 = sha256.Sum256(data)
 	return process, nil

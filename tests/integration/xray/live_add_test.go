@@ -15,7 +15,7 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
-// Omitting the optional API capability reproduces the former full-restart path.
+// Omitting the optional API capability must refuse changes without a restart.
 type noLiveXrayRunner struct{ runner *engine.ExecXrayRunner }
 
 func (r noLiveXrayRunner) Test(ctx context.Context, path string) error {
@@ -127,17 +127,28 @@ func TestXrayLiveAdditionPreservesActualTCPStream(t *testing.T) {
 			}
 			pid, epoch := a.RuntimeMetrics().PID, a.CounterEpoch()
 			second := prepare(2, 2, false)
-			if err := a.Commit(ctx, second); err != nil {
-				t.Fatal(err)
-			}
+			commitErr := a.Commit(ctx, second)
 			if !live {
-				if a.CounterEpoch() == epoch || a.RuntimeMetrics().PID == pid {
-					t.Fatal("legacy restart not reproduced")
+				if !errors.Is(commitErr, engine.ErrLiveUpdateRequiresMaintenance) {
+					t.Fatalf("missing API did not require maintenance: %v", commitErr)
 				}
-				if check(connection) == nil {
-					t.Fatal("legacy path did not interrupt old stream")
+				if a.CounterEpoch() != epoch || a.RuntimeMetrics().PID != pid {
+					t.Fatal("missing API replaced the existing process")
+				}
+				if err := check(connection); err != nil {
+					t.Fatalf("existing stream interrupted: %v", err)
+				}
+				if err := a.Verify(ctx, first); err != nil {
+					t.Fatal(err)
+				}
+				if c, err := net.DialTimeout("tcp", localAddress(ports[1]), 100*time.Millisecond); err == nil {
+					c.Close()
+					t.Fatal("refused listener was opened")
 				}
 				return
+			}
+			if commitErr != nil {
+				t.Fatal(commitErr)
 			}
 			checkOld := func() {
 				t.Helper()

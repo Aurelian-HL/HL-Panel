@@ -9,6 +9,7 @@ func (api *API) registerBusinessRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/v1/customers", api.requireAdministrator(api.saveCustomer))
 		mux.HandleFunc("PUT /api/v1/customers/{id}", api.requireAdministrator(api.saveCustomer))
 		mux.HandleFunc("DELETE /api/v1/customers/{id}", api.requireAdministrator(api.deleteCustomer))
+		mux.HandleFunc("DELETE /api/v1/service-owners/{id}", api.requireAdministrator(api.deleteServiceOwner))
 		mux.HandleFunc("GET /api/v1/user-groups", api.requireAdministrator(api.listUserGroups))
 		mux.HandleFunc("GET /api/v1/user-groups/{id}", api.requireAdministrator(api.getUserGroup))
 		mux.HandleFunc("POST /api/v1/user-groups", api.requireAdministrator(api.saveUserGroup))

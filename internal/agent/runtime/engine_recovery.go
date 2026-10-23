@@ -148,6 +148,11 @@ func (a *Agent) restartEngine(ctx context.Context) error {
 	if err := a.state.SetEngineStopped(false); err != nil {
 		return err
 	}
+	// Only this explicit administrator command (or an Agent upgrade) replaces
+	// a still-live process. Ordinary apply/recovery never escalates to restart.
+	if err := a.closeEngines(ctx); err != nil {
+		return err
+	}
 	_, pending, err := a.state.PendingDesired()
 	if err != nil {
 		return err

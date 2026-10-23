@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 
 // Updating one component must not terminate the other engine's sessions,
 // including when the changed component has to be rolled back.
-func TestMixedAdapterPreservesUnchangedEngine(t *testing.T) {
+func TestMixedAdapterRejectsUnsupportedUpdateWithoutTouchingEitherEngine(t *testing.T) {
 	for _, changed := range []agentv1.Engine{agentv1.EngineXray, agentv1.EngineGOST} {
 		t.Run(string(changed), func(t *testing.T) {
 			ctx := context.Background()
@@ -50,15 +51,15 @@ func TestMixedAdapterPreservesUnchangedEngine(t *testing.T) {
 					t.Fatal("Xray update interrupted unchanged GOST process or reset counters")
 				}
 			}
-			if err := adapter.Commit(ctx, second); err != nil {
-				t.Fatal(err)
+			if err := adapter.Commit(ctx, second); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+				t.Fatalf("unsupported update accepted: %v", err)
 			}
-			if err := adapter.Verify(ctx, second); err != nil {
+			if err := adapter.Verify(ctx, first); err != nil {
 				t.Fatal(err)
 			}
 			assertUnchanged()
-			if changed == agentv1.EngineXray && xrayProcess.Running() || changed == agentv1.EngineGOST && gostProcess.Running() {
-				t.Fatal("changed engine was not replaced")
+			if !xrayProcess.Running() || !gostProcess.Running() || xray.CounterEpoch() != xrayEpoch || gost.CounterEpoch() != gostEpoch {
+				t.Fatal("unsupported update interrupted a live engine")
 			}
 			if err := adapter.Rollback(ctx, &first); err != nil {
 				t.Fatal(err)
@@ -161,11 +162,21 @@ func TestUnchangedEngineChecksStagedAndRunningConfiguration(t *testing.T) {
 			if err := os.WriteFile(activePath, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := adapter.Commit(ctx, second); err != nil {
+			if err := adapter.Commit(ctx, second); !errors.Is(err, ErrLiveUpdateRequiresMaintenance) {
+				t.Fatalf("file drift accepted: %v", err)
+			}
+			if epoch() != initialEpoch {
+				t.Fatal("file drift restarted the process")
+			}
+			if err := adapter.Verify(ctx, second); err == nil {
+				t.Fatal("file drift falsely attested a running configuration")
+			}
+			original, err := os.ReadFile(first.adapterPath)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if epoch() != initialEpoch+1 {
-				t.Fatal("active file was mistaken for the running process configuration")
+			if err := os.WriteFile(activePath, original, 0o600); err != nil {
+				t.Fatal(err)
 			}
 			if err := os.WriteFile(second.adapterPath, []byte(`{}`), 0o600); err != nil {
 				t.Fatal(err)
@@ -176,7 +187,7 @@ func TestUnchangedEngineChecksStagedAndRunningConfiguration(t *testing.T) {
 			if err := adapter.Rollback(ctx, &second); err == nil {
 				t.Fatal("rollback accepted tampered staged config")
 			}
-			if err := adapter.Verify(ctx, second); err != nil {
+			if err := adapter.Verify(ctx, first); err != nil {
 				t.Fatalf("invalid rollback interrupted the verified running process: %v", err)
 			}
 		})

@@ -28,8 +28,9 @@ type xrayAdditions struct {
 	previousRouting, candidateRouting json.RawMessage
 }
 
-// Plan only disjoint additions. Edits, deletions, global settings and
-// reordered existing rules retain the full apply path.
+// Plan only disjoint additions. Edits, deletions and reordered existing rules
+// are evaluated by the general live-change planner; global changes on a live
+// process are refused until explicit maintenance.
 // Every added route must be restricted to newly added inbound tags, so it
 // cannot change dispatch for any existing listener. A changed first outbound
 // is safe only when every listener has an explicit unconditional route.
@@ -222,7 +223,8 @@ func xrayAPIDocument(key string, value any) []byte {
 
 // tryAddLiveLocked never silently falls back to a restart on an API failure.
 // An unsuccessful operation is compensated while the previous process lives;
-// only failed compensation requires last-known-good process recovery.
+// Uncertain RPC completion or failed compensation blocks subsequent mutations
+// while preserving the process. Only an already dead process may be recovered.
 func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, candidate []byte) (bool, error) {
 	api, ok := a.runner.(xrayAPIRunner)
 	if !ok || !a.autoStart || a.process == nil || !a.process.Running() || a.processConfigSHA256 != sha256.Sum256(previous) {
@@ -247,17 +249,23 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 	if err == nil && !a.process.Running() {
 		err = ErrXrayNotRunning
 	}
-	if err == nil {
+	fileAttempted := err == nil
+	if fileAttempted {
 		err = writeFileAtomic(a.activePath, candidate, 0o600)
 	}
 	if err == nil {
 		a.processConfigSHA256 = sha256.Sum256(candidate)
 		return true, nil
 	}
-	if restoreErr := a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta); restoreErr != nil ||
-		errors.Is(err, errXrayAPIUncertain) || !a.process.Running() {
+	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() ||
+		a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta) != nil {
 		if recoveryErr := a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previous); recoveryErr != nil {
-			return true, errors.New("xray incremental update failed; last-known-good recovery failed")
+			return true, errors.Join(ErrXrayLiveUpdate, recoveryErr)
+		}
+	} else if fileAttempted {
+		if restoreErr := writeFileAtomic(a.activePath, previous, 0o600); restoreErr != nil {
+			a.liveStateUncertain = true
+			return true, errors.Join(ErrXrayLiveUpdate, ErrLiveStateUncertain)
 		}
 	}
 	return true, ErrXrayLiveUpdate
@@ -308,9 +316,11 @@ func (a *XrayProcessAdapter) undoXrayAdditions(ctx context.Context, api xrayAPIR
 
 func (a *XrayProcessAdapter) recoverLivePreviousLocked(ctx context.Context, previous []byte) error {
 	if a.process != nil && a.process.Running() {
-		if err := a.process.Stop(ctx); err != nil {
-			return err
-		}
+		a.liveStateUncertain = true
+		// Keep a durable safe boot target, but never claim it reflects the
+		// live process after a timed-out mutation or failed compensation.
+		_ = writeFileAtomic(a.activePath, previous, 0o600)
+		return ErrLiveStateUncertain
 	}
 	a.process = nil
 	if err := writeFileAtomic(a.activePath, previous, 0o600); err != nil {
@@ -324,14 +334,14 @@ func (r *ExecXrayRunner) API(ctx context.Context, address, operation string, doc
 		return nil, ErrXrayLiveUpdate
 	}
 	switch operation {
-	case "adi", "ado", "adrules", "rmi", "rmo", "lsi":
+	case "adi", "ado", "adrules", "rmi", "rmo", "lsi", "lso":
 	default:
 		return nil, ErrXrayLiveUpdate
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	// The process deadline expires before the CLI's RPC deadline, letting us
-	// distinguish an uncertain RPC outcome and rebuild last-known-good state.
+	// distinguish an uncertain RPC outcome and block further live mutations.
 	args := []string{"api", operation, "--server=" + address, "--timeout=6"}
 	if operation == "lsi" {
 		args = append(args, "--isOnlyTags=true")
@@ -339,7 +349,7 @@ func (r *ExecXrayRunner) API(ctx context.Context, address, operation string, doc
 	command := exec.CommandContext(ctx, r.binaryPath, args...)
 	command.Stdin = bytes.NewReader(document)
 	command.Stderr = io.Discard
-	if operation == "lsi" {
+	if operation == "lsi" || operation == "lso" {
 		output, err := command.Output()
 		if err != nil || len(output) > MaxConfigurationBytes {
 			return nil, ErrXrayLiveUpdate
