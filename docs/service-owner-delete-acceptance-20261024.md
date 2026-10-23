@@ -52,7 +52,7 @@
    Go 格式检查和 `git diff --check` 通过。交叉编译不等于 Linux 运行验收。
 
 日志在仓库本地 `artifacts/live-update-20261024/`，由 Git 忽略。没有把日志中的
-条件 SKIP 当作功能通过；Windows 可靠 UDP chain 三个子用例仍需 Linux 补验。
+条件 SKIP 当作功能通过；Windows 可靠 UDP chain 三个子用例已在 Linux 补验通过。
 
 ## Linux 验收门槛与升级边界
 
@@ -60,6 +60,12 @@
 固定 Xray 和正式 recipe 的 GOST，检查真实旧 socket、PID、CounterEpoch、
 可靠 UDP chain success/DELETE 后失败/POST 后失败、身份删除事务。要求这些
 测试实际 PASS，任何 SKIP 或必需测试缺失都判为失败。该流程无发布/部署步骤。
+
+修复提交 `15ba5fa8e38426f2e6926cc0b4c407b5d8e1a1bf` 的隔离流程
+[40009597595](https://github.com/Aurelian-HL/HL-Panel/actions/runs/40009597595)
+已全部通过：80 个 pass 事件，0 fail、0 skip。真实 PostgreSQL 17.11 身份删除、
+格式 25 重开与延迟提交失败回滚通过；其他客户规则、订阅与凭据保持不变，
+身份清理及重放不增加节点 generation。证据已下载核验，详见节点验收记录。
 
 面板新接口上线只解决缺失路由；节点要升级新 Agent 才能消除旧重启路径。
 不修改客户 UUID/订阅地址，不升级 Xray 核心。Agent 升级自身仍有进程切换窗口，

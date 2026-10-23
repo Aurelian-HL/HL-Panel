@@ -4,7 +4,7 @@
 
 日常新增、删除、暂停、恢复、编辑规则以及失败补偿，不得通过停止、替换仍在运行的 Xray/GOST 来应用配置。旧实现主要支持纯新增热更，其他变更可能退回完整 Stop/Start，因此操作一条规则会影响同一引擎的其他客户。
 
-本轮已修改节点 Agent；截至本记录，仅本地代码与测试完成，未提交、推送、发布或升级生产。现有生产节点尚未因此获得新行为。
+修复提交 `15ba5fa8e38426f2e6926cc0b4c407b5d8e1a1bf` 已推送 `fix/rule-deletion-live-20261024`。本地与 Linux 隔离专项均通过；本记录编写时尚未发布或升级生产。生产节点须升级 Agent 后才获得新行为。
 
 ## 已实现策略
 
@@ -37,7 +37,7 @@
 
 ## 环境与方法
 
-仅 Windows 本机回环隔离测试，Go 1.27.0；未向生产注入故障或发送测试配置。
+Windows 本机回环及 Ubuntu 24.04 隔离 CI，Go 1.27.0；未向生产注入故障或发送测试配置。
 
 - Xray 固定 **26.7.28**，未升级核心。
 - GOST 为固定源码 `e9fab9587288b82ce8a1a9b8f07326f41b155935` 的 Windows 3.3.1，依赖 go-gost/x 0.17.2；不具备正式 Linux 可靠 UDP 补丁版能力。
@@ -65,10 +65,18 @@ go test -p 1 ./internal/agent/engine ./tests/integration/gost ./tests/integratio
 ## 失败尝试与未验收项
 
 - 首次双二进制全仓测试中，可靠 UDP API 的 quic/kcp 场景因本机 GOST 能力不足失败，未伪造版本或降低能力校验，不计为已通过。
-- 可靠 UDP chain 更新 success、DELETE chain 后失败、POST chain 后失败三个子用例最终均为 SKIP。外层 PASS 不代表这些子用例通过。
+- Windows 可靠 UDP chain 三个子用例因夹具能力不足跳过，随后在 Linux 正式 recipe 补丁版 GOST 上全部实际通过，见下节。
 - 首次跨包并行运行 GOST 测试争用 `127.0.0.1:18090`，导致启动失败；使用 `-p 1` 串行后通过。
 - 开发期间夹具缺显式回退路由/全局设置、路由故障注入未实际改变路由、旧重启路径断言不适用等问题，均修正后重新实跑。准备阶段失败用例曾错误断言 Validate，已按实际 Prepare 阶段纠正并完成全仓及竞态重测。
-- 尚未进行 Linux 隔离运行、Linux 可靠 UDP 补丁版专项、生产灰度或真实生产客户公网验收。
+- 尚未进行本次新版生产升级或生产客户公网验收。
+
+## 已完成的 Linux 隔离验证
+
+GitHub Actions [40009597595](https://github.com/Aurelian-HL/HL-Panel/actions/runs/40009597595) 对修复提交执行成功。Ubuntu 24.04、PostgreSQL 17.11、固定 Xray 26.7.28 和正式 recipe 补丁版 GOST；专项 80 个 pass 事件、0 fail、0 skip，工作流强制检查必需测试不得跳过或缺失。
+
+可靠 UDP chain success、DELETE chain 后失败、POST chain 后失败全部通过；Xray 删除/暂停/编辑/回滚与补偿失败、Mixed 保留另一引擎原连接、身份删除与事务提交失败回滚全部通过。真实旧 TCP socket 持续收发，PID 和 CounterEpoch 保持不变。engine/reconciler/runtime 与控制面竞态检测、恢复专项、vet 均通过。
+
+下载证据压缩包 SHA256 为 `beb2f7fbb8dd989f6f5465e3fe605bb4de833f02e76948cde300045bb9f3da9a`；已核验并解析到本地 `artifacts/live-update-20261024/linux/`，包含测试 JSONL、race 日志、引擎版本和 `summary.json`。
 
 ## 影响边界与交付
 
@@ -76,6 +84,6 @@ go test -p 1 ./internal/agent/engine ./tests/integration/gost ./tests/integratio
 
 全局设置变化、旧配置缺 API/明确路由、文件漂移、结果不确定时，保留活进程并明确失败/需要维护，不自动重启解决。不确定状态锁定后，新变更会等待维护，不能标记已生效。
 
-本轮未改变客户 UUID、订阅 URI、持久数据模型、核心版本。未提交、推送、发布、升级生产，也未执行生产回滚。新行为需要新 Agent 升级到节点后才会生效，单独更新面板不能改变旧 Agent。
+本轮未改变客户 UUID、订阅 URI、持久数据模型、核心版本。代码已提交推送，本记录编写时尚未发布、升级生产或执行生产回滚。新行为需要新 Agent 升级到节点后才会生效，单独更新面板不能改变旧 Agent。
 
-后续交付应生成独立新版本、保留上一版 Agent 和配置备份，完成 Linux 与可靠 UDP 验收后再按授权升级；不得覆盖旧 tag 或旧发行包。当前本地变更可通过 Git 差异审阅、撤销，无生产数据回滚步骤。
+Linux 与可靠 UDP 验收已完成；后续交付生成独立新版本，保留上一版 Agent 和配置备份，再按授权升级，不覆盖旧 tag 或旧发行包。
