@@ -95,7 +95,10 @@ jobs:
           go test -race ./internal/control/deploymentreceipts ./internal/panellicense
           go test -race -v ./internal/panellicenseissuer
           go test -race ./internal/agent/state ./internal/agent/reconciler
-          go test -race ./internal/control/panelmigration ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/usage/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime ./internal/agent/engine ./internal/agent/trafficcontrol ./internal/agent/usage ./internal/agent/probeecho ./internal/gateway/... ./internal/routing/endpointrouter
+          # Large snapshot fixtures under the race detector must not compete
+          # with other packages for this runner's CPU and exceed production
+          # transaction deadlines. Keep all tests and in-package concurrency.
+          go test -p 1 -race ./internal/control/panelmigration ./internal/control/generations ./internal/control/gatewaymembership ./internal/control/httpapi ./internal/control/usage/httpapi ./internal/control/memoryrepo ./internal/control/postgressnapshot ./internal/agent/controlclient ./internal/agent/runtime ./internal/agent/engine ./internal/agent/trafficcontrol ./internal/agent/usage ./internal/agent/probeecho ./internal/gateway/... ./internal/routing/endpointrouter
           go vet ./...
           for script in deploy/activate-panel-license.sh deploy/setup-panel-license.sh; do bash -n "$script"; done
           python3 -m py_compile deploy/check-panel-license.py deploy/build-license-trust.py tests/install/license_fixture.py

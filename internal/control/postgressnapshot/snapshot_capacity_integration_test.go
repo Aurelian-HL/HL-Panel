@@ -19,7 +19,13 @@ func TestLegacySnapshotCapacityUpgradeRetainsLargeStateAndEnrollment(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = s.Close() }()
+	defer func() {
+		// Open returns nil on failure; keep the original assertion visible
+		// instead of masking it with a second panic during cleanup.
+		if s != nil {
+			_ = s.Close()
+		}
+	}()
 	// Reproduce an existing installation's constraint, not only a fresh schema.
 	if _, err = s.db.Exec(`ALTER TABLE nyvp_control_snapshots DROP CONSTRAINT hl_panel_snapshot_payload_64m,
 		ADD CONSTRAINT nyvp_control_snapshots_payload_check CHECK (octet_length(payload) BETWEEN 1 AND 16777216)`); err != nil {
