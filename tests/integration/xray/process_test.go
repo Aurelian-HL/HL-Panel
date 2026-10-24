@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -146,14 +147,55 @@ func startXray(t *testing.T, binary, config, address string) func() {
 	return stop
 }
 
+// Closing a temporary listener lets the OS immediately reuse its port. Keep a
+// test-scoped record as well: a large configuration must never accidentally
+// install two handlers on one port and mistake the survivor for a failed delete.
+var loopbackPorts = struct {
+	sync.Mutex
+	byTest map[*testing.T]map[int]bool
+}{byTest: make(map[*testing.T]map[int]bool)}
+
 func freeLoopbackPort(t *testing.T) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	loopbackPorts.Lock()
+	defer loopbackPorts.Unlock()
+	used, exists := loopbackPorts.byTest[t]
+	if !exists {
+		used = make(map[int]bool)
+		loopbackPorts.byTest[t] = used
+		t.Cleanup(func() {
+			loopbackPorts.Lock()
+			delete(loopbackPorts.byTest, t)
+			loopbackPorts.Unlock()
+		})
 	}
-	defer listener.Close()
-	return listener.Addr().(*net.TCPAddr).Port
+	for attempt := 0; attempt < 100; attempt++ {
+		listener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := listener.Addr().(*net.TCPAddr).Port
+		if err := listener.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !used[port] {
+			used[port] = true
+			return port
+		}
+	}
+	t.Fatal("cannot allocate a distinct loopback port for this test")
+	return 0
+}
+
+func TestLoopbackPortsAreDistinctAtProductionScale(t *testing.T) {
+	ports := make(map[int]bool)
+	for i := 0; i < 440; i++ {
+		port := freeLoopbackPort(t)
+		if ports[port] {
+			t.Fatalf("test fixture reused port %d", port)
+		}
+		ports[port] = true
+	}
 }
 
 func localAddress(port int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) }

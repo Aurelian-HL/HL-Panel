@@ -339,8 +339,13 @@ func TestXrayLegacyUpgradeFirstDeletionAtProductionScale(t *testing.T) {
 	f := newLiveUpdateFixture(t)
 	f.legacyTags, f.extraOutbounds = true, 760
 	rules := make([]updateRule, 440)
+	ports := make(map[int]bool)
 	for j := range rules {
 		rules[j] = updateRule{id: j + 1, port: freeLoopbackPort(t)}
+		if ports[rules[j].port] {
+			t.Fatalf("duplicate test listener port %d", rules[j].port)
+		}
+		ports[rules[j].port] = true
 	}
 	initial := f.prepare(rules...)
 	if err := f.a.Commit(f.ctx, initial); err != nil {
