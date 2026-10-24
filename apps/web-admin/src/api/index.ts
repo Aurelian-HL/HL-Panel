@@ -20,6 +20,7 @@ import type {
   CreateGroupRevisionResponse,
   LoginRequest,
   LoginResponse,
+  PanelAccountLoginResponse,
   NodesResponse,
   OverviewResponse,
   NodeControlResult,
@@ -45,6 +46,7 @@ import {
   parseRevokeEnrollmentTokenResponse,
   parseGroupRevisionResponse,
   parseLoginResponse,
+  parsePanelAccountLoginResponse,
   parseNodesResponse,
   parseOverviewResponse,
   parseNodeControlResult,
@@ -53,9 +55,11 @@ import {
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
 const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_access_token'))
+const loginHttp = new HttpClient(baseUrl, () => null)
 
 interface AdminApi {
   login(request: LoginRequest): Promise<LoginResponse>
+  loginPanelAccount(request: LoginRequest): Promise<PanelAccountLoginResponse>
   getOverview(): Promise<OverviewResponse>
   deleteNode(nodeId: string, key: string, scope?: 'unassigned'): Promise<{ node_id: string; replayed: boolean }>
   getNodes(): Promise<NodesResponse>
@@ -83,7 +87,10 @@ interface AdminApi {
 
 const realApi: AdminApi = {
   async login(request) {
-    return parseLoginResponse(await http.request('/auth/login', { method: 'POST', body: JSON.stringify(request) }))
+    return parseLoginResponse(await loginHttp.request('/auth/login', { method: 'POST', body: JSON.stringify(request) }))
+  },
+  async loginPanelAccount(request) {
+    return parsePanelAccountLoginResponse(await loginHttp.request('/customer/auth/login', { method: 'POST', body: JSON.stringify(request) }))
   },
   async getOverview() {
     return parseOverviewResponse(await http.request('/overview'))

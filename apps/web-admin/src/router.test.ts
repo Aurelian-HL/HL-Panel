@@ -43,6 +43,13 @@ describe('admin routes', () => {
     expect(router.resolve('/probe').matched.map((record) => record.path)).toEqual(['/probe', '/probe'])
     expect(router.resolve('/overview').matched[0]?.path).toBe('/')
   })
+  it('keeps the shared form available for an account login despite an old administrator session', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: 'admin-for-switch-test', expires_at: '2030-01-01T00:00:00Z', user: { id: 'adm-1', username: 'admin', must_change_password: false } }), { headers: { 'content-type': 'application/json' } })))
+    await authStore.login({ username: 'admin', password: 'test-only-password' })
+    await router.push('/login?redirect=%2Faccount%2Fuserinfo')
+    expect(router.currentRoute.value.name).toBe('login')
+    expect(router.currentRoute.value.query.redirect).toBe('/account/userinfo')
+  })
   it('redirects the obsolete endpoint page to the rule workflow', () => {
     expect(router.resolve('/endpoint-pools').matched.at(-1)?.redirect).toBe('/forward-rules')
   })

@@ -902,8 +902,6 @@ button {
 .ny-login-submit { display: inline-flex; height: 32px; min-width: 64px; align-items: center; justify-content: center; gap: 6px; padding: 0 15px; border: 1px solid #1677ff; border-radius: 5px; background: #1677ff; color: #fff; font-size: 14px; cursor: pointer; }
 .ny-login-submit:hover:not(:disabled) { border-color: #095dcc; background: #095dcc; }
 .ny-login-submit:disabled { cursor: wait; opacity: .68; }
-.login-account-entry { padding: 0 24px 20px; color: #64748b; font-size: 13px; }
-.login-account-entry a { color: #245b95; text-decoration: underline; text-underline-offset: 3px; }
 .login-page--dark { background: #202124; color: #eee; }
 .login-page--dark .login-topbar { background: #3a3b3e; }
 .login-page--dark .login-topbar__brand, .login-page--dark .login-topbar__icon, .login-page--dark .login-session-state { color: #f1f1f1; }

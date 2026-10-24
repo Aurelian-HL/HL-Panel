@@ -3,6 +3,7 @@ import { watch } from 'vue'
 
 import AppShell from '@/layouts/AppShell.vue'
 import { authStore } from '@/stores/auth'
+import { accountLoginDestination } from '@/lib/loginDestination'
 
 const LoginPage = () => import('@/pages/LoginPage.vue')
 const OverviewPage = () => import('@/pages/OverviewPage.vue')
@@ -47,6 +48,7 @@ export const router = createRouter({
 })
 
 router.beforeEach((to) => {
+  if (to.name === 'login' && accountLoginDestination(to.query.redirect)) return true
   if (!to.meta.public && !authStore.isAuthenticated.value) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }

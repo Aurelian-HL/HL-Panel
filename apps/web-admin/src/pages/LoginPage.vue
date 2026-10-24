@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Contrast, Eye, EyeOff, LoaderCircle, LockKeyhole, Moon, UserRound } from '@lucide/vue'
 
 import { authStore } from '@/stores/auth'
 import { siteStore } from '@/stores/site'
 import { displayError } from '@/lib/displayFormatters'
+import { ApiError } from '@/api'
+import { accountLoginDestination, administratorLoginDestination } from '@/lib/loginDestination'
 
 const route = useRoute()
 const router = useRouter()
@@ -21,23 +23,23 @@ watch(() => siteStore.panelTitle.value, (title) => {
   document.title = title
 }, { immediate: true })
 
-const destination = computed(() => {
-  const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/overview'
-  return redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/overview'
-})
-
 async function submit(): Promise<void> {
+  if (submitting.value) return
   errorMessage.value = ''
   if (!username.value.trim() || !password.value) {
-    errorMessage.value = '请输入管理员账号和密码'
+    errorMessage.value = '请输入账号和密码'
     return
   }
   submitting.value = true
   try {
-    await authStore.login({ username: username.value.trim(), password: password.value })
-    await router.replace(destination.value)
+    const identity = await authStore.login({ username: username.value.trim(), password: password.value })
+    if (identity === 'panel_account') {
+      window.location.replace(accountLoginDestination(route.query.redirect) ?? '/account/')
+    } else {
+      await router.replace(administratorLoginDestination(route.query.redirect))
+    }
   } catch (error) {
-    errorMessage.value = displayError(error)
+    errorMessage.value = error instanceof ApiError && error.status === 401 ? '用户名或密码错误' : displayError(error)
   } finally {
     submitting.value = false
   }
@@ -61,14 +63,14 @@ async function submit(): Promise<void> {
       <header class="login-panel__header"><h1 id="login-title">登录</h1></header>
       <form class="login-form" @submit.prevent="submit">
         <label class="ny-login-field">
-          <span class="sr-only">管理员账号</span>
+          <span class="sr-only">账号</span>
           <UserRound :size="16" aria-hidden="true" />
           <input v-model="username" autocomplete="username" inputmode="text" maxlength="128" autofocus placeholder="账号" />
         </label>
         <label class="ny-login-field">
           <span class="sr-only">密码</span>
           <LockKeyhole :size="16" aria-hidden="true" />
-          <input v-model="password" :type="revealPassword ? 'text' : 'password'" autocomplete="current-password" maxlength="256" placeholder="密码" />
+          <input v-model="password" :type="revealPassword ? 'text' : 'password'" autocomplete="current-password" maxlength="4096" placeholder="密码" />
           <button type="button" class="input-action" :aria-label="revealPassword ? '隐藏密码' : '显示密码'" :title="revealPassword ? '隐藏密码' : '显示密码'" @click="revealPassword = !revealPassword">
             <EyeOff v-if="revealPassword" :size="15" />
             <Eye v-else :size="15" />
@@ -81,7 +83,6 @@ async function submit(): Promise<void> {
           {{ submitting ? '登录中' : '登录' }}
         </button>
       </form>
-      <p class="login-account-entry">获授权的用户请使用 <a href="/account/login">子账号登录</a></p>
     </section>
   </main>
 </template>

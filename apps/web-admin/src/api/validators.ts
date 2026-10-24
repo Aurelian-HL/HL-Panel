@@ -18,6 +18,7 @@ import type {
   UpdateDeviceGroupMemberWeightResponse,
   CreateGroupRevisionResponse,
   LoginResponse,
+  PanelAccountLoginResponse,
   NodesResponse,
   OverviewResponse,
   NodeControlResult,
@@ -152,6 +153,32 @@ export function parseLoginResponse(value: unknown): LoginResponse {
       role: optionalText(user.role, 'user.role') || 'administrator',
       created_at: optionalText(user.created_at, 'user.created_at'),
       must_change_password: user.must_change_password === undefined ? false : booleanValue(user.must_change_password, 'user.must_change_password'),
+    },
+  }
+}
+
+export function parsePanelAccountLoginResponse(value: unknown): PanelAccountLoginResponse {
+  const body = record(value, 'panel_account_login')
+  const user = record(body.user, 'user')
+  const status = text(user.effective_status, 'user.effective_status')
+  if (!['active', 'disabled', 'expired', 'quota_exhausted'].includes(status)) throw new ContractError('未知子账号状态')
+  return {
+    access_token: text(body.access_token, 'access_token'),
+    expires_at: text(body.expires_at, 'expires_at'),
+    user: {
+      id: text(user.id, 'user.id'),
+      username: text(user.username, 'user.username'),
+      display_name: text(user.display_name, 'user.display_name'),
+      user_type: text(user.user_type, 'user.user_type'),
+      user_group_name: text(user.user_group_name, 'user.user_group_name'),
+      expires_at: nullableText(user.expires_at, 'user.expires_at'),
+      traffic_used_bytes: numberValue(user.traffic_used_bytes, 'user.traffic_used_bytes'),
+      traffic_limit_bytes: numberValue(user.traffic_limit_bytes, 'user.traffic_limit_bytes'),
+      max_rules: numberValue(user.max_rules, 'user.max_rules'),
+      speed_limit_mbps: numberValue(user.speed_limit_mbps, 'user.speed_limit_mbps'),
+      ip_limit: numberValue(user.ip_limit, 'user.ip_limit'),
+      connection_limit: numberValue(user.connection_limit, 'user.connection_limit'),
+      effective_status: status as PanelAccountLoginResponse['user']['effective_status'],
     },
   }
 }

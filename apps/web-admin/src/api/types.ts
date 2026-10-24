@@ -23,6 +23,26 @@ export interface LoginResponse {
   user: Administrator
 }
 
+export interface PanelAccountLoginResponse {
+  access_token: string
+  expires_at: string
+  user: {
+    id: string
+    username: string
+    display_name: string
+    user_type: string
+    user_group_name: string
+    expires_at: string | null
+    traffic_used_bytes: number
+    traffic_limit_bytes: number
+    max_rules: number
+    speed_limit_mbps: number
+    ip_limit: number
+    connection_limit: number
+    effective_status: 'active' | 'disabled' | 'expired' | 'quota_exhausted'
+  }
+}
+
 export interface OverviewResponse {
   node_count: number
   group_count: number

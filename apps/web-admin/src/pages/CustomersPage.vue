@@ -31,7 +31,7 @@ onMounted(load)
 <template>
   <div class="page-stack">
     <header class="page-heading"><h2>用户管理</h2><div class="page-heading__actions"><button class="button button--secondary" :disabled="loading" @click="load"><RefreshCw :size="16" :class="{ spin: loading }" />刷新</button><button class="button button--primary" :disabled="loading || !!error" @click="open(null)"><Plus :size="16" />添加用户</button></div></header>
-    <p class="field-help">在此授权可登录面板的子账号，并设置可用线路、规则数量、速率、总用量和到期时间。线路客户不会出现在这里。<a href="/account/login" target="_blank" rel="noopener">打开子账号登录</a></p>
+    <p class="field-help">在此授权可登录面板的子账号，并设置可用线路、规则数量、速率、总用量和到期时间。线路客户不会出现在这里。子账号与管理员共用登录页。</p>
     <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索账号或显示名称" /></label><label class="toolbar-select"><span>授权状态</span><select v-model="filter"><option value="all">全部用户</option><option value="active">可用</option><option value="disabled">已停用</option><option value="expired">已到期</option><option value="quota_exhausted">额度已用完</option></select></label></section>
     <StatePanel v-if="loading && !customers.length" state="loading" title="正在读取用户" />
     <StatePanel v-else-if="error && !customers.length" state="error" title="用户加载失败" :message="error" @retry="load" />
