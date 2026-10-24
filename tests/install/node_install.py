@@ -349,8 +349,9 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode == 0
             config = json.loads(Path('/etc/hl-panel/edge-agent.json').read_text())
             assert config['engine_mode'] == 'mixed' and config['xray_auto_start'] and config['gost_auto_start']
-            route = json.loads(run(['ip', '-j', '-4', 'route', 'get', '1.1.1.1']).stdout)
-            assert config['traffic_control_interface'] == route[0]['dev']
+            routes = json.loads(run(['ip', '-j', '-4', 'route', 'get', '1.1.1.1']).stdout)
+            egress_interface = routes[0]['dev']
+            assert config['traffic_control_interface'] == egress_interface
             assert Path(config['traffic_control_binary']).resolve() == Path(shutil.which('tc')).resolve()
             agent_pid = run(['systemctl', 'show', 'hl-panel-edge-agent', '--property=MainPID', '--value']).stdout.strip()
             proc_status = dict(line.split(':', 1) for line in Path('/proc', agent_pid, 'status').read_text().splitlines() if ':' in line)
@@ -494,7 +495,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 wait_for(node_sample)
                 assert node_updater.METRICS_OVERRIDE.is_file()
                 assert not any(key.startswith('traffic_control_') for key in json.loads(agent_config.read_text())), 'Legacy updater did not exercise saved-JSON overwrite'
-                assert 'HL_PANEL_TC_INTERFACE=' + route[0]['dev'] in tc_dropin.read_text()
+                assert 'HL_PANEL_TC_INTERFACE=' + egress_interface in tc_dropin.read_text()
                 assert 'HL_PANEL_TC_BINARY=' in tc_dropin.read_text()
                 agent_pid = run(['systemctl', 'show', 'hl-panel-edge-agent', '-p', 'MainPID', '--value']).stdout.strip()
                 proc_status = dict(line.split(':', 1) for line in Path('/proc', agent_pid, 'status').read_text().splitlines() if ':' in line)
@@ -667,7 +668,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert install(switch_token).returncode == 0, 'Full command did not switch existing node'
             wait_for(node_sample)
             assert tc_dropin.is_file()
-            assert 'HL_PANEL_TC_INTERFACE=' + route[0]['dev'] in tc_dropin.read_text()
+            assert 'HL_PANEL_TC_INTERFACE=' + egress_interface in tc_dropin.read_text()
             checks.append('token-command reinstall provisions TC on an existing legacy node without changing its identity')
             assert bbr_state() == installed_bbr_state, 'Reinstall changed the TCP algorithm or BBR persistence unexpectedly'
             assert {algorithm: path.is_file() for algorithm, path in bbr_configs.items()} == {
