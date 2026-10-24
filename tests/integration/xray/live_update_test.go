@@ -89,14 +89,15 @@ func TestXrayLiveCompensationFailureKeepsExistingStreamAndBlocksChanges(t *testi
 
 type updateRule struct{ id, port, target, redirect, route int }
 type liveUpdateFixture struct {
-	t          *testing.T
-	ctx        context.Context
-	a          *engine.XrayProcessAdapter
-	runner     *updateFaultRunner
-	ports      [4]int
-	targets    [2]int
-	generation agentv1.NodeConfigGeneration
-	legacyTags bool
+	t              *testing.T
+	ctx            context.Context
+	a              *engine.XrayProcessAdapter
+	runner         *updateFaultRunner
+	ports          [4]int
+	targets        [2]int
+	generation     agentv1.NodeConfigGeneration
+	legacyTags     bool
+	extraOutbounds int
 }
 
 func newLiveUpdateFixture(t *testing.T) *liveUpdateFixture {
@@ -175,6 +176,9 @@ func (f *liveUpdateFixture) prepare(rules ...updateRule) engine.PreparedConfigur
 			route = r.route
 		}
 		routes = append(routes, map[string]any{"type": "field", "inboundTag": []string{inTag}, "outboundTag": fmt.Sprintf("out-%d", route)})
+	}
+	for j := 0; j < f.extraOutbounds; j++ {
+		out = append(out, map[string]any{"tag": fmt.Sprintf("extra-leaf-%d", j), "protocol": "freedom", "settings": map[string]any{}})
 	}
 	data, _ := json.Marshal(map[string]any{"log": map[string]any{"loglevel": "none"}, "inbounds": in, "outbounds": out, "routing": map[string]any{"rules": routes}})
 	if len(out) > 0 && !f.legacyTags {
@@ -329,6 +333,41 @@ func TestXrayLiveDeleteDisableEditAndRollbackPreserveStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.dial(middle.port, 'A')
+}
+
+func TestXrayLegacyUpgradeFirstDeletionAtProductionScale(t *testing.T) {
+	f := newLiveUpdateFixture(t)
+	f.legacyTags, f.extraOutbounds = true, 760
+	rules := make([]updateRule, 440)
+	for j := range rules {
+		rules[j] = updateRule{id: j + 1, port: freeLoopbackPort(t)}
+	}
+	initial := f.prepare(rules...)
+	if err := f.a.Commit(f.ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+	defer f.monitor(f.dial(rules[439].port, 'A'))()
+	f.legacyTags = false
+	f.runner.calls = nil
+	next := f.prepare(rules[1:]...)
+	if err := f.a.Commit(f.ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.a.Verify(f.ctx, next); err != nil {
+		t.Fatal(err)
+	}
+	f.closed(rules[0].port)
+	f.dial(rules[1].port, 'A')
+	for _, op := range f.runner.calls {
+		if op == "ado" || op == "adi" {
+			t.Fatalf("unchanged handlers migrated: %v", f.runner.calls)
+		}
+	}
+	// A subsequent ordinary addition must also retain every installed tag.
+	if err := f.a.Commit(f.ctx, f.prepare(rules...)); err != nil {
+		t.Fatal(err)
+	}
+	f.dial(rules[0].port, 'A')
 }
 
 func TestXrayLiveDeleteLastRuleAndResume(t *testing.T) {

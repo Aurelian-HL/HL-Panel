@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
+	"github.com/hongle/hl-panel/internal/xrayconfig"
 )
 
 var (
@@ -146,6 +147,16 @@ func (a *XrayProcessAdapter) Prepare(ctx context.Context, desired agentv1.Desire
 	native, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return PreparedConfiguration{}, err
+	}
+	previous, exists, err := readOptionalRegularFile(a.activePath)
+	if err != nil {
+		return PreparedConfiguration{}, err
+	}
+	if exists {
+		native, err = xrayconfig.PreserveUnchangedLeafTags(previous, native)
+		if err != nil {
+			return PreparedConfiguration{}, err
+		}
 	}
 	if err := ensurePrivateDir(a.stagingDir); err != nil {
 		return PreparedConfiguration{}, fmt.Errorf("prepare xray staging directory: %w", err)
@@ -443,6 +454,10 @@ func (a *XrayProcessAdapter) verifyStaged(prepared PreparedConfiguration) error 
 	if err != nil {
 		return err
 	}
+	expected, err = xrayconfig.PreserveUnchangedLeafTags(data, expected)
+	if err != nil {
+		return ErrConfigurationHash
+	}
 	if !bytes.Equal(data, expected) {
 		return ErrConfigurationHash
 	}
@@ -457,6 +472,10 @@ func (a *XrayProcessAdapter) verifyActive(prepared PreparedConfiguration) error 
 	expected, err := compileXrayBundleWithStats(prepared.Bundle, a.statsAPIAddress)
 	if err != nil {
 		return err
+	}
+	expected, err = xrayconfig.PreserveUnchangedLeafTags(data, expected)
+	if err != nil {
+		return ErrConfigurationHash
 	}
 	if !bytes.Equal(data, expected) {
 		return ErrConfigurationHash

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"time"
@@ -240,15 +241,15 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 	var progress xrayMutationProgress
 	if len(delta.outbounds) != 0 {
 		progress.outboundAdditionAttempted = true
-		_, err = api.API(callContext, a.statsAPIAddress, "ado", xrayAPIDocument("outbounds", delta.outbounds))
+		err = xrayHandlerBatches(callContext, api, a.statsAPIAddress, "ado", "outbounds", delta.outbounds)
 	}
 	if err == nil {
 		progress.routingAttempted = true
-		_, err = api.API(callContext, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.candidateRouting))
+		err = xrayRoutingCall(callContext, api, a.statsAPIAddress, delta.candidateRouting)
 	}
 	if err == nil {
 		progress.inboundAdditionAttempted = true
-		_, err = api.API(callContext, a.statsAPIAddress, "adi", xrayAPIDocument("inbounds", delta.inbounds))
+		err = xrayHandlerBatches(callContext, api, a.statsAPIAddress, "adi", "inbounds", delta.inbounds)
 	}
 	if err == nil && !a.process.Running() {
 		err = ErrXrayNotRunning
@@ -261,18 +262,21 @@ func (a *XrayProcessAdapter) tryAddLiveLocked(ctx context.Context, previous, can
 		a.processConfigSHA256 = sha256.Sum256(candidate)
 		return true, nil
 	}
-	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() ||
-		a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta, progress) != nil {
+	var undoErr error
+	if !errors.Is(err, errXrayAPIUncertain) && a.process.Running() {
+		undoErr = a.undoXrayAdditions(context.WithoutCancel(ctx), api, delta, progress)
+	}
+	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() || undoErr != nil {
 		if recoveryErr := a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previous); recoveryErr != nil {
-			return true, errors.Join(ErrXrayLiveUpdate, recoveryErr)
+			return true, errors.Join(ErrXrayLiveUpdate, err, undoErr, recoveryErr)
 		}
 	} else if fileAttempted {
 		if restoreErr := writeFileAtomic(a.activePath, previous, 0o600); restoreErr != nil {
 			a.liveStateUncertain = true
-			return true, errors.Join(ErrXrayLiveUpdate, ErrLiveStateUncertain)
+			return true, errors.Join(ErrXrayLiveUpdate, err, ErrLiveStateUncertain)
 		}
 	}
-	return true, ErrXrayLiveUpdate
+	return true, errors.Join(ErrXrayLiveUpdate, err)
 }
 
 // Use the same bounded compensation as edits, including actual tag queries
@@ -323,16 +327,21 @@ func (r *ExecXrayRunner) API(ctx context.Context, address, operation string, doc
 	if operation == "lsi" || operation == "lso" {
 		output, err := command.Output()
 		if err != nil || len(output) > MaxConfigurationBytes {
-			return nil, ErrXrayLiveUpdate
+			return nil, &xrayCommandError{operation: operation, reason: "read failed", cause: ErrXrayLiveUpdate}
 		}
 		return output, nil
 	}
 	command.Stdout = io.Discard
 	if err := command.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, errXrayAPIUncertain
+			return nil, &xrayCommandError{operation: operation, reason: "deadline", cause: errXrayAPIUncertain}
 		}
-		return nil, ErrXrayLiveUpdate
+		// Never include CLI output: it can contain an entire native config.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return nil, &xrayCommandError{operation: operation, reason: fmt.Sprintf("exit %d", exit.ExitCode()), cause: ErrXrayLiveUpdate}
+		}
+		return nil, &xrayCommandError{operation: operation, reason: "execution failed", cause: ErrXrayLiveUpdate}
 	}
 	return nil, nil
 }

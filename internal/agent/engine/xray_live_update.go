@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -181,7 +182,7 @@ func (a *XrayProcessAdapter) tryUpdateXrayLiveLocked(ctx context.Context, previo
 	// Query before the first mutation. A missing/unreachable API must fail the
 	// generation without silently restarting a healthy data plane.
 	if _, err := xrayListedTags(callCtx, api, a.statsAPIAddress, "lsi", "inbounds"); err != nil {
-		return true, ErrXrayLiveUpdate
+		return true, fmt.Errorf("preflight lsi: %w", err)
 	}
 	var progress xrayMutationProgress
 	err := a.applyXrayLiveChanges(callCtx, api, delta, &progress)
@@ -198,19 +199,22 @@ func (a *XrayProcessAdapter) tryUpdateXrayLiveLocked(ctx context.Context, previo
 	}
 	// A deadline can leave a late RPC in flight. Block further mutations on
 	// that process; confirmed failures restore only touched handlers.
-	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() ||
-		a.undoXrayLiveChanges(context.WithoutCancel(ctx), api, delta, progress) != nil {
+	var undoErr error
+	if !errors.Is(err, errXrayAPIUncertain) && a.process.Running() {
+		undoErr = a.undoXrayLiveChanges(context.WithoutCancel(ctx), api, delta, progress)
+	}
+	if errors.Is(err, errXrayAPIUncertain) || !a.process.Running() || undoErr != nil {
 		if recoveryErr := a.recoverLivePreviousLocked(context.WithoutCancel(ctx), previous); recoveryErr != nil {
-			return true, errors.Join(ErrXrayLiveUpdate, recoveryErr)
+			return true, errors.Join(ErrXrayLiveUpdate, err, undoErr, recoveryErr)
 		}
 	} else if fileAttempted {
 		// Replacement can succeed before chmod or directory fsync fails.
 		if restoreErr := writeFileAtomic(a.activePath, previous, 0o600); restoreErr != nil {
 			a.liveStateUncertain = true
-			return true, errors.Join(ErrXrayLiveUpdate, ErrLiveStateUncertain)
+			return true, errors.Join(ErrXrayLiveUpdate, err, ErrLiveStateUncertain)
 		}
 	}
-	return true, ErrXrayLiveUpdate
+	return true, errors.Join(ErrXrayLiveUpdate, err)
 }
 
 func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayAPIRunner, delta xrayLiveChanges, progress *xrayMutationProgress) error {
@@ -219,8 +223,7 @@ func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayA
 			return nil
 		}
 		*attempted = true
-		_, err := api.API(ctx, a.statsAPIAddress, operation, xrayAPIDocument(key, entries))
-		return err
+		return xrayHandlerBatches(ctx, api, a.statsAPIAddress, operation, key, entries)
 	}
 	// Close changed/deleted listeners before removing their routing. Other
 	// listeners and established sessions retain the same process and handlers.
@@ -234,7 +237,7 @@ func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayA
 	}
 	if !sameXrayJSON(delta.previousRouting, delta.candidateRouting) {
 		progress.routingAttempted = true
-		if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.candidateRouting)); err != nil {
+		if err := xrayRoutingCall(ctx, api, a.statsAPIAddress, delta.candidateRouting); err != nil {
 			return err
 		}
 	}
@@ -247,7 +250,7 @@ func (a *XrayProcessAdapter) applyXrayLiveChanges(ctx context.Context, api xrayA
 func xrayListedTags(ctx context.Context, api xrayAPIRunner, address, operation, key string) (map[string]bool, error) {
 	raw, err := api.API(ctx, address, operation, nil)
 	if err != nil {
-		return nil, ErrXrayLiveUpdate
+		return nil, errors.Join(ErrXrayLiveUpdate, safeXrayAPIError(err))
 	}
 	var document map[string][]json.RawMessage
 	if json.Unmarshal(raw, &document) != nil || document[key] == nil {
@@ -296,15 +299,19 @@ func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAP
 		}
 	}
 	remove := func(operation, key string, entries []json.RawMessage, present map[string]bool) error {
+		var found []json.RawMessage
 		for _, entry := range entries {
 			tag := xrayEntryTag(entry)
 			if !present[tag] {
 				continue
 			}
-			if _, err := api.API(ctx, a.statsAPIAddress, operation, xrayAPIDocument(key, []json.RawMessage{entry})); err != nil {
-				return err
-			}
-			delete(present, tag)
+			found = append(found, entry)
+		}
+		if err := xrayHandlerBatches(ctx, api, a.statsAPIAddress, operation, key, found); err != nil {
+			return err
+		}
+		for _, entry := range found {
+			delete(present, xrayEntryTag(entry))
 		}
 		return nil
 	}
@@ -318,8 +325,7 @@ func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAP
 		if len(missing) == 0 {
 			return nil
 		}
-		_, err := api.API(ctx, a.statsAPIAddress, operation, xrayAPIDocument(key, missing))
-		return err
+		return xrayHandlerBatches(ctx, api, a.statsAPIAddress, operation, key, missing)
 	}
 	if err := remove("rmi", "inbounds", delta.inbounds.added, in); err != nil {
 		return err
@@ -333,7 +339,7 @@ func (a *XrayProcessAdapter) undoXrayLiveChanges(ctx context.Context, api xrayAP
 	// Routing that was not changed by this transaction needs no replacement.
 	// Avoid exposing unrelated traffic to an unnecessary global router reload.
 	if progress.routingAttempted {
-		if _, err := api.API(ctx, a.statsAPIAddress, "adrules", xrayAPIDocument("routing", delta.previousRouting)); err != nil {
+		if err := xrayRoutingCall(ctx, api, a.statsAPIAddress, delta.previousRouting); err != nil {
 			return err
 		}
 	}
