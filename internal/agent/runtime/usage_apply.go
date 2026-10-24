@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	usageagent "github.com/hongle/hl-panel/internal/agent/usage"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -56,11 +57,11 @@ func (a *Agent) applyWithUsage(ctx context.Context, desired agentv1.DesiredNodeC
 	if stopped {
 		return errEngineStopped
 	}
+	current, err := a.state.CheckDesired(desired)
+	if err != nil {
+		return fmt.Errorf("check desired before applying side effects: %w", err)
+	}
 	if a.usageReporter != nil {
-		current, err := a.state.Load()
-		if err != nil {
-			return err
-		}
 		if current.Applied != nil && current.Applied.Generation != desired.Generation {
 			// Persist independently of network delivery. An unavailable
 			// counter endpoint is logged; it must not prevent engine repair.

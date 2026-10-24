@@ -8,6 +8,10 @@ permission to publish a release, upgrade a production node, or change live TC.
 - TC and engine activation are serialized under the controller transaction.
   An engine rejection restores the controller's exact previous limits, even
   when the engine's last-known-good bundle is missing.
+- Desired configuration integrity and generation compatibility are checked
+  before touching limits or collecting usage. A replay with an altered body,
+  an older generation, or a conflicting reference cannot change filters. The
+  reconciler also checks the body before its identical-generation shortcut.
 - Recovery has its own 30-second context and is not canceled with the request.
   It restores only ports actually attempted, including a partially changed
   port; unchanged and not-yet-attempted ports are not rewritten.
@@ -39,10 +43,11 @@ generations must not become applied; the previous TC and engine files remain.
 
 `TestDisposableLinuxElevenLimitsRestoreAndRemove` uses a random dummy interface
 only on an explicitly disposable root Linux runner. It checks actual flower
-selectors, police rates, high-port coexistence/deletion, cancellation, activation
+selectors, police rates read from each exact kernel action, high-port coexistence/deletion, cancellation, activation
 failure, partial deletion, missing filters, and preservation of the root qdisc
 and an unrelated filter in both directions. Cross compilation alone is not a
-pass for this test. CI includes the TC package in race checks.
+pass for this test. CI includes TC, desired-state storage, the reconciler,
+runtime, and engine packages in race checks.
 
 Real Xray/GOST integration tests remain necessary for unaffected long streams,
 PID/process-epoch preservation, mixed engines, rollback, old Reality clients,

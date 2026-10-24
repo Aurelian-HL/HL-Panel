@@ -26,6 +26,33 @@ type survivingRecoveryAdapter struct {
 	failVerify bool
 }
 
+func TestAppliedReferenceDoesNotBypassConfigurationIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewAtomicStateStore(dir+"/state.json", dir+"/configurations")
+	file, err := engine.NewDryRunFileAdapter(dir+"/staging/config.json", dir+"/active/config.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live := &guardedLiveAdapter{recordingLiveAdapter: &recordingLiveAdapter{DryRunFileAdapter: file}}
+	r, err := New(store, live, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := testDesired(1, `{"schema_version":1,"fragments":[]}`)
+	if err := r.Apply(context.Background(), desired); err != nil {
+		t.Fatal(err)
+	}
+	prepares, validates, commits := live.prepares, live.validates, live.commits
+	altered := desired
+	altered.Config = []byte(`{"schema_version":1,"fragments":[{}]}`)
+	if err := r.Apply(context.Background(), altered); !errors.Is(err, state.ErrConfigurationHash) {
+		t.Fatalf("altered applied replay error = %v", err)
+	}
+	if !live.running || live.prepares != prepares || live.validates != validates || live.commits != commits || live.rollbacks != 0 {
+		t.Fatalf("altered replay touched engine: %#v", live)
+	}
+}
+
 func (a *survivingRecoveryAdapter) HasLiveProcess() bool { return a.survivor }
 func (a *survivingRecoveryAdapter) Verify(ctx context.Context, p engine.PreparedConfiguration) error {
 	if a.failVerify {

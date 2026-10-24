@@ -74,9 +74,9 @@ func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNod
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	current, err := r.store.Load()
+	current, err := r.store.CheckDesired(desired)
 	if err != nil {
-		return fmt.Errorf("load agent state: %w", err)
+		return fmt.Errorf("check desired configuration: %w", err)
 	}
 	// Do not repeat staging, validation or mutations while a live transaction
 	// is uncertain. A dead process clears this guard so recovery remains possible.

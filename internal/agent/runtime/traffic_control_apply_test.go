@@ -61,9 +61,13 @@ func (a *tcFailureAdapter) Rollback(ctx context.Context, p *engine.PreparedConfi
 }
 func (a *tcFailureAdapter) HasLiveProcess() bool { return a.live }
 
-type tcKernelRunner struct{ filters map[string]string }
+type tcKernelRunner struct {
+	filters  map[string]string
+	commands int
+}
 
 func (r *tcKernelRunner) Run(ctx context.Context, _ string, args ...string) error {
+	r.commands++
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -160,5 +164,69 @@ func TestEngineFailureRestoresExactTrafficControlWithoutRequestContext(t *testin
 				t.Fatalf("failed generation was accepted: %#v", current)
 			}
 		})
+	}
+}
+
+func TestRepeatedGenerationWithAlteredBodyCannotChangeTrafficControl(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewAtomicStateStore(filepath.Join(dir, "state.json"), filepath.Join(dir, "configs"))
+	activePath := filepath.Join(dir, "active.json")
+	adapter, err := engine.NewDryRunFileAdapter(filepath.Join(dir, "staged.json"), activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := reconciler.New(store, adapter, nil, "test-credential")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &tcKernelRunner{filters: map[string]string{}}
+	tcPath := filepath.Join(dir, "tc.json")
+	tc, err := trafficcontrol.New("eth0", "tc", tcPath, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{state: store, reconciler: r, trafficControl: tc}
+	previous := tcDesired(t, 2, map[int]int{12001: 10, 12002: 20})
+	if err := a.applyWithUsage(context.Background(), previous); err != nil {
+		t.Fatal(err)
+	}
+	beforeTC, err := os.ReadFile(tcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEngine, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	altered := tcDesired(t, previous.Generation, map[int]int{12001: 1})
+	altered.ConfigSHA256 = previous.ConfigSHA256
+	for _, test := range []struct {
+		name    string
+		desired agentv1.DesiredNodeConfig
+		wantErr error
+	}{
+		{"altered replay", altered, state.ErrConfigurationHash},
+		{"older generation", tcDesired(t, 1, map[int]int{12001: 1}), state.ErrGenerationRollback},
+		{"conflicting generation", tcDesired(t, 2, map[int]int{12001: 1}), state.ErrGenerationConflict},
+		{"identical replay", previous, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commands := runner.commands
+			if err := a.applyWithUsage(context.Background(), test.desired); !errors.Is(err, test.wantErr) {
+				t.Fatalf("replay error = %v, want %v", err, test.wantErr)
+			}
+			if runner.commands != commands {
+				t.Fatalf("rejected or identical replay issued %d TC commands", runner.commands-commands)
+			}
+		})
+	}
+	afterTC, _ := os.ReadFile(tcPath)
+	afterEngine, _ := os.ReadFile(activePath)
+	if !reflect.DeepEqual(beforeTC, afterTC) || !reflect.DeepEqual(beforeEngine, afterEngine) {
+		t.Fatalf("altered replay changed durable state: limits=%s engine=%s", afterTC, afterEngine)
+	}
+	want := map[string]string{"ingress/22001": "10mbit", "egress/22001": "10mbit", "ingress/22002": "20mbit", "egress/22002": "20mbit"}
+	if !reflect.DeepEqual(runner.filters, want) {
+		t.Fatalf("altered replay changed kernel limits: %v", runner.filters)
 	}
 }

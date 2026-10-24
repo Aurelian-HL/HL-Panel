@@ -36,6 +36,57 @@ func (s *AtomicStateStore) Load() (AgentState, error) {
 	return s.loadUnlocked()
 }
 
+// CheckDesired validates a replay or new generation without writing state.
+// Callers must use it before changing side effects such as traffic limits;
+// matching an applied reference alone does not attest the supplied body.
+func (s *AtomicStateStore) CheckDesired(desired agentv1.DesiredNodeConfig) (AgentState, error) {
+	hash, err := validateDesired(desired)
+	if err != nil {
+		return AgentState{}, err
+	}
+	desired.ConfigSHA256 = hash
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := s.loadUnlocked()
+	if err != nil {
+		return AgentState{}, err
+	}
+	if err := checkDesiredGeneration(current, desired, true); err != nil {
+		return AgentState{}, err
+	}
+	return current, nil
+}
+
+func checkDesiredGeneration(current AgentState, desired agentv1.DesiredNodeConfig, allowAppliedReplay bool) error {
+	if current.Applied != nil {
+		if desired.Generation < current.Applied.Generation {
+			return ErrGenerationRollback
+		}
+		if desired.Generation == current.Applied.Generation {
+			if desired.ConfigSHA256 != current.Applied.ConfigSHA256 || desired.Engine != current.Applied.Engine {
+				return ErrGenerationConflict
+			}
+			if allowAppliedReplay {
+				return nil
+			}
+			return ErrGenerationRollback
+		}
+	}
+	if current.Pending != nil {
+		if desired.Generation == current.Pending.Generation {
+			if desired.ConfigSHA256 != current.Pending.ConfigSHA256 || desired.Engine != current.Pending.Engine {
+				return ErrGenerationConflict
+			}
+			return nil
+		}
+		if desired.Generation < current.Pending.Generation {
+			return ErrGenerationRollback
+		}
+		return ErrPendingApplyExists
+	}
+	return nil
+}
+
 func (s *AtomicStateStore) Begin(desired agentv1.DesiredNodeConfig, now time.Time) (AgentState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -47,31 +98,14 @@ func (s *AtomicStateStore) Begin(desired agentv1.DesiredNodeConfig, now time.Tim
 	if err != nil {
 		return AgentState{}, err
 	}
-	if current.Applied != nil {
-		if desired.Generation < current.Applied.Generation {
-			return AgentState{}, ErrGenerationRollback
-		}
-		if desired.Generation == current.Applied.Generation {
-			if desired.ConfigSHA256 != current.Applied.ConfigSHA256 {
-				return AgentState{}, ErrGenerationConflict
-			}
-			return AgentState{}, ErrGenerationRollback
-		}
+	if err := checkDesiredGeneration(current, desired, false); err != nil {
+		return AgentState{}, err
 	}
 	if current.Pending != nil {
-		if desired.Generation == current.Pending.Generation {
-			if desired.ConfigSHA256 != current.Pending.ConfigSHA256 {
-				return AgentState{}, ErrGenerationConflict
-			}
-			if err := s.writeConfigurationUnlocked(desired); err != nil {
-				return AgentState{}, err
-			}
-			return current, nil
+		if err := s.writeConfigurationUnlocked(desired); err != nil {
+			return AgentState{}, err
 		}
-		if desired.Generation < current.Pending.Generation {
-			return AgentState{}, ErrGenerationRollback
-		}
-		return AgentState{}, ErrPendingApplyExists
+		return current, nil
 	}
 	if err := s.writeConfigurationUnlocked(desired); err != nil {
 		return AgentState{}, err
@@ -342,21 +376,29 @@ func (s *AtomicStateStore) configurationPath(generation agentv1.NodeConfigGenera
 	return filepath.Join(s.configurationDir, fmt.Sprintf("%020d-%s.json", uint64(generation), normalized)), nil
 }
 
-func normalizeDesired(desired agentv1.DesiredNodeConfig) (agentv1.DesiredNodeConfig, error) {
+func validateDesired(desired agentv1.DesiredNodeConfig) (string, error) {
 	if desired.Generation == 0 {
-		return agentv1.DesiredNodeConfig{}, errors.New("desired generation must be greater than zero")
+		return "", errors.New("desired generation must be greater than zero")
 	}
 	if desired.Engine != agentv1.EngineNodeBundle {
-		return agentv1.DesiredNodeConfig{}, fmt.Errorf("unsupported desired engine %q", desired.Engine)
+		return "", fmt.Errorf("unsupported desired engine %q", desired.Engine)
 	}
 	if len(desired.Config) == 0 || len(desired.Config) > MaxConfigurationBytes {
-		return agentv1.DesiredNodeConfig{}, errors.New("desired configuration has an invalid size")
+		return "", errors.New("desired configuration has an invalid size")
 	}
 	hash, err := normalizeSHA256(desired.ConfigSHA256)
 	if err != nil {
-		return agentv1.DesiredNodeConfig{}, err
+		return "", err
 	}
 	if err := verifyConfigurationHash(desired.Config, hash); err != nil {
+		return "", err
+	}
+	return hash, nil
+}
+
+func normalizeDesired(desired agentv1.DesiredNodeConfig) (agentv1.DesiredNodeConfig, error) {
+	hash, err := validateDesired(desired)
+	if err != nil {
 		return agentv1.DesiredNodeConfig{}, err
 	}
 	desired.ConfigSHA256 = hash

@@ -126,14 +126,29 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 				police := false
 				for _, raw := range actions {
 					action, _ := raw.(map[string]any)
-					police = police || action["kind"] == "police"
+					if action["kind"] != "police" {
+						continue
+					}
+					police = true
+					index, ok := action["index"].(float64)
+					if !ok || index < 1 || index != float64(uint32(index)) {
+						t.Fatalf("invalid real police action index at port %d: %v", port, action)
+					}
+					// iproute2 emits police rate only in its text output. Read
+					// this filter's exact action instead of treating a missing
+					// JSON field as a zero rate or skipping the rate assertion.
+					output := command(tc, "actions", "get", "action", "police", "index", strconv.FormatUint(uint64(index), 10))
+					rate, found := policeRateBytes(output)
+					if !found || rate != float64(want[port])*125000 {
+						t.Fatalf("incorrect real %s rate at port %d: got %v, want %d Mbit/s; action=%s", direction, port, rate, want[port], output)
+					}
+					control, _ := action["control_action"].(map[string]any)
+					if control["type"] != "drop" {
+						t.Fatalf("incorrect real police exceed action at port %d: %v", port, action)
+					}
 				}
 				if !police {
 					t.Fatalf("missing real police action at port %d: %v", port, options)
-				}
-				rate, found := findPoliceRate(actions)
-				if !found || rate != float64(want[port])*125000 {
-					t.Fatalf("incorrect real %s rate at port %d: got %v, want %d Mbit/s; actions=%v", direction, port, rate, want[port], actions)
 				}
 				seen[port] = true
 			}
@@ -252,27 +267,6 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 	}
 	assertFilters(nil)
 	t.Log("real TC cancellation, activation rejection, partial deletion, missing-filter cleanup, high ports, exact rates and unrelated same-priority filters verified")
-}
-
-func findPoliceRate(value any) (float64, bool) {
-	switch v := value.(type) {
-	case []any:
-		for _, item := range v {
-			if rate, ok := findPoliceRate(item); ok {
-				return rate, true
-			}
-		}
-	case map[string]any:
-		if rate, ok := v["rate"].(float64); ok {
-			return rate, true
-		}
-		for _, item := range v {
-			if rate, ok := findPoliceRate(item); ok {
-				return rate, true
-			}
-		}
-	}
-	return 0, false
 }
 
 type hookedRealTCRunner struct {
