@@ -22,43 +22,61 @@ type ResultReporter interface {
 	ReportApplyResult(context.Context, string, agentv1.ApplyResultRequest) error
 }
 
+// ActivationGuard applies local prerequisites after validation and before
+// changing listeners. recovering also rebuilds prerequisites lost on restart.
+// It must call activate synchronously, at most once, and must not re-enter this
+// reconciler. Keeping this boundary inside the lifecycle avoids nested guards
+// when an applied-generation replay has to recover an exited process.
+type ActivationGuard func(ctx context.Context, desired agentv1.DesiredNodeConfig, recovering bool, activate func() error) error
+
+type Option func(*Reconciler)
+
+func WithActivationGuard(guard ActivationGuard) Option {
+	return func(r *Reconciler) { r.activationGuard = guard }
+}
+
 type Reconciler struct {
-	store        *state.AtomicStateStore
-	adapter      engine.EngineAdapter
-	reporter     ResultReporter
-	nodeSecret   string
-	now          func() time.Time
-	mu           sync.Mutex
-	receiptMu    sync.Mutex
-	receiptReady chan struct{}
+	store           *state.AtomicStateStore
+	adapter         engine.EngineAdapter
+	reporter        ResultReporter
+	nodeSecret      string
+	now             func() time.Time
+	mu              sync.Mutex
+	receiptMu       sync.Mutex
+	receiptReady    chan struct{}
+	activationGuard ActivationGuard
 }
 
 // Bound synchronous result reporting. Terminal receipts are delivered outside
 // the lifecycle lock; prepare/validate and failure reports retain this budget.
 const applyReportTimeout = 750 * time.Millisecond
 
-func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter ResultReporter, nodeSecret string) (*Reconciler, error) {
+func New(store *state.AtomicStateStore, adapter engine.EngineAdapter, reporter ResultReporter, nodeSecret string, options ...Option) (*Reconciler, error) {
 	if store == nil {
 		return nil, errors.New("state store is required")
 	}
 	if adapter == nil {
 		return nil, errors.New("engine adapter is required")
 	}
-	return &Reconciler{
+	r := &Reconciler{
 		store:        store,
 		adapter:      adapter,
 		reporter:     reporter,
 		nodeSecret:   nodeSecret,
 		now:          time.Now,
 		receiptReady: make(chan struct{}, 1),
-	}, nil
+	}
+	for _, option := range options {
+		option(r)
+	}
+	return r, nil
 }
 
 // Apply drives prepare -> validate -> commit -> verify. The applied marker is
 // advanced only after both commit and local verification succeed.
 func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
 	r.mu.Lock()
-	err := r.applyLocked(ctx, desired)
+	err := r.applyLocked(ctx, desired, false)
 	r.mu.Unlock()
 	if err != nil {
 		return err
@@ -69,7 +87,7 @@ func (r *Reconciler) Apply(ctx context.Context, desired agentv1.DesiredNodeConfi
 	return nil
 }
 
-func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
+func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNodeConfig, recovering bool) error {
 
 	if err := ctx.Err(); err != nil {
 		return err
@@ -142,31 +160,88 @@ func (r *Reconciler) applyLocked(ctx context.Context, desired agentv1.DesiredNod
 		}
 	}
 
-	if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
-		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseCommit, err)
+	activated := false
+	activate := func() error {
+		activated = true
+		if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
+			return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseCommit, err)
+		}
+		if err := r.adapter.Verify(ctx, prepared); err != nil {
+			return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseVerify, err)
+		}
+		receipts := r.verifiedReceipts(desired, attemptID)
+		if _, err := r.store.CompleteWithReceipts(desired, receipts, r.now()); err != nil {
+			return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseVerify, err)
+		}
+		return nil
 	}
-	if err := r.adapter.Verify(ctx, prepared); err != nil {
-		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseVerify, err)
+	if r.activationGuard != nil {
+		err := r.activationGuard(ctx, desired, recovering, activate)
+		if err != nil && !activated {
+			// A prerequisite failed before the engine was touched. Recording a
+			// validation failure avoids rolling back a surviving Mixed component.
+			return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseValidate, err)
+		}
+		return err
 	}
-	receipts := r.verifiedReceipts(desired, attemptID)
-	if _, err := r.store.CompleteWithReceipts(desired, receipts, r.now()); err != nil {
-		return r.fail(ctx, desired, attemptID, previousPrepared, agentv1.ApplyPhaseVerify, err)
-	}
-	return nil
+	return activate()
 }
 
 // RecoverPending resumes a journaled apply after a process restart. Replaying
 // the same generation is idempotent and keeps the previous applied marker until
 // verify succeeds.
 func (r *Reconciler) RecoverPending(ctx context.Context) error {
+	r.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	pending, exists, err := r.store.PendingDesired()
 	if err != nil {
+		r.mu.Unlock()
 		return fmt.Errorf("load pending configuration: %w", err)
 	}
 	if !exists {
+		r.mu.Unlock()
 		return nil
 	}
-	return r.Apply(ctx, pending)
+	err = r.recoverPendingLocked(ctx, pending)
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	r.deliverReceipts(ctx)
+	return nil
+}
+
+func (r *Reconciler) recoverPendingLocked(ctx context.Context, pending agentv1.DesiredNodeConfig) error {
+	if _, err := r.store.CheckDesired(pending); err != nil {
+		// Older agents could leave a pending transaction behind a full receipt
+		// queue. After every owned process has exited, its old receipts cannot
+		// attest the next process. Supersede them just as RestoreApplied does;
+		// a live or partially live engine must still retain the queue and reject.
+		process, ok := r.adapter.(interface {
+			RequiresLiveProcess() bool
+			ActiveEngineMode() string
+			HasLiveProcess() bool
+		})
+		if !errors.Is(err, state.ErrApplyReceiptQueueFull) || !ok || !process.RequiresLiveProcess() ||
+			process.ActiveEngineMode() != "" || process.HasLiveProcess() {
+			return fmt.Errorf("check pending configuration: %w", err)
+		}
+		if live, ok := r.adapter.(interface{ LiveUpdateError() error }); ok {
+			if err := live.LiveUpdateError(); err != nil {
+				return err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := r.store.ClearApplyReceipts(); err != nil {
+			return fmt.Errorf("clear previous process receipts before pending recovery: %w", err)
+		}
+	}
+	return r.applyLocked(ctx, pending, true)
 }
 
 // RestoreApplied reactivates the last-known-good configuration after an Agent
@@ -221,12 +296,20 @@ func (r *Reconciler) EnsureApplied(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if len(bundle.Fragments) == 0 {
+		// An empty LKG needs no process, but stale independent TC state must
+		// not survive a crash during an unapplied nonempty generation.
+		if r.activationGuard != nil {
+			return false, r.activationGuard(ctx, desired, true, func() error { return nil })
+		}
 		return false, nil
 	}
 	return true, r.restoreAppliedLocked(ctx, desired, false)
 }
 
 func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.DesiredNodeConfig, deliver bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if live, ok := r.adapter.(interface{ LiveUpdateError() error }); ok {
 		if err := live.LiveUpdateError(); err != nil {
 			return err
@@ -246,14 +329,29 @@ func (r *Reconciler) restoreAppliedLocked(ctx context.Context, desired agentv1.D
 	if err := r.adapter.Validate(ctx, prepared); err != nil {
 		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, err, deliver)
 	}
-	if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseCommit, err, deliver)
+	activated := false
+	activate := func() error {
+		activated = true
+		if err := engine.CommitValidated(ctx, r.adapter, prepared); err != nil {
+			return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseCommit, err, deliver)
+		}
+		if err := r.adapter.Verify(ctx, prepared); err != nil {
+			return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseVerify, err, deliver)
+		}
+		if _, err := r.store.RecordResultWithReceipts(agentv1.ApplyPhaseVerify, agentv1.ApplyStatusSucceeded,
+			"previous configuration reactivated and verified", r.verifiedReceipts(desired, attemptID), r.now()); err != nil {
+			return err
+		}
+		return nil
 	}
-	if err := r.adapter.Verify(ctx, prepared); err != nil {
-		return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseVerify, err, deliver)
-	}
-	if _, err := r.store.RecordResultWithReceipts(agentv1.ApplyPhaseVerify, agentv1.ApplyStatusSucceeded,
-		"previous configuration reactivated and verified", r.verifiedReceipts(desired, attemptID), r.now()); err != nil {
+	if r.activationGuard != nil {
+		if err := r.activationGuard(ctx, desired, true, activate); err != nil {
+			if !activated {
+				return r.restoreFailed(ctx, desired, attemptID, agentv1.ApplyPhaseValidate, err, deliver)
+			}
+			return err
+		}
+	} else if err := activate(); err != nil {
 		return err
 	}
 	if !deliver {

@@ -7,6 +7,8 @@ import (
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
+const maxApplyReceiptQueue = 32
+
 func validatePendingReceipts(receipts []agentv1.ApplyResultRequest) error {
 	if len(receipts) > 2 {
 		return errors.New("too many pending apply receipts")
@@ -34,7 +36,7 @@ func validatePendingReceipts(receipts []agentv1.ApplyResultRequest) error {
 }
 
 func validateReceiptQueue(receipts []agentv1.ApplyResultRequest) error {
-	if len(receipts) > 32 {
+	if len(receipts) > maxApplyReceiptQueue {
 		return errors.New("too many pending apply receipts")
 	}
 	type attemptState struct {

@@ -44,6 +44,7 @@ type Agent struct {
 	bootID          string
 	logger          *slog.Logger
 	bootstrapMu     sync.Mutex
+	controlMu       sync.Mutex
 	usageApplyMu    sync.Mutex
 	usageSource     usageagent.CounterSource
 	accessExecutor  usageagent.AccessExecutor
@@ -334,7 +335,8 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 	}
 	a.nodeID = credentials.NodeID
 	a.nodeSecret = credentials.NodeCredential
-	reconcilerInstance, err := reconciler.New(a.state, a.adapter, a.client, a.nodeSecret)
+	reconcilerInstance, err := reconciler.New(a.state, a.adapter, a.client, a.nodeSecret,
+		reconciler.WithActivationGuard(a.withTrafficControl))
 	if err != nil {
 		return err
 	}
@@ -376,8 +378,17 @@ func (a *Agent) Bootstrap(ctx context.Context) error {
 			}
 		}
 		if a.trafficControl != nil {
-			if err := a.trafficControl.Restore(ctx); err != nil {
-				return fmt.Errorf("restore traffic control: %w", err)
+			// Recovery applies limits from its validated bundle before activation.
+			// Only fall back to the independent TC map when no engine LKG exists;
+			// it may protect a still-serving process with missing durable state.
+			_, hasApplied, err := a.state.LastKnownGood()
+			if err != nil {
+				return fmt.Errorf("load restored traffic control target: %w", err)
+			}
+			if !hasApplied {
+				if err := a.trafficControl.Restore(ctx); err != nil {
+					return fmt.Errorf("restore traffic control: %w", err)
+				}
 			}
 		}
 	}
@@ -508,11 +519,50 @@ func (a *Agent) ControlOnce(ctx context.Context) error {
 	if err := a.Bootstrap(ctx); err != nil {
 		return err
 	}
-	command, err := a.client.DesiredControl(ctx, a.nodeSecret)
-	if err != nil || command == nil {
+	result, err := a.nextControlResult(ctx)
+	if err != nil || result == nil {
 		return err
 	}
+	// Slow result delivery must not block desired apply, local recovery, or a
+	// newer operator action. Only execution is serialized and journaled.
+	return a.client.ReportControlResult(ctx, a.nodeSecret, *result)
+}
+
+func (a *Agent) nextControlResult(ctx context.Context) (*agentv1.ControlCommandResultRequest, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	command, err := a.client.DesiredControl(ctx, a.nodeSecret)
+	if err != nil || command == nil {
+		return nil, err
+	}
+	destructive := command.Command == agentv1.ControlStop || command.Command == agentv1.ControlRestart
+	if destructive {
+		cached, err := a.state.BeginControl(*command)
+		if err != nil {
+			a.logger.Error("control command rejected before execution", "error", err)
+			return &agentv1.ControlCommandResultRequest{ID: command.ID, Status: "failed",
+				Message: "命令未执行：无法安全记录控制操作，请检查节点存储或命令标识"}, nil
+		}
+		if cached != nil {
+			return cached, nil
+		}
+	}
+	result := a.executeControl(ctx, *command)
+	if destructive {
+		if err := a.state.CompleteControl(*command, result); err != nil {
+			a.logger.Error("control result could not be persisted; replay remains blocked", "error", err)
+			result.Status, result.Message = "failed", "命令可能已执行，但结果未能持久保存；已阻止自动重试，请检查节点后重新下发新命令"
+		}
+	}
+	return &result, nil
+}
+
+func (a *Agent) executeControl(ctx context.Context, command agentv1.ControlCommandEnvelope) agentv1.ControlCommandResultRequest {
 	result := agentv1.ControlCommandResultRequest{ID: command.ID, Status: "succeeded"}
+	if ctx.Err() != nil {
+		result.Status, result.Message = "failed", "命令未执行：请求已取消，请重新下发新命令"
+		return result
+	}
 	switch command.Command {
 	case agentv1.ControlStatus:
 		result.Message = "运行中"
@@ -552,7 +602,7 @@ func (a *Agent) ControlOnce(ctx context.Context) error {
 	if len(result.Message) > 512 {
 		result.Message = result.Message[:512]
 	}
-	return a.client.ReportControlResult(ctx, a.nodeSecret, result)
+	return result
 }
 
 func (a *Agent) activeEngineMode() string {

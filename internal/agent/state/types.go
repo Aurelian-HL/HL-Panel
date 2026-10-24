@@ -15,13 +15,14 @@ const (
 )
 
 var (
-	ErrAlreadyEnrolled     = errors.New("agent is already enrolled")
-	ErrCredentialsNotFound = errors.New("agent credentials not found")
-	ErrGenerationRollback  = errors.New("node configuration generation rollback rejected")
-	ErrGenerationConflict  = errors.New("node configuration generation hash conflict")
-	ErrNoLastKnownGood     = errors.New("last-known-good configuration not found")
-	ErrNoPendingApply      = errors.New("pending apply not found")
-	ErrPendingApplyExists  = errors.New("a different configuration apply is already pending")
+	ErrAlreadyEnrolled       = errors.New("agent is already enrolled")
+	ErrCredentialsNotFound   = errors.New("agent credentials not found")
+	ErrGenerationRollback    = errors.New("node configuration generation rollback rejected")
+	ErrGenerationConflict    = errors.New("node configuration generation hash conflict")
+	ErrNoLastKnownGood       = errors.New("last-known-good configuration not found")
+	ErrNoPendingApply        = errors.New("pending apply not found")
+	ErrPendingApplyExists    = errors.New("a different configuration apply is already pending")
+	ErrApplyReceiptQueueFull = errors.New("apply receipt queue is full; deliver pending receipts before applying a new generation")
 )
 
 type Credentials struct {

@@ -137,6 +137,18 @@ func (c *Controller) ApplyBundle(ctx context.Context, desired agentv1.DesiredNod
 // LKG, which can be missing while a process and its limits are still serving.
 // activate must not call back into this controller.
 func (c *Controller) WithBundle(ctx context.Context, desired agentv1.DesiredNodeConfig, activate func() error) error {
+	return c.withBundle(ctx, desired, false, activate)
+}
+
+// RestoreBundle rebuilds limits from the engine's verified recovery target.
+// The TC file may be ahead of or behind that target after a crash, and a host
+// restart may also have cleared the kernel filters. Apply them before starting
+// listeners, retaining the exact previous limits if activation fails.
+func (c *Controller) RestoreBundle(ctx context.Context, desired agentv1.DesiredNodeConfig, activate func() error) error {
+	return c.withBundle(ctx, desired, true, activate)
+}
+
+func (c *Controller) withBundle(ctx context.Context, desired agentv1.DesiredNodeConfig, force bool, activate func() error) error {
 	var bundle agentv1.ConfigurationBundle
 	if err := json.Unmarshal(desired.Config, &bundle); err != nil {
 		return fmt.Errorf("decode node bundle for traffic control: %w", err)
@@ -153,7 +165,7 @@ func (c *Controller) WithBundle(ctx context.Context, desired agentv1.DesiredNode
 			want[fragment.Usage.ListenPort] = fragment.Usage.SpeedLimitMbps
 		}
 	}
-	return c.apply(ctx, want, false, activate)
+	return c.apply(ctx, want, force, activate)
 }
 
 func (c *Controller) apply(ctx context.Context, want map[int]int, force bool, activate func() error) error {

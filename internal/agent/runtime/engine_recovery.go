@@ -10,6 +10,7 @@ import (
 	"github.com/hongle/hl-panel/internal/agent/hostprobe"
 	"github.com/hongle/hl-panel/internal/agent/reconciler"
 	usageagent "github.com/hongle/hl-panel/internal/agent/usage"
+	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
 
 var errEngineStopped = errors.New("engine is stopped by administrator")
@@ -22,6 +23,16 @@ const (
 	engineRecoveryMinimumBackoff = 5 * time.Second
 	engineRecoveryStableWindow   = 30 * time.Second
 )
+
+func (a *Agent) withTrafficControl(ctx context.Context, desired agentv1.DesiredNodeConfig, recovering bool, activate func() error) error {
+	if a.trafficControl == nil {
+		return activate()
+	}
+	if recovering {
+		return a.trafficControl.RestoreBundle(ctx, desired, activate)
+	}
+	return a.trafficControl.WithBundle(ctx, desired, activate)
+}
 
 // Recovery does not depend on a desired-generation response or on report
 // delivery. It shares the lifecycle lock with apply and administrator commands.
@@ -119,6 +130,9 @@ func runEngineRecoveryLoopWithTiming(
 func (a *Agent) stopEngine(ctx context.Context) error {
 	a.usageApplyMu.Lock()
 	defer a.usageApplyMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Persist before stopping, so neither a concurrent apply nor a later agent
 	// restart can undo an explicit administrator action.
 	if err := a.state.SetEngineStopped(true); err != nil {
@@ -137,6 +151,9 @@ func (a *Agent) stopEngine(ctx context.Context) error {
 func (a *Agent) restartEngine(ctx context.Context) error {
 	a.usageApplyMu.Lock()
 	defer a.usageApplyMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if a.usageReporter != nil {
 		if err := a.usageReporter.CollectOnce(ctx); err != nil {
 			if !errors.Is(err, usageagent.ErrCounterReadFailed) {

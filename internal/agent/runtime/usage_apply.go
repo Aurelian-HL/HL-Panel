@@ -73,10 +73,5 @@ func (a *Agent) applyWithUsage(ctx context.Context, desired agentv1.DesiredNodeC
 			}
 		}
 	}
-	if a.trafficControl != nil {
-		return a.trafficControl.WithBundle(ctx, desired, func() error {
-			return a.reconciler.Apply(ctx, desired)
-		})
-	}
 	return a.reconciler.Apply(ctx, desired)
 }

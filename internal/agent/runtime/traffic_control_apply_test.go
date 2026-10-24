@@ -89,7 +89,7 @@ func (r *tcKernelRunner) Run(ctx context.Context, _ string, args ...string) erro
 
 func tcDesired(t *testing.T, generation agentv1.NodeConfigGeneration, limits map[int]int) agentv1.DesiredNodeConfig {
 	t.Helper()
-	var fragments []agentv1.ConfigurationFragment
+	fragments := make([]agentv1.ConfigurationFragment, 0, len(limits))
 	for port, rate := range limits {
 		fragments = append(fragments, agentv1.ConfigurationFragment{GroupID: "rule-" + strconv.Itoa(port), GroupRevision: 1, Engine: agentv1.EngineXray, Config: json.RawMessage(`{}`), Usage: &agentv1.UsageMetadata{RuleID: "rule-" + strconv.Itoa(port), Protocol: "tcp", ListenPort: port, SpeedLimitMbps: rate}})
 	}
@@ -111,17 +111,17 @@ func TestEngineFailureRestoresExactTrafficControlWithoutRequestContext(t *testin
 				t.Fatal(err)
 			}
 			adapter := &tcFailureAdapter{EngineAdapter: file}
-			r, err := reconciler.New(store, adapter, nil, "test-credential")
-			if err != nil {
-				t.Fatal(err)
-			}
 			runner := &tcKernelRunner{filters: map[string]string{}}
 			tcPath := filepath.Join(dir, "tc.json")
 			tc, err := trafficcontrol.New("eth0", "tc", tcPath, runner)
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := &Agent{state: store, reconciler: r, trafficControl: tc}
+			a := &Agent{state: store, trafficControl: tc}
+			a.reconciler, err = reconciler.New(store, adapter, nil, "test-credential", reconciler.WithActivationGuard(a.withTrafficControl))
+			if err != nil {
+				t.Fatal(err)
+			}
 			previous := tcDesired(t, 1, map[int]int{12001: 10, 12002: 20})
 			if phase == "missing_lkg" {
 				// A running process can outlive its engine LKG. Do not substitute
@@ -175,17 +175,17 @@ func TestRepeatedGenerationWithAlteredBodyCannotChangeTrafficControl(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := reconciler.New(store, adapter, nil, "test-credential")
-	if err != nil {
-		t.Fatal(err)
-	}
 	runner := &tcKernelRunner{filters: map[string]string{}}
 	tcPath := filepath.Join(dir, "tc.json")
 	tc, err := trafficcontrol.New("eth0", "tc", tcPath, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &Agent{state: store, reconciler: r, trafficControl: tc}
+	a := &Agent{state: store, trafficControl: tc}
+	a.reconciler, err = reconciler.New(store, adapter, nil, "test-credential", reconciler.WithActivationGuard(a.withTrafficControl))
+	if err != nil {
+		t.Fatal(err)
+	}
 	previous := tcDesired(t, 2, map[int]int{12001: 10, 12002: 20})
 	if err := a.applyWithUsage(context.Background(), previous); err != nil {
 		t.Fatal(err)
@@ -228,5 +228,65 @@ func TestRepeatedGenerationWithAlteredBodyCannotChangeTrafficControl(t *testing.
 	want := map[string]string{"ingress/22001": "10mbit", "egress/22001": "10mbit", "ingress/22002": "20mbit", "egress/22002": "20mbit"}
 	if !reflect.DeepEqual(runner.filters, want) {
 		t.Fatalf("altered replay changed kernel limits: %v", runner.filters)
+	}
+}
+
+func TestFullReceiptQueueCannotChangeTrafficControlOrEngine(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewAtomicStateStore(filepath.Join(dir, "state.json"), filepath.Join(dir, "configs"))
+	activePath := filepath.Join(dir, "active.json")
+	file, err := engine.NewDryRunFileAdapter(filepath.Join(dir, "staged.json"), activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &tcFailureAdapter{EngineAdapter: file}
+	runner := &tcKernelRunner{filters: map[string]string{}}
+	tcPath := filepath.Join(dir, "tc.json")
+	tc, err := trafficcontrol.New("eth0", "tc", tcPath, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{state: store, trafficControl: tc}
+	a.reconciler, err = reconciler.New(store, adapter, nil, "test-credential", reconciler.WithActivationGuard(a.withTrafficControl))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied agentv1.DesiredNodeConfig
+	for gen := 1; gen <= 16; gen++ {
+		applied = tcDesired(t, agentv1.NodeConfigGeneration(gen), map[int]int{12001: gen})
+		if err := a.applyWithUsage(context.Background(), applied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	beforeFilters := map[string]string{}
+	for key, value := range runner.filters {
+		beforeFilters[key] = value
+	}
+	commands := runner.commands
+	beforeTC, err := os.ReadFile(tcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEngine, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.applyWithUsage(context.Background(), applied); err != nil {
+		t.Fatalf("full queue rejected a valid replay: %v", err)
+	}
+	candidate := tcDesired(t, 17, map[int]int{12001: 100, 12002: 20})
+	if err := a.applyWithUsage(context.Background(), candidate); !errors.Is(err, state.ErrApplyReceiptQueueFull) {
+		t.Fatalf("new desired with full queue = %v", err)
+	}
+	if runner.commands != commands || !reflect.DeepEqual(beforeFilters, runner.filters) || adapter.commits != 16 || adapter.rollbacks != 0 {
+		t.Fatalf("full queue mutated forwarding: TC commands=%d commits=%d rollbacks=%d", runner.commands-commands, adapter.commits, adapter.rollbacks)
+	}
+	afterTC, err := os.ReadFile(tcPath)
+	if err != nil || string(beforeTC) != string(afterTC) {
+		t.Fatalf("full queue changed durable TC state: %v", err)
+	}
+	afterEngine, err := os.ReadFile(activePath)
+	if err != nil || string(beforeEngine) != string(afterEngine) {
+		t.Fatalf("full queue changed durable engine state: %v", err)
 	}
 }

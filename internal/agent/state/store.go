@@ -36,7 +36,8 @@ func (s *AtomicStateStore) Load() (AgentState, error) {
 	return s.loadUnlocked()
 }
 
-// CheckDesired validates a replay or new generation without writing state.
+// CheckDesired validates a replay or new generation, including the room needed
+// for its durable commit/verify receipts, without writing state.
 // Callers must use it before changing side effects such as traffic limits;
 // matching an applied reference alone does not attest the supplied body.
 func (s *AtomicStateStore) CheckDesired(desired agentv1.DesiredNodeConfig) (AgentState, error) {
@@ -53,6 +54,14 @@ func (s *AtomicStateStore) CheckDesired(desired agentv1.DesiredNodeConfig) (Agen
 	}
 	if err := checkDesiredGeneration(current, desired, true); err != nil {
 		return AgentState{}, err
+	}
+	// A new apply adds two terminal receipts. Reject before any TC/engine
+	// mutation rather than committing and then rolling back on a full queue.
+	// Replaying the applied generation adds nothing; restoring a dead process
+	// supersedes its previous receipts with the new process's verified pair.
+	if (current.Applied == nil || current.Applied.Generation != desired.Generation) &&
+		len(current.PendingReceipts) > maxApplyReceiptQueue-2 {
+		return AgentState{}, ErrApplyReceiptQueueFull
 	}
 	return current, nil
 }
