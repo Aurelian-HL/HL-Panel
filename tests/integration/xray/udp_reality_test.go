@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -30,11 +32,7 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	udpTarget, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = udpTarget.Close() })
+	tcpListener, udpTarget := listenRealityTargets(t)
 	unauthorizedTarget, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -68,10 +66,7 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 	if err := tcpTarget.Listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	tcpTarget.Listener, err = net.Listen("tcp4", udpTarget.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
+	tcpTarget.Listener = tcpListener
 	tcpTarget.Start()
 	t.Cleanup(tcpTarget.Close)
 
@@ -206,6 +201,32 @@ func TestVLESSRealityUDPLoopback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// DIRECT TCP and UDP deliberately share a target port. A port allocated by
+// the UDP socket can still be occupied by TCP (including a previous test's
+// TIME_WAIT sockets). Reserve TCP first and retain both sockets; only retry
+// a collision while setting up the fixture, never failed protocol traffic.
+func listenRealityTargets(t *testing.T) (net.Listener, *net.UDPConn) {
+	t.Helper()
+	for attempt := 0; attempt < 32; attempt++ {
+		tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: tcp.Addr().(*net.TCPAddr).Port})
+		if err != nil {
+			_ = tcp.Close()
+			if errors.Is(err, syscall.EADDRINUSE) {
+				continue
+			}
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = tcp.Close(); _ = udp.Close() })
+		return tcp, udp
+	}
+	t.Fatal("could not reserve a shared loopback TCP/UDP target port")
+	return nil, nil
 }
 
 func checkRealityTCP(t *testing.T, clientPort int, targetURL string) {
