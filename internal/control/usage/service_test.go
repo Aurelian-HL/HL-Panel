@@ -158,7 +158,7 @@ func TestIngestRejectsNegativeBytesInvalidMultiplierAndOverflow(t *testing.T) {
 	}
 }
 
-func TestEnforcementPriorityIsDisabledThenExpiredThenQuota(t *testing.T) {
+func TestEnforcementPriorityIsDisabledThenQuota(t *testing.T) {
 	now := time.Date(2026, 10, 3, 2, 0, 0, 0, time.UTC)
 	expired := now.Add(-time.Minute)
 	event := Event{Report: testReport()}
@@ -168,7 +168,7 @@ func TestEnforcementPriorityIsDisabledThenExpiredThenQuota(t *testing.T) {
 		want   EnforcementReason
 	}{
 		{policy: CustomerPolicy{CustomerID: "customer-one", Disabled: true, ExpiresAt: &expired, TrafficLimitBytes: 1}, want: EnforcementCustomerDisabled},
-		{policy: CustomerPolicy{CustomerID: "customer-one", ExpiresAt: &expired, TrafficLimitBytes: 1}, want: EnforcementCustomerExpired},
+		{policy: CustomerPolicy{CustomerID: "customer-one", ExpiresAt: &expired, TrafficLimitBytes: 1}, want: EnforcementQuotaExhausted},
 		{policy: CustomerPolicy{CustomerID: "customer-one", TrafficLimitBytes: 100}, want: EnforcementQuotaExhausted},
 	}
 	for _, test := range tests {
@@ -177,7 +177,7 @@ func TestEnforcementPriorityIsDisabledThenExpiredThenQuota(t *testing.T) {
 			t.Fatalf("decision = %#v, want %s", decision, test.want)
 		}
 	}
-	if decision := projectEnforcement(CustomerPolicy{CustomerID: "customer-one", TrafficLimitBytes: 101}, totals, event, now); decision != nil {
+	if decision := projectEnforcement(CustomerPolicy{CustomerID: "customer-one", ExpiresAt: &expired, TrafficLimitBytes: 101}, totals, event, now); decision != nil {
 		t.Fatal("active customer below quota received enforcement decision")
 	}
 }

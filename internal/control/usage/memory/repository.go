@@ -195,6 +195,11 @@ func (repository *Repository) DesiredEnforcement(_ context.Context, nodeID strin
 	defer repository.mu.Unlock()
 	var selected *usage.EnforcementDecision
 	for _, item := range repository.decisions {
+		// Old reminder-only decisions remain audit history, never disable commands.
+		// Explicit revocations must still reach a previously enabled executor.
+		if item.Reason == usage.EnforcementCustomerExpired && item.Action == agentv1.EnforcementDisableCustomer {
+			continue
+		}
 		if item.TriggerNodeID != nodeID || (item.Status != usage.EnforcementPending && item.Status != usage.EnforcementRevokePending) {
 			continue
 		}

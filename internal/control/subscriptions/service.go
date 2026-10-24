@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hongle/hl-panel/internal/control/audit"
-	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/idgen"
@@ -243,7 +242,7 @@ func (s *Service) Resolve(ctx context.Context, r Record, draft bool) ([]Resolved
 		if err != nil {
 			return nil, subscriptionReadError(err)
 		}
-		if customer.EffectiveStatus(s.now()) != customers.StatusActive {
+		if !customer.ForwardingAllowed() {
 			return nil, faults.ErrNotFound
 		}
 	}

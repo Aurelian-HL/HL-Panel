@@ -115,7 +115,7 @@ func compileDirect(rules []forwarding.Rule, bindIP string, ingress forwarding.In
 	ports := make(map[int]struct{})
 	ids := make(map[string]struct{})
 	for _, rule := range rules {
-		if rule.Paused || rule.Status == forwarding.StatusPaused || rule.Status == forwarding.StatusCustomerDisabled || rule.Status == forwarding.StatusCustomerExpired || rule.Status == forwarding.StatusQuotaExhausted {
+		if rule.Paused || rule.Status == forwarding.StatusPaused || rule.Status == forwarding.StatusCustomerDisabled || rule.Status == forwarding.StatusQuotaExhausted {
 			continue
 		}
 		if rule.ID == "" || len(rule.ID) > 128 || rule.ListenPort < 1 {

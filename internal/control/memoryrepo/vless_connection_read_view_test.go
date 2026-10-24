@@ -97,7 +97,7 @@ func TestConnectionReadViewPreservesLiveReadinessAndPermissions(t *testing.T) {
 			if byID != want || !sameConnectionError(byErr, wantErr) {
 				t.Fatalf("identity view changed result: %v", byErr)
 			}
-			if (err == nil) != (name == "healthy") {
+			if (err == nil) != (name == "healthy" || name == "expired customer") {
 				t.Fatalf("unexpected admission: %v", err)
 			}
 			if err != nil && got.URI != "" {

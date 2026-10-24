@@ -80,7 +80,7 @@ const (
 	StatusPendingActivation Status            = "pending_activation"
 	// StatusActive means the rule has a matching deployment receipt and a
 	// verified healthy runtime candidate. It is distinct from customer
-	// availability so pause/expiry/quota states can still override it.
+	// availability so pause, disable and quota states can still override it.
 	StatusActive          Status        = "active"
 	IngressReady          IngressStatus = "ready"
 	IngressPendingReality IngressStatus = "pending_reality_parameters"
@@ -364,9 +364,6 @@ func DeriveStatus(rule Rule, customer CustomerAvailability, now time.Time) Statu
 	}
 	if !customer.Enabled {
 		return StatusCustomerDisabled
-	}
-	if customer.ExpiresAt != nil && !customer.ExpiresAt.After(now) {
-		return StatusCustomerExpired
 	}
 	if customer.TrafficLimitBytes > 0 && customer.UsedTrafficBytes >= customer.TrafficLimitBytes {
 		return StatusQuotaExhausted

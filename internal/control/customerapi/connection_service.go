@@ -127,7 +127,8 @@ func (service *ConnectionService) unverified(ctx context.Context, principal cust
 
 func (service *ConnectionService) populate(view *ConnectionView, profile customeridentity.Profile, evidence ConnectionEvidence) {
 	rule, pool, binding := evidence.Rule, evidence.Pool, evidence.Binding
-	if profile.EffectiveStatus != customers.StatusActive || rule.ID == "" || rule.Paused || !rule.Deployed ||
+	if (profile.EffectiveStatus != customers.StatusActive && profile.EffectiveStatus != customers.StatusExpired) ||
+		(profile.TrafficLimitBytes > 0 && profile.TrafficUsedBytes >= profile.TrafficLimitBytes) || rule.ID == "" || rule.Paused || !rule.Deployed ||
 		rule.Status != forwarding.StatusPendingActivation || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
 		(rule.Protocol != forwarding.ProtocolTCP && rule.Protocol != forwarding.ProtocolUDP) || rule.IngressReadiness() != forwarding.IngressReady ||
 		!rule.SupportedVLESSFlow() || rule.RealityDestination == "" ||

@@ -91,7 +91,13 @@ func TestSubscriptionSnapshotUpgradeRoundtripAndCorruption(t *testing.T) {
 	}
 	// Customer restrictions are checked at every public fetch, including saved manual links.
 	expired := now.Add(-time.Hour)
-	for _, change := range []func(*customers.Customer){func(c *customers.Customer) { c.Disabled = true }, func(c *customers.Customer) { c.ExpiresAt = &expired }, func(c *customers.Customer) { c.TrafficLimitBytes = 1; c.TrafficUsedBytes = 1 }} {
+	reminder := customer
+	reminder.ExpiresAt = &expired
+	seedCustomer(restored, reminder)
+	if _, _, err = reopened.Public(ctx, record.Token); err != nil {
+		t.Fatal("reminder date blocked stable subscription", err)
+	}
+	for _, change := range []func(*customers.Customer){func(c *customers.Customer) { c.Disabled = true }, func(c *customers.Customer) { c.TrafficLimitBytes = 1; c.TrafficUsedBytes = 1 }} {
 		c := customer
 		change(&c)
 		seedCustomer(restored, c)

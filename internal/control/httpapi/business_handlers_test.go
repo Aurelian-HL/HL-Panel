@@ -566,8 +566,8 @@ func TestBusinessCustomerDisableAndExpiryPreventResume(t *testing.T) {
 	if customer.Status != customers.StatusExpired {
 		t.Fatal("expired customer did not reflect actual availability")
 	}
-	if _, _, err := forwardingService.UpdateForCustomer(context.Background(), f.customer.ID, rule.ID, ruleInput, "resume-expired-rule"); err == nil {
-		t.Fatal("expired customer resumed a rule")
+	if _, _, err := forwardingService.UpdateForCustomer(context.Background(), f.customer.ID, rule.ID, ruleInput, "resume-expired-rule"); err != nil {
+		t.Fatal("reminder date blocked resuming a rule", err)
 	}
 	stored, err := f.store.Customer(context.Background(), f.customer.ID)
 	if err != nil || !bytes.Equal(stored.PasswordHash, originalCustomer.PasswordHash) {

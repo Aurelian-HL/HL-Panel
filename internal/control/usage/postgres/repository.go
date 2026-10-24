@@ -205,7 +205,8 @@ func (repository *Repository) DesiredEnforcement(ctx context.Context, nodeID str
 	}
 	row := repository.db.QueryRowContext(ctx, `SELECT `+decisionColumns+` FROM usage_enforcement_decisions
 		WHERE trigger_node_id=$1 AND status IN ('pending','revoke_pending')
-		ORDER BY created_at,id LIMIT 1`, nodeID)
+		AND NOT (reason='customer_expired' AND action=$2)
+		ORDER BY created_at,id LIMIT 1`, nodeID, agentv1.EnforcementDisableCustomer)
 	decision, err := scanDecision(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

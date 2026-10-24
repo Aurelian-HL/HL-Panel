@@ -278,6 +278,9 @@ func (service *Service) DesiredEnforcement(ctx context.Context, nodeID string) (
 	if decision.TriggerNodeID != nodeID || (decision.Status != EnforcementPending && decision.Status != EnforcementRevokePending) {
 		return nil, errors.New("repository returned an invalid enforcement command")
 	}
+	if decision.Reason == EnforcementCustomerExpired && decision.Action == agentv1.EnforcementDisableCustomer {
+		return nil, nil
+	}
 	limits := agentv1.EffectiveLimits{}
 	protocol := decision.Protocol
 	if service.limits != nil {
@@ -475,8 +478,6 @@ func projectEnforcement(policy CustomerPolicy, totals CustomerTotals, event Even
 	switch {
 	case policy.Disabled:
 		reason = EnforcementCustomerDisabled
-	case policy.ExpiresAt != nil && !policy.ExpiresAt.After(now):
-		reason = EnforcementCustomerExpired
 	case policy.TrafficLimitBytes > 0 && totals.ChargedBytes >= policy.TrafficLimitBytes:
 		reason = EnforcementQuotaExhausted
 	default:

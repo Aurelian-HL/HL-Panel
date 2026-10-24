@@ -219,7 +219,7 @@ func TestForwardingAuthorizationQuotasStatusAndPause(t *testing.T) {
 	seedCustomer(s, customer)
 	request.Paused = false
 	request.Revision = paused.Revision
-	if _, _, err := service.Update(ctx, "admin", rule.ID, request, "expired-resume"); !errors.Is(err, faults.ErrConflict) {
+	if _, _, err := service.Update(ctx, "admin", rule.ID, request, "expired-resume"); err != nil {
 		t.Fatalf("expired resume: %v", err)
 	}
 }

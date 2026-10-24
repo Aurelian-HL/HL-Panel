@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
-	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/endpoints"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
@@ -184,7 +183,7 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		case rulegroups.BatchResume:
 			item.Paused = false
 			customer := s.customers[item.CustomerID]
-			if current.OwnerKind != forwarding.OwnerAdministrator && !current.IsUnassignedImport() && customer.EffectiveStatus(input.UpdatedAt) != customers.StatusActive {
+			if current.OwnerKind != forwarding.OwnerAdministrator && !current.IsUnassignedImport() && !customer.ForwardingAllowed() {
 				return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s customer is not active", faults.ErrConflict, id)
 			}
 		case rulegroups.BatchMoveGroup:

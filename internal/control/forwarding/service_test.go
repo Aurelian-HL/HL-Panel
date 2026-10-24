@@ -419,7 +419,7 @@ func TestAvailabilityStatusBoundaries(t *testing.T) {
 	}{
 		{"paused", Rule{Paused: true}, CustomerAvailability{}, StatusPaused},
 		{"disabled", Rule{}, CustomerAvailability{}, StatusCustomerDisabled},
-		{"expiry boundary", Rule{}, CustomerAvailability{Enabled: true, ExpiresAt: &now}, StatusCustomerExpired},
+		{"expiry boundary", Rule{}, CustomerAvailability{Enabled: true, ExpiresAt: &now}, StatusPendingActivation},
 		{"quota boundary", Rule{}, CustomerAvailability{Enabled: true, TrafficLimitBytes: 10, UsedTrafficBytes: 10}, StatusQuotaExhausted},
 		{"enabled remains pending", Rule{}, CustomerAvailability{Enabled: true, ExpiresAt: &future, TrafficLimitBytes: 10, UsedTrafficBytes: 9}, StatusPendingActivation},
 		{"unlimited", Rule{}, CustomerAvailability{Enabled: true, UsedTrafficBytes: 100}, StatusPendingActivation},

@@ -162,7 +162,11 @@ func TestNodeCompilationInputsEnforceCustomerLifecycle(t *testing.T) {
 				c.TrafficLimitBytes, c.TrafficUsedBytes = 10, 10
 			}
 			f.store.customers[f.rule.CustomerID] = c
-			if fs, err := f.store.compileForwardingFragmentsLocked(f.nodeID); err != nil || len(fs) != 0 {
+			wantCount := 0
+			if kind == "expired" {
+				wantCount = 1
+			}
+			if fs, err := f.store.compileForwardingFragmentsLocked(f.nodeID); err != nil || len(fs) != wantCount {
 				t.Fatal("customer restriction bypassed", err)
 			}
 		})

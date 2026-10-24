@@ -76,7 +76,7 @@ func TestConfigurationReadPreservesInactiveStateAndStableIdentity(t *testing.T) 
 			at := time.Now().Add(-time.Hour)
 			c.ExpiresAt = &at
 			seedCustomer(s, c)
-		}, "inactive"},
+		}, "configured"},
 		{"disabled", func(s *Store) { c := s.customers["customer"]; c.Disabled = true; s.customers[c.ID] = c }, "inactive"},
 		{"quota", func(s *Store) {
 			r := s.forwardRules["rule"]
@@ -125,7 +125,7 @@ func TestConfigurationReadPreservesInactiveStateAndStableIdentity(t *testing.T) 
 				}
 				want = got
 			}
-			if tc.name != "configured" && tc.name != "SOCKS5 landing" {
+			if tc.name != "configured" && tc.name != "SOCKS5 landing" && tc.name != "expired" {
 				if got, err := view.ResolveForwardingConnection(context.Background(), "admin", "rule"); err == nil || got.URI != "" {
 					t.Fatal("saved export weakened the live rule gate")
 				}

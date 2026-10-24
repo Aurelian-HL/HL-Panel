@@ -94,7 +94,7 @@ func TestCompilerUsesFIFOForFailoverAndRejectsLeastLoad(t *testing.T) {
 }
 
 func TestInactiveRulesProduceNoListeningService(t *testing.T) {
-	for _, status := range []forwarding.Status{forwarding.StatusPaused, forwarding.StatusCustomerDisabled, forwarding.StatusCustomerExpired, forwarding.StatusQuotaExhausted} {
+	for _, status := range []forwarding.Status{forwarding.StatusPaused, forwarding.StatusCustomerDisabled, forwarding.StatusQuotaExhausted} {
 		rule := validRule()
 		rule.Status = status
 		data, err := CompileDirectTCP([]forwarding.Rule{rule}, "127.0.0.1")

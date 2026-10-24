@@ -54,6 +54,12 @@ func (c Customer) EffectiveStatus(now time.Time) Status {
 	return StatusActive
 }
 
+// ForwardingAllowed is independent of the reminder date. Keep explicit
+// suspension and traffic quotas enforceable even when the reminder is overdue.
+func (c Customer) ForwardingAllowed() bool {
+	return !c.Disabled && (c.TrafficLimitBytes <= 0 || c.TrafficUsedBytes < c.TrafficLimitBytes)
+}
+
 type UserGroup struct {
 	ID                   string    `json:"id"`
 	Name                 string    `json:"name"`

@@ -32,7 +32,8 @@ import (
 // Revision 2 explicitly allows third-party Reality client version numbering.
 // Revision 3 drops unsupported listener metadata from rejected legacy bundles.
 // Revision 4 negotiates authenticated QUIC/KCP fragments and private TLS material.
-const NodeBundleCompilerRevision = 4
+// Revision 5 restores listeners previously omitted solely by a customer reminder date.
+const NodeBundleCompilerRevision = 5
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
 	return s.compileNodeConfigWithRealityKeysLocked(nodeID, now, nil)

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
-	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/forwarding"
 	"github.com/hongle/hl-panel/internal/control/gatewaymembership"
@@ -343,8 +342,8 @@ func (s *Store) prepareForwardingRuleAgainstLocked(item *forwarding.Rule, rules 
 			return err
 		}
 	}
-	if !adminOwned && !item.Paused && customer.EffectiveStatus(time.Now().UTC()) != customers.StatusActive {
-		return fmt.Errorf("%w: customer is disabled, expired or has exhausted the traffic quota", faults.ErrConflict)
+	if !adminOwned && !item.Paused && !customer.ForwardingAllowed() {
+		return fmt.Errorf("%w: customer is disabled or has exhausted the traffic quota", faults.ErrConflict)
 	}
 	count := 0
 	for _, other := range rules {

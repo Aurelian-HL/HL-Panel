@@ -56,7 +56,7 @@ async function save(): Promise<void> {
       <label class="field"><span>用户组</span><select v-model="form.user_group_id"><option value="">暂不分组（无线路权限）</option><option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
       <div class="form-stack">
         <label class="field"><span>备注名称</span><input v-model="form.display_name" maxlength="120" /></label>
-        <label class="field"><span>过期时间</span><input v-model="form.expires_at" type="datetime-local" /><small class="field-help">本地时间，留空不限。</small></label>
+        <label class="field"><span>到期提醒</span><input v-model="form.expires_at" type="datetime-local" /><small class="field-help">本地时间，仅提醒，不影响转发和订阅；留空不提醒。</small></label>
         <label class="field"><span>状态</span><select v-model="form.disabled"><option :value="false">启用</option><option :value="true">停用</option></select></label>
         <label class="field"><span>流量 · GB</span><input v-model.number="form.traffic_gib" type="number" min="0" step="any" required /></label>
         <label class="field"><span>最大规则数</span><input v-model.number="form.max_rules" type="number" min="0" max="1000000" step="1" required /></label>
