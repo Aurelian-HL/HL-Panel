@@ -349,6 +349,12 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode == 0
             config = json.loads(Path('/etc/hl-panel/edge-agent.json').read_text())
             assert config['engine_mode'] == 'mixed' and config['xray_auto_start'] and config['gost_auto_start']
+            route = json.loads(run(['ip', '-j', '-4', 'route', 'get', '1.1.1.1']).stdout)
+            assert config['traffic_control_interface'] == route[0]['dev']
+            assert Path(config['traffic_control_binary']).resolve() == Path(shutil.which('tc')).resolve()
+            agent_pid = run(['systemctl', 'show', 'hl-panel-edge-agent', '--property=MainPID', '--value']).stdout.strip()
+            proc_status = dict(line.split(':', 1) for line in Path('/proc', agent_pid, 'status').read_text().splitlines() if ':' in line)
+            assert int(proc_status['CapEff'].strip(), 16) & (1 << 12), 'Agent lacks real CAP_NET_ADMIN for limited rules'
             assert not Path('/etc/systemd/system/hl-panel-control-api.service').exists()
             assert not Path('/etc/nginx/sites-available/hl-panel.conf').exists()
             members = request('GET', f"/device-groups/{group['id']}/members")['items']
@@ -359,6 +365,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 nodes = request('GET','/nodes')['items']
                 assert len(nodes) == 1
                 node = nodes[0]
+                assert 'linux-tc-speed-limit-v1' in node['capabilities']
                 host = node['resources']['host']
                 assert node['agent_version'] == args.version
                 assert host['memory_total_bytes'] > 0 and host['disk_total_bytes'] > 0
@@ -368,6 +375,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 return node
 
             wait_for(node_sample)
+            checks.append('fresh token installation configures real TC interface, effective NET_ADMIN and reported speed-limit capability')
             for route in ['/monitoring/nezha/servers', f"/device-groups/{group['id']}/monitoring/nezha"]:
                 probe = request('GET',route)
                 assert probe['upstream_status'] == 'disabled'

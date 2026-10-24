@@ -5,6 +5,7 @@ import (
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/control/groups"
 	"github.com/hongle/hl-panel/internal/control/nodes"
+	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
 
 // groupMemberMutationSnapshot captures every in-memory projection touched by
@@ -27,6 +28,7 @@ type groupMemberMutationSnapshot struct {
 
 	pools         map[string]endpoints.EndpointPool
 	poolMembers   map[string]map[string]endpoints.EndpointPoolMember
+	materials     map[string]vlessruntime.Material
 	auditEventLen int
 }
 
@@ -37,6 +39,12 @@ func (s *Store) captureGroupMemberMutationLocked(groupID, nodeID string) groupMe
 		auditEventLen: len(s.auditEvents),
 	}
 	snapshot.relatedNodes = make(map[string]nodes.Node)
+	snapshot.materials = make(map[string]vlessruntime.Material)
+	for id, material := range s.vlessRuntimeMaterials {
+		if material.NodeID == nodeID {
+			snapshot.materials[id] = cloneVLESSRuntimeMaterial(material)
+		}
+	}
 	snapshot.relatedConfigs = make(map[string]map[int64]generations.NodeConfigGeneration)
 	for _, id := range s.reliableUDPDependentGroupsLocked([]string{groupID}) {
 		for n := range s.membersByGroup[id] {
@@ -80,6 +88,14 @@ func (s *Store) captureGroupMemberMutationLocked(groupID, nodeID string) groupMe
 }
 
 func (s *Store) restoreGroupMemberMutationLocked(snapshot groupMemberMutationSnapshot) {
+	for id, material := range s.vlessRuntimeMaterials {
+		if material.NodeID == snapshot.nodeID {
+			delete(s.vlessRuntimeMaterials, id)
+		}
+	}
+	for id, material := range snapshot.materials {
+		s.vlessRuntimeMaterials[id] = material
+	}
 	for id, node := range snapshot.relatedNodes {
 		s.nodes[id] = node
 		if configs := snapshot.relatedConfigs[id]; configs != nil {

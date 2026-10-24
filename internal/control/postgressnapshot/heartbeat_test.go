@@ -89,6 +89,20 @@ func TestFailedHeartbeatPersistenceClaimCanBeRetried(t *testing.T) {
 	}
 }
 
+func TestTrafficControlCapabilityChangeBypassesHeartbeatThrottle(t *testing.T) {
+	store := &Store{heartbeats: make(map[string]heartbeatPersistence)}
+	now := time.Date(2026, time.October, 24, 10, 0, 0, 0, time.UTC)
+	value := nodes.Heartbeat{Capabilities: []string{"xray", "vless-reality"}}
+	store.markHeartbeatPersisted("node-a", value, now)
+	if store.claimHeartbeatPersistence("node-a", value, now.Add(time.Second)) {
+		t.Fatal("unchanged capability bypassed telemetry throttle")
+	}
+	value.Capabilities = append(value.Capabilities, "linux-tc-speed-limit-v1")
+	if !store.claimHeartbeatPersistence("node-a", value, now.Add(time.Second)) {
+		t.Fatal("new TC capability was not scheduled for a durable reconcile")
+	}
+}
+
 func TestCompilerReconcileClaimIsCooledAfterFailureButKeepsSingleFlight(t *testing.T) {
 	store := &Store{heartbeats: make(map[string]heartbeatPersistence)}
 	value := nodes.Heartbeat{Hostname: "node-a", AgentVersion: "1.0.0"}

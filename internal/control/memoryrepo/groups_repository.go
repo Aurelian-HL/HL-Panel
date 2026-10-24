@@ -356,8 +356,13 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 	// Automatic Reality material requires both source membership and its
 	// endpoint projection. Establish both before compiling the initial bundle.
 	s.syncGroupMemberToEndpointPoolsLocked(member)
+	provisioned, err := s.provisionMemberNativeMaterialsLocked(member)
+	if err != nil {
+		s.restoreGroupMemberMutationLocked(mutation)
+		return groups.Member{}, nil, err
+	}
 	assignments := make([]generations.NodeConfigGeneration, 0, 1)
-	if changed || s.nodes[member.NodeID].DesiredGeneration == 0 {
+	if changed || provisioned || s.nodes[member.NodeID].DesiredGeneration == 0 {
 		assignment, created, err := s.compileNodeConfigLocked(member.NodeID, member.UpdatedAt)
 		if err != nil {
 			if tolerateCompileFailure {

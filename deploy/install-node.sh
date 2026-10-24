@@ -93,6 +93,18 @@ else
   [[ -f "$archive" && -f "$checksum" ]] || { echo '离线安装必须同时提供 --archive 和 --sha256 文件。' >&2; exit 2; }
 fi
 ensure_time_synchronization
+# Per-rule speed limits need the real TC binary and a validated route interface.
+# Require them before creating a fresh installation, rather than advertising a
+# capability whose rules the node cannot apply.
+if [[ ! -e /var/lib/hl-panel-edge/credentials.json ]] && { ! command -v ip >/dev/null || ! command -v tc >/dev/null; }; then
+  if [[ -z "$archive" ]] && command -v apt-get >/dev/null; then
+    apt-get update
+    apt-get install -y --no-install-recommends iproute2
+  else
+    echo '新节点安装需要 iproute2（ip、tc）；请先安装后重试，尚未创建节点。' >&2
+    exit 1
+  fi
+fi
 # Public address is separate from the operating-system hostname.
 if [[ -z "$node_address" ]]; then
   for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
@@ -146,12 +158,17 @@ temporary=$(mktemp -d)
 created_install=0
 install_ready=0
 installed_ca=0
+created_tc_dropin=0
 cleanup_install() {
   if [[ "$created_install" == 1 && "$install_ready" == 0 ]]; then
     rm -f /opt/hl-panel/edge-agent /opt/hl-panel/enroll-node.sh /etc/hl-panel/edge-agent.json /etc/systemd/system/hl-panel-edge-agent.service
     rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost
     if [[ "$installed_ca" == 1 ]]; then
       rm -f /etc/hl-panel/edge-agent-ca.pem
+    fi
+    if [[ "$created_tc_dropin" == 1 ]]; then
+      rm -f /etc/systemd/system/hl-panel-edge-agent.service.d/30-traffic-control.conf
+      rmdir /etc/systemd/system/hl-panel-edge-agent.service.d 2>/dev/null || true
     fi
     rmdir /opt/hl-panel/node-engines 2>/dev/null || true
     systemctl daemon-reload >/dev/null 2>&1 || true
@@ -204,7 +221,7 @@ for line in (target/'SHA256SUMS').read_text().splitlines():
     require((target/name).is_file() and digest(target/name) == expected, '文件摘要校验失败')
     verified.add(name)
 require({str(p.relative_to(target)) for p in target.rglob('*') if p.is_file()} == verified | {'SHA256SUMS'}, '存在未校验文件')
-for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr2.py', 'deploy/configure-node-bbr.py', 'deploy/systemd/hl-panel-edge-agent.service'):
+for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr2.py', 'deploy/configure-node-bbr.py', 'deploy/configure-node-traffic-control.py', 'deploy/systemd/hl-panel-edge-agent.service'):
     require(name in verified, '缺少节点安装文件：' + name)
 (target/'bin/edge-agent').chmod(0o755)
 PY
@@ -301,6 +318,10 @@ fd,name=tempfile.mkstemp(dir=p.parent)
 with os.fdopen(fd,'w') as f: f.write(json.dumps(c)+'\n')
 os.chown(name,p.stat().st_uid,p.stat().st_gid); os.chmod(name,0o640); os.replace(name,p)
 PY
+if [[ "$created_install" == 1 && ! -e /etc/systemd/system/hl-panel-edge-agent.service.d/30-traffic-control.conf && ! -L /etc/systemd/system/hl-panel-edge-agent.service.d/30-traffic-control.conf ]]; then
+  created_tc_dropin=1
+fi
+python3 "$release/deploy/configure-node-traffic-control.py"
 python3 "$release/deploy/install-node-update.py" "$release"
 echo '[HL-panel 节点] 自动注册并启用开机自启…'
 HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh

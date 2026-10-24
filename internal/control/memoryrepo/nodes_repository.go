@@ -143,6 +143,7 @@ func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now ti
 		nodeSupportsVLESSUDPDirect(previousNode) != nodeSupportsVLESSUDPDirect(node) ||
 		nodeSupportsGOSTUDPDirect(previousNode) != nodeSupportsGOSTUDPDirect(node) ||
 		nodeSupportsReliableUDP(previousNode) != nodeSupportsReliableUDP(node) ||
+		nodeSupportsTCSpeedLimit(previousNode) != nodeSupportsTCSpeedLimit(node) ||
 		node.BundleCompilerRevision < NodeBundleCompilerRevision) {
 		groups := []string{}
 		for groupID, members := range s.membersByGroup {
