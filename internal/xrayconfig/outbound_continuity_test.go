@@ -95,6 +95,22 @@ func TestLeafContinuityLeavesUnknownReferencesUntouched(t *testing.T) {
 	}
 }
 
+func TestLeafContinuityPreservesUnnamedDefaultOutbound(t *testing.T) {
+	for _, tag := range []string{"", `,"tag":""`} {
+		raw := []byte(`{"outbounds":[{"protocol":"freedom"` + tag + `}]}`)
+		got, err := PreserveUnchangedLeafTags(raw, raw)
+		if err != nil || !bytes.Equal(got, raw) {
+			t.Fatalf("valid unnamed default rejected or rewritten: %v", err)
+		}
+		// A previous unnamed default is not an alias for a newly named one.
+		named := []byte(`{"outbounds":[{"protocol":"freedom","tag":"direct"}]}`)
+		got, err = PreserveUnchangedLeafTags(raw, named)
+		if err != nil || !bytes.Equal(got, named) {
+			t.Fatalf("unnamed previous handler treated as alias: %v", err)
+		}
+	}
+}
+
 // Match the incident's scale: 440 listeners with 1,200 leaf outbounds. A
 // single deletion must not schedule a content-version migration of the rest.
 func TestLeafContinuityLargeLegacyDeletion(t *testing.T) {

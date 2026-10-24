@@ -21,11 +21,28 @@ func PreserveUnchangedLeafTags(previous, candidate []byte) ([]byte, error) {
 	if json.Unmarshal(before["outbounds"], &old) != nil || json.Unmarshal(after["outbounds"], &next) != nil {
 		return nil, ErrOutboundVersioning
 	}
+	// Xray permits unnamed default outbounds. They have no stable identity
+	// for aliasing; leave such configurations intact and let the adapter's
+	// exact byte/hash checks continue to attest the original document.
+	for _, out := range next {
+		var tag string
+		if raw, exists := out["tag"]; !exists || bytes.Equal(raw, []byte(`""`)) {
+			return candidate, nil
+		} else if json.Unmarshal(raw, &tag) != nil {
+			return nil, ErrOutboundVersioning
+		}
+	}
 	installed := make(map[string]map[string]json.RawMessage, len(old))
 	for _, out := range old {
 		var tag string
-		if json.Unmarshal(out["tag"], &tag) != nil || tag == "" {
+		if _, exists := out["tag"]; !exists {
+			continue
+		}
+		if json.Unmarshal(out["tag"], &tag) != nil {
 			return nil, ErrOutboundVersioning
+		}
+		if tag == "" {
+			continue
 		}
 		base := leafTagBase(tag)
 		if _, exists := installed[base]; exists {
