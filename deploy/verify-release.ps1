@@ -32,6 +32,7 @@ $required = @(
     'deploy/reinstall-node.py',
     'deploy/configure-node-bbr2.py',
     'deploy/configure-node-bbr.py',
+    'deploy/configure-node-traffic-control.py',
     'deploy/fetch-node-engines.py',
     'deploy/node-control-url.py',
     'deploy/update.sh',

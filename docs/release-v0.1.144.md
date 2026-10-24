@@ -5,6 +5,8 @@ without overwriting explicit settings. Recovery and rollback change only owned
 filter handles, retain unrelated filters at the same priority and restore the
 verified generation's limits before activating its listeners. Invalid or stale
 desired configurations are rejected before changing limits or usage state.
+Windows packaging and package verification include the required TC configurator,
+matching the Linux release workflow and node installer.
 
 Agent stop/restart commands are durably claimed before execution. Repeated IDs
 report the saved result; interrupted or unrecordable execution is rejected

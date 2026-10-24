@@ -153,6 +153,7 @@ try {
         'reinstall-node.py',
         'configure-node-bbr2.py',
         'configure-node-bbr.py',
+        'configure-node-traffic-control.py',
         'fetch-node-engines.py',
         'update.sh',
         'update.py',
