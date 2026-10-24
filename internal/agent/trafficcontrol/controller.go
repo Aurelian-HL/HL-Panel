@@ -270,10 +270,9 @@ func (c *Controller) applyPort(ctx context.Context, port, rate int) error {
 			return err
 		}
 		if rate == 0 {
-			args := []string{"filter", "del", "dev", c.interfaceName, direction, "pref", pref}
-			if port > lastIndividualPriorityPort {
-				args = append(args, "handle", handle, "protocol", "ip", "flower")
-			}
+			// Even an individual priority may contain a filter owned by another
+			// service. Select our exact handle instead of removing that group.
+			args := []string{"filter", "del", "dev", c.interfaceName, direction, "pref", pref, "handle", handle, "protocol", "ip", "flower"}
 			if err := c.runner.Run(ctx, c.binary, args...); err != nil && !errors.Is(err, ErrFilterNotFound) {
 				return err
 			}

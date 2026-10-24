@@ -23,6 +23,9 @@ permission to publish a release, upgrade a production node, or change live TC.
   55536–65535 share priority 10000 with distinct handles. Delete selects the
   exact high-port handle and cannot delete other listeners at that priority.
   The root qdisc and unrelated filters remain outside controller ownership.
+- Every deletion, including low ports, selects the exact IPv4 flower handle.
+  An unrelated filter sharing a listener's priority is retained. Acceptance
+  checks coexistence at both individual and shared high-port priorities.
 
 ## Acceptance
 

@@ -37,16 +37,27 @@ func (r *kernelRunner) Run(ctx context.Context, _ string, args ...string) error 
 			return errors.New("invalid priority value")
 		}
 		key := args[4] + "/" + args[6]
-		if priority == 10000 {
-			for i, arg := range args {
-				if arg == "handle" {
-					key += "/" + args[i+1]
-					break
-				}
+		handle := ""
+		for i, arg := range args {
+			if arg == "handle" {
+				handle = args[i+1]
+				break
 			}
 		}
+		if priority == 10000 || (handle != "" && handle != "1") {
+			key += "/" + handle
+		}
 		if args[1] == "del" {
-			delete(r.filters, key)
+			if handle == "" {
+				// A priority-only deletion removes every filter in its group.
+				for candidate := range r.filters {
+					if candidate == key || strings.HasPrefix(candidate, key+"/") {
+						delete(r.filters, candidate)
+					}
+				}
+			} else {
+				delete(r.filters, key)
+			}
 		} else {
 			for i, arg := range args {
 				if arg == "rate" {
@@ -145,6 +156,41 @@ func TestHighListenerPortsApplyRemoveAndRollbackIndependently(t *testing.T) {
 		t.Fatal(err)
 	}
 	assert(map[string]string{"65535": "10mbit", "10000/10000": "30mbit"})
+}
+
+func TestDeletionPreservesUnownedFiltersAtTheSamePriority(t *testing.T) {
+	for _, tt := range []struct {
+		name, priority, foreignHandle string
+		port                          int
+	}{
+		{"low", "22001", "2", 12001},
+		{"last_individual", "65535", "2", 55535},
+		{"first_shared", "10000", "10001", 55536},
+		{"last_shared", "10000", "10001", 65535},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &kernelRunner{filters: map[string]string{}}
+			c, err := New("eth0", "tc", filepath.Join(t.TempDir(), "tc.json"), runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := c.ApplyBundle(context.Background(), bundleWithLimits(t, map[int]int{tt.port: 10})); err != nil {
+				t.Fatal(err)
+			}
+			foreign := map[string]string{}
+			for _, direction := range []string{"ingress", "egress"} {
+				key := direction + "/" + tt.priority + "/" + tt.foreignHandle
+				foreign[key] = "unowned"
+				runner.filters[key] = "unowned"
+			}
+			if err := c.ApplyBundle(context.Background(), bundleWithLimits(t, nil)); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(runner.filters, foreign) {
+				t.Fatalf("listener removal changed unowned same-priority filters: got %v, want %v", runner.filters, foreign)
+			}
+		})
+	}
 }
 
 func TestPersistenceFailureRestoresOnlyChangedPorts(t *testing.T) {

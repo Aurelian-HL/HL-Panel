@@ -65,6 +65,12 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 	command(tc, "qdisc", "add", "dev", iface, "clsact")
 	for _, direction := range []string{"ingress", "egress"} {
 		command(tc, "filter", "add", "dev", iface, direction, "pref", "9000", "matchall", "action", "pass")
+		// Share both an individual listener's priority and the high-port group
+		// with unrelated filters. Removing a listener must retain both handles.
+		for _, identity := range []struct{ priority, handle string }{{"34001", "2"}, {"10000", "10001"}} {
+			command(tc, "filter", "add", "dev", iface, direction, "pref", identity.priority, "handle", identity.handle,
+				"protocol", "ip", "flower", "ip_proto", "tcp", "dst_port", "19999", "action", "pass")
+		}
 	}
 	limits := map[int]int{}
 	for port := 24001; port <= 24011; port++ {
@@ -89,6 +95,7 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 			}
 			seen := map[int]bool{}
 			unrelated := false
+			sharedUnrelated := map[int]bool{}
 			for _, filter := range filters {
 				pref, _ := filter["pref"].(float64)
 				if pref == 9000 {
@@ -99,6 +106,10 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 					continue
 				}
 				keys, _ := options["keys"].(map[string]any)
+				if keys["dst_port"] == float64(19999) && keys["ip_proto"] == "tcp" {
+					sharedUnrelated[int(pref)] = true
+					continue
+				}
 				portKey := "dst_port"
 				if direction == "egress" {
 					portKey = "src_port"
@@ -129,6 +140,9 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 			if !unrelated || len(seen) != len(want) {
 				t.Fatalf("%s: got %d limits, want %d; unrelated filter retained=%v", direction, len(seen), len(want), unrelated)
 			}
+			if len(sharedUnrelated) != 2 || !sharedUnrelated[34001] || !sharedUnrelated[10000] {
+				t.Fatalf("%s: lost unrelated same-priority filter: %v", direction, sharedUnrelated)
+			}
 		}
 		if !reflect.DeepEqual(originalRoot, rootQdisc()) {
 			t.Fatal("controller changed the root qdisc")
@@ -137,7 +151,7 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 	assertFilters(limits)
 	// Remove one kernel filter, then recreate the controller from durable state.
 	// Restore must repair it without EEXIST on the other ten existing filters.
-	command(tc, "filter", "del", "dev", iface, "ingress", "pref", strconv.Itoa(10000+24001))
+	command(tc, "filter", "del", "dev", iface, "ingress", "pref", strconv.Itoa(10000+24001), "handle", "1", "protocol", "ip", "flower")
 	restarted, err := New(iface, tc, statePath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +217,7 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 	assertFilters(limits)
 	// Missing filters are the sole idempotent delete error. Exercise the actual
 	// iproute2 diagnostic instead of accepting all errors as absence.
-	command(tc, "filter", "del", "dev", iface, "ingress", "pref", "34001")
+	command(tc, "filter", "del", "dev", iface, "ingress", "pref", "34001", "handle", "1", "protocol", "ip", "flower")
 	restarted.runner = ExecRunner{}
 	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, withoutFirst)); err != nil {
 		t.Fatalf("delete already missing real filter: %v", err)
@@ -237,7 +251,7 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFilters(nil)
-	t.Log("real TC cancellation, activation rejection, partial deletion, missing-filter cleanup, high ports, exact rates and unrelated filters verified")
+	t.Log("real TC cancellation, activation rejection, partial deletion, missing-filter cleanup, high ports, exact rates and unrelated same-priority filters verified")
 }
 
 func findPoliceRate(value any) (float64, bool) {
