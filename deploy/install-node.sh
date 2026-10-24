@@ -94,14 +94,14 @@ else
 fi
 ensure_time_synchronization
 # Per-rule speed limits need the real TC binary and a validated route interface.
-# Require them before creating a fresh installation, rather than advertising a
+# Require them before a new installation or re-enrollment, rather than advertising a
 # capability whose rules the node cannot apply.
-if [[ ! -e /var/lib/hl-panel-edge/credentials.json ]] && { ! command -v ip >/dev/null || ! command -v tc >/dev/null; }; then
+if ! command -v ip >/dev/null || ! command -v tc >/dev/null; then
   if [[ -z "$archive" ]] && command -v apt-get >/dev/null; then
     apt-get update
     apt-get install -y --no-install-recommends iproute2
   else
-    echo '新节点安装需要 iproute2（ip、tc）；请先安装后重试，尚未创建节点。' >&2
+    echo '节点安装或重装需要 iproute2（ip、tc）；请先安装后重试，尚未修改节点身份。' >&2
     exit 1
   fi
 fi

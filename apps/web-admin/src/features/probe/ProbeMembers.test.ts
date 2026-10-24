@@ -44,9 +44,7 @@ describe('ProbeMembers', () => {
     await row.get('.probe-status').trigger('mouseleave')
     expect(document.body.querySelector('.probe-status-tooltip')).toBeNull()
     await row.get('.probe-rate-hover').trigger('mouseenter')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('连接数: 2,113')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('TCP: 2,104')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('UDP: 9')
+    expect(Array.from(document.body.querySelectorAll('.probe-rate-tooltip > div'), (line) => line.textContent)).toEqual(['连接数:', 'TCP 2104', 'UDP 9'])
     await row.get('.probe-rate-hover').trigger('mouseleave')
     expect(document.body.querySelector('.probe-rate-tooltip')).toBeNull()
     expect(row.get('td:nth-child(5) span').attributes('title')).toContain('启动时间：')
@@ -76,13 +74,11 @@ describe('ProbeMembers', () => {
     wrapper.unmount()
   })
 
-  it('does not infer a total when only one connection protocol is sampled', async () => {
+  it('keeps an unavailable protocol distinct from zero without inferring a total', async () => {
     const member = { ...completeProbeSample.items[0]!, udp_conn_count: undefined }
     const wrapper = mount(ProbeMembers, { props: { items: [member], upstreamStatus: 'ok', now: Date.now() }, attachTo: document.body })
     await wrapper.get('.probe-rate-hover').trigger('mouseenter')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('连接数: 未采集')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('TCP: 2,104')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('UDP: 未采集')
+    expect(Array.from(document.body.querySelectorAll('.probe-rate-tooltip > div'), (line) => line.textContent)).toEqual(['连接数:', 'TCP 2104', 'UDP 未采集'])
     wrapper.unmount()
   })
 
@@ -97,7 +93,7 @@ describe('ProbeMembers', () => {
     expect(row.text()).not.toContain('8.4 Mbps')
     expect(row.text()).not.toContain('37%')
     await row.get('.probe-rate-hover').trigger('focus')
-    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('TCP: 未采集')
+    expect(document.body.querySelector('.probe-rate-tooltip')?.textContent).toContain('TCP 未采集')
     await row.get('.probe-rate-hover').trigger('blur')
     wrapper.unmount()
   })

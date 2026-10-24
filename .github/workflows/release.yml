@@ -114,6 +114,8 @@ jobs:
           python3 tests/install/test_node_bbr.py
           python3 tests/install/test_node_bbr2_policy.py
           python3 tests/install/test_node_traffic_control.py
+          go test -c -o "$RUNNER_TEMP/hl-tc-test" ./internal/agent/trafficcontrol
+          sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true "$RUNNER_TEMP/hl-tc-test" -test.run '^TestDisposableLinuxElevenLimitsRestoreAndRemove$' -test.v -test.timeout 3m
           sudo python3 tests/install/test_recovery.py
           python3 tests/install/test_install_addresses.py
           python3 tests/install/test_subscription_nginx.py

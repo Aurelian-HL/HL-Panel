@@ -88,6 +88,54 @@ class TrafficControlInstallTest(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), original)
         self.assertEqual(self.dropin.read_text(), 'custom override')
 
+    def test_upgrade_defaults_survive_legacy_json_replacement_and_are_idempotent(self):
+        original = self.config.read_bytes()
+        with patch.object(tc, 'discover', return_value=('ens3', '/usr/sbin/tc')):
+            result = tc.configure(self.config, self.dropin, service_defaults=True)
+            self.assertTrue(result['configured'])
+            self.assertEqual(self.config.read_bytes(), original)
+            content = self.dropin.read_bytes()
+            self.assertTrue(tc.managed_defaults(content))
+            self.assertIn(b'HL_PANEL_TC_INTERFACE=ens3', content)
+            self.assertIn(b'HL_PANEL_TC_BINARY=/usr/sbin/tc', content)
+            self.assertNotIn(b'ExecStart', content)
+            calls = len(self.calls)
+            # This is the ordering of the already installed, older updater.
+            self.config.write_bytes(original)
+            self.assertFalse(tc.configure(self.config, self.dropin, service_defaults=True)['configured'])
+            self.assertEqual(len(self.calls), calls)
+            self.assertEqual(self.dropin.read_bytes(), content)
+            self.fail_reload = True
+            with patch.object(tc, 'discover', return_value=('ens4', '/usr/sbin/tc')):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    tc.configure(self.config, self.dropin, service_defaults=True)
+            self.assertEqual(self.config.read_bytes(), original)
+            self.assertEqual(self.dropin.read_bytes(), content)
+
+    def test_service_defaults_preserve_explicit_custom_settings_and_conflicting_override(self):
+        for setting in [{'traffic_control_interface': ''}, {'traffic_control_binary': '/custom/tc'}, {'traffic_control_state_file': '/custom/state'}]:
+            self.config.write_text(json.dumps(setting))
+            original = self.config.read_bytes()
+            self.assertFalse(tc.configure(self.config, self.dropin, service_defaults=True)['configured'])
+            self.assertEqual(self.config.read_bytes(), original)
+            self.assertFalse(self.dropin.exists())
+        self.config.write_text('{}')
+        self.dropin.parent.mkdir()
+        self.dropin.write_text('custom')
+        with patch.object(tc, 'discover', return_value=('ens3', '/usr/sbin/tc')):
+            with self.assertRaises(ValueError):
+                tc.configure(self.config, self.dropin, service_defaults=True)
+        self.assertEqual(self.dropin.read_text(), 'custom')
+
+    def test_missing_iproute2_can_be_installed_without_changing_qdisc(self):
+        lookups = {'ip': [None, str(self.config)], 'tc': [None, str(self.config)], 'apt-get': [str(self.config)]}
+        with patch.object(tc.shutil, 'which', side_effect=lambda name: lookups[name].pop(0)):
+            interface, binary = tc.discover(install_missing=True)
+        self.assertEqual(interface, 'ens3')
+        self.assertEqual(binary, str(self.config))
+        self.assertTrue(any(call[1:] == ['install', '-y', '--no-install-recommends', 'iproute2'] for call in self.calls))
+        self.assertFalse(any('qdisc' in call or 'filter' in call for call in self.calls))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -145,8 +146,8 @@ func Load(path string) (Config, error) {
 
 	decoder := json.NewDecoder(io.LimitReader(file, 1<<20))
 	decoder.DisallowUnknownFields()
-	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil {
+	var document json.RawMessage
+	if err := decoder.Decode(&document); err != nil {
 		return Config{}, fmt.Errorf("decode agent config: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
@@ -154,6 +155,15 @@ func Load(path string) (Config, error) {
 			return Config{}, errors.New("agent config contains multiple JSON values")
 		}
 		return Config{}, fmt.Errorf("decode trailing agent config data: %w", err)
+	}
+	var cfg Config
+	strict := json.NewDecoder(bytes.NewReader(document))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&cfg); err != nil {
+		return Config{}, fmt.Errorf("decode agent config: %w", err)
+	}
+	if err := cfg.applyTrafficControlEnvironment(document); err != nil {
+		return Config{}, err
 	}
 	cfg.setDefaults()
 	if err := cfg.Validate(); err != nil {

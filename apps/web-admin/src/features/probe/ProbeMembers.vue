@@ -40,6 +40,7 @@ const connectionCount = (member: ProbeMember): number | undefined => {
   return tcp === undefined || udp === undefined ? undefined : tcp + udp
 }
 const formatCount = (value?: number) => value === undefined ? '未采集' : value.toLocaleString('zh-CN')
+const tooltipCount = (value?: number) => value === undefined ? '未采集' : String(value)
 const positionTooltip = (event: Event, width: number, height: number) => {
   const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
   return {
@@ -53,7 +54,7 @@ const showStatus = (member: ProbeMember, event: Event) => {
 }
 const hideStatus = () => { hoveredId.value = null }
 const showRate = (member: ProbeMember, event: Event) => {
-  rateTooltipPosition.value = positionTooltip(event, 150, 84)
+  rateTooltipPosition.value = positionTooltip(event, 112, 78)
   rateHoveredId.value = member.node_id
 }
 const hideRate = () => { rateHoveredId.value = null }
@@ -107,9 +108,9 @@ const uptimeDetails = (member: ProbeMember) => [
         <div><b>节点端版本:</b> {{ collected(hovered.agent_version) }}</div>
       </div>
       <div v-if="rateHovered" id="probe-rate-tooltip" class="probe-status-tooltip probe-rate-tooltip" role="tooltip" :style="{ left: `${rateTooltipPosition.left}px`, top: `${rateTooltipPosition.top}px` }">
-        <div><b>连接数:</b> {{ formatCount(connectionCount(rateHovered)) }}</div>
-        <div><b>TCP:</b> {{ formatCount(metric(rateHovered, 'tcp_conn_count')) }}</div>
-        <div><b>UDP:</b> {{ formatCount(metric(rateHovered, 'udp_conn_count')) }}</div>
+        <div>连接数:</div>
+        <div>TCP {{ tooltipCount(metric(rateHovered, 'tcp_conn_count')) }}</div>
+        <div>UDP {{ tooltipCount(metric(rateHovered, 'udp_conn_count')) }}</div>
       </div>
     </Teleport>
 

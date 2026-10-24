@@ -7,16 +7,27 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path('/opt/hl-panel')
 UNITS = Path('/etc/systemd/system')
 NAMES = ('node-update-worker.py', 'update.py', 'update-node.py')
 UNIT_NAMES = ('hl-panel-node-update.socket', 'hl-panel-node-update.service')
+TC_NAME = '30-traffic-control.conf'
 
 
 def destinations():
-    return [(name, ROOT / name, 0o755) for name in NAMES] + [(name, UNITS / name, 0o644) for name in UNIT_NAMES]
+    return ([(name, ROOT / name, 0o755) for name in NAMES] +
+            [(name, UNITS / name, 0o644) for name in UNIT_NAMES] +
+            [(TC_NAME, UNITS / 'hl-panel-edge-agent.service.d' / TC_NAME, 0o644)])
+
+
+def safe_parent(dest):
+    if dest.name == TC_NAME and not dest.parent.exists() and not dest.parent.is_symlink():
+        safe(dest.parent.parent)
+    else:
+        safe(dest.parent)
 
 
 def safe(path):
@@ -44,9 +55,9 @@ def replace(source, destination, mode):
 
 def snapshot(backup):
     backup.mkdir(mode=0o700, exist_ok=False)
-    manifest = {}
+    manifest = {'tc_directory_present': (UNITS / 'hl-panel-edge-agent.service.d').exists()}
     for name, dest, _ in destinations():
-        safe(dest.parent)
+        safe_parent(dest)
         if dest.exists() or dest.is_symlink():
             safe(dest)
             shutil.copy2(dest, backup / name)
@@ -65,7 +76,7 @@ def restore(backup):
     manifest = json.loads((backup / 'manifest.json').read_text())
     for name, dest, _ in destinations():
         saved = manifest[name]
-        safe(dest.parent)
+        safe_parent(dest)
         if dest.exists() or dest.is_symlink():
             safe(dest)
         if saved is not None:
@@ -84,7 +95,12 @@ def restore(backup):
             if dest.exists():
                 dest.unlink()
         else:
+            if name == TC_NAME and not dest.parent.exists():
+                dest.parent.mkdir(mode=0o755)
             replace(backup / name, dest, saved['mode'])
+    tc_directory = UNITS / 'hl-panel-edge-agent.service.d'
+    if not manifest.get('tc_directory_present', True) and tc_directory.exists() and not any(tc_directory.iterdir()):
+        tc_directory.rmdir()
     command('systemctl', 'daemon-reload')
     if manifest['enabled']:
         command('systemctl', 'enable', 'hl-panel-node-update.socket')
@@ -97,11 +113,16 @@ def install(release):
         raise ValueError('root required')
     sources = {name: release / 'deploy' / name for name in NAMES}
     sources.update({name: release / 'deploy/systemd' / name for name in UNIT_NAMES})
+    helper = release / 'deploy/configure-node-traffic-control.py'
+    safe(helper)
+    if not helper.is_file():
+        raise ValueError('missing traffic-control provisioner')
     for name, dest, _ in destinations():
-        safe(sources[name])
-        if not sources[name].is_file():
-            raise ValueError('invalid release')
-        safe(dest.parent)
+        if name != TC_NAME:
+            safe(sources[name])
+            if not sources[name].is_file():
+                raise ValueError('invalid release')
+        safe_parent(dest)
         if dest.exists() or dest.is_symlink():
             safe(dest)
     command('systemd-analyze', 'verify', str(sources[UNIT_NAMES[0]]), str(sources[UNIT_NAMES[1]]))
@@ -110,7 +131,13 @@ def install(release):
         snapshot(backup)
         try:
             for name, dest, mode in destinations():
-                replace(sources[name], dest, mode)
+                if name != TC_NAME:
+                    replace(sources[name], dest, mode)
+            # This new-release installer is also invoked by old updaters.
+            # Service defaults survive their later saved-JSON installation;
+            # no root pre-start command or extra service restart is needed.
+            subprocess.run([sys.executable, '-I', str(helper), '--service-defaults', '--install-missing'],
+                           check=True, capture_output=True, timeout=260)
             command('systemctl', 'daemon-reload')
             command('systemctl', 'enable', '--now', 'hl-panel-node-update.socket')
         except Exception:

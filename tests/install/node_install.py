@@ -477,6 +477,14 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             saved_args = sys.argv
             service_unit = Path('/etc/systemd/system/hl-panel-edge-agent.service')
             original_unit = service_unit.read_text()
+            agent_config = Path('/etc/hl-panel/edge-agent.json')
+            original_config = agent_config.read_bytes()
+            tc_dropin = service_unit.parent / 'hl-panel-edge-agent.service.d/30-traffic-control.conf'
+            original_tc_dropin = tc_dropin.read_bytes()
+            legacy_config = {key: value for key, value in json.loads(original_config).items()
+                             if not key.startswith('traffic_control_')}
+            agent_config.write_text(json.dumps(legacy_config) + '\n')
+            tc_dropin.unlink()
             service_unit.write_text(original_unit.replace(' AF_NETLINK', ''))
             run(['systemctl', 'daemon-reload'], check=True)
             try:
@@ -485,20 +493,32 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 wait_for(real_clients)
                 wait_for(node_sample)
                 assert node_updater.METRICS_OVERRIDE.is_file()
+                assert not any(key.startswith('traffic_control_') for key in json.loads(agent_config.read_text())), 'Legacy updater did not exercise saved-JSON overwrite'
+                assert 'HL_PANEL_TC_INTERFACE=' + route[0]['dev'] in tc_dropin.read_text()
+                assert 'HL_PANEL_TC_BINARY=' in tc_dropin.read_text()
+                agent_pid = run(['systemctl', 'show', 'hl-panel-edge-agent', '-p', 'MainPID', '--value']).stdout.strip()
+                proc_status = dict(line.split(':', 1) for line in Path('/proc', agent_pid, 'status').read_text().splitlines() if ':' in line)
+                assert int(proc_status['CapEff'].strip(), 16) & (1 << 12), 'Upgraded legacy agent lacks effective CAP_NET_ADMIN'
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
                 backups = sorted(Path('/var/backups/hl-panel-node').glob('update-*'))
                 assert backups
                 run(['bash', str(backups[-1]/'rollback.sh')], check=True)
                 assert not node_updater.METRICS_OVERRIDE.exists()
+                assert not tc_dropin.exists(), 'Rollback retained new TC service defaults'
+                assert json.loads(agent_config.read_text()) == legacy_config
                 assert service_unit.read_text() == original_unit.replace(' AF_NETLINK', '')
                 wait_for(real_clients)
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
             finally:
                 sys.argv = saved_args
                 service_unit.write_text(original_unit)
+                agent_config.write_bytes(original_config)
+                tc_dropin.parent.mkdir(mode=0o755, exist_ok=True)
+                tc_dropin.write_bytes(original_tc_dropin)
                 run(['systemctl', 'daemon-reload'], check=True)
                 run(['systemctl', 'restart', 'hl-panel-edge-agent'], check=True)
             checks.append('verified legacy node metrics upgrade and rollback launcher preserve custom unit, identity and real forwarding')
+            checks.append('legacy JSON without TC upgrades to effective NET_ADMIN and reported speed-limit capability; rollback restores absent defaults and real clients')
             limits = run(['systemctl','show','hl-panel-edge-agent',
                           '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
             assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits
@@ -636,8 +656,19 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
             checks.append('legacy program upgrade configures supported BBR with independent network rollback and preserves node identity')
             backups_before_reinstall = bbr_backup_paths()
+            # A legacy machine may also be migrated using its token command.
+            # Remove only this disposable VM's TC configuration fixture.
+            legacy_config = {key: value for key, value in json.loads(agent_config.read_text()).items()
+                             if not key.startswith('traffic_control_')}
+            agent_config.write_text(json.dumps(legacy_config) + '\n')
+            tc_dropin.unlink()
+            run(['systemctl', 'daemon-reload'], check=True)
             fault_state['reenroll_fault'] = True
             assert install(switch_token).returncode == 0, 'Full command did not switch existing node'
+            wait_for(node_sample)
+            assert tc_dropin.is_file()
+            assert 'HL_PANEL_TC_INTERFACE=' + route[0]['dev'] in tc_dropin.read_text()
+            checks.append('token-command reinstall provisions TC on an existing legacy node without changing its identity')
             assert bbr_state() == installed_bbr_state, 'Reinstall changed the TCP algorithm or BBR persistence unexpectedly'
             assert {algorithm: path.is_file() for algorithm, path in bbr_configs.items()} == {
                 algorithm: bbr_enabled and algorithm == installed_bbr_algorithm for algorithm in bbr_configs}

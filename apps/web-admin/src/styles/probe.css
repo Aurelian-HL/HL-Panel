@@ -76,7 +76,7 @@
 .probe-status--icon:focus-visible { outline: 2px solid var(--ny-blue); outline-offset: 2px; }
 .probe-status-tooltip { position: fixed; z-index: 1000; width: 230px; padding: 9px 12px; border-radius: 4px; background: #303035; color: #fff; box-shadow: 0 5px 16px #0003; font-size: 12px; line-height: 1.55; pointer-events: none; overflow-wrap: anywhere; }
 .probe-status-tooltip b { font-weight: 650; }
-.probe-rate-tooltip { width: 150px; white-space: nowrap; }
+.probe-rate-tooltip { width: 112px; padding: 8px 10px; background: #555; font-weight: 400; white-space: nowrap; }
 .probe-status--success { border-color: #bfdfce; background: #eaf6ee; color: #22704b; }
 .probe-status--icon.probe-status--success { border-color: #4bba64; border-radius: 6px; background: #4bba64; color: #175a2a; }
 .probe-status--danger { border-color: #efd0ce; background: #fff0ee; color: #b3423e; }
