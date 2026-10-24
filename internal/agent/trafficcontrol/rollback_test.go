@@ -349,10 +349,12 @@ func TestMissingFilterDeleteClassificationIsNarrow(t *testing.T) {
 	}{
 		{"RTNETLINK answers: No such file or directory\nWe have an error talking to the kernel", true},
 		{"Error: Cannot find specified filter chain.\nWe have an error talking to the kernel", true},
+		{"Error: Specified filter handle not found.\nWe have an error talking to the kernel", true},
 		{"Error: Parent Qdisc doesn't exists.", true},
 		{"RTNETLINK answers: Operation not permitted", false},
 		{"Cannot find device eth0", false},
 		{"RTNETLINK answers: No such file or directory\npermission denied", false},
+		{"Error: Specified filter handle not found.\nRTNETLINK answers: Operation not permitted", false},
 		{"", false},
 	} {
 		if got := missingFilterDelete([]string{"filter", "del"}, tt.text); got != tt.missing {

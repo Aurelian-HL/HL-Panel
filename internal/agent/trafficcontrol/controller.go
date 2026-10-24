@@ -82,7 +82,7 @@ func missingFilterDelete(args []string, message string) bool {
 	found := false
 	for _, line := range strings.Split(message, "\n") {
 		switch strings.TrimSpace(line) {
-		case "RTNETLINK answers: No such file or directory", "Error: Cannot find specified filter chain.", "Error: Parent Qdisc doesn't exists.":
+		case "RTNETLINK answers: No such file or directory", "Error: Cannot find specified filter chain.", "Error: Specified filter handle not found.", "Error: Parent Qdisc doesn't exists.":
 			found = true
 		case "", "We have an error talking to the kernel":
 		default:

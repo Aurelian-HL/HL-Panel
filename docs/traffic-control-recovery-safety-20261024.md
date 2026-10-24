@@ -16,7 +16,9 @@ permission to publish a release, upgrade a production node, or change live TC.
   It restores only ports actually attempted, including a partially changed
   port; unchanged and not-yet-attempted ports are not rewritten.
 - Filter deletion ignores only recognized missing-filter diagnostics. Permission
-  errors, a missing interface, and cancellation remain failures.
+  errors, a missing interface, and cancellation remain failures. Real Linux
+  acceptance also covers the exact `Specified filter handle not found` response
+  when the priority exists but this controller's handle has already disappeared.
 - A recovery failure persists the affected ports and blocks subsequent normal
   configuration changes. Explicit successful `Restore` repairs those ports and
   clears the marker. This does not kill or restart a live engine. The current
