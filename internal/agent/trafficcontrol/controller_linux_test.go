@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,14 +98,15 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 				if pref < 10000 || !ok {
 					continue
 				}
-				port := int(pref) - 10000
-				if _, ok := want[port]; !ok {
-					t.Fatalf("unexpected %s limit at port %d", direction, port)
-				}
 				keys, _ := options["keys"].(map[string]any)
 				portKey := "dst_port"
 				if direction == "egress" {
 					portKey = "src_port"
+				}
+				portValue, _ := keys[portKey].(float64)
+				port := int(portValue)
+				if _, ok := want[port]; !ok {
+					t.Fatalf("unexpected %s limit at port %d", direction, port)
 				}
 				if keys["ip_proto"] != "tcp" || keys[portKey] != float64(port) {
 					t.Fatalf("incorrect %s TCP port selector: %v", direction, keys)
@@ -117,6 +119,10 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 				}
 				if !police {
 					t.Fatalf("missing real police action at port %d: %v", port, options)
+				}
+				rate, found := findPoliceRate(actions)
+				if !found || rate != float64(want[port])*125000 {
+					t.Fatalf("incorrect real %s rate at port %d: got %v, want %d Mbit/s; actions=%v", direction, port, rate, want[port], actions)
 				}
 				seen[port] = true
 			}
@@ -140,8 +146,139 @@ func TestDisposableLinuxElevenLimitsRestoreAndRemove(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFilters(limits)
+	// Cancel after a real ingress replacement. Egress has not changed yet;
+	// recovery must use a fresh bounded context and leave other ports alone.
+	candidate := map[int]int{}
+	for port, rate := range limits {
+		candidate[port] = rate
+	}
+	candidate[24002] = 50
+	candidate[24012] = 60
+	cancelCtx, cancelApply := context.WithCancel(ctx)
+	defer cancelApply()
+	hook := &hookedRealTCRunner{after: func(args []string) {
+		if args[0] == "filter" && args[1] == "replace" && args[4] == "ingress" && args[6] == "34002" {
+			cancelApply()
+		}
+	}}
+	restarted.runner = hook
+	if err := restarted.ApplyBundle(cancelCtx, bundleWithLimits(t, candidate)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled real apply: %v", err)
+	}
+	assertFilters(limits)
+	for _, args := range hook.commands {
+		if args[0] == "filter" && args[6] != "34002" {
+			t.Fatalf("real rollback touched unrelated port: %v", args)
+		}
+	}
+	// Engine rejection after all new limits are installed must also recover
+	// the exact old map, including removal of the newly created port.
+	restarted.runner = ExecRunner{}
+	activationCtx, cancelActivation := context.WithCancel(ctx)
+	defer cancelActivation()
+	err = restarted.WithBundle(activationCtx, bundleWithLimits(t, candidate), func() error { cancelActivation(); return context.Canceled })
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("real activation rollback: %v", err)
+	}
+	assertFilters(limits)
+	// A real ingress deletion followed by an egress failure must be repaired.
+	withoutFirst := map[int]int{}
+	for port, rate := range limits {
+		if port != 24001 {
+			withoutFirst[port] = rate
+		}
+	}
+	denied := errors.New("injected tc permission failure")
+	failed := false
+	restarted.runner = &hookedRealTCRunner{before: func(args []string) error {
+		if !failed && args[0] == "filter" && args[1] == "del" && args[4] == "egress" {
+			failed = true
+			return denied
+		}
+		return nil
+	}}
+	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, withoutFirst)); !errors.Is(err, denied) {
+		t.Fatalf("real partial delete failure: %v", err)
+	}
+	assertFilters(limits)
+	// Missing filters are the sole idempotent delete error. Exercise the actual
+	// iproute2 diagnostic instead of accepting all errors as absence.
+	command(tc, "filter", "del", "dev", iface, "ingress", "pref", "34001")
+	restarted.runner = ExecRunner{}
+	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, withoutFirst)); err != nil {
+		t.Fatalf("delete already missing real filter: %v", err)
+	}
+	assertFilters(withoutFirst)
+	// All accepted listener ports must work with Linux's 16-bit priorities.
+	// Two high ports intentionally share a priority; deleting or restoring one
+	// must preserve the other filter and all eleven unrelated listeners.
+	highLimits := map[int]int{}
+	for port, rate := range withoutFirst {
+		highLimits[port] = rate
+	}
+	for port, rate := range map[int]int{55535: 25, 55536: 30, 65535: 35} {
+		highLimits[port] = rate
+	}
+	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, highLimits)); err != nil {
+		t.Fatalf("apply high listener ports: %v", err)
+	}
+	assertFilters(highLimits)
+	delete(highLimits, 55536)
+	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, highLimits)); err != nil {
+		t.Fatalf("delete one shared-priority listener: %v", err)
+	}
+	assertFilters(highLimits)
+	err = restarted.WithBundle(ctx, bundleWithLimits(t, withoutFirst), func() error { return denied })
+	if !errors.Is(err, denied) {
+		t.Fatalf("rollback high listener ports: %v", err)
+	}
+	assertFilters(highLimits)
 	if err := restarted.ApplyBundle(ctx, bundleWithLimits(t, nil)); err != nil {
 		t.Fatal(err)
 	}
 	assertFilters(nil)
+	t.Log("real TC cancellation, activation rejection, partial deletion, missing-filter cleanup, high ports, exact rates and unrelated filters verified")
+}
+
+func findPoliceRate(value any) (float64, bool) {
+	switch v := value.(type) {
+	case []any:
+		for _, item := range v {
+			if rate, ok := findPoliceRate(item); ok {
+				return rate, true
+			}
+		}
+	case map[string]any:
+		if rate, ok := v["rate"].(float64); ok {
+			return rate, true
+		}
+		for _, item := range v {
+			if rate, ok := findPoliceRate(item); ok {
+				return rate, true
+			}
+		}
+	}
+	return 0, false
+}
+
+type hookedRealTCRunner struct {
+	before   func([]string) error
+	after    func([]string)
+	commands [][]string
+}
+
+func (r *hookedRealTCRunner) Run(ctx context.Context, binary string, args ...string) error {
+	r.commands = append(r.commands, append([]string(nil), args...))
+	if r.before != nil {
+		if err := r.before(args); err != nil {
+			return err
+		}
+	}
+	if err := (ExecRunner{}).Run(ctx, binary, args...); err != nil {
+		return err
+	}
+	if r.after != nil {
+		r.after(args)
+	}
+	return nil
 }

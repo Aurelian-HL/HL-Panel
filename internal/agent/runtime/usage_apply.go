@@ -72,32 +72,10 @@ func (a *Agent) applyWithUsage(ctx context.Context, desired agentv1.DesiredNodeC
 			}
 		}
 	}
-	var previous agentv1.DesiredNodeConfig
-	previousExists := false
 	if a.trafficControl != nil {
-		var err error
-		previous, previousExists, err = a.state.LastKnownGood()
-		if err != nil {
-			return err
-		}
-		// Apply traffic control before switching the engine. If the engine
-		// rejects the bundle, restore the last known-good limits below; this
-		// avoids a successful engine switch with an unshaped listener.
-		if err := a.trafficControl.ApplyBundle(ctx, desired); err != nil {
-			return fmt.Errorf("apply traffic control: %w", err)
-		}
+		return a.trafficControl.WithBundle(ctx, desired, func() error {
+			return a.reconciler.Apply(ctx, desired)
+		})
 	}
-	if err := a.reconciler.Apply(ctx, desired); err != nil {
-		if a.trafficControl != nil {
-			restore := agentv1.DesiredNodeConfig{Config: []byte(`{"schema_version":1,"fragments":[]}`)}
-			if previousExists {
-				restore = previous
-			}
-			if restoreErr := a.trafficControl.ApplyBundle(ctx, restore); restoreErr != nil {
-				return errors.Join(err, fmt.Errorf("restore traffic control after engine failure: %w", restoreErr))
-			}
-		}
-		return err
-	}
-	return nil
+	return a.reconciler.Apply(ctx, desired)
 }

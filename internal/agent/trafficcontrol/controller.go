@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
@@ -23,6 +24,26 @@ type Runner interface {
 }
 
 type ExecRunner struct{}
+
+var (
+	ErrFilterNotFound   = errors.New("traffic control filter does not exist")
+	ErrRecoveryRequired = errors.New("traffic control recovery required before another configuration change")
+)
+
+const recoveryTimeout = 30 * time.Second
+
+// Existing lower ports retain their durable filter identity. High listener
+// ports share the unused priority 10000 with distinct flower handles, avoiding
+// the 16-bit tc priority limit without removing another listener's filter.
+const highPortPriority = 10000
+const lastIndividualPriorityPort = 65535 - highPortPriority
+
+func filterIdentity(port int) (priority, handle string) {
+	if port > lastIndividualPriorityPort {
+		return strconv.Itoa(highPortPriority), strconv.Itoa(port - lastIndividualPriorityPort)
+	}
+	return strconv.Itoa(highPortPriority + port), "1"
+}
 
 func (ExecRunner) Run(ctx context.Context, binary string, args ...string) error {
 	if strings.TrimSpace(binary) == "" {
@@ -37,8 +58,15 @@ func (r commandRunner) run(ctx context.Context, args ...string) error {
 	// Kept in a small platform-neutral helper so tests can replace Runner. The
 	// production binary receives an argv vector; no shell is ever involved.
 	cmd := exec.CommandContext(ctx, r.binary, args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	if output, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("tc %s: %w", strings.Join(args, " "), ctx.Err())
+		}
 		message := strings.TrimSpace(string(output))
+		if missingFilterDelete(args, message) {
+			return fmt.Errorf("tc %s: %w", strings.Join(args, " "), ErrFilterNotFound)
+		}
 		if message == "" {
 			return fmt.Errorf("tc %s: %w", strings.Join(args, " "), err)
 		}
@@ -47,8 +75,26 @@ func (r commandRunner) run(ctx context.Context, args ...string) error {
 	return nil
 }
 
+func missingFilterDelete(args []string, message string) bool {
+	if len(args) < 2 || args[0] != "filter" || args[1] != "del" {
+		return false
+	}
+	found := false
+	for _, line := range strings.Split(message, "\n") {
+		switch strings.TrimSpace(line) {
+		case "RTNETLINK answers: No such file or directory", "Error: Cannot find specified filter chain.", "Error: Parent Qdisc doesn't exists.":
+			found = true
+		case "", "We have an error talking to the kernel":
+		default:
+			return false
+		}
+	}
+	return found
+}
+
 type state struct {
-	Ports map[int]int `json:"ports"`
+	Ports         map[int]int `json:"ports"`
+	RecoveryPorts []int       `json:"recovery_ports,omitempty"`
 }
 
 type Controller struct {
@@ -58,6 +104,7 @@ type Controller struct {
 	statePath     string
 	runner        Runner
 	ports         map[int]int
+	recoveryPorts []int
 }
 
 func New(interfaceName, binary, statePath string, runner Runner) (*Controller, error) {
@@ -82,6 +129,14 @@ func New(interfaceName, binary, statePath string, runner Runner) (*Controller, e
 }
 
 func (c *Controller) ApplyBundle(ctx context.Context, desired agentv1.DesiredNodeConfig) error {
+	return c.WithBundle(ctx, desired, nil)
+}
+
+// WithBundle applies limits before activation, restoring this controller's exact
+// previous limits if activation fails. The snapshot does not depend on the engine
+// LKG, which can be missing while a process and its limits are still serving.
+// activate must not call back into this controller.
+func (c *Controller) WithBundle(ctx context.Context, desired agentv1.DesiredNodeConfig, activate func() error) error {
 	var bundle agentv1.ConfigurationBundle
 	if err := json.Unmarshal(desired.Config, &bundle); err != nil {
 		return fmt.Errorf("decode node bundle for traffic control: %w", err)
@@ -98,12 +153,22 @@ func (c *Controller) ApplyBundle(ctx context.Context, desired agentv1.DesiredNod
 			want[fragment.Usage.ListenPort] = fragment.Usage.SpeedLimitMbps
 		}
 	}
-	return c.apply(ctx, want, false)
+	return c.apply(ctx, want, false, activate)
 }
 
-func (c *Controller) apply(ctx context.Context, want map[int]int, force bool) error {
+func (c *Controller) apply(ctx context.Context, want map[int]int, force bool, activate func() error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.applyLocked(ctx, want, force, activate)
+}
+
+func (c *Controller) applyLocked(ctx context.Context, want map[int]int, force bool, activate func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(c.recoveryPorts) > 0 && !force {
+		return ErrRecoveryRequired
+	}
 	previous := make(map[int]int, len(c.ports))
 	for p, r := range c.ports {
 		previous[p] = r
@@ -117,9 +182,17 @@ func (c *Controller) apply(ctx context.Context, want map[int]int, force bool) er
 	for p := range want {
 		if !seen[p] {
 			ports = append(ports, p)
+			seen[p] = true
+		}
+	}
+	for _, p := range c.recoveryPorts {
+		if !seen[p] {
+			ports = append(ports, p)
+			seen[p] = true
 		}
 	}
 	sort.Ints(ports)
+	touched := make([]int, 0, len(ports))
 	for _, port := range ports {
 		if !force {
 			oldRate, hadOld := previous[port]
@@ -128,28 +201,61 @@ func (c *Controller) apply(ctx context.Context, want map[int]int, force bool) er
 				continue
 			}
 		}
+		touched = append(touched, port)
 		if err := c.applyPort(ctx, port, want[port]); err != nil {
-			if restoreErr := c.restore(ctx, previous, ports); restoreErr != nil {
-				return errors.Join(err, fmt.Errorf("restore traffic control: %w", restoreErr))
-			}
-			return err
+			return c.rollback(ctx, previous, touched, err, false)
 		}
 	}
-	if err := c.save(want); err != nil {
-		if restoreErr := c.restore(ctx, previous, ports); restoreErr != nil {
-			return errors.Join(err, fmt.Errorf("restore traffic control: %w", restoreErr))
+	if err := ctx.Err(); err != nil {
+		return c.rollback(ctx, previous, touched, err, false)
+	}
+	// An identical generation must not rewrite filters or the state file.
+	if len(touched) == 0 {
+		if activate != nil {
+			return activate()
 		}
-		return err
+		return nil
+	}
+	c.recoveryPorts = nil
+	if err := c.save(want); err != nil {
+		return c.rollback(ctx, previous, touched, err, false)
 	}
 	c.ports = want
+	if activate != nil {
+		if err := activate(); err != nil {
+			return c.rollback(ctx, previous, touched, err, true)
+		}
+	}
 	return nil
 }
 
+func (c *Controller) rollback(ctx context.Context, previous map[int]int, touched []int, cause error, persisted bool) error {
+	// The request deadline is unrelated to local safety recovery. Bound recovery
+	// independently, and never rewrite unchanged or not-yet-attempted filters.
+	restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recoveryTimeout)
+	defer cancel()
+	c.ports = previous
+	if err := c.restore(restoreCtx, previous, touched); err != nil {
+		c.recoveryPorts = append(c.recoveryPorts, touched...)
+		cause = errors.Join(cause, fmt.Errorf("%w: %w", ErrRecoveryRequired, err))
+	}
+	if persisted || len(c.recoveryPorts) > 0 {
+		if err := c.save(previous); err != nil {
+			c.recoveryPorts = append(c.recoveryPorts, touched...)
+			cause = errors.Join(cause, fmt.Errorf("%w: persist previous traffic control: %w", ErrRecoveryRequired, err))
+		}
+	}
+	return cause
+}
+
 func (c *Controller) applyPort(ctx context.Context, port, rate int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if port < 1 || port > 65535 {
 		return errors.New("traffic control port is invalid")
 	}
-	pref := strconv.Itoa(10000 + port)
+	pref, handle := filterIdentity(port)
 	if rate > 0 {
 		// clsact is a dedicated ingress/egress hook. Do not replace the root
 		// qdisc, which may belong to another service on the node.
@@ -160,8 +266,16 @@ func (c *Controller) applyPort(ctx context.Context, port, rate int) error {
 	// clsact police rules shape traffic entering and leaving the selected
 	// listener. A zero rate removes only this controller's rule.
 	for _, direction := range []string{"ingress", "egress"} {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if rate == 0 {
-			if err := c.runner.Run(ctx, c.binary, "filter", "del", "dev", c.interfaceName, direction, "pref", pref); err != nil { /* absent is idempotent */
+			args := []string{"filter", "del", "dev", c.interfaceName, direction, "pref", pref}
+			if port > lastIndividualPriorityPort {
+				args = append(args, "handle", handle, "protocol", "ip", "flower")
+			}
+			if err := c.runner.Run(ctx, c.binary, args...); err != nil && !errors.Is(err, ErrFilterNotFound) {
+				return err
 			}
 			continue
 		}
@@ -171,7 +285,7 @@ func (c *Controller) applyPort(ctx context.Context, port, rate int) error {
 		}
 		// Use a deterministic handle so replace updates an existing rule with
 		// the same preference instead of failing with EEXIST during restore.
-		args := []string{"filter", "replace", "dev", c.interfaceName, direction, "pref", pref, "handle", "1", "protocol", "ip", "flower", "ip_proto", "tcp", portArg, strconv.Itoa(port), "action", "police", "rate", strconv.Itoa(rate) + "mbit", "burst", "64k", "conform-exceed", "drop"}
+		args := []string{"filter", "replace", "dev", c.interfaceName, direction, "pref", pref, "handle", handle, "protocol", "ip", "flower", "ip_proto", "tcp", portArg, strconv.Itoa(port), "action", "police", "rate", strconv.Itoa(rate) + "mbit", "burst", "64k", "conform-exceed", "drop"}
 		if err := c.runner.Run(ctx, c.binary, args...); err != nil {
 			return err
 		}
@@ -193,15 +307,12 @@ func (c *Controller) restore(ctx context.Context, ports map[int]int, all []int) 
 // restart. A control-plane outage therefore cannot remove a working limit.
 func (c *Controller) Restore(ctx context.Context) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	want := make(map[int]int, len(c.ports))
-	ports := make([]int, 0, len(c.ports))
 	for port, rate := range c.ports {
 		want[port] = rate
-		ports = append(ports, port)
 	}
-	c.mu.Unlock()
-	sort.Ints(ports)
-	return c.apply(ctx, want, true)
+	return c.applyLocked(ctx, want, true, nil)
 }
 
 func (c *Controller) load() error {
@@ -221,13 +332,18 @@ func (c *Controller) load() error {
 			c.ports[p] = r
 		}
 	}
+	for _, p := range saved.RecoveryPorts {
+		if p >= 1 && p <= 65535 {
+			c.recoveryPorts = append(c.recoveryPorts, p)
+		}
+	}
 	return nil
 }
 func (c *Controller) save(ports map[int]int) error {
 	if err := os.MkdirAll(filepath.Dir(c.statePath), 0700); err != nil {
 		return err
 	}
-	raw, err := json.Marshal(state{Ports: ports})
+	raw, err := json.Marshal(state{Ports: ports, RecoveryPorts: c.recoveryPorts})
 	if err != nil {
 		return err
 	}
