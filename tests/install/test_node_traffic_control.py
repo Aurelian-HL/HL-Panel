@@ -48,16 +48,20 @@ class TrafficControlInstallTest(unittest.TestCase):
         self.assertFalse(any('qdisc' in call or 'filter' in call for call in self.calls))
         calls = len(self.calls)
         self.assertFalse(tc.configure(self.config, self.dropin)['configured'])
-        self.assertEqual(len(self.calls), calls)
+        self.assertEqual(self.calls[calls:], [[str(self.config), '-Version']] * 2 + [[str(self.config), '--version']] * 3)
 
     def test_existing_custom_or_disabled_settings_are_preserved(self):
         for value in ['custom0', '']:
             self.config.write_text(json.dumps({'traffic_control_interface': value}))
             original = self.config.read_bytes()
-            self.assertFalse(tc.configure(self.config, self.dropin)['configured'])
+            result = tc.configure(self.config, self.dropin)
+            self.assertEqual(result['configured'], bool(value))
             self.assertEqual(self.config.read_bytes(), original)
-            self.assertFalse(self.calls)
-            self.assertFalse(self.dropin.exists())
+            if value:
+                self.assertEqual(self.dropin.read_text(), tc.UNIT)
+                self.dropin.unlink()
+            else:
+                self.assertFalse(self.dropin.exists())
 
     def test_missing_tools_and_ambiguous_route_do_not_write_configuration(self):
         original = self.config.read_bytes()
@@ -103,7 +107,7 @@ class TrafficControlInstallTest(unittest.TestCase):
             # This is the ordering of the already installed, older updater.
             self.config.write_bytes(original)
             self.assertFalse(tc.configure(self.config, self.dropin, service_defaults=True)['configured'])
-            self.assertEqual(len(self.calls), calls)
+            self.assertEqual(self.calls[calls:], [[str(self.config), '-Version']] * 2 + [[str(self.config), '--version']] * 3)
             self.assertEqual(self.dropin.read_bytes(), content)
             self.fail_reload = True
             with patch.object(tc, 'discover', return_value=('ens4', '/usr/sbin/tc')):
@@ -128,13 +132,64 @@ class TrafficControlInstallTest(unittest.TestCase):
         self.assertEqual(self.dropin.read_text(), 'custom')
 
     def test_missing_iproute2_can_be_installed_without_changing_qdisc(self):
-        lookups = {'ip': [None, str(self.config)], 'tc': [None, str(self.config)], 'apt-get': [str(self.config)]}
+        lookups = {name: [str(self.config)] * 2 for name in ('systemd-analyze', 'sysctl', 'modprobe')}
+        lookups.update({'ip': [None, str(self.config)], 'tc': [None, str(self.config)], 'apt-get': [str(self.config)]})
         with patch.object(tc.shutil, 'which', side_effect=lambda name: lookups[name].pop(0)):
             interface, binary = tc.discover(install_missing=True)
         self.assertEqual(interface, 'ens3')
         self.assertEqual(binary, str(self.config))
-        self.assertTrue(any(call[1:] == ['install', '-y', '--no-install-recommends', 'iproute2'] for call in self.calls))
+        self.assertTrue(any(call[-4:] == ['install', '-y', '--no-install-recommends', 'iproute2'] for call in self.calls))
+        self.assertTrue(any('--reinstall' in call for call in self.calls))
         self.assertFalse(any('qdisc' in call or 'filter' in call for call in self.calls))
+
+    def test_existing_json_does_not_hide_missing_system_packages(self):
+        self.config.write_text(json.dumps({'traffic_control_interface': 'custom0'}))
+        lookups = {name: [str(self.config)] * 2 for name in ('systemd-analyze', 'sysctl', 'modprobe')}
+        lookups.update({'ip': [None, str(self.config)], 'tc': [None, str(self.config)], 'apt-get': [str(self.config)]})
+        with patch.object(tc.shutil, 'which', side_effect=lambda name: lookups[name].pop(0)):
+            result = tc.configure(self.config, self.dropin, install_missing=True)
+        self.assertTrue(result['preserved_existing_interface'])
+        self.assertTrue(any('install' in call for call in self.calls))
+        self.assertEqual(json.loads(self.config.read_text())['traffic_control_interface'], 'custom0')
+
+    def test_package_install_suppresses_unrelated_service_restarts(self):
+        lookups = {name: [str(self.config)] * 2 for name in ('systemd-analyze', 'sysctl', 'modprobe')}
+        lookups.update({'ip': [None, str(self.config)], 'tc': [None, str(self.config)], 'apt-get': [str(self.config)]})
+        with patch.object(tc.shutil, 'which', side_effect=lambda name: lookups[name].pop(0)), \
+                patch.object(tc.subprocess, 'run', side_effect=self.run_command) as run:
+            tc.ensure_tools(install_missing=True)
+        installs = [call for call in run.call_args_list if 'install' in call.args[0]]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0].kwargs['env']['NEEDRESTART_MODE'], 'l')
+
+    def test_missing_bbr_utilities_are_batched_and_existing_tools_skip_apt(self):
+        with patch.object(tc.subprocess, 'run', side_effect=self.run_command) as run:
+            tc.ensure_tools(install_missing=True)
+            self.assertFalse(any('install' in call.args[0] or 'update' in call.args[0] for call in run.call_args_list))
+        lookups = {name: [str(self.config)] * 2 for name in ('ip', 'tc', 'systemd-analyze')}
+        lookups.update({'sysctl': [None, str(self.config)], 'modprobe': [None, str(self.config)], 'apt-get': [str(self.config)]})
+        with patch.object(tc.shutil, 'which', side_effect=lambda name: lookups[name].pop(0)):
+            tc.ensure_tools(install_missing=True)
+        installs = [call for call in self.calls if 'install' in call]
+        self.assertEqual(len(installs), 1)
+        self.assertEqual(installs[0][-2:], ['kmod', 'procps'])
+
+    def test_enabled_custom_interface_missing_dropin_repairs_permission_only(self):
+        self.config.write_text(json.dumps({'traffic_control_interface': 'custom0', 'traffic_control_binary': '/custom/tc'}))
+        original = self.config.read_bytes()
+        result = tc.configure(self.config, self.dropin, service_defaults=True)
+        self.assertTrue(result['configured'])
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertEqual(self.dropin.read_text(), tc.UNIT)
+        self.assertFalse(any('route' in call or 'restart' in call for call in self.calls))
+
+    def test_unusable_tools_reject_before_writing_config(self):
+        original = self.config.read_bytes()
+        with patch.object(tc.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['tc'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                tc.configure(self.config, self.dropin)
+        self.assertEqual(self.config.read_bytes(), original)
+        self.assertFalse(self.dropin.exists())
 
 
 if __name__ == '__main__':

@@ -109,7 +109,28 @@ ACME 挑战文件放在独立 `/var/lib/hl-panel-acme/`，由 root 管理且目�
 
 当前源码构建的引擎基线为（已发布资产需单独核对）：Xray v26.7.28、GOST v3.3.1-nightly.20260922，来源与锁定摘要见包内 `licenses/node-engines.json`。混合模式只在面板下发有效配置后启动对应引擎。服务使用 hl-edge 账号，默认监听端口需不低于 1024，不调整其他服务、防火墙或系统转发规则。升级既有节点前，先升级面板并确认节点已应用兼容配置，再分批更新节点；具体顺序见[内核兼容性维护](../docs/xray-compatibility.md)。
 
-程序在 `/opt/hl-panel/edge-agent`，引擎在 `/opt/hl-panel/node-engines/`，配置在 `/etc/hl-panel/edge-agent.json`，私有状态在 `/var/lib/hl-panel-edge/`。在线入口默认从面板 HTTPS 的公开版本接口选定标签，再下载同标签安装器和程序包；可用 `--version vX.Y.Z` 固定版本。入口、脚本与安装包下载均有有限重试和超时。
+程序在 `/opt/hl-panel/edge-agent`，引擎在 `/opt/hl-panel/node-engines/`，配置在 `/etc/hl-panel/edge-agent.json`，私有状态在 `/var/lib/hl-panel-edge/`。在线入口默认解析 GitHub 最新正式发布标签，再下载同标签安装器和程序包；可用 `--version vX.Y.Z` 固定版本。入口、脚本与安装包下载均有有限重试和超时。
+
+### 安装、升级依赖自检与独立修复
+
+面板复制的节点安装命令和旧节点更新命令，在首次下载脚本前也会检查 root、curl 和 CA 证书，避免机器缺少 curl 时连安装器都无法启动。依赖已齐全时跳过软件源刷新与安装。
+
+仅对缺少工具所对应的软件包使用 `--reinstall`，因此软件包记录仍在、可执行文件却已丢失时也能恢复；不会为工具齐全的软件包主动重装。
+
+安装器检查 Python 3.9+、curl、CA 证书、ip/tc（iproute2）、useradd、runuser、systemd-analyze、sysctl 和 modprobe。在线 Debian/Ubuntu 缺哪个包就安装哪个；已有依赖跳过软件包安装，缺包合并安装并复用本轮 apt 索引更新。升级预检也会检查并补齐 iproute2、systemd、procps、kmod；软件源不可用或程序无法运行时，停止升级并保留正在转发的服务。安装不会为此升级 Xray 核心，兼容基线保持 26.7.28。
+
+新升级器在停止 Agent 前，使用候选 Xray 实际解析 GeoIP/GeoSite 资源并验证更新服务单元。缺失或空资源从已校验的同版本正式包补入；已有非空资源保留，损坏或不安全路径拒绝覆盖。资源补齐纳入维护备份和回滚；旧维护清单缺少资源项时，回滚跳过这些项，保持旧备份可用。
+
+已安装节点也可仅修复依赖（以下命令要求目标正式版本已经包含本功能）：
+
+```sh
+curl -fsSL --proto '=https' --proto-redir '=https' https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update-node.sh -o /tmp/hl-node-update.sh
+bash /tmp/hl-node-update.sh --version vX.Y.Z --repair
+```
+
+`--repair` 不替换、不停止、不重启 Agent、Xray、GOST，不修改节点身份、规则、订阅或流量账本，也不更改 BBR 算法。它检查系统工具，补缺失资源，恢复受管 TC 权限文件；显式禁用和自定义接口保持原样，冲突的自定义服务文件不覆盖。权限文件更新只做 systemd daemon-reload，新增进程权限需下次主动升级/启动生效。本次不能将“文件已补齐”视为活动 Agent 已获得新权限。
+
+软件包安装禁用 needrestart 的自动重启模式。修复失败恢复受管文件，输出独立 `rollback.sh`；新装的软件包保留，不在回滚时自动卸载。原有非空但损坏的自定义资源需管理员确认后另行替换。旧节点内置的旧升级器不具备停机前预检，首次使用本功能应运行上述新版入口，升级成功后面板一键更新才会调用新升级器。
 
 注册最多等待 90 秒，每 15 秒提示进度；网络中断、408、429 和服务端暂时错误会退避重试。令牌被拒绝、证书错误或私有状态损坏会停止。注册失败停止服务并移除一次性令牌环境文件，保留安装与私有恢复状态；检查原因后重跑原命令。只有令牌过期或失效才重新生成。若面板已升级，添加 `--version vX.Y.Z` 指定最初安装版本，避免覆盖未完成的安装。
 
@@ -149,7 +170,7 @@ GOST 仅在旧服务、链及全局配置保持不变的纯新增规则场景尝
 
 ### 节点离线安装
 
-在可访问 GitHub 的机器，从 Releases 下载同版本 `hl-panel-linux-amd64.tar.gz` 和 `.sha256`，从同标签源码取得 `deploy/install-node.sh`，将三个文件放在节点同一目录。也可从已校验的正式归档提取该脚本。无需节点访问 GitHub，但节点必须能通过 HTTPS 连接面板，并预装 python3、CA 证书和 systemd。
+在可访问 GitHub 的机器，从 Releases 下载同版本 `hl-panel-linux-amd64.tar.gz` 和 `.sha256`，从同标签源码取得 `deploy/install-node.sh`，将三个文件放在节点同一目录。也可从已校验的正式归档提取该脚本。无需节点访问 GitHub，但节点必须能通过 HTTPS 连接面板，并预装 Python 3.9+、curl、CA 证书、iproute2、passwd、util-linux、systemd、procps、kmod。离线缺包会在修改身份前明确退出，不会自动访问软件源。
 
 在面板生成一次性令牌，替换以下三个占位值，执行一条命令：
 

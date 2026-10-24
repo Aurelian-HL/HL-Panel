@@ -196,8 +196,6 @@ def reinstall(args):
     sources = [(ROOT / 'edge-agent', 'bin/edge-agent', 0o755),
                (ROOT / 'node-engines/xray', 'bin/xray', 0o755),
                (ROOT / 'node-engines/gost', 'bin/gost', 0o755),
-               (ROOT / 'node-engines/geoip.dat', 'bin/geoip.dat', 0o644),
-               (ROOT / 'node-engines/geosite.dat', 'bin/geosite.dat', 0o644),
                (ROOT / 'enroll-node.sh', 'deploy/edge-agent/enroll.sh', 0o700),
                (ROOT / 'reinstall-node.py', 'deploy/reinstall-node.py', 0o700),
                (UNIT, 'deploy/systemd/hl-panel-edge-agent.service', 0o644)]
@@ -208,6 +206,8 @@ def reinstall(args):
     require(run([str(args.release / 'bin/xray'), 'version']).startswith(b'Xray 26.7.28 '),
             'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
     run([str(args.release / 'bin/gost'), '-V'])
+    run([sys.executable, str(args.release / 'deploy/install-node-update.py'), str(args.release),
+         '--preflight', '--install-missing'])
     run(['systemd-analyze', 'verify', str(args.release / 'deploy/systemd/hl-panel-edge-agent.service')])
     BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)
     require(BACKUPS.stat().st_uid == 0 and not BACKUPS.stat().st_mode & 0o077, '备份目录权限不安全')

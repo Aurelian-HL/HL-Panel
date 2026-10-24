@@ -1,0 +1,3 @@
+// The copyable command must bootstrap curl before its first download; checking
+// only inside the downloaded installer cannot repair a missing downloader.
+export const nodeDownloadPrerequisites = `test "$(id -u)" = 0 || { echo '请使用 root 执行节点命令。' >&2; exit 1; }; p=''; command -v curl >/dev/null 2>&1 || p="$p curl"; test -s /etc/ssl/certs/ca-certificates.crt || p="$p ca-certificates"; if test -n "$p"; then command -v apt-get >/dev/null 2>&1 || { echo '请预装 curl、ca-certificates；自动补齐支持 Debian/Ubuntu。' >&2; exit 1; }; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=2 update; DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends $p; fi`

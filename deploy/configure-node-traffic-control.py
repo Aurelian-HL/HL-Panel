@@ -43,22 +43,36 @@ def replace(path, content, mode, owner):
             os.unlink(name)
 
 
-def discover(install_missing=False):
-    binaries = {name: shutil.which(name) for name in ('ip', 'tc')}
+def ensure_tools(install_missing=False):
+    packages = {'ip': 'iproute2', 'tc': 'iproute2', 'systemd-analyze': 'systemd',
+                'sysctl': 'procps', 'modprobe': 'kmod'}
+    binaries = {name: shutil.which(name) for name in packages}
     if not all(binaries.values()) and install_missing:
         apt = shutil.which('apt-get')
         if not apt:
-            raise ValueError('install iproute2 (ip and tc) before updating this node')
+            raise ValueError('missing node tools; automatic installation requires apt-get')
         safe(Path(apt).resolve(strict=True))
-        subprocess.run([apt, 'update'], check=True, capture_output=True, timeout=120)
-        subprocess.run([apt, 'install', '-y', '--no-install-recommends', 'iproute2'],
-                       check=True, capture_output=True, timeout=120)
-        binaries = {name: shutil.which(name) for name in ('ip', 'tc')}
+        environment = dict(os.environ, DEBIAN_FRONTEND='noninteractive', NEEDRESTART_MODE='l')
+        subprocess.run([apt, '-o', 'Acquire::Retries=2', 'update'], check=True,
+                       capture_output=True, timeout=120, env=environment)
+        missing = sorted({packages[name] for name, binary in binaries.items() if not binary})
+        subprocess.run([apt, '-o', 'DPkg::Lock::Timeout=60', '--reinstall', 'install', '-y',
+                        '--no-install-recommends', *missing],
+                       check=True, capture_output=True, timeout=180, env=environment)
+        binaries = {name: shutil.which(name) for name in packages}
     if not all(binaries.values()):
-        raise ValueError('iproute2 (ip and tc) is required for rule speed limits')
-    for binary in binaries.values():
+        missing = ', '.join(name for name, binary in binaries.items() if not binary)
+        raise ValueError('missing required node tools: ' + missing)
+    for name, binary in binaries.items():
         # Distribution binaries may themselves be links; validate their target.
         safe(Path(binary).resolve(strict=True))
+        flag = '-Version' if name in ('ip', 'tc') else '--version'
+        subprocess.run([binary, flag], check=True, capture_output=True, timeout=10)
+    return binaries
+
+
+def discover(install_missing=False, binaries=None):
+    binaries = binaries if binaries is not None else ensure_tools(install_missing)
     route = subprocess.run([binaries['ip'], '-j', '-4', 'route', 'get', '1.1.1.1'],
                            check=True, capture_output=True, text=True, timeout=10)
     routes = json.loads(route.stdout)
@@ -82,13 +96,23 @@ def configure(config=CONFIG, dropin=DROPIN, service_defaults=False, install_miss
     safe(config)
     original = config.read_bytes()
     value = json.loads(original)
+    # An existing JSON field says nothing about the packages still being present.
+    # Check dependencies even when preserving a custom or disabled TC setting.
+    binaries = ensure_tools(install_missing)
     # Empty custom fields may intentionally disable this feature. Do not
     # silently replace an administrator's explicit configuration.
-    if any(key.startswith('traffic_control_') for key in value):
+    explicit = any(key.startswith('traffic_control_') for key in value)
+    if explicit and not value.get('traffic_control_interface'):
         return {'configured': False, 'preserved_existing_interface': True}
-    interface, binary = discover(install_missing)
+    if explicit:
+        interface = value['traffic_control_interface']
+        if not isinstance(interface, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface) or interface == 'lo':
+            raise ValueError('invalid explicit traffic-control interface')
+        binary = value.get('traffic_control_binary') or binaries['tc']
+    else:
+        interface, binary = discover(install_missing, binaries=binaries)
     content = UNIT.encode()
-    if service_defaults:
+    if service_defaults and not explicit:
         if not re.fullmatch(r'/[A-Za-z0-9_./-]+', binary):
             raise ValueError('unsafe managed tc executable path')
         content = (MANAGED_DEFAULTS + UNIT +
@@ -104,18 +128,18 @@ def configure(config=CONFIG, dropin=DROPIN, service_defaults=False, install_miss
         previous = dropin.read_bytes()
         if previous != UNIT.encode() and not managed_defaults(previous):
             raise ValueError('custom traffic-control systemd drop-in already exists')
-    if service_defaults and previous == content:
-        return {'configured': False, 'service_defaults': True, 'interface': interface}
+    if (service_defaults or explicit) and previous == content:
+        return {'configured': False, 'service_defaults': service_defaults, 'interface': interface}
     stat = config.stat()
     value.update(traffic_control_interface=interface, traffic_control_binary=binary)
     try:
         replace(dropin, content, 0o644, (0, 0))
-        if not service_defaults:
+        if not service_defaults and not explicit:
             replace(config, (json.dumps(value) + '\n').encode(), stat.st_mode & 0o777,
                     (stat.st_uid, stat.st_gid))
         subprocess.run(['systemctl', 'daemon-reload'], check=True, capture_output=True, timeout=30)
     except Exception:
-        if not service_defaults:
+        if not service_defaults and not explicit:
             replace(config, original, stat.st_mode & 0o777, (stat.st_uid, stat.st_gid))
         if previous is None:
             dropin.unlink(missing_ok=True)
@@ -126,6 +150,7 @@ def configure(config=CONFIG, dropin=DROPIN, service_defaults=False, install_miss
         subprocess.run(['systemctl', 'daemon-reload'], capture_output=True, timeout=30)
         raise
     return {'configured': True, 'interface': interface, 'service_defaults': service_defaults,
+            'preserved_existing_interface': explicit,
             'root_qdisc_unchanged': True}
 
 
@@ -133,7 +158,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--service-defaults', action='store_true')
     parser.add_argument('--install-missing', action='store_true')
+    parser.add_argument('--check', action='store_true', help='check packages and route without writing configuration')
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit('root required')
-    print(json.dumps(configure(service_defaults=args.service_defaults, install_missing=args.install_missing)))
+    if args.check:
+        interface, binary = discover(args.install_missing)
+        print(json.dumps({'checked': True, 'interface': interface, 'binary': binary}))
+    else:
+        print(json.dumps(configure(service_defaults=args.service_defaults, install_missing=args.install_missing)))

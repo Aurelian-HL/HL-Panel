@@ -108,6 +108,7 @@ jobs:
           python3 -m py_compile tests/install/prepare_ci_apt.py
           python3 -m py_compile tests/install/node_install.py deploy/fetch-node-engines.py deploy/reinstall-node.py
           python3 tests/install/test_node_update.py
+          python3 tests/install/test_node_bootstrap.py
           python3 -m py_compile deploy/node-update-worker.py deploy/install-node-update.py
           sudo python3 tests/install/test_node_update_worker.py
           python3 -m py_compile deploy/configure-node-bbr2.py
@@ -115,6 +116,7 @@ jobs:
           python3 tests/install/test_node_bbr.py
           python3 tests/install/test_node_bbr2_policy.py
           python3 tests/install/test_node_traffic_control.py
+          sudo python3 tests/install/test_node_assets.py
           go test -c -o "$RUNNER_TEMP/hl-tc-test" ./internal/agent/trafficcontrol
           sudo env HL_PANEL_DISPOSABLE_INSTALL_TEST=true "$RUNNER_TEMP/hl-tc-test" -test.run '^TestDisposableLinuxElevenLimitsRestoreAndRemove$' -test.v -test.timeout 3m
           sudo python3 tests/install/test_recovery.py
@@ -187,6 +189,7 @@ jobs:
           cmp "$RUNNER_TEMP/udp-release/bundle/gost" "$release/bin/gost"
           "$release/bin/xray" version
           "$release/bin/gost" -V
+          sudo env HL_TEST_XRAY_ASSET_DIRECTORY="$release/bin" python3 tests/install/test_node_assets.py
           # Real engines and loopback clients, no production services.
           env -u GOOS -u GOARCH NYVP_XRAY_BINARY="$release/bin/xray" NYVP_GOST_BINARY="$release/bin/gost" HL_TEST_XRAY_LEGACY_BINARY="$RUNNER_TEMP/xray-legacy/xray" go test -p 1 -v ./internal/agent/runtime ./internal/agent/engine ./internal/control/httpapi ./tests/integration/xray ./tests/integration/gost
           cp -R apps/web-admin/dist/. "$release/web-admin/"

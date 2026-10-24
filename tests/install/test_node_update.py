@@ -97,6 +97,33 @@ class TelemetryConfiguration(unittest.TestCase):
                 self.assertEqual(json.loads(config.read_text()), original)
 
 
+class DependencyOnlyRepair(unittest.TestCase):
+    def test_repair_and_failure_rollback_never_stop_or_replace_core(self):
+        for fail in (False, True):
+            with self.subTest(failure=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                release = root/'release'
+                (release/'deploy').mkdir(parents=True)
+                (release/'deploy/install-node-update.py').write_text('# candidate helper')
+                backup = root/'backup'
+                backup.mkdir()
+                commands = []
+                def run(argv):
+                    commands.append(argv)
+                    if fail and '--repair-assets' in argv:
+                        raise updater.UpdateError('synthetic repair failure')
+                with patch.object(updater, 'run', side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+                    if fail:
+                        with self.assertRaises(updater.UpdateError):
+                            updater.repair_dependencies(release, backup)
+                    else:
+                        updater.repair_dependencies(release, backup)
+                self.assertTrue((backup/'rollback.sh').is_file())
+                self.assertFalse(any(argv[0] == 'systemctl' for argv in commands))
+                self.assertFalse(any(str(path) in argv for argv in commands for path in ('xray', 'gost', 'edge-agent')))
+                self.assertEqual(any('--restore' in argv for argv in commands), fail)
+
+
 class CredentialPermissions(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()

@@ -49,6 +49,11 @@ class Worker(unittest.TestCase):
 class Maintenance(unittest.TestCase):
     def release(self, root):
         release=root/'release';(release/'deploy/systemd').mkdir(parents=True)
+        (root/'program/node-engines').mkdir(exist_ok=True)
+        (release/'bin').mkdir()
+        for name in installer.ASSET_NAMES:
+            (release/'bin'/name).write_text('packaged resource')
+        (release/'bin/xray').write_text('fixed core fixture')
         for name in installer.NAMES:(release/'deploy'/name).write_text('new')
         for name in installer.UNIT_NAMES:(release/'deploy/systemd'/name).write_text('new unit')
         (release/'deploy/configure-node-traffic-control.py').write_text('# isolated helper fixture')
@@ -64,7 +69,7 @@ class Maintenance(unittest.TestCase):
                     dropin=units/'hl-panel-edge-agent.service.d'/installer.TC_NAME
                     dropin.parent.mkdir();dropin.write_text('new TC defaults')
                 if args[:3]==['systemctl','enable','--now']:raise OSError('failure after files replaced')
-                return types.SimpleNamespace(returncode=1 if 'is-active' in args or 'is-enabled' in args else 0)
+                return types.SimpleNamespace(returncode=1 if 'is-active' in args or 'is-enabled' in args else 0, stdout=b'Xray 26.7.28 (fixture)')
             with patch.object(installer,'ROOT',program),patch.object(installer,'UNITS',units),patch.object(installer.subprocess,'run',side_effect=run):
                 with self.assertRaises(OSError):installer.install(release)
                 self.assertEqual((program/'update.py').read_text(),'old verifier')
@@ -82,7 +87,7 @@ class Maintenance(unittest.TestCase):
             def run(args,**kwargs):
                 if '--service-defaults' in args:
                     dropin.write_text('new TC defaults');dropin.chmod(0o644)
-                return types.SimpleNamespace(returncode=0)
+                return types.SimpleNamespace(returncode=0, stdout=b'Xray 26.7.28 (fixture)')
             with patch.object(installer,'ROOT',program),patch.object(installer,'UNITS',units),patch.object(installer.subprocess,'run',side_effect=run):
                 backup=root/'backup';installer.snapshot(backup)
                 installer.install(release)
@@ -101,11 +106,12 @@ class Maintenance(unittest.TestCase):
             release=self.release(root)
             def run(args,**kwargs):
                 if '--service-defaults' in args:raise OSError('conflicting custom drop-in')
-                return types.SimpleNamespace(returncode=1 if 'is-active' in args or 'is-enabled' in args else 0)
+                return types.SimpleNamespace(returncode=1 if 'is-active' in args or 'is-enabled' in args else 0, stdout=b'Xray 26.7.28 (fixture)')
             with patch.object(installer,'ROOT',program),patch.object(installer,'UNITS',units),patch.object(installer.subprocess,'run',side_effect=run):
                 with self.assertRaises(OSError):installer.install(release)
                 self.assertEqual(dropin.read_text(),'custom operator override')
-                self.assertEqual(list(program.iterdir()),[])
+                self.assertEqual(list(program.iterdir()),[program/'node-engines'])
+                self.assertEqual(list((program/'node-engines').iterdir()),[])
                 self.assertEqual(list(units.iterdir()),[dropin.parent])
 
 if __name__=='__main__':unittest.main()

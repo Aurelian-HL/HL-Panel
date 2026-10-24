@@ -189,6 +189,7 @@ def main():
     parser.add_argument('--rollback',type=Path)
     parser.add_argument('--expected-sha256', default='')
     parser.add_argument('--result-file', type=Path)
+    parser.add_argument('--repair', action='store_true', help='repair dependencies only, without replacing or restarting engines')
     args=parser.parse_args()
     global RESULT_FILE
     RESULT_FILE = args.result_file
@@ -234,6 +235,19 @@ def main():
             require((release/asset).is_file(), '发布包缺少节点更新服务资产；当前节点未停止')
         verify_xray_version(release/'bin/xray')
         run([str(release/'bin/gost'),'-V'])
+        maintenance = release/'deploy/install-node-update.py'
+        # Download/package failures, missing packages and invalid resources must
+        # be resolved while the current forwarding processes are still running.
+        try:
+            run([sys.executable, str(maintenance), str(release), '--preflight', '--install-missing'])
+        except UpdateError:
+            raise UpdateError('节点依赖或 Xray 资源预检失败；请检查软件源、iproute2/systemd/procps/kmod 和 GeoIP/GeoSite 资源；当前转发服务未停止') from None
+        run(['systemd-analyze', 'verify',
+             str(release/'deploy/systemd/hl-panel-node-update.socket'),
+             str(release/'deploy/systemd/hl-panel-node-update.service')])
+        if args.repair:
+            repair_dependencies(release, backup)
+            return
         credential=digest(STATE/'credentials.json')
         shutil.copy2(CONFIG, backup/'edge-agent.json')
         config['heartbeat_interval'] = '1s'
@@ -288,6 +302,32 @@ def main():
         print('[HL-panel 节点更新] 程序已更新；请回面板核对在线、版本和真实转发。')
         print('备份：'+str(backup))
         print('回滚：bash '+str(backup/'rollback.sh'))
+
+
+def repair_dependencies(release, backup):
+    maintenance = release/'deploy/install-node-update.py'
+    runner = backup/'maintenance-rollback.py'
+    shutil.copy2(maintenance, runner)
+    run([sys.executable, str(runner), '--snapshot', str(backup/'maintenance')])
+    rollback_script = backup/'rollback.sh'
+    rollback_script.write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' +
+                              str(runner) + ' --restore ' + str(backup/'maintenance') + '\n')
+    rollback_script.chmod(0o700)
+    try:
+        run([sys.executable, str(maintenance), str(release), '--repair-assets'])
+        run([sys.executable, '-I', str(release/'deploy/configure-node-traffic-control.py'),
+             '--service-defaults', '--install-missing'])
+    except Exception:
+        try:
+            run([sys.executable, str(runner), '--restore', str(backup/'maintenance')])
+        except Exception:
+            raise UpdateError('依赖修复失败，受管文件恢复未完成；未请求重启转发。请检查备份并运行：bash ' + str(rollback_script)) from None
+        raise UpdateError('依赖修复失败，已恢复受管文件；未请求重启转发。备份：' + str(backup)) from None
+    result('verifying', backup)
+    print('[HL-panel 节点] 缺失依赖已补齐，已有资源保留；未替换或重启 Agent、Xray、GOST。')
+    print('如新补了 TC 服务权限，它在下次主动更新/启动时生效；本次不会为了权限重启转发。')
+    print('备份：' + str(backup))
+    print('回滚：bash ' + str(rollback_script))
 
 
 if __name__=='__main__':

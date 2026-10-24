@@ -10,6 +10,7 @@ checksum=""
 enrollment_token=""
 ca_file=""
 node_address=""
+apt_refreshed=0
 while (($#)); do
   case "$1" in
     --repo|--version|--panel-url|--archive|--sha256|--token|--ca-file|--node-address)
@@ -34,6 +35,15 @@ if [[ -n "$ca_file" ]]; then
   [[ -f "$ca_file" && ! -L "$ca_file" ]] || { echo 'CA 文件不存在或是链接；未修改节点。' >&2; exit 2; }
 fi
 
+install_missing_packages() {
+  command -v apt-get >/dev/null || { echo "缺少依赖：$*；当前自动补齐支持 Debian/Ubuntu 的 apt-get，尚未修改节点身份。" >&2; exit 1; }
+  if [[ "$apt_refreshed" == 0 ]]; then
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=2 update
+    apt_refreshed=1
+  fi
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "$@"
+}
+
 ensure_time_synchronization() {
   local synchronized provider unit
   if ! command -v timedatectl >/dev/null 2>&1; then
@@ -54,7 +64,7 @@ ensure_time_synchronization() {
     fi
   done
   if [[ -z "$provider" && -z "$archive" && -x "$(command -v apt-get 2>/dev/null || true)" ]]; then
-    if apt-get update >/dev/null 2>&1 && apt-get install -y --no-install-recommends systemd-timesyncd >/dev/null 2>&1; then
+    if install_missing_packages systemd-timesyncd >/dev/null 2>&1; then
       provider="systemd-timesyncd.service"
     else
       echo '[HL-panel 节点] 警告：无法安装 systemd-timesyncd，安装继续；请手动配置 NTP' >&2
@@ -82,29 +92,26 @@ configure_tcp_bbr() {
   fi
 }
 
-if [[ -z "$archive" ]]; then
-  if ! command -v python3 >/dev/null || ! command -v curl >/dev/null || [[ ! -e /etc/ssl/certs/ca-certificates.crt ]]; then
-    command -v apt-get >/dev/null || { echo '请先安装 curl、python3、ca-certificates。' >&2; exit 1; }
-    apt-get update
-    apt-get install -y curl python3 ca-certificates
-  fi
-else
-  command -v python3 >/dev/null || { echo '离线模式需要预装 python3。' >&2; exit 1; }
+packages=()
+command -v python3 >/dev/null || packages+=(python3)
+command -v curl >/dev/null || packages+=(curl)
+[[ -s /etc/ssl/certs/ca-certificates.crt ]] || packages+=(ca-certificates)
+if ! command -v ip >/dev/null || ! command -v tc >/dev/null; then packages+=(iproute2); fi
+command -v useradd >/dev/null || packages+=(passwd)
+command -v runuser >/dev/null || packages+=(util-linux)
+command -v systemd-analyze >/dev/null || packages+=(systemd)
+command -v sysctl >/dev/null || packages+=(procps)
+command -v modprobe >/dev/null || packages+=(kmod)
+if [[ -n "$archive" ]]; then
   [[ -f "$archive" && -f "$checksum" ]] || { echo '离线安装必须同时提供 --archive 和 --sha256 文件。' >&2; exit 2; }
+  ((${#packages[@]} == 0)) || { echo "离线模式缺少依赖：${packages[*]}；请预装后重试，尚未修改节点身份。" >&2; exit 1; }
+elif ((${#packages[@]})); then
+  install_missing_packages "${packages[@]}"
+else
+  echo '[HL-panel 节点] 系统安装依赖已齐全，跳过软件包安装。'
 fi
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else "需要 Python 3.9 或更新版本；尚未修改节点身份")'
 ensure_time_synchronization
-# Per-rule speed limits need the real TC binary and a validated route interface.
-# Require them before a new installation or re-enrollment, rather than advertising a
-# capability whose rules the node cannot apply.
-if ! command -v ip >/dev/null || ! command -v tc >/dev/null; then
-  if [[ -z "$archive" ]] && command -v apt-get >/dev/null; then
-    apt-get update
-    apt-get install -y --no-install-recommends iproute2
-  else
-    echo '节点安装或重装需要 iproute2（ip、tc）；请先安装后重试，尚未修改节点身份。' >&2
-    exit 1
-  fi
-fi
 # Public address is separate from the operating-system hostname.
 if [[ -z "$node_address" ]]; then
   for endpoint in https://api.ipify.org https://ipv4.icanhazip.com; do
@@ -239,6 +246,7 @@ result = subprocess.run([sys.argv[1], 'version'], capture_output=True, timeout=1
 if result.returncode or not result.stdout.startswith(b'Xray 26.7.28 '):
     raise SystemExit('Xray 版本未通过旧客户端兼容验收；要求 26.7.28，未修改节点。')
 PY
+python3 "$release/deploy/install-node-update.py" "$release" --preflight
 if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
   [[ -f "$release/deploy/reinstall-node.py" ]] || { echo '该版本不支持重装换组，请先更新面板后重新复制安装命令。' >&2; exit 1; }
   echo '[HL-panel 节点] 发现已有节点，按本次有效命令重新安装并切换设备组…'
@@ -274,8 +282,6 @@ if any(config.get(k) != v for k,v in expected.items()):
 release = pathlib.Path(sys.argv[2])
 for installed, source in [('/opt/hl-panel/edge-agent','bin/edge-agent'),
         ('/opt/hl-panel/node-engines/xray','bin/xray'), ('/opt/hl-panel/node-engines/gost','bin/gost'),
-        ('/opt/hl-panel/node-engines/geoip.dat','bin/geoip.dat'),
-        ('/opt/hl-panel/node-engines/geosite.dat','bin/geosite.dat'),
         ('/opt/hl-panel/enroll-node.sh','deploy/edge-agent/enroll.sh'),
         ('/etc/systemd/system/hl-panel-edge-agent.service','deploy/systemd/hl-panel-edge-agent.service')]:
     p = pathlib.Path(installed)
@@ -284,6 +290,9 @@ for installed, source in [('/opt/hl-panel/edge-agent','bin/edge-agent'),
     if hashlib.sha256(p.read_bytes()).digest() != hashlib.sha256((release/source).read_bytes()).digest():
         raise SystemExit('现有安装版本不同；请指定原 --version 重试，不覆盖安装')
 PY
+  # Resume only after validating installation identity/version; repair missing
+  # resource files without relaxing executable or credential checks.
+  python3 "$release/deploy/install-node-update.py" "$release" --repair-assets
   echo '[HL-panel 节点] 安装文件已存在，继续尚未完成的注册。'
 else
   [[ ! -e /opt/hl-panel/node-engines ]] || { echo '已有引擎目录，拒绝覆盖。' >&2; exit 1; }

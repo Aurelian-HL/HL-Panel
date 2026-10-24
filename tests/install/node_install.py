@@ -395,11 +395,23 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             listener.bind(('127.0.0.1', 0)); listener.listen()
             target_port = listener.getsockname()[1]
 
+            def echo(connection):
+                try:
+                    with connection:
+                        connection.sendall(marker)
+                        while True:
+                            block = connection.recv(4096)
+                            if not block:
+                                return
+                            connection.sendall(block)
+                except OSError:
+                    return
+
             def serve():
                 while True:
                     try:
                         connection, _ = listener.accept()
-                        with connection: connection.sendall(marker)
+                        threading.Thread(target=echo, args=(connection,), daemon=True).start()
                     except OSError: return
 
             threading.Thread(target=serve, daemon=True).start()
@@ -480,6 +492,62 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             original_unit = service_unit.read_text()
             agent_config = Path('/etc/hl-panel/edge-agent.json')
             original_config = agent_config.read_bytes()
+            # Dependency repair must keep both existing data-plane processes,
+            # the service identity and active client connections untouched.
+            def running_pids():
+                result = {}
+                for path in Path('/proc').iterdir():
+                    if not path.name.isdigit():
+                        continue
+                    try:
+                        executable = (path / 'exe').resolve(strict=True)
+                    except (FileNotFoundError, PermissionError, ProcessLookupError):
+                        continue
+                    if str(executable) in ('/opt/hl-panel/edge-agent',
+                            '/opt/hl-panel/node-engines/xray', '/opt/hl-panel/node-engines/gost'):
+                        result[int(path.name)] = str(executable)
+                assert len(set(result.values())) == 3, 'Both real engines and Agent must be running'
+                return result
+
+            before_repair = running_pids()
+            persistent_clients = []
+            resource_root = Path('/opt/hl-panel/node-engines')
+            retained_resources = {name: (resource_root / name).read_bytes() for name in ('geoip.dat', 'geosite.dat')}
+            try:
+                for port in (gost_port, socks_port):
+                    connection = socket.create_connection(('127.0.0.1', port), timeout=3)
+                    persistent_clients.append(connection)
+                    if port == socks_port:
+                        connection.sendall(b'\x05\x01\x00')
+                        assert receive_exact(connection, 2) == b'\x05\x00'
+                        connection.sendall(b'\x05\x01\x00\x01\x7f\x00\x00\x01' + target_port.to_bytes(2, 'big'))
+                        assert receive_exact(connection, 10)[:2] == b'\x05\x00'
+                    assert receive_exact(connection, len(marker)) == marker
+                    connection.sendall(b'before-repair')
+                    assert receive_exact(connection, 13) == b'before-repair'
+                for name in retained_resources:
+                    (resource_root / name).unlink()
+                sys.argv = ['update-node.py', '--version', args.version, '--repair']
+                node_updater.main()
+                for name in retained_resources:
+                    assert (resource_root / name).stat().st_size > 0
+                repaired_stamps = {name: (resource_root / name).stat().st_mtime_ns for name in retained_resources}
+                node_updater.main()
+                assert repaired_stamps == {name: (resource_root / name).stat().st_mtime_ns for name in retained_resources}
+                assert running_pids() == before_repair, 'Dependency-only repair restarted Agent or an engine'
+                assert agent_config.read_bytes() == original_config
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+                for connection in persistent_clients:
+                    connection.sendall(b'after-repair')
+                    assert receive_exact(connection, 12) == b'after-repair'
+                wait_for(real_clients)
+            finally:
+                for connection in persistent_clients:
+                    connection.close()
+                sys.argv = saved_args
+                for name, content in retained_resources.items():
+                    (resource_root / name).write_bytes(content)
+            checks.append('dependency-only repair restores missing GeoIP/GeoSite, repeats without writes, preserves all PIDs and real clients')
             tc_dropin = service_unit.parent / 'hl-panel-edge-agent.service.d/30-traffic-control.conf'
             original_tc_dropin = tc_dropin.read_bytes()
             legacy_config = {key: value for key, value in json.loads(original_config).items()

@@ -19,7 +19,14 @@ while (($#)); do
   esac
 done
 [[ "$repository" == Aurelian-HL/HL-Panel ]] || { echo 'Invalid repository' >&2; exit 2; }
-command -v curl >/dev/null || { echo '请先安装 curl：apt-get update && apt-get install -y curl' >&2; exit 1; }
+bootstrap_packages=()
+command -v curl >/dev/null || bootstrap_packages+=(curl)
+[[ -s /etc/ssl/certs/ca-certificates.crt ]] || bootstrap_packages+=(ca-certificates)
+if ((${#bootstrap_packages[@]})); then
+  [[ $(id -u) == 0 ]] && command -v apt-get >/dev/null || { echo '请使用 root 并预装 curl、ca-certificates。' >&2; exit 1; }
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=2 update
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "${bootstrap_packages[@]}"
+fi
 if [[ "$version" == "latest" ]]; then
   [[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }
   # GitHub's latest URL selects a published, non-draft, non-prerelease release.

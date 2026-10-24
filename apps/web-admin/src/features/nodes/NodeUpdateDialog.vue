@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import BaseModal from '@/components/BaseModal.vue'
+import { nodeDownloadPrerequisites } from '@/lib/nodeCommand'
 import { nodeUpdateStatus, startNodeUpdate, cancelNodeUpdate, type NodeUpdateStatus } from '@/api/nodeUpdates'
 
 const props = defineProps<{ nodeId: string }>()
@@ -18,7 +19,7 @@ const pendingKey = `hl-node-update:${props.nodeId}`
 const command = computed(() => {
   const tag = status.value?.panel_version ?? ''
   if (!/^v\d+\.\d+\.\d+$/.test(tag)) return ''
-  return `(set -Eeuo pipefail; f=$(mktemp); trap 'rm -f -- "$f"' EXIT; curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/${tag}/update-node.sh -o "$f"; bash "$f" --version ${tag})`
+  return `(set +x; set -Eeuo pipefail; ${nodeDownloadPrerequisites}; f=$(mktemp); trap 'rm -f -- "$f"' EXIT; curl --proto '=https' --proto-redir '=https' -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/${tag}/update-node.sh -o "$f"; bash "$f" --version ${tag})`
 })
 const labels: Record<string, string> = { queued: '等待领取', running: '正在更新', verifying: '验证配置与监听', succeeded: '更新成功', failed: '更新失败', rolled_back: '已回滚', cancelled: '已取消', uncertain: '结果待核实' }
 async function refresh() {

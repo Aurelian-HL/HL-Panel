@@ -16,6 +16,18 @@ BOOTSTRAP = ROOT / 'install-node.sh'
 REPOSITORY = 'https://github.com/Aurelian-HL/HL-Panel'
 TOKEN = 'enr_synthetic_test_only'
 WRAPPER = r'''
+command() {
+  if [[ "${FIX_MISSING_CURL:-0}" == 1 && "$*" == '-v curl' ]]; then return 1; fi
+  builtin command "$@"
+}
+apt-get() {
+  printf 'PACKAGES:%s NEEDRESTART_MODE=%s\n' "$*" "${NEEDRESTART_MODE:-}" >> "$FIX_LOG"
+  [[ "${FIX_APT_FAIL:-0}" == 0 ]]
+}
+id() {
+  if [[ "$*" == '-u' ]]; then printf '0\n'; else builtin command id "$@"; fi
+}
+export -f command apt-get id
 curl() {
   local url='' output='' item
   printf '%s\n' "$*" >> "$FIX_LOG"
@@ -117,6 +129,24 @@ class NodeBootstrapTest(unittest.TestCase):
                 result, _ = self.run_bootstrap(**{setting: '1'})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn('DELEGATE_ARG:', result.stdout)
+
+    def test_missing_curl_is_installed_once_and_complete_host_skips_packages(self):
+        result, log = self.run_bootstrap(FIX_MISSING_CURL='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        package_calls = [line for line in log.splitlines() if line.startswith('PACKAGES:')]
+        self.assertEqual(len(package_calls), 2)
+        self.assertIn('update', package_calls[0])
+        self.assertIn('install -y --no-install-recommends curl', package_calls[1])
+        self.assertTrue(all('NEEDRESTART_MODE=l' in line for line in package_calls))
+        result, log = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('PACKAGES:', log)
+
+    def test_package_failure_aborts_before_download_or_registration(self):
+        result, log = self.run_bootstrap(FIX_MISSING_CURL='1', FIX_APT_FAIL='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('https://', log)
+        self.assertNotIn('DELEGATE_ARG:', result.stdout)
 
 
 if __name__ == '__main__':
