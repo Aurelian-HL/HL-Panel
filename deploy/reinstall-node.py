@@ -133,7 +133,7 @@ def restore_programs(backup):
     credential_sha256 = manifest.get('credential_sha256')
     require(isinstance(credential_sha256, str) and re.fullmatch(r'[0-9a-f]{64}', credential_sha256), '节点身份摘要无效')
     require(digest(STATE / 'credentials.json') == credential_sha256, '节点身份不同，拒绝恢复')
-    allowed = {str(ROOT / p) for p in ('edge-agent', 'node-engines/xray', 'node-engines/gost', 'enroll-node.sh', 'reinstall-node.py')}
+    allowed = {str(ROOT / p) for p in ('edge-agent', 'node-engines/xray', 'node-engines/gost', 'node-engines/geoip.dat', 'node-engines/geosite.dat', 'enroll-node.sh', 'reinstall-node.py')}
     allowed.update({str(UNIT), str(CONFIG), str(CA_FILE)})
     items = manifest.get('files')
     require(isinstance(items, list) and items, '节点回滚文件清单为空')
@@ -196,6 +196,8 @@ def reinstall(args):
     sources = [(ROOT / 'edge-agent', 'bin/edge-agent', 0o755),
                (ROOT / 'node-engines/xray', 'bin/xray', 0o755),
                (ROOT / 'node-engines/gost', 'bin/gost', 0o755),
+               (ROOT / 'node-engines/geoip.dat', 'bin/geoip.dat', 0o644),
+               (ROOT / 'node-engines/geosite.dat', 'bin/geosite.dat', 0o644),
                (ROOT / 'enroll-node.sh', 'deploy/edge-agent/enroll.sh', 0o700),
                (ROOT / 'reinstall-node.py', 'deploy/reinstall-node.py', 0o700),
                (UNIT, 'deploy/systemd/hl-panel-edge-agent.service', 0o644)]

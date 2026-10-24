@@ -71,7 +71,8 @@ def install_engines(release_directory, gost_bundle=None, gost_manifest_sha256=No
         if engine['format'] == 'zip':
             with zipfile.ZipFile(io.BytesIO(data)) as source:
                 for entry in source.infolist():
-                    if entry.filename in (engine['name'], 'LICENSE'):
+                    selected = (engine['name'], 'LICENSE', 'geoip.dat', 'geosite.dat') if engine['name'] == 'xray' else (engine['name'], 'LICENSE')
+                    if entry.filename in selected:
                         if entry.file_size > 128*1024*1024 or entry.filename in files:
                             raise EngineBuildError('Invalid official engine archive member')
                         files[entry.filename] = source.read(entry)
@@ -85,6 +86,12 @@ def install_engines(release_directory, gost_bundle=None, gost_manifest_sha256=No
                         files[name] = source.extractfile(entry).read()
         if engine['name'] not in files or 'LICENSE' not in files:
             raise EngineBuildError('Engine binary/license missing')
+        if engine['name'] == 'xray':
+            for name in ('geoip.dat', 'geosite.dat'):
+                if not files.get(name):
+                    raise EngineBuildError('Xray geodata missing from pinned archive')
+                (binary / name).write_bytes(files[name])
+                (binary / name).chmod(0o644)
         path = binary / engine['name']
         path.write_bytes(files[engine['name']]); path.chmod(0o755)
         (licenses / (engine['name'] + '-LICENSE')).write_bytes(files['LICENSE'])

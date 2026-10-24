@@ -16,6 +16,8 @@ $required = @(
     'bin/usage-migrate',
     'bin/edge-agent',
     'bin/xray',
+    'bin/geoip.dat',
+    'bin/geosite.dat',
     'bin/gost',
     'licenses/node-engines.json',
     'licenses/xray-LICENSE',

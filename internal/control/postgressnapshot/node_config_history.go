@@ -10,7 +10,28 @@ import (
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
 )
 
-const maxHotSnapshotBytes = 16 << 20
+// Match the existing snapshot codec limit. Current configurations for several
+// large group members can exceed 16 MiB even after history has been detached.
+const maxHotSnapshotBytes = memoryrepo.MaxSnapshotBytes
+
+func initializeSnapshotCapacity(ctx context.Context, tx *sql.Tx) error {
+	var ready bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_constraint
+		WHERE conrelid='nyvp_control_snapshots'::regclass AND conname='hl_panel_snapshot_payload_64m')`).Scan(&ready); err != nil {
+		return errors.New("PostgreSQL snapshot capacity lookup failed")
+	}
+	if ready {
+		return nil
+	}
+	// Initialization already holds the bootstrap advisory lock. Keep the new
+	// bound and removal of the old check in the same transaction, before writes.
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE nyvp_control_snapshots
+		DROP CONSTRAINT IF EXISTS nyvp_control_snapshots_payload_check,
+		ADD CONSTRAINT hl_panel_snapshot_payload_64m CHECK (octet_length(payload) BETWEEN 1 AND 67108864)`); err != nil {
+		return errors.New("PostgreSQL snapshot capacity migration failed")
+	}
+	return nil
+}
 
 func initializeNodeConfigHistory(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS hl_panel_node_config_history (

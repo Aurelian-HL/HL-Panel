@@ -273,6 +273,9 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 	)`); err != nil {
 		return errors.New("PostgreSQL snapshot table initialization failed")
 	}
+	if err := initializeSnapshotCapacity(ctx, tx); err != nil {
+		return err
+	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM nyvp_control_snapshots`).Scan(&count); err != nil {
 		return errors.New("PostgreSQL snapshot lookup failed")

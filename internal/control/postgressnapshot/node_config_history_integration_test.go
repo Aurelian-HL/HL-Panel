@@ -50,7 +50,7 @@ func nodeHistoryFixture(t *testing.T) (*Store, string) {
 	return s, dsn
 }
 
-func TestArchivedHistoryLargerThanHotLimitRoundTripsMigration(t *testing.T) {
+func TestArchivedHistoryLargerThanLegacyHotLimitRoundTripsMigration(t *testing.T) {
 	source, _ := nodeHistoryFixture(t)
 	ctx := context.Background()
 	input := historyRevision(1)
@@ -126,7 +126,7 @@ func TestArchivedHistoryLargerThanHotLimitRoundTripsMigration(t *testing.T) {
 		}
 	}
 	exported, err := source.ExportMigration(ctx)
-	if err != nil || len(exported.Snapshot) <= maxHotSnapshotBytes {
+	if err != nil || len(exported.Snapshot) <= 16<<20 {
 		t.Fatal("large history export failed", len(exported.Snapshot), err)
 	}
 	runtime := migrationbackup.RuntimeSecrets{PasswordFingerprintKey: bytes.Repeat([]byte{7}, 32)}

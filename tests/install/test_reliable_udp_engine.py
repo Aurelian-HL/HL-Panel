@@ -193,6 +193,9 @@ class ReleaseEngineTests(unittest.TestCase):
         with zipfile.ZipFile(data, 'w') as handle:
             handle.writestr(name, b'official-' + name.encode())
             handle.writestr('LICENSE', b'official-license')
+            if name == 'xray':
+                handle.writestr('geoip.dat', b'official-geoip')
+                handle.writestr('geosite.dat', b'official-geosite')
         raw = data.getvalue()
         return {'name': name, 'version': 'test', 'format': 'zip', 'url': 'https://example.invalid/' + name,
                 'sha256': hashlib.sha256(raw).hexdigest()}, raw
@@ -204,6 +207,20 @@ class ReleaseEngineTests(unittest.TestCase):
                 patch.object(fetch.urllib.request, 'urlopen', side_effect=[io.BytesIO(xray_zip), io.BytesIO(gost_zip)]):
             fetch.install_engines(self.root / 'release')
         self.assertEqual((self.root / 'release/bin/gost').read_bytes(), b'official-gost')
+        self.assertEqual((self.root / 'release/bin/geoip.dat').read_bytes(), b'official-geoip')
+        self.assertEqual((self.root / 'release/bin/geosite.dat').read_bytes(), b'official-geosite')
+
+    def test_missing_geodata_rejected(self):
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as handle:
+            handle.writestr('xray', b'official-xray')
+            handle.writestr('LICENSE', b'official-license')
+        metadata = {'name': 'xray', 'format': 'zip', 'url': 'https://example.invalid/xray',
+                    'sha256': hashlib.sha256(data.getvalue()).hexdigest()}
+        with patch.object(fetch, 'ENGINES', [metadata]), \
+                patch.object(fetch.urllib.request, 'urlopen', return_value=io.BytesIO(data.getvalue())):
+            with self.assertRaisesRegex(fetch.EngineBuildError, 'geodata missing'):
+                fetch.install_engines(self.root / 'release')
 
     def test_verified_candidate_does_not_download_official_gost(self):
         root, digest = self.bundle()

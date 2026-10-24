@@ -187,7 +187,7 @@ class NodeRecoveryTests(IsolatedFiles):
         (self.state / 'usage.json').write_text('usage cursor')
         self.before = {path.name: path.read_bytes() for path in self.state.iterdir()}
         self.release = self.root / 'release'
-        for relative in ('bin/edge-agent', 'bin/xray', 'bin/gost',
+        for relative in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'bin/geoip.dat', 'bin/geosite.dat',
                          'deploy/edge-agent/enroll.sh', 'deploy/reinstall-node.py',
                          'deploy/install-node-update.py',
                          'deploy/systemd/hl-panel-edge-agent.service'):

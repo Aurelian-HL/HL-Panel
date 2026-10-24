@@ -162,7 +162,7 @@ created_tc_dropin=0
 cleanup_install() {
   if [[ "$created_install" == 1 && "$install_ready" == 0 ]]; then
     rm -f /opt/hl-panel/edge-agent /opt/hl-panel/enroll-node.sh /etc/hl-panel/edge-agent.json /etc/systemd/system/hl-panel-edge-agent.service
-    rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost
+    rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost /opt/hl-panel/node-engines/geoip.dat /opt/hl-panel/node-engines/geosite.dat
     if [[ "$installed_ca" == 1 ]]; then
       rm -f /etc/hl-panel/edge-agent-ca.pem
     fi
@@ -226,6 +226,9 @@ for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/instal
 (target/'bin/edge-agent').chmod(0o755)
 PY
 release="$temporary/release"
+for asset in geoip.dat geosite.dat; do
+  [[ -s "$release/bin/$asset" ]] || { echo '安装包缺少 Xray 资源文件；尚未修改节点。' >&2; exit 1; }
+done
 for asset in bin/xray bin/gost; do
   [[ -f "$release/$asset" ]] || { echo '安装包缺少转发引擎；未修改节点，请使用新版本。' >&2; exit 1; }
   chmod 0755 "$release/$asset"
@@ -271,6 +274,8 @@ if any(config.get(k) != v for k,v in expected.items()):
 release = pathlib.Path(sys.argv[2])
 for installed, source in [('/opt/hl-panel/edge-agent','bin/edge-agent'),
         ('/opt/hl-panel/node-engines/xray','bin/xray'), ('/opt/hl-panel/node-engines/gost','bin/gost'),
+        ('/opt/hl-panel/node-engines/geoip.dat','bin/geoip.dat'),
+        ('/opt/hl-panel/node-engines/geosite.dat','bin/geosite.dat'),
         ('/opt/hl-panel/enroll-node.sh','deploy/edge-agent/enroll.sh'),
         ('/etc/systemd/system/hl-panel-edge-agent.service','deploy/systemd/hl-panel-edge-agent.service')]:
     p = pathlib.Path(installed)
@@ -286,8 +291,10 @@ else
   install -d -m 0755 -o root -g root /opt/hl-panel/node-engines
   install -m 0755 -o root -g root "$release/bin/xray" /opt/hl-panel/node-engines/xray
   install -m 0755 -o root -g root "$release/bin/gost" /opt/hl-panel/node-engines/gost
+  install -m 0644 -o root -g root "$release/bin/geoip.dat" /opt/hl-panel/node-engines/geoip.dat
+  install -m 0644 -o root -g root "$release/bin/geosite.dat" /opt/hl-panel/node-engines/geosite.dat
   if ! sh "$release/deploy/edge-agent/install.sh" "$release/bin/edge-agent" "$release/deploy/systemd/hl-panel-edge-agent.service" "$origin" mixed /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost true; then
-    rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost
+    rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost /opt/hl-panel/node-engines/geoip.dat /opt/hl-panel/node-engines/geosite.dat
     rmdir /opt/hl-panel/node-engines
     exit 1
   fi
