@@ -63,14 +63,14 @@ func (s Spec) validate() error {
 		return ErrInvalidSpec
 	}
 	uuid := strings.TrimSpace(s.UUID)
-	if len(uuid) != 36 || uuid[8] != '-' || uuid[13] != '-' || uuid[18] != '-' || uuid[23] != '-' {
+	if uuid != s.UUID || len(uuid) != 36 || uuid[8] != '-' || uuid[13] != '-' || uuid[18] != '-' || uuid[23] != '-' {
 		return ErrInvalidSpec
 	}
 	if _, err := hex.DecodeString(strings.ReplaceAll(uuid, "-", "")); err != nil {
 		return ErrInvalidSpec
 	}
 	key, err := base64.RawURLEncoding.DecodeString(s.PublicKey)
-	if err != nil || len(key) != 32 || !shortIDPattern.MatchString(s.ShortID) {
+	if err != nil || len(key) != 32 || !shortIDPattern.MatchString(s.ShortID) || len(s.ShortID)%2 != 0 {
 		return ErrInvalidSpec
 	}
 	return nil

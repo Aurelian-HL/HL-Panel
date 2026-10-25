@@ -31,7 +31,11 @@ type protocolRunnerRepository interface {
 	PublishProtocolHealthBatch(context.Context, []ProtocolObservation) ([]error, error)
 }
 
-const protocolProbeWorkers = 8
+const protocolProbeWorkers = protocolprobe.NetworkChecks
+
+// Fairness is independent of concurrency: raising throughput must not reduce
+// the share of probes reserved for other members of an already recovered pool.
+const protocolPriorityBurst = 8
 
 // Protocol observations are published outside the scheduler loop. A blocked
 // database write must not stop probes, lease renewal, or failure detection.
@@ -53,6 +57,7 @@ const (
 type ProtocolRunner struct {
 	repository        protocolRunnerRepository
 	observer          *ProtocolObserver
+	probeClient       *protocolprobe.Client
 	xrayBinary        string
 	echoPort          int
 	interval          time.Duration
@@ -97,7 +102,10 @@ func NewProtocolRunner(repository protocolRunnerRepository, xrayBinary string, e
 	if interval <= 0 || interval > endpoints.DefaultHealthTTL/3 {
 		interval = 15 * time.Second
 	}
-	return &ProtocolRunner{repository: repository, observer: NewProtocolObserver(repository, time.Now), xrayBinary: xrayBinary, echoPort: echoPort, interval: interval, repositoryTimeout: protocolRepositoryTimeout, logger: logger, wake: make(chan struct{}, 1)}
+	client := protocolprobe.NewClient(xrayBinary)
+	observer := NewProtocolObserver(repository, time.Now)
+	observer.check = client.Check
+	return &ProtocolRunner{repository: repository, observer: observer, probeClient: client, xrayBinary: xrayBinary, echoPort: echoPort, interval: interval, repositoryTimeout: protocolRepositoryTimeout, logger: logger, wake: make(chan struct{}, 1)}
 }
 
 func (r *ProtocolRunner) repositoryCallTimeout() time.Duration {
@@ -118,6 +126,7 @@ func (r *ProtocolRunner) NotifyDeployment(_ string) {
 // block all other pools for an entire scan or delay lease renewal by minutes.
 // Network concurrency and database publication are bounded separately.
 func (r *ProtocolRunner) Run(parent context.Context) error {
+	defer r.probeClient.Close()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	jobs := make(chan probeJob)
@@ -158,9 +167,8 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 				case <-ctx.Done():
 					return
 				case job := <-jobs:
-					state := job.input.State
-					spec := protocolprobe.Spec{XrayBinary: r.xrayBinary, DialHost: job.member.DialHost, DialPort: state.Rule.ListenPort, UUID: job.input.Config.UUID, Flow: state.Rule.EffectiveVLESSFlow(), FlowExplicit: true, ServerName: state.Rule.RealityServerName, PublicKey: state.Rule.RealityPublicKey, ShortID: state.Rule.RealityShortID, EchoHost: "127.0.0.1", EchoPort: job.input.Config.EchoPort}
-					observation, err := r.observer.observeState(ctx, state, job.input.Config, job.member.NodeID, spec)
+					spec := r.probeSpec(job.input, job.member)
+					observation, err := r.observer.observeState(ctx, job.input.State, job.input.Config, job.member.NodeID, spec)
 					select {
 					case results <- probeResult{job, observation, err}:
 					case <-ctx.Done():
@@ -184,6 +192,14 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 				refreshContext, cancel := context.WithTimeout(ctx, r.repositoryCallTimeout())
 				inputs, err := r.loadRefresh(refreshContext)
 				cancel()
+				if err == nil {
+					prepareContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+					prepareErr := r.prepareProbeClient(prepareContext, inputs)
+					cancel()
+					if prepareErr != nil && ctx.Err() == nil {
+						r.logger.Warn("VLESS shared probe client refresh failed", "error", prepareErr)
+					}
+				}
 				select {
 				case refreshResults <- protocolRefreshResult{inputs: inputs, err: err}:
 				case <-ctx.Done():
@@ -288,7 +304,7 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			dispatchSequence = job.attempt
 			next.inFlight = job.attempt
 			if next.priority == 0 {
-				if priorityDispatches < protocolProbeWorkers {
+				if priorityDispatches < protocolPriorityBurst {
 					priorityDispatches++
 				}
 			} else {
@@ -309,7 +325,7 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 			}
 			if target != nil {
 				// Renew halfway through the 90-second lease. This leaves a full
-				// failure window while reducing expensive Xray forks by one third.
+				// failure window for a fresh challenge and durable publication.
 				target.due = time.Now().Add(endpoints.DefaultHealthTTL / 2)
 			}
 			if result.err != nil {
@@ -374,6 +390,32 @@ func (r *ProtocolRunner) Run(parent context.Context) error {
 	}
 }
 
+func (r *ProtocolRunner) probeSpec(input ProbeState, member endpoints.EndpointPoolMember) protocolprobe.Spec {
+	rule := input.State.Rule
+	return protocolprobe.Spec{XrayBinary: r.xrayBinary, DialHost: member.DialHost, DialPort: rule.ListenPort,
+		UUID: input.Config.UUID, Flow: rule.EffectiveVLESSFlow(), FlowExplicit: true,
+		ServerName: rule.RealityServerName, PublicKey: rule.RealityPublicKey, ShortID: rule.RealityShortID,
+		EchoHost: "127.0.0.1", EchoPort: input.Config.EchoPort}
+}
+
+func (r *ProtocolRunner) prepareProbeClient(ctx context.Context, inputs []ProbeState) error {
+	var specs []protocolprobe.Spec
+	for _, input := range inputs {
+		state := input.State
+		if state.Rule.Paused || state.Rule.IngressReadiness() != forwarding.IngressReady ||
+			(state.Rule.Status != forwarding.StatusPendingActivation && state.Rule.Status != forwarding.StatusActive) {
+			continue
+		}
+		for _, member := range state.Members {
+			if member.State == endpoints.CandidateEligible && member.Weight > 0 &&
+				deploymentReady(state.Deployments[member.NodeID], state.Rule, member.NodeID) {
+				specs = append(specs, r.probeSpec(input, member))
+			}
+		}
+	}
+	return r.probeClient.Prepare(ctx, specs)
+}
+
 func dropExpiredProtocolResults(batch []probeResult, now time.Time) []probeResult {
 	if len(batch) == 0 {
 		return nil
@@ -432,10 +474,10 @@ func nextProbe(targets map[string]*scheduledProbe, now time.Time) *scheduledProb
 }
 
 // Keep recovery and lease renewal preferred, while reserving a dispatch after
-// each worker-sized priority burst for the oldest due remaining candidate.
+// each bounded priority burst for the oldest due remaining candidate.
 // Continuous failures must not starve the rest of a group's nodes forever.
 func nextFairProbe(targets map[string]*scheduledProbe, now time.Time, priorityDispatches int) *scheduledProbe {
-	if priorityDispatches >= protocolProbeWorkers {
+	if priorityDispatches >= protocolPriorityBurst {
 		var oldest *scheduledProbe
 		for _, target := range targets {
 			if target.priority == 0 || target.inFlight != 0 || target.due.After(now) {

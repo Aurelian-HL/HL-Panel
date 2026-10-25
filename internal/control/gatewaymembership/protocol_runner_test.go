@@ -704,7 +704,7 @@ func TestProtocolSchedulerNewDeploymentSupersedesInFlightProof(t *testing.T) {
 }
 
 func TestNewRuleBypassesLargePoolBacklog(t *testing.T) {
-	repo := &schedulingRepository{states: []ProbeState{schedulingInput("old-rule", 32)}, published: make(chan []ProtocolObservation, 20)}
+	repo := &schedulingRepository{states: []ProbeState{schedulingInput("old-rule", protocolProbeWorkers*4)}, published: make(chan []ProtocolObservation, 20)}
 	runner := NewProtocolRunner(repo, "unused", 39000, 15*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	started := make(chan string, 100)
 	release := make(chan struct{})

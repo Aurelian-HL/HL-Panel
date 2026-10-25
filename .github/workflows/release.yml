@@ -92,7 +92,7 @@ jobs:
           HL_LICENSE_TEST_DATABASE_URL: postgres://postgres:disposable-ci-only@127.0.0.1:5432/postgres?sslmode=disable
         run: |
           go test ./...
-          go test -race ./internal/control/deploymentreceipts ./internal/panellicense
+          go test -race ./internal/control/deploymentreceipts ./internal/control/protocolprobe ./internal/panellicense
           go test -race -v ./internal/panellicenseissuer
           go test -race ./internal/agent/state ./internal/agent/reconciler
           # Large snapshot fixtures under the race detector must not compete

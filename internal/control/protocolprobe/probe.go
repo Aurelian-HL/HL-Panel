@@ -376,6 +376,39 @@ func stopProbeProcess(process probeProcess) {
 }
 
 func echoThroughSOCKS(ctx context.Context, conn net.Conn, host string, port int) error {
+	return echoThroughSOCKSAuth(ctx, conn, host, port, "", "")
+}
+
+func authenticateSOCKS(conn net.Conn, username, password string) error {
+	method := byte(0)
+	if username != "" {
+		method = 2
+	}
+	if len(username) > 255 || len(password) > 255 {
+		return ErrUnhealthy
+	}
+	if _, err := conn.Write([]byte{5, 1, method}); err != nil {
+		return ErrUnhealthy
+	}
+	var response [2]byte
+	if _, err := io.ReadFull(conn, response[:]); err != nil || response != [2]byte{5, method} {
+		return ErrUnhealthy
+	}
+	if method == 2 {
+		request := append([]byte{1, byte(len(username))}, []byte(username)...)
+		request = append(request, byte(len(password)))
+		request = append(request, []byte(password)...)
+		if _, err := conn.Write(request); err != nil {
+			return ErrUnhealthy
+		}
+		if _, err := io.ReadFull(conn, response[:]); err != nil || response != [2]byte{1, 0} {
+			return ErrUnhealthy
+		}
+	}
+	return nil
+}
+
+func echoThroughSOCKSAuth(ctx context.Context, conn net.Conn, host string, port int, username, password string) error {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return ErrUnhealthy
@@ -383,13 +416,10 @@ func echoThroughSOCKS(ctx context.Context, conn net.Conn, host string, port int)
 	if err := conn.SetDeadline(deadline); err != nil {
 		return ErrUnhealthy
 	}
-	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
-		return ErrUnhealthy
+	if err := authenticateSOCKS(conn, username, password); err != nil {
+		return err
 	}
 	response := make([]byte, 4)
-	if _, err := io.ReadFull(conn, response[:2]); err != nil || response[0] != 5 || response[1] != 0 {
-		return ErrUnhealthy
-	}
 	request := append([]byte{5, 1, 0, 3, byte(len(host))}, []byte(host)...)
 	request = append(request, byte(port>>8), byte(port))
 	if _, err := conn.Write(request); err != nil {
