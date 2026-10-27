@@ -74,7 +74,7 @@ func (s *Store) DeleteOffline(_ context.Context, input nodes.DeleteInput, event 
 		group.UpdatedAt = result.DeletedAt
 		s.deviceGroups[groupID] = group
 	}
-	if err := s.recompileForwardingGroupsLocked(groupIDs, result.DeletedAt); err != nil {
+	if err := s.recompileNodesLocked(s.memberDependentNodeIDsLocked(groupIDs, node.ID), result.DeletedAt); err != nil {
 		for i := len(snapshots) - 1; i >= 0; i-- {
 			s.restoreGroupMemberMutationLocked(snapshots[i])
 		}

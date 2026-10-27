@@ -36,10 +36,11 @@ type Store struct {
 	// Structural evidence for detached immutable forwarding views only.
 	receiptEvaluator *deploymentreceipts.Evaluator
 
-	mu                      sync.RWMutex
-	desiredChanges          generations.ChangeSignals
-	persistenceRevision     uint64
-	nodeConfigHistoryReader NodeConfigHistoryReader
+	mu                              sync.RWMutex
+	desiredChanges                  generations.ChangeSignals
+	persistenceRevision             uint64
+	nodeConfigHistoryReader         NodeConfigHistoryReader
+	nodeConfigGenerationFloorReader NodeConfigGenerationFloorReader
 	// Unaudited protocol/configuration projections must also advance gateway
 	// membership. PostgreSQL uses its row revision instead of this local offset.
 	gatewayMutationRevision uint64

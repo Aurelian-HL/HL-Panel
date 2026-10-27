@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/hongle/hl-panel/internal/control/customers"
+	"github.com/hongle/hl-panel/internal/control/forwarding"
 )
 
 // Fixtures must model the independent credential registry, never credentials
@@ -24,6 +25,24 @@ func legacyLoginSnapshot(t testing.TB, raw []byte) []byte {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		t.Fatal(err)
 	}
+	// Older documents had only one rule revision. Do not manufacture a legacy
+	// fixture from state whose management and executable identities diverged.
+	var rules map[string]forwarding.Rule
+	if err := json.Unmarshal(doc["ForwardRules"], &rules); err != nil {
+		t.Fatal(err)
+	}
+	for id, rule := range rules {
+		if rule.RuntimeRevision != 0 && rule.RuntimeRevision != rule.Revision {
+			t.Fatal("cannot downgrade a fixture with separate runtime identity")
+		}
+		rule.RuntimeRevision = 0
+		rules[id] = rule
+	}
+	var err error
+	doc["ForwardRules"], err = json.Marshal(rules)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var accounts map[string]panelAccount
 	var owners map[string]storedCustomer
 	if err := json.Unmarshal(doc["PanelAccounts"], &accounts); err != nil {
@@ -37,7 +56,6 @@ func legacyLoginSnapshot(t testing.TB, raw []byte) []byte {
 		owner.PasswordHash = account.PasswordHash
 		owners[id] = owner
 	}
-	var err error
 	doc["Customers"], err = json.Marshal(owners)
 	if err != nil {
 		t.Fatal(err)

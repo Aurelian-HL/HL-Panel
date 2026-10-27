@@ -3,8 +3,8 @@ package memoryrepo
 import "github.com/hongle/hl-panel/internal/control/vlessruntime"
 
 // compilationRealityKeys memoizes only a pure cryptographic comparison, never
-// authorization. It belongs to one synchronous multi-node compilation under the
-// store lock and must not be retained by a Store, read view or returned config.
+// authorization. It belongs to one synchronous compilation or detached snapshot
+// validation and must not be retained by a Store, read view or returned config.
 // The pair includes both exact input strings, so a different public key cannot
 // inherit another pair's result. All record and relationship checks still run.
 type compilationRealityKeys struct {

@@ -81,6 +81,7 @@ func (s *Store) syncRuleTrafficLocked(id string, total int64, at time.Time) erro
 	}
 	if quotaStateChanged {
 		rule.Revision++
+		rule.RuntimeRevision = rule.Revision
 		rule.Status = forwarding.DeriveStatus(rule, forwarding.CustomerAvailability{Enabled: true}, at)
 	}
 	s.forwardRules[id] = rule

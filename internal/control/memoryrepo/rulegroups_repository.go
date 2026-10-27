@@ -175,7 +175,6 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 			return rulegroups.BatchResult{}, false, fmt.Errorf("%w: forwarding rule %s changed; reload before saving", faults.ErrConflict, id)
 		}
 		previous[id] = current
-		groups = append(groups, current.EntryGroupID, current.ExitGroupID)
 		item := cloneForwardingRule(current)
 		switch request.Operation {
 		case rulegroups.BatchPause:
@@ -189,6 +188,7 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		case rulegroups.BatchMoveGroup:
 			item.RuleGroupID = request.RuleGroupID
 		case rulegroups.BatchDelete:
+			groups = append(groups, current.EntryGroupID, current.ExitGroupID)
 			// An active reference outside the rule's own pool cannot be retired
 			// by this transaction, even if another rule is selected in the batch.
 			for _, material := range s.vlessRuntimeMaterials {
@@ -288,8 +288,11 @@ func (s *Store) BatchUpdateRules(_ context.Context, input rulegroups.BatchInput,
 		}
 		item.Revision++
 		item.UpdatedAt = input.UpdatedAt
-		item.Deployed = false
-		item.Status = forwarding.StatusPendingActivation
+		if setForwardingRuntimeRevision(current, &item, false) {
+			item.Deployed = false
+			item.Status = forwarding.StatusPendingActivation
+			groups = append(groups, current.EntryGroupID, current.ExitGroupID)
+		}
 		items = append(items, item)
 	}
 	result := rulegroups.BatchResult{Operation: request.Operation, RuleGroupID: request.RuleGroupID, Items: make([]forwarding.Rule, len(items))}

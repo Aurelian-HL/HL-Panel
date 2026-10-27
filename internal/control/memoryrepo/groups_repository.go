@@ -296,18 +296,7 @@ func (s *Store) UpdateGroupMemberWeight(_ context.Context, input groups.UpdateMe
 			updated.UpdatedAt = previous.UpdatedAt.Add(time.Nanosecond)
 		}
 		members[input.NodeID] = updated
-		assignment, created, err := s.compileNodeConfigLocked(input.NodeID, updated.UpdatedAt)
-		if err != nil {
-			members[input.NodeID] = previous
-			return groups.UpdateMemberWeightResult{}, err
-		}
-		if created {
-			result.Assignments = append(result.Assignments, assignment)
-		}
-		if err := s.recompileForwardingGroupsLocked([]string{input.GroupID}, updated.UpdatedAt); err != nil {
-			s.restoreGroupMemberMutationLocked(mutation)
-			return groups.UpdateMemberWeightResult{}, err
-		}
+		// Weight selects new endpoint connections; it is not engine config.
 		s.syncGroupMemberToEndpointPoolsLocked(updated)
 		group := s.deviceGroups[input.GroupID]
 		group.UpdatedAt = updated.UpdatedAt
@@ -347,7 +336,8 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 		return groups.Member{}, nil, err
 	}
 	existing, exists := s.membersByGroup[member.GroupID][member.NodeID]
-	changed := !exists || existing.RetiredAt != nil || existing.Weight != member.Weight || existing.Priority != member.Priority || existing.DialHost != member.DialHost
+	membershipChanged := !exists || existing.RetiredAt != nil || existing.DialHost != member.DialHost
+	changed := membershipChanged || existing.Weight != member.Weight || existing.Priority != member.Priority
 	if exists {
 		member.CreatedAt = existing.CreatedAt
 	}
@@ -362,8 +352,12 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 		return groups.Member{}, nil, err
 	}
 	assignments := make([]generations.NodeConfigGeneration, 0, 1)
-	if changed || provisioned || s.nodes[member.NodeID].DesiredGeneration == 0 {
-		assignment, created, err := s.compileNodeConfigLocked(member.NodeID, member.UpdatedAt)
+	if membershipChanged || provisioned || s.nodes[member.NodeID].DesiredGeneration == 0 {
+		var dependencyGroups []string
+		if membershipChanged {
+			dependencyGroups = []string{member.GroupID}
+		}
+		assignment, created, err := s.recompileMemberConfigsLocked(member.NodeID, dependencyGroups, member.UpdatedAt)
 		if err != nil {
 			if tolerateCompileFailure {
 				group := s.deviceGroups[member.GroupID]
@@ -376,14 +370,6 @@ func (s *Store) upsertGroupMemberLockedWithCompilePolicy(member groups.Member, t
 		}
 		if created {
 			assignments = append(assignments, assignment)
-		}
-	}
-	if changed {
-		if err := s.recompileForwardingGroupsLocked([]string{member.GroupID}, member.UpdatedAt); err != nil {
-			if !tolerateCompileFailure {
-				s.restoreGroupMemberMutationLocked(mutation)
-				return groups.Member{}, nil, err
-			}
 		}
 	}
 	if changed {
@@ -441,18 +427,14 @@ func (s *Store) retireGroupMemberLocked(groupID, nodeID string, retiredAt time.T
 	member.RetiredAt = &retiredAt
 	member.UpdatedAt = retiredAt
 	members[nodeID] = member
-	assignment, created, err := s.compileNodeConfigLocked(nodeID, retiredAt)
+	assignment, created, err := s.recompileMemberConfigsLocked(nodeID, []string{groupID}, retiredAt)
 	if err != nil {
-		members[nodeID] = previous
+		s.restoreGroupMemberMutationLocked(mutation)
 		return groups.RetireMemberResult{}, err
 	}
 	assignments := make([]generations.NodeConfigGeneration, 0, 1)
 	if created {
 		assignments = append(assignments, assignment)
-	}
-	if err := s.recompileForwardingGroupsLocked([]string{groupID}, retiredAt); err != nil {
-		s.restoreGroupMemberMutationLocked(mutation)
-		return groups.RetireMemberResult{}, err
 	}
 	s.syncGroupMemberToEndpointPoolsLocked(member)
 	group := s.deviceGroups[groupID]

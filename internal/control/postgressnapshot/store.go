@@ -47,6 +47,8 @@ type Store struct {
 	quotaMu        sync.RWMutex
 	panelQuota     panelquota.Provider
 	db             *sql.DB
+	writeGate      snapshotWriteGate
+	preparedWrite  preparedSnapshotWrite // single-use; protected by writeGate
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
 	readCache      snapshotReadCache
@@ -115,10 +117,10 @@ func (s *Store) validatedReadSnapshot(ctx context.Context, tx *sql.Tx) (snapshot
  FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
 		Scan(&next.version, &next.revision, &next.transactionID, &raw)
 	if err != nil {
-		return snapshotReadCache{}, nil, errors.New("PostgreSQL snapshot read failed")
+		return snapshotReadCache{}, nil, snapshotFailure(ctx, "snapshot_read", err)
 	}
 	if !memoryrepo.SupportsSnapshotVersion(next.version) {
-		return snapshotReadCache{}, nil, errors.New("unsupported PostgreSQL snapshot version")
+		return snapshotReadCache{}, nil, snapshotFailure(ctx, "snapshot_format", errors.New("unsupported PostgreSQL snapshot version"))
 	}
 	if raw == nil && cached.payload != nil {
 		// The bytes and detached identity projection are immutable. Database
@@ -185,7 +187,7 @@ func readIdentity[T any](parent context.Context, s *Store, operation func(*memor
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		return zero, errors.New("PostgreSQL transaction unavailable")
+		return zero, snapshotFailure(ctx, "begin", err)
 	}
 	defer tx.Rollback()
 	cached, _, err := s.validatedReadSnapshot(ctx, tx)
@@ -197,7 +199,7 @@ func readIdentity[T any](parent context.Context, s *Store, operation func(*memor
 		return result, err
 	}
 	if err := tx.Commit(); err != nil {
-		return zero, errors.New("PostgreSQL transaction commit failed")
+		return zero, snapshotFailure(ctx, "commit", err)
 	}
 	return result, nil
 }
@@ -207,7 +209,7 @@ func readIdentity[T any](parent context.Context, s *Store, operation func(*memor
 func decodeReadSnapshot(raw []byte, version int, revision uint64) (*memoryrepo.Store, error) {
 	clone, err := memoryrepo.DecodeSnapshotAtVersion(raw, version)
 	if err != nil {
-		return nil, errors.New("PostgreSQL snapshot clone failed")
+		return nil, snapshotFailure(context.Background(), "snapshot_decode", err)
 	}
 	clone.SetPersistenceRevision(revision)
 	return clone, nil
@@ -284,7 +286,7 @@ func (s *Store) initialize(parent context.Context, bootstrap auth.Administrator)
 		if bootstrap.ID == "" || bootstrap.Username == "" || auth.ValidatePasswordHash(bootstrap.PasswordHash) != nil {
 			return errors.New("valid bootstrap administrator required for empty store")
 		}
-		raw, err := memoryrepo.New(bootstrap).EncodeSnapshot()
+		raw, err := encodeHotSnapshot(memoryrepo.New(bootstrap))
 		if err != nil {
 			return err
 		}
@@ -322,7 +324,11 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool, stores ...*Store) (*m
 	if lock {
 		// Decode before taking the shared business row lock. The locked MVCC
 		// identity must still match before this private state can be mutated.
-		prepared, prepareErr := prepareSnapshotWrite(ctx, tx)
+		prepare := prepareSnapshotWrite
+		if len(stores) > 0 && stores[0] != nil {
+			prepare = stores[0].prepareSnapshotWrite
+		}
+		prepared, prepareErr := prepare(ctx, tx)
 		if prepareErr != nil {
 			return nil, prepareErr
 		}
@@ -344,20 +350,27 @@ func readState(ctx context.Context, tx *sql.Tx, lock bool, stores ...*Store) (*m
 			}
 		}
 	}
-	return state, err
+	return state, snapshotFailure(ctx, "overlay_read", err)
 }
 
 func transact[T any](parent context.Context, s *Store, write bool, operation func(*memoryrepo.Store) (T, error)) (T, error) {
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
+	if write {
+		release, err := s.writeGate.acquire(ctx)
+		if err != nil {
+			return zero, snapshotFailure(ctx, "write_queue", err)
+		}
+		defer release()
+	}
 	options := &sql.TxOptions{ReadOnly: !write}
 	if !write {
 		options.Isolation = sql.LevelRepeatableRead
 	}
 	tx, err := s.db.BeginTx(ctx, options)
 	if err != nil {
-		return zero, errors.New("PostgreSQL transaction unavailable")
+		return zero, snapshotFailure(ctx, "begin", err)
 	}
 	defer tx.Rollback()
 	var state *memoryrepo.Store
@@ -378,6 +391,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	var beforeUsage panelquota.Usage
 	var auditCount int
 	var committedCache snapshotReadCache
+	var preparedState *memoryrepo.Store
 	if write {
 		before = state.DesiredGenerationIndex()
 		beforeUsage, _ = state.PanelResourceUsage(ctx)
@@ -385,7 +399,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 	}
 	result, err := operation(state)
 	if err != nil {
-		return result, err
+		return result, snapshotOperationFailure(ctx, err)
 	}
 	if write {
 		events := state.AuditEvents()
@@ -394,34 +408,40 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 			return zero, err
 		}
 		if auditCount > len(events) {
-			return zero, errors.New("audit state changed unexpectedly")
+			return zero, snapshotFailure(ctx, "audit_validate", errors.New("audit state changed unexpectedly"))
 		}
 		if err := appendAuditJournal(ctx, tx, events[auditCount:]); err != nil {
-			return zero, err
+			return zero, snapshotFailure(ctx, "audit_write", err)
 		}
 		if err := persistNodeConfigHistory(ctx, tx, state.DetachHistoricalNodeConfigs()); err != nil {
-			return zero, err
+			return zero, snapshotFailure(ctx, "history_write", err)
 		}
-		raw, err := encodeHotSnapshot(state)
+		raw, restored, err := encodePreparedHotSnapshot(state)
 		if err != nil {
 			return zero, err
 		}
+		preparedState = restored
 		// Proofs were merged before the mutation and are now in the new snapshot.
 		// Clear overlays atomically so an old proof cannot undo a business edit.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM hl_panel_protocol_health`); err != nil {
-			return zero, errors.New("protocol health projection fold failed")
+			return zero, snapshotFailure(ctx, "overlay_fold", err)
 		}
 		committedCache.version = memoryrepo.SnapshotVersion
 		committedCache.payload = raw
 		if err := tx.QueryRowContext(ctx, `UPDATE nyvp_control_snapshots SET payload = $1, format_version = $2, revision = revision + 1, updated_at = clock_timestamp() WHERE singleton = true RETURNING revision, xmin::text`, raw, memoryrepo.SnapshotVersion).
 			Scan(&committedCache.revision, &committedCache.transactionID); err != nil {
-			return zero, errors.New("PostgreSQL snapshot write failed")
+			return zero, snapshotFailure(ctx, "snapshot_update", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return zero, errors.New("PostgreSQL transaction commit failed")
+		return zero, snapshotFailure(ctx, "commit", err)
 	}
 	if write {
+		preparedState.SetPersistenceRevision(uint64(committedCache.revision))
+		s.preparedWrite = preparedSnapshotWrite{
+			version: committedCache.version, revision: committedCache.revision,
+			transactionID: committedCache.transactionID, state: preparedState,
+		}
 		// Publish only committed bytes and detached identities. The next request
 		// still validates the database row, but need not decode the entire state
 		// again merely because this instance just recorded a heartbeat or probe.
@@ -459,7 +479,7 @@ func transactNoopAware[T any](parent context.Context, s *Store, operation func(*
 	defer cancel()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
-		return zero, errors.New("PostgreSQL transaction unavailable")
+		return zero, snapshotFailure(ctx, "begin", err)
 	}
 	defer tx.Rollback()
 	state, err := s.readSnapshot(ctx, tx)
@@ -470,12 +490,12 @@ func transactNoopAware[T any](parent context.Context, s *Store, operation func(*
 	beforeRevision, beforeAudits := state.PersistenceMutationState()
 	result, err := operation(state)
 	if err != nil {
-		return result, err
+		return result, snapshotOperationFailure(ctx, err)
 	}
 	afterRevision, afterAudits := state.PersistenceMutationState()
 	if beforeRevision == afterRevision && beforeAudits == afterAudits {
 		if err := tx.Commit(); err != nil {
-			return zero, errors.New("PostgreSQL transaction commit failed")
+			return zero, snapshotFailure(ctx, "commit", err)
 		}
 		return result, nil
 	}
@@ -485,7 +505,7 @@ func transactNoopAware[T any](parent context.Context, s *Store, operation func(*
 	// otherwise a small pool can deadlock while the deferred rollback waits for
 	// the write attempt to finish.
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
-		return zero, errors.New("PostgreSQL read transaction rollback failed")
+		return zero, snapshotFailure(ctx, "read_rollback", err)
 	}
 	return transact(parent, s, true, operation)
 }

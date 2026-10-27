@@ -79,6 +79,34 @@ func TestOutboundVersionsChangeOnlyAffectedEgress(t *testing.T) {
 	}
 }
 
+func TestVersionedDocumentMatchesSerializedConfiguration(t *testing.T) {
+	for _, protocol := range []string{"socks", "freedom", "blackhole"} {
+		t.Run(protocol, func(t *testing.T) {
+			doc := readVersioned(t, []byte(leafFixture))
+			doc["policy"].(map[string]any)["exactNumber"] = uint64(9007199254740993)
+			outs := doc["outbounds"].([]any)
+			out := outs[0].(map[string]any)
+			out["protocol"] = protocol
+			out["settings"] = map[string]any{
+				"port": 1080, "exactNumber": uint64(9007199254740993),
+				"hosts": []string{"one.example.test", "two.example.test"},
+			}
+			serialized, err := json.Marshal(doc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := VersionLeafOutbounds(serialized)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := MarshalVersionedLeafOutbounds(doc)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatal("native scalar types changed serialized configuration or outbound versions")
+			}
+		})
+	}
+}
+
 func TestOutboundVersionsRejectUnboundedConfigurations(t *testing.T) {
 	for name, mutate := range map[string]func(map[string]any){
 		"stream settings": func(d map[string]any) {
@@ -112,11 +140,21 @@ func TestOutboundVersionsRejectUnboundedConfigurations(t *testing.T) {
 			if _, err := VersionLeafOutbounds(raw); !errors.Is(err, ErrOutboundVersioning) {
 				t.Fatal("unsafe versioning accepted")
 			}
+			if _, err := MarshalVersionedLeafOutbounds(doc); !errors.Is(err, ErrOutboundVersioning) {
+				t.Fatal("unsafe in-memory versioning accepted")
+			}
+			after, err := json.Marshal(doc)
+			if err != nil || !bytes.Equal(raw, after) {
+				t.Fatal("rejected configuration was partially rewritten")
+			}
 		})
 	}
 	for _, raw := range []string{"null", "{}", leafFixture + " {}", leafFixture + " trailing"} {
 		if _, err := VersionLeafOutbounds([]byte(raw)); !errors.Is(err, ErrOutboundVersioning) {
 			t.Fatal("invalid document accepted")
 		}
+	}
+	if _, err := MarshalVersionedLeafOutbounds(nil); !errors.Is(err, ErrOutboundVersioning) {
+		t.Fatal("nil in-memory document accepted")
 	}
 }

@@ -504,7 +504,7 @@ func sameProbe(a, b probeJob) bool {
 	return x.Pool.ID == y.Pool.ID && x.Rule.ID == y.Rule.ID &&
 		a.member.PoolID == b.member.PoolID && a.member.GroupID == b.member.GroupID &&
 		a.member.NodeID == b.member.NodeID && a.member.DialHost == b.member.DialHost &&
-		x.Rule.Revision == y.Rule.Revision && x.Rule.ListenPort == y.Rule.ListenPort &&
+		x.Rule.EffectiveRuntimeRevision() == y.Rule.EffectiveRuntimeRevision() && x.Rule.ListenPort == y.Rule.ListenPort &&
 		x.Rule.EffectiveVLESSFlow() == y.Rule.EffectiveVLESSFlow() &&
 		x.Rule.RealityServerName == y.Rule.RealityServerName &&
 		x.Rule.RealityPublicKey == y.Rule.RealityPublicKey &&
@@ -542,7 +542,7 @@ func recoveryProbeCandidate(state State, now time.Time) string {
 		host, err := serviceaddress.NormalizeHost(member.DialHost)
 		observedHost, proofErr := serviceaddress.NormalizeHost(proof.DialHost)
 		if err != nil || proofErr != nil || host == "" || host != observedHost ||
-			proof.RuleID != state.Rule.ID || proof.NodeID != member.NodeID || proof.RuleRevision != state.Rule.Revision ||
+			proof.RuleID != state.Rule.ID || proof.NodeID != member.NodeID || proof.RuleRevision != state.Rule.EffectiveRuntimeRevision() ||
 			proof.Protocol != forwarding.IngressVLESSReality || proof.VerifiedAt.IsZero() || proof.VerifiedAt.After(now) ||
 			!proof.LeaseExpiresAt.After(proof.VerifiedAt) || proof.LeaseExpiresAt.After(proof.VerifiedAt.Add(endpoints.DefaultHealthTTL)) {
 			continue

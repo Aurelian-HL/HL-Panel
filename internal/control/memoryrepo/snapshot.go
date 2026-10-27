@@ -32,7 +32,7 @@ import (
 	provisioningvless "github.com/hongle/hl-panel/internal/provisioning/vless"
 )
 
-const SnapshotVersion = 25
+const SnapshotVersion = 26
 const panelAccountsSnapshotVersion = 25
 const importedTrafficSnapshotVersion = 21
 const nativeRuntimeSnapshotVersion = 20
@@ -372,6 +372,13 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 			}
 		}
 	}
+	if state.Version < 26 {
+		for _, rule := range state.ForwardRules {
+			if rule.RuntimeRevision != 0 {
+				return nil, errors.New("legacy snapshot contains an explicit runtime revision")
+			}
+		}
+	}
 	if !SupportsSnapshotVersion(state.Version) {
 		return nil, errors.New("unsupported persistence state version")
 	}
@@ -694,7 +701,8 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 	}
 	s.tokensByHash = state.Tokens
 	pendingNezhaIDs := make(map[uint64]struct{})
-	for _, token := range s.tokensByHash {
+	now := time.Now().UTC()
+	for hash, token := range s.tokensByHash {
 		if token.NezhaServerID == 0 {
 			continue
 		}
@@ -702,12 +710,22 @@ func decodeSnapshot(raw []byte, expectedVersion int) (*Store, error) {
 			return nil, errors.New("invalid persisted Nezha enrollment")
 		}
 		if token.UsedAt != nil {
-			if boundNezhaIDs[token.NezhaServerID] == "" {
-				return nil, errors.New("consumed Nezha enrollment has no bound node")
+			// A consumed token is enrollment history, not a permanent monitor
+			// reservation. Deleting a node releases its monitoring ID, and the
+			// tombstone can later reenroll without a monitoring binding.
+			if token.UsedNodeID == "" {
+				// Older tokens predate UsedNodeID. Resolve their existing binding
+				// while it is still known so a later deletion preserves the history.
+				token.UsedNodeID = boundNezhaIDs[token.NezhaServerID]
+				s.tokensByHash[hash] = token
 			}
-		} else if token.RevokedAt == nil && token.ExpiresAt.After(time.Now().UTC()) && boundNezhaIDs[token.NezhaServerID] != "" {
+			node, exists := s.nodes[token.UsedNodeID]
+			if !exists || node.NezhaServerID != 0 && node.NezhaServerID != token.NezhaServerID {
+				return nil, errors.New("consumed Nezha enrollment has an invalid node reference")
+			}
+		} else if token.RevokedAt == nil && token.ExpiresAt.After(now) && boundNezhaIDs[token.NezhaServerID] != "" {
 			return nil, errors.New("pending Nezha enrollment conflicts with bound node")
-		} else if token.RevokedAt == nil && token.ExpiresAt.After(time.Now().UTC()) {
+		} else if token.RevokedAt == nil && token.ExpiresAt.After(now) {
 			if _, duplicate := pendingNezhaIDs[token.NezhaServerID]; duplicate {
 				return nil, errors.New("duplicate pending Nezha enrollment")
 			}

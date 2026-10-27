@@ -59,7 +59,7 @@ func writeProtocolHealthOverlays(ctx context.Context, tx protocolHealthWriter, o
 			args = append(args, observation.RuleID, observation.NodeID, raw)
 		}
 		if _, err := tx.ExecContext(ctx, protocolHealthInsertQuery(len(batch)), args...); err != nil {
-			return errors.New("protocol health projection write failed")
+			return snapshotFailure(ctx, "overlay_write", err)
 		}
 	}
 	return nil

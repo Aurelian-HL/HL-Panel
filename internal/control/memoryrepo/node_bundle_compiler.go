@@ -36,7 +36,11 @@ import (
 const NodeBundleCompilerRevision = 5
 
 func (s *Store) compileNodeConfigLocked(nodeID string, now time.Time) (generations.NodeConfigGeneration, bool, error) {
-	return s.compileNodeConfigWithRealityKeysLocked(nodeID, now, nil)
+	configuration, created, err := s.compileNodeConfigWithRealityKeysLocked(nodeID, now, nil)
+	if err == nil && created {
+		s.desiredChanges.Notify(nodeID)
+	}
+	return configuration, created, err
 }
 
 func (s *Store) compileNodeConfigWithRealityKeysLocked(nodeID string, now time.Time, keys *compilationRealityKeys) (generations.NodeConfigGeneration, bool, error) {
@@ -141,11 +145,15 @@ func (s *Store) compileNodeConfigWithRealityKeysLocked(nodeID string, now time.T
 			return cloneNodeConfig(current), false, nil
 		}
 	}
+	nextGeneration, err := s.nextNodeConfigGenerationLocked(nodeID)
+	if err != nil {
+		return generations.NodeConfigGeneration{}, false, err
+	}
 	id, err := idgen.New("ncfg")
 	if err != nil {
 		return generations.NodeConfigGeneration{}, false, err
 	}
-	node.DesiredGeneration++
+	node.DesiredGeneration = nextGeneration
 	node.BundleCompilerRevision = NodeBundleCompilerRevision
 	node.UpdatedAt = now
 	s.nodes[nodeID] = node
@@ -162,7 +170,6 @@ func (s *Store) compileNodeConfigWithRealityKeysLocked(nodeID string, now time.T
 		s.nodeConfigsByNode[nodeID] = make(map[int64]generations.NodeConfigGeneration)
 	}
 	s.nodeConfigsByNode[nodeID][configuration.Generation] = configuration
-	s.desiredChanges.Notify(nodeID)
 	return cloneNodeConfig(configuration), true, nil
 }
 
@@ -239,7 +246,7 @@ func (s *Store) compileForwardingFragmentsWithRealityKeysLocked(nodeID string, k
 			if err != nil {
 				return nil, fmt.Errorf("compile forwarding rule %s: %w", rule.ID, err)
 			}
-			revision := rule.Revision
+			revision := rule.EffectiveRuntimeRevision()
 			if revision < 1 {
 				revision = 1
 			}
@@ -255,7 +262,7 @@ func (s *Store) compileForwardingFragmentsWithRealityKeysLocked(nodeID string, k
 			if err != nil {
 				return nil, fmt.Errorf("compile UDP forwarding rule %s: %w", rule.ID, err)
 			}
-			revision := rule.Revision
+			revision := rule.EffectiveRuntimeRevision()
 			if revision < 1 {
 				revision = 1
 			}
@@ -375,7 +382,7 @@ func (s *Store) compileVLESSRealityFragmentWithInputsLocked(nodeID string, rule 
 		if err != nil {
 			return agentv1.ConfigurationFragment{}, false, nil
 		}
-		return agentv1.ConfigurationFragment{GroupID: generations.ForwardingFragmentID(agentv1.EngineXray, rule.ID), GroupRevision: agentv1.GroupRevision(rule.Revision), Engine: agentv1.EngineXray, Config: raw}, true, nil
+		return agentv1.ConfigurationFragment{GroupID: generations.ForwardingFragmentID(agentv1.EngineXray, rule.ID), GroupRevision: agentv1.GroupRevision(rule.EffectiveRuntimeRevision()), Engine: agentv1.EngineXray, Config: raw}, true, nil
 	}
 	destination := rule.RealityDestination
 	if destination == "" {
@@ -426,7 +433,7 @@ func (s *Store) compileVLESSRealityFragmentWithInputsLocked(nodeID string, rule 
 		// fail-closed path rather than a user-visible compiler error.
 		return agentv1.ConfigurationFragment{}, false, nil
 	}
-	revision := rule.Revision
+	revision := rule.EffectiveRuntimeRevision()
 	if revision < 1 {
 		revision = 1
 	}
@@ -573,6 +580,13 @@ func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time
 			}
 		}
 	}
+	return s.recompileNodesLocked(nodeIDs, now)
+}
+
+// recompileNodesLocked publishes only the requested node projections. A batch
+// failure restores every node generation before its caller rolls back business
+// state; unchanged bundles retain their generation and notification state.
+func (s *Store) recompileNodesLocked(nodeIDs map[string]struct{}, now time.Time) error {
 	orderedNodes := make([]string, 0, len(nodeIDs))
 	for nodeID := range nodeIDs {
 		orderedNodes = append(orderedNodes, nodeID)
@@ -590,8 +604,10 @@ func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time
 	if len(orderedNodes) > 1 {
 		keys = &compilationRealityKeys{}
 	}
+	changedNodes := make([]string, 0, len(orderedNodes))
 	for _, nodeID := range orderedNodes {
-		if _, _, err := s.compileNodeConfigWithRealityKeysLocked(nodeID, now, keys); err != nil {
+		_, created, err := s.compileNodeConfigWithRealityKeysLocked(nodeID, now, keys)
+		if err != nil {
 			for _, rollbackNodeID := range orderedNodes {
 				s.nodes[rollbackNodeID] = previousNodes[rollbackNodeID]
 				if previousConfigs[rollbackNodeID] == nil {
@@ -602,6 +618,12 @@ func (s *Store) recompileForwardingGroupsLocked(groupIDs []string, now time.Time
 			}
 			return fmt.Errorf("recompile node %s after forwarding mutation: %w", nodeID, err)
 		}
+		if created {
+			changedNodes = append(changedNodes, nodeID)
+		}
+	}
+	for _, nodeID := range changedNodes {
+		s.desiredChanges.Notify(nodeID)
 	}
 	return nil
 }

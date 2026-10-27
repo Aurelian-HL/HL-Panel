@@ -83,7 +83,7 @@ func (s *Store) validateBusinessSnapshot() error {
 	bindings := make(map[string]bool)
 	nodeBindings := make(map[string]bool)
 	for id, rule := range s.forwardRules {
-		if id != rule.ID || id == "" || rule.Revision < 1 || rule.ListenPort < 1 || rule.ListenPort > 65535 {
+		if id != rule.ID || id == "" || rule.Revision < 1 || rule.RuntimeRevision < 0 || rule.RuntimeRevision > rule.Revision || rule.ListenPort < 1 || rule.ListenPort > 65535 {
 			return errors.New("invalid persisted forwarding rule")
 		}
 		if !rule.ImportedTraffic.Valid() || rule.ImportedTraffic != (forwarding.ImportedTraffic{}) && rule.VLESSOutboundMode != forwarding.VLESSOutboundNative {
@@ -200,10 +200,14 @@ func (s *Store) validateBusinessSnapshot() error {
 		}
 	}
 	activeVLESSTuples := make(map[string]bool)
+	// A group repeats the same rule keys on several nodes. Share only the pure
+	// key-pair comparison within this validation; every relationship and native
+	// configuration is still checked, and the next restore gets a fresh memo.
+	realityKeys := &compilationRealityKeys{}
 	for ruleID, privateKey := range s.autoRealityKeys {
 		rule, exists := s.forwardRules[ruleID]
 		if !exists || rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality ||
-			!vlessruntime.RealityKeyMatchesPublicKey(privateKey, rule.RealityPublicKey) {
+			!realityKeys.matches(privateKey, rule.RealityPublicKey) {
 			return errors.New("invalid persisted automatic Reality material")
 		}
 	}
@@ -247,7 +251,7 @@ func (s *Store) validateBusinessSnapshot() error {
 	}
 	activeRuntimeBindings := make(map[string]bool)
 	for id, material := range s.vlessRuntimeMaterials {
-		if id != material.ID || s.validateVLESSRuntimeMaterialLocked(material) != nil {
+		if id != material.ID || s.validatePersistedVLESSRuntimeMaterialLocked(material, realityKeys) != nil {
 			return errors.New("invalid persisted VLESS runtime material")
 		}
 		if material.State == vlessruntime.StateActive {

@@ -364,6 +364,9 @@ func (api *API) securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set("Referrer-Policy", "no-referrer")
 		writer.Header().Set("Cache-Control", "no-store")
+		request = withRequestDiagnostics(request, api.logger)
+		diagnostic := request.Context().Value(requestDiagnosticsKey{}).(requestDiagnostics)
+		writer.Header().Set("X-Request-ID", diagnostic.id)
 		next.ServeHTTP(writer, request)
 	})
 }

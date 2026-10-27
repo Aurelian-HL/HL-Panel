@@ -48,7 +48,7 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(writer).Encode(value)
 }
 
-func writeProblem(writer http.ResponseWriter, _ *http.Request, err error) {
+func writeProblem(writer http.ResponseWriter, request *http.Request, err error) {
 	status := http.StatusInternalServerError
 	code := "internal_error"
 	message := "internal server error"
@@ -68,6 +68,9 @@ func writeProblem(writer http.ResponseWriter, _ *http.Request, err error) {
 		status, code, message = http.StatusConflict, "idempotency_conflict", err.Error()
 	case errors.Is(err, faults.ErrConflict):
 		status, code, message = http.StatusConflict, "conflict", err.Error()
+	}
+	if status == http.StatusInternalServerError {
+		logPersistenceFailure(request, err)
 	}
 	writeJSON(writer, status, problemEnvelope{Error: problem{Code: code, Message: message}})
 }

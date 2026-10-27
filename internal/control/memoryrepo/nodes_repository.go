@@ -151,10 +151,7 @@ func (s *Store) updateHeartbeat(nodeID string, heartbeat nodes.Heartbeat, now ti
 				groups = append(groups, groupID)
 			}
 		}
-		compileErr := s.recompileForwardingGroupsLocked(groups, now)
-		if compileErr == nil {
-			_, _, compileErr = s.compileNodeConfigLocked(nodeID, now)
-		}
+		_, _, compileErr := s.recompileMemberConfigsLocked(nodeID, groups, now)
 		if err := compileErr; err != nil {
 			if previousNode.DesiredGeneration > 0 {
 				s.nodes[nodeID] = previousNode

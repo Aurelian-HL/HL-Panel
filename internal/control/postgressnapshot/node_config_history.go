@@ -63,11 +63,28 @@ func initializeNodeConfigHistory(ctx context.Context, tx *sql.Tx) error {
 }
 
 func encodeHotSnapshot(state *memoryrepo.Store) ([]byte, error) {
-	raw, err := state.EncodeSnapshotWithAudit(nil)
-	if err == nil && len(raw) > maxHotSnapshotBytes {
-		return nil, errors.New("hot persistence state exceeds snapshot size limit")
-	}
+	raw, _, err := encodePreparedHotSnapshot(state)
 	return raw, err
+}
+
+// Keep the independent restore result for one subsequent writer. It is never
+// the caller's mutable transaction store, and is publishable only after COMMIT.
+func encodePreparedHotSnapshot(state *memoryrepo.Store) ([]byte, *memoryrepo.Store, error) {
+	raw, err := state.EncodeSnapshotWithAudit(nil)
+	if err != nil {
+		return nil, nil, snapshotFailure(context.Background(), "snapshot_encode", err)
+	}
+	if len(raw) > maxHotSnapshotBytes {
+		return nil, nil, snapshotFailure(context.Background(), "snapshot_capacity", errors.New("hot persistence state exceeds snapshot size limit"))
+	}
+	// A successful domain operation must not commit bytes that the next login,
+	// heartbeat or write cannot restore. Validate the detached encoding before
+	// replacing the singleton; any failure rolls back the current SQL transaction.
+	restored, err := memoryrepo.DecodeSnapshotAtVersion(raw, memoryrepo.SnapshotVersion)
+	if err != nil {
+		return nil, nil, snapshotFailure(context.Background(), "snapshot_validate", err)
+	}
+	return raw, restored, nil
 }
 
 func persistNodeConfigHistory(ctx context.Context, tx *sql.Tx, history []memoryrepo.NodeConfigHistory) error {
@@ -81,7 +98,7 @@ func persistNodeConfigHistory(ctx context.Context, tx *sql.Tx, history []memoryr
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO hl_panel_node_config_history(node_id,generation,payload) VALUES($1,$2,$3)
 		 ON CONFLICT(node_id,generation) DO UPDATE SET payload=excluded.payload`, h.Config.NodeID, h.Config.Generation, raw); err != nil {
-			return errors.New("node configuration history write failed")
+			return snapshotFailure(ctx, "history_write", err)
 		}
 	}
 	return nil
@@ -96,6 +113,13 @@ func decodeNodeConfigHistory(raw []byte, nodeID string, generation int64) (memor
 }
 
 func attachNodeConfigHistoryReader(ctx context.Context, tx *sql.Tx, state *memoryrepo.Store) {
+	state.SetNodeConfigGenerationFloorReader(func(nodeID string) (int64, error) {
+		var generation int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(generation),0) FROM hl_panel_node_config_history WHERE node_id=$1`, nodeID).Scan(&generation); err != nil {
+			return 0, snapshotFailure(ctx, "history_generation_read", err)
+		}
+		return generation, nil
+	})
 	state.SetNodeConfigHistoryReader(func(_ context.Context, nodeID string, generation int64) (memoryrepo.NodeConfigHistory, error) {
 		var raw []byte
 		err := tx.QueryRowContext(ctx, `SELECT payload FROM hl_panel_node_config_history WHERE node_id=$1 AND generation=$2`, nodeID, generation).Scan(&raw)
@@ -103,7 +127,7 @@ func attachNodeConfigHistoryReader(ctx context.Context, tx *sql.Tx, state *memor
 			return memoryrepo.NodeConfigHistory{}, faults.ErrNotFound
 		}
 		if err != nil {
-			return memoryrepo.NodeConfigHistory{}, errors.New("node configuration history read failed")
+			return memoryrepo.NodeConfigHistory{}, snapshotFailure(ctx, "history_read", err)
 		}
 		return decodeNodeConfigHistory(raw, nodeID, generation)
 	})

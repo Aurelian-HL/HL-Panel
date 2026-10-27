@@ -31,7 +31,7 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 	if !ok {
 		return faults.ErrNotFound
 	}
-	if rule.Revision != expectedRevision {
+	if rule.EffectiveRuntimeRevision() != expectedRevision {
 		return faults.ErrConflict
 	}
 	current := s.forwardingBaseViewLocked(rule)
@@ -61,7 +61,7 @@ func (s *Store) markActivatedLocked(ruleID string, expectedRevision int64, event
 		if err != nil {
 			continue
 		}
-		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input)}
+		evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.EffectiveRuntimeRevision(), Status: s.evaluateDeploymentLocked(input)}
 		if s.protocolHealth[poolID][nodeID].MatchesCurrentDeployment(pool, current, member, evidence, time.Now().UTC()) {
 			ready = true
 			break
@@ -400,7 +400,33 @@ func (s *Store) saveForwardingRuleLocked(key, hash string, item forwarding.Rule,
 }
 
 func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwarding.Rule, privateKey string, upstream *provisioningvless.SOCKS5Upstream, echoPort int, event audit.Event) (forwarding.Rule, bool, error) {
-	if _, exists := s.forwardRules[item.ID]; !exists {
+	previous, hadPrevious := s.forwardRules[item.ID]
+	previousUpstream, hadPreviousUpstream := s.vlessSOCKS5UpstreamLocked(item.ID)
+	if upstream != nil {
+		item.VLESSSOCKS5Username = upstream.Username
+	}
+	item.RuntimeRevision = item.Revision // Runtime revisions are assigned only by the repository.
+	if hadPrevious {
+		materialChanged := (upstream != nil) != hadPreviousUpstream || upstream != nil && *upstream != previousUpstream ||
+			privateKey != "" && privateKey != s.autoRealityKeys[item.ID]
+		if !setForwardingRuntimeRevision(previous, &item, materialChanged) {
+			// Keep probes, confidential material, desired configurations and health
+			// proofs untouched. This is still an audited, idempotent CAS write.
+			item.ActivationReason = s.forwardingBaseViewLocked(item).ActivationReason
+			public := s.forwardingViewLocked(item)
+			event.Metadata = maps.Clone(event.Metadata)
+			if event.Metadata == nil {
+				event.Metadata = make(map[string]any)
+			}
+			event.Metadata["listen_port"] = item.ListenPort
+			if err := s.recordBusinessLocked(key, hash, item.ID, public); err != nil {
+				return forwarding.Rule{}, false, err
+			}
+			s.forwardRules[item.ID] = cloneForwardingRule(item)
+			s.appendAuditLocked(event)
+			return public, false, nil
+		}
+	} else {
 		after := s.panelResourceUsageLocked()
 		after.Rules++
 		if err := s.validatePanelGrowthLocked(after); err != nil {
@@ -430,13 +456,11 @@ func (s *Store) saveForwardingRuleWithKeyLocked(key, hash string, item forwardin
 	// Transient readiness explanations belong only to the public projection.
 	// Persist the canonical configuration reason accepted by snapshot validation.
 	storedItem.ActivationReason = baseReason
-	previous, hadPrevious := s.forwardRules[item.ID]
 	previousTunnel, hadPreviousTunnel := s.reliableUDPTunnels[item.ID]
 	tunnel, err := s.prepareReliableUDPTunnelLocked(storedItem)
 	if err != nil {
 		return forwarding.Rule{}, false, err
 	}
-	previousUpstream, hadPreviousUpstream := s.vlessSOCKS5UpstreamLocked(item.ID)
 	// Record the allocated port in the same audit transaction as the rule.
 	event.Metadata = maps.Clone(event.Metadata)
 	if event.Metadata == nil {

@@ -28,6 +28,15 @@ func VersionLeafOutbounds(raw []byte) ([]byte, error) {
 	if decoder.Decode(&doc) != nil || doc == nil || decoder.Decode(new(any)) != io.EOF {
 		return nil, ErrOutboundVersioning
 	}
+	return MarshalVersionedLeafOutbounds(doc)
+}
+
+// MarshalVersionedLeafOutbounds versions a freshly built managed document and
+// encodes it once. Documents use map[string]any and []any for JSON objects and
+// arrays; scalar fields and string slices may retain their native Go types.
+// The caller transfers ownership of doc, which must not be reused after this
+// call. Use VersionLeafOutbounds for serialized or imported configurations.
+func MarshalVersionedLeafOutbounds(doc map[string]any) ([]byte, error) {
 	outs, ok := doc["outbounds"].([]any)
 	if !ok || len(outs) == 0 {
 		return nil, ErrOutboundVersioning
@@ -64,7 +73,6 @@ func VersionLeafOutbounds(raw []byte) ([]byte, error) {
 		} else {
 			tags[tag] = tag + version
 		}
-		out["tag"] = tags[tag]
 	}
 	routing, ok := doc["routing"].(map[string]any)
 	if !ok {
@@ -89,7 +97,16 @@ func VersionLeafOutbounds(raw []byte) ([]byte, error) {
 		if _, exists := rule["balancerTag"]; exists || tags[tag] == "" {
 			return nil, ErrOutboundVersioning
 		}
-		rule["outboundTag"] = tags[tag]
+	}
+	// Validate all references before changing the owned document. The raw and
+	// in-memory entry points share exactly the same bounded transformation.
+	for _, value := range outs {
+		out := value.(map[string]any)
+		out["tag"] = tags[out["tag"].(string)]
+	}
+	for _, value := range rules {
+		rule := value.(map[string]any)
+		rule["outboundTag"] = tags[rule["outboundTag"].(string)]
 	}
 	return json.Marshal(doc)
 }

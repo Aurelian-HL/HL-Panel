@@ -28,6 +28,24 @@ func TestExplicitEmptyFlowSurvivesLegacyEditReplayAndRestart(t *testing.T) {
 			t.Fatalf("empty flow changed: %v", err)
 		}
 	}
+	// Check the old flow schema before a management-only edit separates the
+	// runtime identity. A later state cannot be represented by the old format.
+	legacyRaw, err := store.EncodeSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old map[string]json.RawMessage
+	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &old); err != nil {
+		t.Fatal(err)
+	}
+	old["Version"] = json.RawMessage("18")
+	downgrade, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeSnapshot(downgrade); err == nil {
+		t.Fatal("legacy snapshot accepted explicit flow")
+	}
 	// Old clients used to force Vision on every save and have no explicit marker.
 	request.Revision = updated.Revision
 	request.VLESSFlow, request.VLESSFlowExplicit = "xtls-rprx-vision", false
@@ -48,22 +66,6 @@ func TestExplicitEmptyFlowSurvivesLegacyEditReplayAndRestart(t *testing.T) {
 	raw, err := store.EncodeSnapshot()
 	if err != nil {
 		t.Fatal(err)
-	}
-	var old map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &old); err != nil {
-		t.Fatal(err)
-	}
-	legacyRaw, _ := json.Marshal(old)
-	if err := json.Unmarshal(legacyLoginSnapshot(t, legacyRaw), &old); err != nil {
-		t.Fatal(err)
-	}
-	old["Version"] = json.RawMessage("18")
-	downgrade, err := json.Marshal(old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DecodeSnapshot(downgrade); err == nil {
-		t.Fatal("legacy snapshot accepted explicit flow")
 	}
 	restored, err := DecodeSnapshot(raw)
 	if err != nil {

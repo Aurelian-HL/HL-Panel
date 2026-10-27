@@ -66,6 +66,31 @@ func TestNezhaGroupEnrollmentPersistsOneToOneBinding(t *testing.T) {
 	if err != nil || restoredBindings["node-1"] != 7 {
 		t.Fatalf("restored bindings: %+v, %v", restoredBindings, err)
 	}
+	for _, corruption := range []string{"missing-node", "other-live-binding", "unbound-legacy-token"} {
+		t.Run(corruption, func(t *testing.T) {
+			var state snapshot
+			if err := json.Unmarshal(raw, &state); err != nil {
+				t.Fatal(err)
+			}
+			token := state.Tokens["hash-1"]
+			switch corruption {
+			case "missing-node":
+				token.UsedNodeID = "missing-node"
+			case "other-live-binding":
+				token.NezhaServerID = 8
+			case "unbound-legacy-token":
+				token.UsedNodeID, token.NezhaServerID = "", 8
+			}
+			state.Tokens["hash-1"] = token
+			corrupt, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeSnapshot(corrupt); err == nil {
+				t.Fatal("invalid consumed monitoring enrollment was accepted")
+			}
+		})
+	}
 }
 
 func TestVersionThirteenSnapshotUpgradesWithoutNezhaBinding(t *testing.T) {
@@ -103,4 +128,80 @@ func TestVersionThirteenSnapshotUpgradesWithoutNezhaBinding(t *testing.T) {
 	if _, err := DecodeSnapshot(corrupt); err == nil {
 		t.Fatal("version 13 snapshot accepted a version 14 binding")
 	}
+}
+
+func TestConsumedNezhaEnrollmentSurvivesNodeDeletion(t *testing.T) {
+	for _, lifecycle := range []string{"delete", "reuse-pending", "reuse-consumed", "reenroll", "legacy-delete"} {
+		t.Run(lifecycle, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Now().UTC()
+			store := snapshotFixture(t)
+			event := projectionAudit("nezha-lifecycle", now)
+			event.Metadata = make(map[string]any)
+			group := groups.DeviceGroup{ID: "nezha-group", Name: "nezha-group", Kind: groups.KindEntry, CreatedAt: now, UpdatedAt: now}
+			if err := store.CreateDeviceGroup(ctx, group, event); err != nil {
+				t.Fatal(err)
+			}
+			token := enrollment.Token{ID: "nezha-token", Name: "nezha-node", GroupID: group.ID, NezhaServerID: 7, TokenHash: "nezha-token-hash", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+			if err := store.CreateEnrollmentToken(ctx, token, event); err != nil {
+				t.Fatal(err)
+			}
+			node, err := store.ConsumeEnrollmentToken(ctx, enrollment.ConsumeInput{TokenHash: token.TokenHash, CredentialHash: "nezha-node-credential", Node: nodes.Node{ID: "nezha-node", Hostname: "edge.example.test", CreatedAt: now}}, now, event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lifecycle == "legacy-delete" {
+				legacy := store.tokensByHash[token.TokenHash]
+				legacy.UsedNodeID = ""
+				store.tokensByHash[token.TokenHash] = legacy
+				store = requireNezhaSnapshotRoundTrip(t, store)
+			}
+			if _, _, err := store.DeleteOffline(ctx, nodes.DeleteInput{NodeID: node.ID, DeletedBy: "admin", IdempotencyKey: "nezha-delete", RequestSHA256: "nezha-delete-hash", DeletedAt: now.Add(time.Minute), OnlineFor: time.Minute}, event); err != nil {
+				t.Fatal(err)
+			}
+			store = requireNezhaSnapshotRoundTrip(t, store)
+			if lifecycle == "reuse-pending" || lifecycle == "reuse-consumed" {
+				replacement := token
+				replacement.ID, replacement.TokenHash = "replacement-token", "replacement-hash"
+				if err := store.CreateEnrollmentToken(ctx, replacement, event); err != nil {
+					t.Fatal("deleted node retained its monitoring reservation", err)
+				}
+				if lifecycle == "reuse-consumed" {
+					if _, err := store.ConsumeEnrollmentToken(ctx, enrollment.ConsumeInput{TokenHash: replacement.TokenHash, CredentialHash: "replacement-credential", Node: nodes.Node{ID: "replacement-node", Hostname: "replacement.example.test", CreatedAt: now}}, now.Add(2*time.Minute), event); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else if lifecycle == "reenroll" {
+				replacement := token
+				replacement.ID, replacement.TokenHash, replacement.NezhaServerID = "reenroll-token", "reenroll-hash", 0
+				if err := store.CreateEnrollmentToken(ctx, replacement, event); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.ConsumeEnrollmentToken(ctx, enrollment.ConsumeInput{TokenHash: replacement.TokenHash, CredentialHash: node.CredentialHash, Node: node, Reenroll: true}, now.Add(2*time.Minute), event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store = requireNezhaSnapshotRoundTrip(t, store)
+			bindings, err := store.ListNezhaBindings(ctx)
+			if err != nil || bindings[node.ID] != 0 {
+				t.Fatal("historical enrollment restored a released monitoring binding", err)
+			}
+			if lifecycle == "reuse-consumed" && bindings["replacement-node"] != 7 {
+				t.Fatal("monitoring ID was not bound to the replacement node")
+			}
+		})
+	}
+}
+
+func requireNezhaSnapshotRoundTrip(t *testing.T, store *Store) *Store {
+	t.Helper()
+	raw, err := store.EncodeSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := DecodeSnapshot(raw)
+	if err != nil {
+		t.Fatalf("monitoring enrollment lifecycle poisoned the snapshot: %v", err)
+	}
+	return restored
 }

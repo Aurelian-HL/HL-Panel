@@ -47,6 +47,18 @@
 .probe-table th:last-child, .probe-table td:last-child { width: 13%; padding-right: 10px; text-align: center; }
 .probe-table .table-secondary { max-width: 100%; white-space: normal; font-size: 10px; }
 .probe-row-actions { display: flex; align-items: center; justify-content: center; gap: 4px; white-space: nowrap; }
+.probe-status-cell, .probe-mobile-heading { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.probe-sort-handle { display: inline-flex; flex: 0 0 22px; align-items: center; justify-content: center; width: 22px; height: 32px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #8b97a7; cursor: grab; touch-action: none; user-select: none; }
+.probe-sort-handle:hover { background: #eaf2fb; color: var(--ny-blue); }
+.probe-sort-handle:active, .probe-inventory--sorting .probe-sort-handle { cursor: grabbing; }
+.probe-sort-handle:focus-visible { outline: 2px solid var(--ny-blue); outline-offset: 2px; }
+.probe-sort-handle:disabled { color: #c6cdd6; cursor: default; background: transparent; }
+.probe-inventory--sorting { user-select: none; }
+.probe-sort-dragging { opacity: .5; background: #f2f6fb; }
+.probe-table .probe-sort-target--before > td { box-shadow: inset 0 2px var(--ny-blue); }
+.probe-table .probe-sort-target--after > td { box-shadow: inset 0 -2px var(--ny-blue); }
+.probe-mobile-item.probe-sort-target--before { box-shadow: 0 -2px var(--ny-blue); }
+.probe-mobile-item.probe-sort-target--after { box-shadow: 0 2px var(--ny-blue); }
 .probe-delete-button, .node-delete-button { color: #b3423e; white-space: nowrap; }
 .probe-delete-button:hover, .node-delete-button:hover { background: #fff0ee; color: #a02824; }
 .probe-address { line-height: 1.6; overflow-wrap: anywhere; }
@@ -116,6 +128,8 @@
   .probe-mobile-item { min-width: 0; padding: 13px; border: 1px solid var(--ny-border); border-radius: 4px; background: #fff; }
   .probe-mobile-item header, .probe-mobile-item footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .probe-mobile-item header strong { color: var(--gray-900); font-size: 13px; }
+  .probe-mobile-heading { flex: 1; gap: 5px; }
+  .probe-mobile-item .probe-sort-handle { flex-basis: 30px; width: 30px; height: 40px; }
   .probe-mobile-item .probe-remark-button { flex-basis: 32px; width: 32px; height: 34px; }
   .probe-mobile-item__body { display: grid; gap: 13px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--ny-border); }
   .probe-mobile-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 0; }

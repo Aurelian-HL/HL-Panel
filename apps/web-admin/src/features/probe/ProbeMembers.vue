@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { BadgeCheck, Eye, Pencil, Settings2, Trash2 } from '@lucide/vue'
+import { BadgeCheck, Eye, GripVertical, Pencil, Settings2, Trash2 } from '@lucide/vue'
 
 import type { ProbeMember, ProbeUpstreamStatus } from '@/api/probe'
 import type { DeviceGroupMember } from '@/api'
@@ -10,10 +10,14 @@ import { capacityPercent, countryFlag, formatBytes, formatRate, formatUnixTime, 
 import ProbeMetricBar from './ProbeMetricBar.vue'
 import NodeUpdateDialog from '@/features/nodes/NodeUpdateDialog.vue'
 import type { ProbeRemarks } from './remarks'
+import type { ProbeMemberMove } from './memberOrder'
+import { useProbeMemberSorting } from './useProbeMemberSorting'
 const updateNodeId = ref<string | null>(null)
 
-const props = withDefaults(defineProps<{ items: ProbeMember[]; remarks?: ProbeRemarks; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { remarks: () => ({}), groupMembers: () => [], unassigned: false })
-const emit = defineEmits<{ editRemark: [member: ProbeMember]; editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember] }>()
+const props = withDefaults(defineProps<{ items: ProbeMember[]; remarks?: ProbeRemarks; groupMembers?: DeviceGroupMember[]; unassigned?: boolean; sortable?: boolean; upstreamStatus: ProbeUpstreamStatus; now: number }>(), { remarks: () => ({}), groupMembers: () => [], unassigned: false, sortable: false })
+const emit = defineEmits<{ editRemark: [member: ProbeMember]; editWeight: [member: DeviceGroupMember]; deleteNode: [member: ProbeMember]; reorder: [move: ProbeMemberMove] }>()
+const inventory = ref<HTMLElement | null>(null)
+const { draggingId, classes: sortClasses, start: startSort, track: trackSort, finish: finishSort, cancel: cancelSort, keyboard: sortKeyboard } = useProbeMemberSorting(() => props.items, () => props.sortable, move => emit('reorder', move), inventory)
 const remark = (member: ProbeMember) => Object.hasOwn(props.remarks, member.node_id) ? props.remarks[member.node_id] : ''
 const displayAddress = (member: ProbeMember) => remark(member) || collected(member.ipv4 || member.ipv6)
 const addressTitle = (member: ProbeMember) => [remark(member), `IPv4 · ${collected(member.ipv4)}`, member.ipv6 ? `IPv6 · ${member.ipv6}` : ''].filter(Boolean).join('\n')
@@ -79,13 +83,13 @@ const uptimeDetails = (member: ProbeMember) => [
 </script>
 
 <template>
-  <div class="probe-inventory">
+  <div ref="inventory" class="probe-inventory" :class="{ 'probe-inventory--sorting': draggingId }">
     <div class="table-wrap probe-table-wrap">
       <table class="data-table probe-table">
         <thead><tr><th>状态</th><th>主机属地</th><th>主机 IP / 备注</th><th>速率</th><th>开机时长</th><th>流量</th><th>CPU</th><th>内存</th><th>存储</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-for="member in items" :key="member.node_id">
-            <td><span class="probe-status probe-status--icon" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`" :aria-label="`状态：${monitorStatus(member, upstreamStatus, now).text}`" :aria-describedby="hoveredId === member.node_id ? 'probe-status-tooltip' : undefined" tabindex="0" @mouseenter="showStatus(member, $event)" @mouseleave="hideStatus" @focus="showStatus(member, $event)" @blur="hideStatus"><BadgeCheck v-if="monitorStatus(member, upstreamStatus, now).text === '在线'" :size="17" /><span :class="{ 'sr-only': monitorStatus(member, upstreamStatus, now).text === '在线' }">{{ monitorStatus(member, upstreamStatus, now).text }}</span></span></td>
+          <tr v-for="member in items" :key="member.node_id" :data-probe-sort-id="member.node_id" :class="sortClasses(member.node_id)">
+            <td><div class="probe-status-cell"><button v-if="sortable" type="button" class="probe-sort-handle" :disabled="items.length < 2" :aria-label="`拖动${displayAddress(member)}排序`" title="拖动调整组内顺序，也可使用上下方向键" @pointerdown="startSort(member.node_id, $event)" @pointermove="trackSort" @pointerup="finishSort" @pointercancel="cancelSort" @lostpointercapture="cancelSort" @keydown="sortKeyboard(member.node_id, $event)"><GripVertical :size="17" /></button><span class="probe-status probe-status--icon" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`" :aria-label="`状态：${monitorStatus(member, upstreamStatus, now).text}`" :aria-describedby="hoveredId === member.node_id ? 'probe-status-tooltip' : undefined" tabindex="0" @mouseenter="showStatus(member, $event)" @mouseleave="hideStatus" @focus="showStatus(member, $event)" @blur="hideStatus"><BadgeCheck v-if="monitorStatus(member, upstreamStatus, now).text === '在线'" :size="17" /><span :class="{ 'sr-only': monitorStatus(member, upstreamStatus, now).text === '在线' }">{{ monitorStatus(member, upstreamStatus, now).text }}</span></span></div></td>
             <td><span class="probe-region" :title="`主机 GeoIP：${collected(member.country_code)}`"><img v-if="countryFlag(member.country_code)" class="probe-region__flag" :src="countryFlag(member.country_code)" alt="" />{{ member.country_code?.toUpperCase() || '未采集' }}</span></td>
             <td class="probe-address"><div class="probe-host-label"><span :title="addressTitle(member)">{{ displayAddress(member) }}</span><button type="button" class="probe-remark-button" :aria-label="`编辑${member.ipv4 || member.ipv6 || nodeName(member)}备注`" title="编辑本地备注" @click="emit('editRemark', member)"><Pencil :size="13" /></button></div><small v-if="member.ipv6 && !remark(member)" :title="`IPv6 · ${member.ipv6}`">v6 {{ member.ipv6 }}</small></td>
             <td class="probe-measure-pair"><div class="probe-rate-hover" tabindex="0" :aria-describedby="rateHoveredId === member.node_id ? 'probe-rate-tooltip' : undefined" @mouseenter="showRate(member, $event)" @mouseleave="hideRate" @focus="showRate(member, $event)" @blur="hideRate"><span>↑ {{ formatRate(metric(member, 'net_out_speed_bytes_per_second')) }}</span><span>↓ {{ formatRate(metric(member, 'net_in_speed_bytes_per_second')) }}</span></div></td>
@@ -115,8 +119,8 @@ const uptimeDetails = (member: ProbeMember) => [
     </Teleport>
 
     <div class="probe-mobile-list">
-      <article v-for="member in items" :key="member.node_id" class="probe-mobile-item">
-        <header><div class="probe-host-label"><strong :title="addressTitle(member)">{{ displayAddress(member) }}</strong><button type="button" class="probe-remark-button" :aria-label="`编辑${member.ipv4 || member.ipv6 || nodeName(member)}备注`" title="编辑本地备注" @click="emit('editRemark', member)"><Pencil :size="14" /></button></div><span class="probe-status" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`">{{ monitorStatus(member, upstreamStatus, now).text }}</span></header>
+      <article v-for="member in items" :key="member.node_id" class="probe-mobile-item" :data-probe-sort-id="member.node_id" :class="sortClasses(member.node_id)">
+        <header><div class="probe-mobile-heading"><button v-if="sortable" type="button" class="probe-sort-handle" :disabled="items.length < 2" :aria-label="`拖动${displayAddress(member)}排序`" title="拖动调整组内顺序，也可使用上下方向键" @pointerdown="startSort(member.node_id, $event)" @pointermove="trackSort" @pointerup="finishSort" @pointercancel="cancelSort" @lostpointercapture="cancelSort" @keydown="sortKeyboard(member.node_id, $event)"><GripVertical :size="18" /></button><div class="probe-host-label"><strong :title="addressTitle(member)">{{ displayAddress(member) }}</strong><button type="button" class="probe-remark-button" :aria-label="`编辑${member.ipv4 || member.ipv6 || nodeName(member)}备注`" title="编辑本地备注" @click="emit('editRemark', member)"><Pencil :size="14" /></button></div></div><span class="probe-status" :class="`probe-status--${monitorStatus(member, upstreamStatus, now).tone}`">{{ monitorStatus(member, upstreamStatus, now).text }}</span></header>
         <div class="probe-mobile-item__body">
           <dl class="probe-mobile-facts"><div><dt>主机 IPv6</dt><dd>{{ collected(member.ipv6) }}</dd></div><div><dt>主机 GeoIP</dt><dd><span class="probe-region"><img v-if="countryFlag(member.country_code)" class="probe-region__flag" :src="countryFlag(member.country_code)" alt="" />{{ member.country_code?.toUpperCase() || '未采集' }}</span></dd></div><div><dt>线路出口 IP</dt><dd>未验证</dd></div><div><dt>开机时长</dt><dd>{{ formatUptime(metric(member, 'uptime_seconds')) }}</dd></div></dl>
           <div class="probe-mobile-network"><div><span>下行</span><strong>{{ formatRate(metric(member, 'net_in_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_in_transfer_bytes')) }}</small></div><div><span>上行</span><strong>{{ formatRate(metric(member, 'net_out_speed_bytes_per_second')) }}</strong><small>累计 {{ formatBytes(metric(member, 'net_out_transfer_bytes')) }}</small></div></div>

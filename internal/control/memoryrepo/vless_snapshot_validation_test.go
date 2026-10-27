@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/hongle/hl-panel/internal/control/forwarding"
+	"github.com/hongle/hl-panel/internal/control/vlessruntime"
 )
 
 func TestVLESSRealitySnapshotRoundTripAndValidation(t *testing.T) {
@@ -66,5 +67,47 @@ func TestVLESSRealitySnapshotRoundTripAndValidation(t *testing.T) {
 	}
 	if _, err := DecodeSnapshot(corrupt); err == nil || !strings.Contains(err.Error(), "forwarding configuration") {
 		t.Fatalf("invalid Reality public key accepted: %v", err)
+	}
+}
+
+func TestSnapshotKeyMemoStillValidatesEveryMaterial(t *testing.T) {
+	for _, corrupt := range []string{"other-rule-key", "binding-customer", "missing-node", "revoked-with-secrets", "automatic-key"} {
+		t.Run(corrupt, func(t *testing.T) {
+			s, nodeIDs := compilerScaleIdentityFixture(t, 2, 3, true)
+			baseline, err := s.EncodeSnapshotWithAudit(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err = DecodeSnapshot(baseline)
+			if err != nil {
+				t.Fatal("invalid baseline", err)
+			}
+			id := "material-compile-rule-0000-" + nodeIDs[1]
+			material := s.vlessRuntimeMaterials[id]
+			switch corrupt {
+			case "other-rule-key":
+				material.RealityPrivateKey = s.vlessRuntimeMaterials["material-compile-rule-0001-"+nodeIDs[1]].RealityPrivateKey
+			case "binding-customer":
+				material.CustomerID = "another-customer"
+			case "missing-node":
+				material.NodeID = "missing-node"
+			case "revoked-with-secrets":
+				material.State = vlessruntime.StateRevoked
+				at := material.UpdatedAt
+				material.RevokedAt = &at
+			case "automatic-key":
+				s.autoRealityKeys[material.ForwardingRuleID] = "invalid"
+			}
+			s.vlessRuntimeMaterials[id] = material
+			for attempt := 0; attempt < 2; attempt++ {
+				raw, err := s.EncodeSnapshotWithAudit(nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := DecodeSnapshot(raw); err == nil {
+					t.Fatal("key memo accepted corrupted state")
+				}
+			}
+		})
 	}
 }

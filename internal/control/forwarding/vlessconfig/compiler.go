@@ -234,11 +234,7 @@ func compileDirect(rule forwarding.Rule, identity Identity, profile RealityProfi
 		"outbounds": outbounds,
 		"routing":   map[string]any{"rules": routes},
 	}
-	raw, err := json.Marshal(config)
-	if err != nil {
-		return nil, err
-	}
-	return xrayconfig.VersionLeafOutbounds(raw)
+	return xrayconfig.MarshalVersionedLeafOutbounds(config)
 }
 
 // statsTag keeps the human-readable rule prefix while carrying the exact

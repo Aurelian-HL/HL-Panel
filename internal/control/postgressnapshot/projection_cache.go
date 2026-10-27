@@ -53,7 +53,7 @@ func initializeProjectionRevisionTracking(ctx context.Context, tx *sql.Tx) error
 func (s *Store) projectionRevision(ctx context.Context, tx *sql.Tx, name string) (int64, error) {
 	var revision int64
 	if err := tx.QueryRowContext(ctx, `SELECT revision FROM hl_panel_projection_revisions WHERE projection=$1`, name).Scan(&revision); err != nil {
-		return 0, errors.New("projection revision read failed")
+		return 0, snapshotFailure(ctx, "overlay_revision_read", err)
 	}
 	return revision, nil
 }
@@ -135,7 +135,7 @@ func (s *Store) forwardingOverlays(ctx context.Context, tx *sql.Tx) ([]memoryrep
 	if err := tx.QueryRowContext(ctx, `SELECT
         (SELECT revision FROM hl_panel_projection_revisions WHERE projection=$1),
         (SELECT revision FROM hl_panel_projection_revisions WHERE projection=$2)`, ruleTrafficProjection, healthProjection).Scan(&trafficRevision, &healthRevision); err != nil {
-		return nil, nil, errors.New("projection revisions read failed")
+		return nil, nil, snapshotFailure(ctx, "overlay_revision_read", err)
 	}
 	traffic, err := s.ruleTrafficOverlaysAtRevision(ctx, tx, trafficRevision)
 	if err != nil {

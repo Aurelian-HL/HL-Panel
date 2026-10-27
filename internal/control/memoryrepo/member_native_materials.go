@@ -54,18 +54,37 @@ func (s *Store) provisionMemberNativeMaterialsLocked(member groups.Member) (bool
 		if err := s.validateVLESSCredentialRecordLocked(s.vlessBindings[bindingID]); err != nil {
 			return false, fmt.Errorf("%w: invalid imported identity for group member", faults.ErrConflict)
 		}
-		var source *vlessruntime.Material
-		var canonical []byte
+		liveSources := make([]vlessruntime.Material, 0, len(materials))
+		retainedSources := make([]vlessruntime.Material, 0, len(materials))
 		for _, material := range materials {
 			if material.State != vlessruntime.StateActive {
 				continue
 			}
+			retainedSources = append(retainedSources, material)
 			peer, exists := s.membersByGroup[member.GroupID][material.NodeID]
 			node, nodeExists := s.nodes[material.NodeID]
 			if !exists || peer.RetiredAt != nil || !nodeExists || node.DeletedAt != nil {
 				continue
 			}
-			if err := s.validateVLESSRuntimeMaterialLocked(material); err != nil {
+			liveSources = append(liveSources, material)
+		}
+		// The import belongs to the service, including while its group is empty.
+		// Prefer current peers; only fall back to retained, non-revoked material
+		// when no live source exists. Never restore the old peer's authorization.
+		sources := liveSources
+		if len(sources) == 0 {
+			sources = retainedSources
+		}
+		var source *vlessruntime.Material
+		var canonical []byte
+		for _, material := range sources {
+			var err error
+			if len(liveSources) == 0 {
+				err = s.validatePersistedVLESSRuntimeMaterialLocked(material, nil)
+			} else {
+				err = s.validateVLESSRuntimeMaterialLocked(material)
+			}
+			if err != nil {
 				return false, fmt.Errorf("%w: invalid imported material for group member", faults.ErrConflict)
 			}
 			raw, err := generations.CanonicalJSON(material.NativeConfig)

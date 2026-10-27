@@ -59,11 +59,14 @@ func (s *Store) ImportForwardingRules(_ context.Context, input forwarding.Import
 	evaluations, working := s.evaluateForwardingImportLocked(input.Candidates)
 	affectedGroups := make([]string, 0, len(input.Candidates)*2)
 	for _, candidate := range input.Candidates {
-		if candidate.Rule.EntryGroupID != "" {
-			affectedGroups = append(affectedGroups, candidate.Rule.EntryGroupID)
+		item := working[candidate.Rule.ID]
+		previous, exists := s.forwardRules[item.ID]
+		if exists && item.EffectiveRuntimeRevision() == previous.EffectiveRuntimeRevision() {
+			continue
 		}
-		if previous, exists := s.forwardRules[candidate.Rule.ID]; exists && previous.EntryGroupID != "" {
-			affectedGroups = append(affectedGroups, previous.EntryGroupID)
+		affectedGroups = append(affectedGroups, item.EntryGroupID, item.ExitGroupID)
+		if exists {
+			affectedGroups = append(affectedGroups, previous.EntryGroupID, previous.ExitGroupID)
 		}
 	}
 	result := forwarding.ImportResult{Items: make([]forwarding.Rule, 0, len(evaluations))}
@@ -199,6 +202,16 @@ func (s *Store) evaluateForwardingImportLocked(candidates []forwarding.ImportCan
 			evaluation.Issue = &issue
 			evaluations = append(evaluations, evaluation)
 			continue
+		}
+		item.RuntimeRevision = item.Revision
+		if exists {
+			// Transfer projections omit write-only usernames. Preserve them when
+			// the private SOCKS5 landing itself has not changed.
+			if item.VLESSSOCKS5Username == "" && item.VLESSOutboundMode == previous.VLESSOutboundMode &&
+				item.VLESSSOCKS5Host == previous.VLESSSOCKS5Host && item.VLESSSOCKS5Port == previous.VLESSSOCKS5Port {
+				item.VLESSSOCKS5Username = previous.VLESSSOCKS5Username
+			}
+			setForwardingRuntimeRevision(previous, &item, false)
 		}
 		working[item.ID] = cloneForwardingRule(item)
 		evaluation.Rule = s.forwardingViewLocked(item)

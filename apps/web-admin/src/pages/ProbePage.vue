@@ -12,6 +12,7 @@ import { formatRate, hasLiveProbeReading, monitorStatus } from '@/features/probe
 import { displayError } from '@/lib/displayFormatters'
 import { serverNow } from '@/lib/serverClock'
 import { loadProbeRemarks, probeRemarkMaxLength, probeRemarksStorageKey, saveProbeRemark } from '@/features/probe/remarks'
+import { loadProbeMemberOrders, orderProbeMembers, probeMemberOrderStorageKey, saveProbeMemberMove, unassignedProbeOrderKey, type ProbeMemberMove } from '@/features/probe/memberOrder'
 
 type StatusFilter = 'all' | 'online' | 'offline'
 const groups = ref<DeviceGroup[]>([])
@@ -33,6 +34,9 @@ const editingMember = ref<DeviceGroupMember | null>(null)
 const deletingNode = ref<ProbeMember | null>(null)
 const deletingUnassigned = ref(false)
 const remarks = ref(loadProbeRemarks())
+const memberOrders = ref(loadProbeMemberOrders())
+const memberOrderError = ref('')
+const memberOrderNotice = ref('')
 const editingRemark = ref<ProbeMember | null>(null)
 const remarkDraft = ref('')
 const remarkError = ref('')
@@ -55,6 +59,10 @@ function saveRemark(): void {
 }
 function onRemarksStorage(event: StorageEvent): void {
   if (event.key === probeRemarksStorageKey || event.key === null) remarks.value = loadProbeRemarks()
+  if (event.key === probeMemberOrderStorageKey || event.key === null) {
+    memberOrders.value = loadProbeMemberOrders()
+    memberOrderError.value = ''
+  }
 }
 function askDelete(member: ProbeMember, unassigned = false): void {
   deletingNode.value = member
@@ -64,6 +72,37 @@ function askDelete(member: ProbeMember, unassigned = false): void {
 const availableGroups = computed(() => groups.value.filter((group) => !group.hide_in_probe))
 const selectedGroup = computed(() => availableGroups.value.find((group) => group.id === selectedGroupId.value))
 const members = computed(() => response.value?.items ?? [])
+const assignedNodeIds = computed(() => new Set(Object.values(allGroupMembers.value).flat().map(member => member.node_id)))
+function groupItems(groupId: string): ProbeMember[] {
+  if (groupId === unassignedProbeOrderKey) return members.value.filter(item => !assignedNodeIds.value.has(item.node_id))
+  const ids = new Set((allGroupMembers.value[groupId] ?? []).map(member => member.node_id))
+  return members.value.filter(item => ids.has(item.node_id))
+}
+const orderedMembers = computed(() => {
+  if (selectedGroupId.value) return orderProbeMembers(members.value, memberOrders.value[selectedGroupId.value])
+  if (groupMembersError.value) return members.value
+  const seen = new Set<string>()
+  return [...availableGroups.value.map(group => group.id), unassignedProbeOrderKey]
+    .flatMap(groupId => orderProbeMembers(groupItems(groupId), memberOrders.value[groupId]))
+    .filter(item => {
+      if (seen.has(item.node_id)) return false
+      seen.add(item.node_id)
+      return true
+    })
+})
+function reorderMembers(groupId: string, move: ProbeMemberMove): void {
+  if (groupMembersError.value || !groupId) return
+  const items = groupItems(groupId)
+  if (move.nodeId === move.targetId || !items.some(item => item.node_id === move.nodeId) || !items.some(item => item.node_id === move.targetId)) return
+  try {
+    memberOrders.value = saveProbeMemberMove(groupId, items, move)
+    memberOrderError.value = ''
+    memberOrderNotice.value = '机器显示顺序已保存。'
+  } catch {
+    memberOrderError.value = '未能保存排序，请允许浏览器保存本站数据后重试。'
+    memberOrderNotice.value = ''
+  }
+}
 const upstreamStatus = computed(() => monitoringError.value && response.value ? 'unavailable' : response.value?.upstream_status ?? 'disabled')
 const hasProbeSource = computed(() => Boolean(response.value && (upstreamStatus.value === 'ok' || members.value.some((member) => member.source === 'hl'))))
 function isMemberOnline(member: ProbeMember): boolean {
@@ -79,7 +118,7 @@ const filters: Array<{ value: StatusFilter; label: string }> = [
   { value: 'offline', label: '离线' },
 ]
 const filteredMembers = computed(() => {
-  return members.value.filter((member) => {
+  return orderedMembers.value.filter((member) => {
     const online = isMemberOnline(member)
     return statusFilter.value === 'all' || (statusFilter.value === 'online' ? online : !online)
   })
@@ -94,11 +133,10 @@ const pageEnd = computed(() => Math.min(page.value * pageSize.value, filteredMem
 const groupedMembers = computed(() => availableGroups.value.map((group) => ({
   group,
   membership: allGroupMembers.value[group.id] ?? [],
-  items: pagedMembers.value.filter((item) => (allGroupMembers.value[group.id] ?? []).some((member) => member.node_id === item.node_id)),
+  items: orderProbeMembers(pagedMembers.value.filter((item) => (allGroupMembers.value[group.id] ?? []).some((member) => member.node_id === item.node_id)), memberOrders.value[group.id]),
 })).filter((section) => section.items.length))
 const ungroupedMembers = computed(() => {
-  const assigned = new Set(Object.values(allGroupMembers.value).flat().map((member) => member.node_id))
-  return pagedMembers.value.filter((item) => !assigned.has(item.node_id))
+  return orderProbeMembers(pagedMembers.value.filter(item => !assignedNodeIds.value.has(item.node_id)), memberOrders.value[unassignedProbeOrderKey])
 })
 
 function sumOnlineSpeed(items: typeof members.value, field: 'net_in_speed_bytes_per_second' | 'net_out_speed_bytes_per_second'): number | undefined {
@@ -304,6 +342,8 @@ onUnmounted(() => {
       <p v-if="groupsError" class="inline-warning">设备组读取失败，分组列表可能不完整：{{ groupsError }}</p>
       <p v-if="groupMembersError" class="inline-warning">设备组成员读取失败，无法设置权重：{{ groupMembersError }}</p>
       <p v-if="monitoringError && response" class="inline-warning">探针刷新失败，仍显示上次采样：{{ monitoringError }}</p>
+      <p v-if="memberOrderError" class="inline-warning" role="alert">{{ memberOrderError }}</p>
+      <p class="sr-only" role="status" aria-live="polite">{{ memberOrderNotice }}</p>
 
       <StatePanel v-if="monitoringLoading && !response" state="loading" title="正在读取探针采样" />
       <StatePanel v-else-if="monitoringError && !response" state="error" title="探针数据加载失败" :message="monitoringError" @retry="loadMonitoring" />
@@ -312,15 +352,15 @@ onUnmounted(() => {
       <StatePanel v-else-if="response && !members.length" state="empty" :title="selectedGroupId ? '设备组暂无成员' : '暂无已上报机器'" />
       <StatePanel v-else-if="response && !filteredMembers.length" state="empty" title="没有符合条件的机器" message="调整状态筛选后重试。" />
       <template v-else-if="response">
-        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="pagedMembers" :remarks="remarks" :group-members="groupMembers" :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
+        <ProbeMembers v-if="selectedGroupId || groupMembersError" :key="selectedGroupId" :items="pagedMembers" :remarks="remarks" :group-members="groupMembers" :sortable="!groupMembersError" :upstream-status="upstreamStatus" :now="now" @reorder="reorderMembers(selectedGroupId, $event)" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
         <div v-else class="probe-sections">
           <section v-for="section in groupedMembers" :key="section.group.id" class="probe-section" :aria-label="`${section.group.name}探针`">
             <header class="probe-section__heading"><span class="probe-section__name">{{ section.group.name }}</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(section.items, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(section.items, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="section.items" :remarks="remarks" :group-members="section.membership" :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
+            <ProbeMembers :items="section.items" :remarks="remarks" :group-members="section.membership" sortable :upstream-status="upstreamStatus" :now="now" @reorder="reorderMembers(section.group.id, $event)" @edit-remark="editRemark" @edit-weight="editingMember = $event" @delete-node="askDelete($event)" />
           </section>
           <section v-if="ungroupedMembers.length" class="probe-section" aria-label="未入组机器探针">
             <header class="probe-section__heading"><span class="probe-section__name">未入组机器</span><span class="probe-section__rate"><span>↑ {{ sectionSpeed(ungroupedMembers, 'net_out_speed_bytes_per_second') }}</span><span>↓ {{ sectionSpeed(ungroupedMembers, 'net_in_speed_bytes_per_second') }}</span></span></header>
-            <ProbeMembers :items="ungroupedMembers" :remarks="remarks" unassigned :upstream-status="upstreamStatus" :now="now" @edit-remark="editRemark" @delete-node="askDelete($event, true)" />
+            <ProbeMembers :items="ungroupedMembers" :remarks="remarks" unassigned sortable :upstream-status="upstreamStatus" :now="now" @reorder="reorderMembers(unassignedProbeOrderKey, $event)" @edit-remark="editRemark" @delete-node="askDelete($event, true)" />
           </section>
         </div>
       </template>

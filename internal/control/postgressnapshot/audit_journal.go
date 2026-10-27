@@ -29,7 +29,7 @@ func initializeAuditJournal(ctx context.Context, tx *sql.Tx) error {
 	if err := appendAuditJournal(ctx, tx, events); err != nil {
 		return err
 	}
-	raw, err := state.EncodeSnapshotWithAudit(nil)
+	raw, err := encodeHotSnapshot(state)
 	if err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func appendAuditJournal(ctx context.Context, tx *sql.Tx, events []audit.Event) e
 		return errors.New("audit journal encoding failed")
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO hl_panel_audit_journal(payload) VALUES($1)`, raw); err != nil {
-		return errors.New("audit journal write failed")
+		return snapshotFailure(ctx, "audit_write", err)
 	}
 	return nil
 }

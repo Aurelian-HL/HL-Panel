@@ -68,6 +68,12 @@ func TestFailedWriteNeverPublishesReadCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	if err := mutate(ctx, s, func(*memoryrepo.Store) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s.preparedWrite.state == nil {
+		t.Fatal("missing prepared fixture")
+	}
 	if _, err = s.AdministratorByID(ctx, admin.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +91,9 @@ func TestFailedWriteNeverPublishesReadCache(t *testing.T) {
 		if !errors.Is(err, faults.ErrConflict) {
 			t.Fatal(err)
 		}
+		if s.preparedWrite.state != nil {
+			t.Fatal("rolled-back state remained prepared")
+		}
 	})
 	t.Run("deferred commit failure", func(t *testing.T) {
 		// A deferred constraint fails after UPDATE RETURNING has succeeded.
@@ -96,6 +105,13 @@ CREATE CONSTRAINT TRIGGER reject_snapshot_commit AFTER UPDATE ON nyvp_control_sn
 		}
 		if err = mutate(ctx, s, change); err == nil {
 			t.Fatal("deferred database failure was ignored")
+		}
+		var failure *snapshotTransactionFailure
+		if !errors.As(err, &failure) || failure.stage != "commit" || failure.sqlState != "P0001" || failure.outcome != "unconfirmed" {
+			t.Fatal("commit failure lost its stage or overstated its outcome", err)
+		}
+		if s.preparedWrite.state != nil {
+			t.Fatal("failed commit published prepared state")
 		}
 	})
 	if s.readCache.usage != cached.usage || s.readCache.identities != cached.identities || &s.readCache.payload[0] != &cached.payload[0] {

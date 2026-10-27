@@ -3,6 +3,7 @@ package postgressnapshot
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -23,6 +24,24 @@ func TestPostgreSQLServiceOwnerDeletionFormat25RestartAndCommitRollback(t *testi
 	service := customers.NewService(s, nil)
 	owner, _, err := service.CreateCustomer(ctx, adminID, customers.CustomerInput{AccountKind: customers.AccountService, Username: "disposable-service-owner", IdempotencyKey: "create-service-owner"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise an actual format25 payload rather than assuming that the current
+	// writer's format must stay at 25. This fixture has no executable rules.
+	legacy, _ := healthSnapshot(t, s)
+	var legacyDocument map[string]json.RawMessage
+	if err := json.Unmarshal(legacy, &legacyDocument); err != nil {
+		t.Fatal(err)
+	}
+	legacyDocument["Version"] = json.RawMessage("25")
+	legacy, err = json.Marshal(legacyDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memoryrepo.DecodeSnapshot(legacy); err != nil {
+		t.Fatal("invalid format25 fixture", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE nyvp_control_snapshots SET payload=$1,format_version=25,revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true`, legacy); err != nil {
 		t.Fatal(err)
 	}
 	before, revision := healthSnapshot(t, s)
@@ -49,15 +68,15 @@ CREATE CONSTRAINT TRIGGER reject_service_delete_commit AFTER UPDATE ON nyvp_cont
 	if err := s.db.QueryRowContext(ctx, `SELECT format_version FROM nyvp_control_snapshots WHERE singleton=true`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 25 || memoryrepo.SnapshotVersion != 25 {
-		t.Fatalf("format changed to %d", version)
+	if version != memoryrepo.SnapshotVersion {
+		t.Fatalf("format25 mutation did not migrate to current format: %d", version)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := Open(ctx, dsn, auth.Administrator{})
 	if err != nil {
-		t.Fatal("reopen format25", err)
+		t.Fatal("reopen migrated format25", err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
 	if _, err := reopened.Customer(ctx, owner.ID); !errors.Is(err, faults.ErrNotFound) {

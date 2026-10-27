@@ -144,6 +144,9 @@ func (s *Store) runtimeMaterialFromCandidatesWithRealityKeysLocked(nodeID, bindi
 			continue
 		}
 		if err := s.validateVLESSRuntimeMaterialWithRealityKeysLocked(material, keys); err != nil {
+			if errors.Is(err, faults.ErrNotFound) {
+				return vlessruntime.Material{}, faults.ErrNotFound
+			}
 			return vlessruntime.Material{}, errors.New("invalid persisted VLESS runtime material")
 		}
 		return cloneVLESSRuntimeMaterial(material), nil
@@ -169,7 +172,7 @@ func (s *Store) runtimeMaterialFromCandidatesWithRealityKeysLocked(nodeID, bindi
 	pool := s.endpointPools[binding.Binding.EndpointPoolID]
 	member, memberExists := s.membersByGroup[rule.EntryGroupID][nodeID]
 	endpointMember, endpointExists := s.endpointMembers[pool.ID][nodeID]
-	if _, nodeExists := s.nodes[nodeID]; !nodeExists || !memberExists || member.RetiredAt != nil || !endpointExists || endpointMember.GroupID != rule.EntryGroupID || endpointMember.NodeID != nodeID {
+	if node, nodeExists := s.nodes[nodeID]; !nodeExists || node.DeletedAt != nil || !memberExists || member.RetiredAt != nil || !endpointExists || endpointMember.GroupID != rule.EntryGroupID || endpointMember.NodeID != nodeID {
 		return vlessruntime.Material{}, faults.ErrNotFound
 	}
 	return vlessruntime.Material{
@@ -236,6 +239,27 @@ func (s *Store) validateVLESSRuntimeMaterialLocked(material vlessruntime.Materia
 }
 
 func (s *Store) validateVLESSRuntimeMaterialWithRealityKeysLocked(material vlessruntime.Material, keys *compilationRealityKeys) error {
+	if err := s.validatePersistedVLESSRuntimeMaterialLocked(material, keys); err != nil {
+		return err
+	}
+	if material.State == vlessruntime.StateRevoked {
+		return nil
+	}
+	pool := s.endpointPools[material.EndpointPoolID]
+	node := s.nodes[material.NodeID]
+	member, memberExists := s.membersByGroup[pool.GroupID][material.NodeID]
+	endpointMember, endpointExists := s.endpointMembers[pool.ID][material.NodeID]
+	if node.DeletedAt != nil || !memberExists || member.RetiredAt != nil || !endpointExists ||
+		endpointMember.GroupID != pool.GroupID || endpointMember.NodeID != material.NodeID {
+		return faults.ErrNotFound
+	}
+	return nil
+}
+
+// A retired or moved node may retain intact material for rejoining its group.
+// Snapshot integrity must not depend on its current scheduling eligibility;
+// secret reads and new bindings still require the strict validator above.
+func (s *Store) validatePersistedVLESSRuntimeMaterialLocked(material vlessruntime.Material, keys *compilationRealityKeys) error {
 	if material.ID == "" || material.BindingID == "" || material.NodeID == "" || material.CustomerID == "" ||
 		material.ForwardingRuleID == "" || material.EndpointPoolID == "" || !material.State.Valid() || material.Revision < 1 ||
 		material.CreatedAt.IsZero() || material.UpdatedAt.Before(material.CreatedAt) {
@@ -275,14 +299,6 @@ func (s *Store) validateVLESSRuntimeMaterialWithRealityKeysLocked(material vless
 	}
 	if _, exists := s.nodes[material.NodeID]; !exists {
 		return fmt.Errorf("%w: VLESS runtime node does not exist", faults.ErrConflict)
-	}
-	member, exists := s.membersByGroup[pool.GroupID][material.NodeID]
-	if !exists || member.RetiredAt != nil {
-		return fmt.Errorf("%w: VLESS runtime node is not an active entry-group member", faults.ErrConflict)
-	}
-	endpointMember, exists := s.endpointMembers[pool.ID][material.NodeID]
-	if !exists || endpointMember.GroupID != pool.GroupID || endpointMember.NodeID != material.NodeID {
-		return fmt.Errorf("%w: VLESS runtime node is not an endpoint candidate", faults.ErrConflict)
 	}
 	if material.RevokedAt != nil || !vlessruntime.ValidCredentialUUID(material.CredentialUUID) || !vlessruntime.ValidRealityPrivateKey(material.RealityPrivateKey) {
 		return fmt.Errorf("%w: active VLESS runtime material lacks valid secrets", faults.ErrValidation)

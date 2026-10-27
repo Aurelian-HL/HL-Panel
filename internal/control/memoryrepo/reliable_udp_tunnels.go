@@ -174,7 +174,7 @@ func (s *Store) compileReliableUDPFragmentsLocked(nodeID string) ([]agentv1.Conf
 		if err != nil {
 			return nil, err
 		}
-		fragments = append(fragments, agentv1.ConfigurationFragment{GroupID: generations.ForwardingFragmentID(agentv1.EngineGOST, r.ID), GroupRevision: agentv1.GroupRevision(r.Revision), Engine: agentv1.EngineGOST, Config: raw})
+		fragments = append(fragments, agentv1.ConfigurationFragment{GroupID: generations.ForwardingFragmentID(agentv1.EngineGOST, r.ID), GroupRevision: agentv1.GroupRevision(r.EffectiveRuntimeRevision()), Engine: agentv1.EngineGOST, Config: raw})
 	}
 	return fragments, nil
 }
@@ -240,7 +240,7 @@ func (s *Store) recompileReliableUDPAfterReceiptLocked(nodeID string, now time.T
 		}
 		// A failed or rolled-back exit must also withdraw its ingress route.
 		// Restricting this to successful receipts leaves stale exits selectable.
-		groups = append(groups, r.EntryGroupID)
+		groups = append(groups, r.ExitGroupID)
 	}
-	return s.recompileForwardingGroupsLocked(groups, now)
+	return s.recompileNodesLocked(s.memberDependentNodeIDsLocked(groups, nodeID), now)
 }

@@ -98,6 +98,25 @@ func TestCustomerConnectionsDefaultFailsClosed(t *testing.T) {
 	}
 }
 
+func TestCustomerConnectionEvidenceSurvivesManagementRevision(t *testing.T) {
+	now := time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC)
+	evidence := validConnectionEvidence(t, now)
+	evidence.Rule.RuntimeRevision = evidence.Rule.Revision
+	evidence.Rule.Revision++
+	service := NewConnectionService(nil, nil, func() time.Time { return now })
+	view := ConnectionView{Status: "unavailable"}
+	service.populate(&view, customeridentity.Profile{ID: "cus_api", EffectiveStatus: "active"}, evidence)
+	if view.Status != "ready" || view.URI == "" {
+		t.Fatal("management edit hid verified connection")
+	}
+	evidence.Rule.RuntimeRevision++
+	view = ConnectionView{Status: "unavailable"}
+	service.populate(&view, customeridentity.Profile{ID: "cus_api", EffectiveStatus: "active"}, evidence)
+	if view.Status != "unavailable" || view.URI != "" {
+		t.Fatal("stale executable revision authorized connection")
+	}
+}
+
 func TestCustomerConnectionURIRequiresAllAuthoritativeEvidence(t *testing.T) {
 	now := time.Date(2026, 10, 3, 2, 0, 0, 0, time.UTC)
 	base := validConnectionEvidence(t, now)

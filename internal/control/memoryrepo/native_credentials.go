@@ -62,7 +62,10 @@ func (s *Store) RotateNativeSOCKS5Credentials(_ context.Context, in vlessruntime
 		updated.NativeConfig = config
 		updated.Revision++
 		updated.UpdatedAt = now
-		if err := s.validateVLESSRuntimeMaterialLocked(updated); err != nil {
+		// Retired/moved members retain historical material for rejoining. Rotate
+		// that material too, without requiring current scheduling eligibility or
+		// granting it access to a desired configuration or secret read.
+		if err := s.validatePersistedVLESSRuntimeMaterialLocked(updated, nil); err != nil {
 			return zero, faults.ErrValidation
 		}
 		before[id], after[id] = material, updated
@@ -83,6 +86,7 @@ func (s *Store) RotateNativeSOCKS5Credentials(_ context.Context, in vlessruntime
 	}
 	updatedRule := rule
 	updatedRule.Revision = result.Revision
+	updatedRule.RuntimeRevision = updatedRule.Revision
 	updatedRule.UpdatedAt = now
 	s.forwardRules[rule.ID] = updatedRule
 	if err = s.recompileForwardingGroupsLocked([]string{rule.EntryGroupID}, now); err != nil {

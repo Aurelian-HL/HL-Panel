@@ -109,7 +109,7 @@ func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeC
 	}
 	receipt := state.Deployments[nodeID]
 	if !deploymentReady(receipt, rule, nodeID) || receipt.Status.Engine != agentv1.EngineXray {
-		return ProtocolObservation{}, fmt.Errorf("%w: deployment receipt not ready (rule_revision=%d receipt_rule_revision=%d receipt_rule_id=%q receipt_node_id=%q verified=%t reason=%q engine=%q generation=%d hash_len=%d)", ErrProtocolObservationUnavailable, rule.Revision, receipt.RuleRevision, receipt.Status.RuleID, receipt.Status.NodeID, receipt.Status.ReceiptVerified, receipt.Status.Reason, receipt.Status.Engine, receipt.Status.NodeConfigGeneration, len(receipt.Status.ConfigSHA256))
+		return ProtocolObservation{}, fmt.Errorf("%w: deployment receipt not ready (runtime_revision=%d receipt_rule_revision=%d receipt_rule_id=%q receipt_node_id=%q verified=%t reason=%q engine=%q generation=%d hash_len=%d)", ErrProtocolObservationUnavailable, rule.EffectiveRuntimeRevision(), receipt.RuleRevision, receipt.Status.RuleID, receipt.Status.NodeID, receipt.Status.ReceiptVerified, receipt.Status.Reason, receipt.Status.Engine, receipt.Status.NodeConfigGeneration, len(receipt.Status.ConfigSHA256))
 	}
 	host, err := serviceaddress.NormalizeHost(member.DialHost)
 	if err != nil || host == "" || spec.DialHost != host || spec.DialPort != rule.ListenPort || !loopbackHost(spec.EchoHost) {
@@ -131,7 +131,7 @@ func (o *ProtocolObserver) observeState(ctx context.Context, state State, probeC
 		return ProtocolObservation{}, ErrProtocolObservationUnavailable
 	}
 	observation := ProtocolObservation{
-		RuleID: rule.ID, NodeID: nodeID, RuleRevision: rule.Revision,
+		RuleID: rule.ID, NodeID: nodeID, RuleRevision: rule.EffectiveRuntimeRevision(),
 		NodeConfigGeneration: receipt.Status.NodeConfigGeneration, ConfigSHA256: receipt.Status.ConfigSHA256,
 		RuleConfigSHA256: receipt.Status.RuleConfigSHA256,
 		Protocol:         forwarding.IngressVLESSReality, DialHost: host, VerifiedAt: verifiedAt,

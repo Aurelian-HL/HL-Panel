@@ -30,6 +30,7 @@ type State struct {
 // DeploymentEvidence is evaluated from the same repository snapshot as the
 // pool and rule. A receipt for an older rule revision cannot authorize a node.
 type DeploymentEvidence struct {
+	// RuleRevision is the executable rule revision, not the management CAS.
 	RuleRevision int64
 	Status       deploymentreceipts.Status
 }
@@ -40,7 +41,7 @@ type DeploymentEvidence struct {
 type ProtocolObservation struct {
 	RuleID               string
 	NodeID               string
-	RuleRevision         int64
+	RuleRevision         int64 // Executable rule revision, independent of management edits.
 	NodeConfigGeneration int64
 	ConfigSHA256         string
 	RuleConfigSHA256     string
@@ -274,7 +275,7 @@ func (o ProtocolObservation) CanReplace(previous ProtocolObservation) bool {
 }
 
 func deploymentReady(evidence DeploymentEvidence, rule forwarding.Rule, nodeID string) bool {
-	return evidence.RuleRevision == rule.Revision && evidence.Status.RuleID == rule.ID &&
+	return evidence.RuleRevision == rule.EffectiveRuntimeRevision() && evidence.Status.RuleID == rule.ID &&
 		evidence.Status.NodeID == nodeID && evidence.Status.ReceiptVerified &&
 		evidence.Status.Reason == deploymentreceipts.ReasonReceiptVerified &&
 		evidence.Status.Engine == agentv1.EngineXray && evidence.Status.NodeConfigGeneration > 0 &&
@@ -287,7 +288,7 @@ func protocolHealthy(observation ProtocolObservation, receipt deploymentreceipts
 
 func protocolEvidenceMatches(observation ProtocolObservation, receipt deploymentreceipts.Status, rule forwarding.Rule, member endpoints.EndpointPoolMember, dialHost string, now time.Time) bool {
 	if observation.RuleID != rule.ID || observation.NodeID != member.NodeID ||
-		observation.RuleRevision != rule.Revision || observation.Protocol != forwarding.IngressVLESSReality ||
+		observation.RuleRevision != rule.EffectiveRuntimeRevision() || observation.Protocol != forwarding.IngressVLESSReality ||
 		!observationMatchesReceipt(observation, receipt) ||
 		observation.VerifiedAt.IsZero() ||
 		observation.VerifiedAt.After(now) || !observation.LeaseExpiresAt.After(observation.VerifiedAt) ||

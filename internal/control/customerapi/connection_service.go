@@ -35,13 +35,13 @@ type ConnectionEvidence struct {
 type ConnectionMemberEvidence struct {
 	Member                    endpoints.EndpointPoolMember
 	DeploymentReceiptVerified bool
-	DeployedRuleRevision      int64
+	DeployedRuleRevision      int64 // Executable rule revision, independent of management edits.
 	ProtocolHealthExpiresAt   time.Time
 }
 
 type GatewayEvidence struct {
 	Published             bool
-	PublishedRuleRevision int64
+	PublishedRuleRevision int64 // Executable rule revision, independent of management edits.
 	CandidateNodeIDs      []string
 }
 
@@ -137,7 +137,7 @@ func (service *ConnectionService) populate(view *ConnectionView, profile custome
 		pool.Mode != endpoints.ModeSingleServiceEndpoint || pool.Port != rule.ListenPort ||
 		binding.Binding.State != vlessidentity.StateActive || binding.Binding.CustomerID != profile.ID ||
 		binding.Binding.ForwardingRuleID != rule.ID || binding.Binding.EndpointPoolID != pool.ID ||
-		!evidence.Gateway.Published || evidence.Gateway.PublishedRuleRevision != rule.Revision ||
+		!evidence.Gateway.Published || evidence.Gateway.PublishedRuleRevision != rule.EffectiveRuntimeRevision() ||
 		len(evidence.Gateway.CandidateNodeIDs) == 0 {
 		return
 	}
@@ -145,7 +145,7 @@ func (service *ConnectionService) populate(view *ConnectionView, profile custome
 	now := service.now().UTC()
 	for _, member := range evidence.Members {
 		if member.Member.PoolID != pool.ID || member.Member.GroupID != pool.GroupID || member.Member.NodeID == "" ||
-			!member.DeploymentReceiptVerified || member.DeployedRuleRevision != rule.Revision ||
+			!member.DeploymentReceiptVerified || member.DeployedRuleRevision != rule.EffectiveRuntimeRevision() ||
 			!member.Member.CandidateEligibleForNewConnection(now, endpoints.DefaultHealthTTL) ||
 			!member.ProtocolHealthExpiresAt.After(now) {
 			continue

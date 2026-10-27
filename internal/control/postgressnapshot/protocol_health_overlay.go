@@ -60,9 +60,18 @@ func readProtocolHealthOverlays(ctx context.Context, tx *sql.Tx) ([]gatewaymembe
 func (s *Store) publishProtocolHealth(parent context.Context, observations []gatewaymembership.ProtocolObservation, activate bool) ([]error, error) {
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
+	release, err := s.writeGate.acquire(ctx)
+	if err != nil {
+		return nil, snapshotFailure(ctx, "write_queue", err)
+	}
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, errors.New("protocol health transaction unavailable")
+		return nil, snapshotFailure(ctx, "begin", err)
 	}
 	defer tx.Rollback()
 	// Build a cold immutable view before locking the business row. Once the
@@ -77,12 +86,12 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 	}
 	traffic, health, err := s.forwardingOverlays(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, snapshotFailure(ctx, "overlay_read", err)
 	}
 	view := cached.forwarding.WithOverlays(uint64(cached.revision), traffic, health, nil)
 	results, changed, needsActivation, err := view.CheckProtocolHealthRenewal(ctx, observations)
 	if err != nil {
-		return nil, err
+		return nil, snapshotOperationFailure(ctx, err)
 	}
 	apply := func(m *memoryrepo.Store) ([]error, error) {
 		if activate {
@@ -96,24 +105,40 @@ func (s *Store) publishProtocolHealth(parent context.Context, observations []gat
 	}
 	if activate && needsActivation && changed {
 		if err = tx.Rollback(); err != nil {
-			return nil, errors.New("protocol health read rollback failed")
+			return nil, snapshotFailure(ctx, "read_rollback", err)
 		}
+		// The audited activation takes the same gate. Release the preliminary
+		// renewal attempt after rollback before entering that transaction.
+		release()
+		release = nil
 		// Use parent context on replay so a small pool releases its connection
 		// before waiting for the normal audited write.
 		return transact(parent, s, true, apply)
 	}
 	if changed {
+		// Renewal only changes overlays and metadata. The prepared restore still
+		// represents these exact payload bytes; merge overlays after locking on
+		// its next use. A different MVCC row must never inherit this shortcut.
+		preparedMatches := s.preparedWrite.state != nil && s.preparedWrite.version == cached.version &&
+			s.preparedWrite.revision == cached.revision && s.preparedWrite.transactionID == cached.transactionID
 		if err = writeProtocolHealthOverlays(ctx, tx, observations, results); err != nil {
-			return nil, err
+			return nil, snapshotFailure(ctx, "overlay_write", err)
 		}
 		if err = tx.QueryRowContext(ctx, `UPDATE nyvp_control_snapshots SET revision=revision+1,updated_at=clock_timestamp() WHERE singleton=true RETURNING revision,xmin::text`).Scan(&cached.revision, &cached.transactionID); err != nil {
-			return nil, errors.New("protocol health revision write failed")
+			return nil, snapshotFailure(ctx, "snapshot_update", err)
+		}
+		if !preparedMatches {
+			s.preparedWrite = preparedSnapshotWrite{}
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, errors.New("protocol health transaction commit failed")
+		return nil, snapshotFailure(ctx, "commit", err)
 	}
 	if changed {
+		if s.preparedWrite.state != nil {
+			s.preparedWrite.revision, s.preparedWrite.transactionID = cached.revision, cached.transactionID
+			s.preparedWrite.state.SetPersistenceRevision(uint64(cached.revision))
+		}
 		// The immutable base payload/identity/usage views did not change.
 		s.readMu.Lock()
 		if s.readCache.revision <= cached.revision {

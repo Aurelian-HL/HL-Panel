@@ -2,6 +2,7 @@ package memoryrepo
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
@@ -52,29 +53,42 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	node.Name, node.Hostname, node.DialHost = token.Name, input.Node.Hostname, input.Node.DialHost
 	node.Platform, node.Architecture, node.AgentVersion = input.Node.Platform, input.Node.Architecture, input.Node.AgentVersion
 	node.UpdatedAt = now
-	mutations := []groupMemberMutationSnapshot{s.captureGroupMemberMutationLocked(token.GroupID, node.ID)}
 	previousMembers := make(map[string]groups.Member)
-	retired := make([]groups.Member, 0)
+	groupIDs := []string{token.GroupID}
 	for groupID, members := range s.membersByGroup {
 		if member, exists := members[node.ID]; exists {
 			previousMembers[groupID] = member
 			if groupID != token.GroupID && member.RetiredAt == nil {
-				mutations = append(mutations, s.captureGroupMemberMutationLocked(groupID, node.ID))
-				member.RetiredAt, member.UpdatedAt = &now, now
-				members[node.ID] = member
-				retired = append(retired, member)
+				groupIDs = append(groupIDs, groupID)
 			}
 		}
+	}
+	// Capture every affected projection before changing any membership. Related
+	// UDP groups can overlap; a later snapshot must not capture partial changes.
+	sort.Strings(groupIDs)
+	mutations := make([]groupMemberMutationSnapshot, 0, len(groupIDs))
+	for _, groupID := range groupIDs {
+		mutations = append(mutations, s.captureGroupMemberMutationLocked(groupID, node.ID))
+	}
+	restore := func() {
+		for i := len(mutations) - 1; i >= 0; i-- {
+			s.restoreGroupMemberMutationLocked(mutations[i])
+		}
+	}
+	retired := make([]groups.Member, 0, len(groupIDs)-1)
+	for _, groupID := range groupIDs {
+		if groupID == token.GroupID {
+			continue
+		}
+		member := previousMembers[groupID]
+		member.RetiredAt, member.UpdatedAt = &now, now
+		s.membersByGroup[groupID][node.ID] = member
+		retired = append(retired, member)
 	}
 	member := groups.Member{GroupID: token.GroupID, NodeID: node.ID, DialHost: node.DialHost,
 		Weight: 100, CreatedAt: now, UpdatedAt: now}
 	if old, exists := previousMembers[token.GroupID]; exists {
 		member.CreatedAt, member.Weight, member.Priority = old.CreatedAt, old.Weight, old.Priority
-	}
-	restore := func() {
-		for _, mutation := range mutations {
-			s.restoreGroupMemberMutationLocked(mutation)
-		}
 	}
 	if err := s.validateForwardingMemberListenersLocked(member); err != nil {
 		restore()
@@ -87,9 +101,17 @@ func (s *Store) reenrollNodeLocked(input enrollment.ConsumeInput, token enrollme
 	for _, changed := range append(retired, member) {
 		s.syncGroupMemberToEndpointPoolsLocked(changed)
 	}
+	// Reinstallation follows the same native-import provisioning contract as a
+	// normal group join, while preserving explicit node-local revocations.
+	if _, err := s.provisionMemberNativeMaterialsLocked(member); err != nil {
+		restore()
+		return nodes.Node{}, err
+	}
 	// Compile once after both sides change so old listeners are removed before
 	// installing the new group's listeners, including same-port group switches.
-	if _, _, err := s.compileNodeConfigLocked(node.ID, now); err != nil {
+	// Moving or changing an exit address must also withdraw its old address
+	// from dependent QUIC/KCP entries, without recompiling independent peers.
+	if _, _, err := s.recompileMemberConfigsLocked(node.ID, groupIDs, now); err != nil {
 		restore()
 		return nodes.Node{}, err
 	}

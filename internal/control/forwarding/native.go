@@ -20,6 +20,7 @@ func SameNativeRuntime(previous, next Rule) bool {
 		r.Description = ""
 		r.Paused = false
 		r.Revision = 0
+		r.RuntimeRevision = 0
 		r.CreatedAt = time.Time{}
 		r.UpdatedAt = time.Time{}
 		r.Status = ""

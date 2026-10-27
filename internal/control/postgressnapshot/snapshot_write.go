@@ -15,6 +15,37 @@ type preparedSnapshotWrite struct {
 	state         *memoryrepo.Store
 }
 
+// Called only while holding this store's writeGate. Consume, never share, the
+// independent restore produced by the last successful write. A failed attempt
+// discards it, so mutated or rolled-back state cannot reach a later request.
+func (s *Store) prepareSnapshotWrite(ctx context.Context, tx *sql.Tx) (preparedSnapshotWrite, error) {
+	cached := s.preparedWrite
+	s.preparedWrite = preparedSnapshotWrite{}
+	if cached.state == nil {
+		return prepareSnapshotWrite(ctx, tx)
+	}
+	var next preparedSnapshotWrite
+	var raw []byte
+	if err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text,
+ CASE WHEN format_version=$1 AND revision=$2 AND xmin::text=$3 THEN NULL ELSE payload END
+ FROM nyvp_control_snapshots WHERE singleton=true`, cached.version, cached.revision, cached.transactionID).
+		Scan(&next.version, &next.revision, &next.transactionID, &raw); err != nil {
+		return preparedSnapshotWrite{}, snapshotFailure(ctx, "snapshot_read", err)
+	}
+	if !memoryrepo.SupportsSnapshotVersion(next.version) {
+		return preparedSnapshotWrite{}, snapshotFailure(ctx, "snapshot_format", errors.New("unsupported PostgreSQL snapshot version"))
+	}
+	if raw == nil && next.version == cached.version && next.revision == cached.revision && next.transactionID == cached.transactionID {
+		return cached, nil
+	}
+	state, err := decodeReadSnapshot(raw, next.version, uint64(next.revision))
+	if err != nil {
+		return preparedSnapshotWrite{}, err
+	}
+	next.state = state
+	return next, nil
+}
+
 // Preparing is read-only: it neither locks the business row nor executes a
 // caller's mutation. A later locking read validates the exact MVCC row, including
 // external repairs that replace a payload without advancing its revision.
@@ -23,10 +54,10 @@ func prepareSnapshotWrite(ctx context.Context, tx *sql.Tx) (preparedSnapshotWrit
 	var raw []byte
 	if err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text, payload
  FROM nyvp_control_snapshots WHERE singleton=true`).Scan(&prepared.version, &prepared.revision, &prepared.transactionID, &raw); err != nil {
-		return preparedSnapshotWrite{}, errors.New("PostgreSQL snapshot read failed")
+		return preparedSnapshotWrite{}, snapshotFailure(ctx, "snapshot_read", err)
 	}
 	if !memoryrepo.SupportsSnapshotVersion(prepared.version) {
-		return preparedSnapshotWrite{}, errors.New("unsupported PostgreSQL snapshot version")
+		return preparedSnapshotWrite{}, snapshotFailure(ctx, "snapshot_format", errors.New("unsupported PostgreSQL snapshot version"))
 	}
 	state, err := decodeReadSnapshot(raw, prepared.version, uint64(prepared.revision))
 	if err != nil {
@@ -42,7 +73,7 @@ func lockSnapshotWrite(ctx context.Context, tx *sql.Tx, prepared preparedSnapsho
 	var transactionID string
 	if err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text
  FROM nyvp_control_snapshots WHERE singleton=true FOR UPDATE`).Scan(&version, &revision, &transactionID); err != nil {
-		return nil, errors.New("PostgreSQL snapshot lock failed")
+		return nil, snapshotFailure(ctx, "snapshot_lock", err)
 	}
 	if version == prepared.version && revision == prepared.revision && transactionID == prepared.transactionID {
 		return prepared.state, nil
@@ -64,7 +95,7 @@ func (s *Store) lockReadSnapshot(ctx context.Context, tx *sql.Tx, cached snapsho
 	var transactionID string
 	if err := tx.QueryRowContext(ctx, `SELECT format_version, revision, xmin::text
  FROM nyvp_control_snapshots WHERE singleton=true FOR UPDATE`).Scan(&version, &revision, &transactionID); err != nil {
-		return snapshotReadCache{}, errors.New("protocol health snapshot lock failed")
+		return snapshotReadCache{}, snapshotFailure(ctx, "snapshot_lock", err)
 	}
 	if version == cached.version && revision == cached.revision && transactionID == cached.transactionID {
 		return cached, nil

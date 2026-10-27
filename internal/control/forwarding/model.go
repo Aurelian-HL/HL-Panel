@@ -182,12 +182,15 @@ type Rule struct {
 	Paused              bool              `json:"paused"`
 	Description         string            `json:"description"`
 	Revision            int64             `json:"revision"`
-	CreatedAt           time.Time         `json:"created_at"`
-	UpdatedAt           time.Time         `json:"updated_at"`
-	Status              Status            `json:"status"`
-	IngressStatus       IngressStatus     `json:"ingress_status"`
-	Deployed            bool              `json:"deployed"`
-	ActivationReason    ActivationReason  `json:"activation_reason,omitempty"`
+	// RuntimeRevision identifies executable rule state. Zero in older snapshots
+	// means Revision; management-only edits pin that old runtime identity.
+	RuntimeRevision  int64            `json:"runtime_revision,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+	Status           Status           `json:"status"`
+	IngressStatus    IngressStatus    `json:"ingress_status"`
+	Deployed         bool             `json:"deployed"`
+	ActivationReason ActivationReason `json:"activation_reason,omitempty"`
 }
 
 func AdministratorSubjectID(adminID string) string { return "adminline_" + adminID }

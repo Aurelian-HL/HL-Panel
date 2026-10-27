@@ -46,16 +46,23 @@ func (s *Store) captureGroupMemberMutationLocked(groupID, nodeID string) groupMe
 		}
 	}
 	snapshot.relatedConfigs = make(map[string]map[int64]generations.NodeConfigGeneration)
-	for _, id := range s.reliableUDPDependentGroupsLocked([]string{groupID}) {
-		for n := range s.membersByGroup[id] {
-			snapshot.relatedNodes[n] = cloneNode(s.nodes[n])
-			if configs := s.nodeConfigsByNode[n]; configs != nil {
-				copyConfigs := make(map[int64]generations.NodeConfigGeneration, len(configs))
-				for gen, config := range configs {
-					copyConfigs[gen] = cloneNodeConfig(config)
-				}
-				snapshot.relatedConfigs[n] = copyConfigs
+	relatedNodeIDs := s.memberDependentNodeIDsLocked([]string{groupID}, nodeID)
+	if nodeID == "" {
+		// Group-wide policy mutations still affect all group projections.
+		for _, id := range s.reliableUDPDependentGroupsLocked([]string{groupID}) {
+			for n := range s.membersByGroup[id] {
+				relatedNodeIDs[n] = struct{}{}
 			}
+		}
+	}
+	for n := range relatedNodeIDs {
+		snapshot.relatedNodes[n] = cloneNode(s.nodes[n])
+		if configs := s.nodeConfigsByNode[n]; configs != nil {
+			copyConfigs := make(map[int64]generations.NodeConfigGeneration, len(configs))
+			for gen, config := range configs {
+				copyConfigs[gen] = cloneNodeConfig(config)
+			}
+			snapshot.relatedConfigs[n] = copyConfigs
 		}
 	}
 	snapshot.group, snapshot.groupExists = s.deviceGroups[groupID]

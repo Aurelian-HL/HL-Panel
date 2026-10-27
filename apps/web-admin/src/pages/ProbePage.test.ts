@@ -9,11 +9,14 @@ vi.mock('@/api/probe', () => ({ probeApi: { getGroup: mocked.getGroup, getInvent
 
 import ProbePage from './ProbePage.vue'
 import { probeRemarksStorageKey } from '@/features/probe/remarks'
+import { probeMemberOrderStorageKey } from '@/features/probe/memberOrder'
+import ProbeMembers from '@/features/probe/ProbeMembers.vue'
 
 beforeEach(() => {
   mocked.deleteNode.mockReset().mockResolvedValue({ node_id: 'offline-native', replayed: false })
   localStorage.removeItem('hl_probe_refresh_intervals_v1')
   localStorage.removeItem(probeRemarksStorageKey)
+  localStorage.removeItem(probeMemberOrderStorageKey)
   mocked.getDeviceGroups.mockReset().mockResolvedValue({ items: probeGroups })
   mocked.getGroup.mockReset().mockResolvedValue(completeProbeSample)
   mocked.getInventory.mockReset().mockResolvedValue(completeProbeSample)
@@ -22,6 +25,76 @@ beforeEach(() => {
 })
 
 describe('ProbePage', () => {
+  function sortableInventory() {
+    const items = Array.from({ length: 5 }, (_, index) => ({ ...completeProbeSample.items[0]!, node_id: `sort-${index + 1}`, name: `机器${index + 1}`, ipv4: `192.0.2.${index + 1}`, sampled_at: new Date().toISOString() }))
+    const membership = items.map((item, index) => ({ group_id: index < 4 ? 'group-gz' : 'group-hk', node_id: item.node_id, dial_host: '', weight: 10, priority: 0, retired_at: null, created_at: '', updated_at: '' }))
+    mocked.getInventory.mockResolvedValue({ upstream_status: 'ok', items })
+    mocked.getGroup.mockImplementation(async groupId => ({ upstream_status: 'ok', items: items.filter(item => membership.some(member => member.group_id === groupId && member.node_id === item.node_id)) }))
+    mocked.getDeviceGroupMembers.mockImplementation(async groupId => ({ items: membership.filter(member => member.group_id === groupId) }))
+    return items
+  }
+
+  it('inserts the fourth machine first and third second, preserving display order across refreshes and group changes without server writes', async () => {
+    const items = sortableInventory()
+    const original = JSON.stringify(items)
+    let wrapper = mount(ProbePage)
+    await flushPromises()
+    const ids = () => wrapper.findAll('.probe-section')[0]!.findAll('.probe-table tbody tr').map(row => row.attributes('data-probe-sort-id'))
+    let rows = wrapper.findAll('.probe-section')[0]!.findAll('.probe-table tbody tr')
+    await rows[3]!.get('.probe-sort-handle').trigger('keydown', { key: 'Home' })
+    expect(ids()).toEqual(['sort-4', 'sort-1', 'sort-2', 'sort-3'])
+    rows = wrapper.findAll('.probe-section')[0]!.findAll('.probe-table tbody tr')
+    await rows[2]!.get('.probe-sort-handle').trigger('keydown', { key: 'ArrowUp' })
+    const expected = ['sort-4', 'sort-2', 'sort-1', 'sort-3']
+    expect(ids()).toEqual(expected)
+    expect(wrapper.findAll('.probe-section')[0]!.findAll('.probe-mobile-item').map(row => row.attributes('data-probe-sort-id'))).toEqual(expected)
+    expect(JSON.parse(localStorage.getItem(probeMemberOrderStorageKey)!)['group-gz']).toEqual(expected)
+    window.dispatchEvent(new Event('online'))
+    await flushPromises()
+    expect(ids()).toEqual(expected)
+    await wrapper.get('.probe-group-select select').setValue('group-gz')
+    await flushPromises()
+    expect(wrapper.findAll('.probe-table tbody tr').map(row => row.attributes('data-probe-sort-id'))).toEqual(expected)
+    wrapper.unmount()
+    wrapper = mount(ProbePage)
+    await flushPromises()
+    expect(ids()).toEqual(expected)
+    expect(wrapper.findAll('.probe-section')[1]!.findAll('.probe-table tbody tr').map(row => row.attributes('data-probe-sort-id'))).toEqual(['sort-5'])
+    expect(JSON.stringify(items)).toBe(original)
+    expect(mocked.updateDeviceGroupMemberWeight).not.toHaveBeenCalled()
+    expect(mocked.deleteNode).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps the current order and shows an error when local persistence fails', async () => {
+    sortableInventory()
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    const storage = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('blocked') })
+    try {
+      await wrapper.findAll('.probe-sort-handle')[3]!.trigger('keydown', { key: 'Home' })
+      expect(wrapper.get('[role=alert]').text()).toContain('未能保存排序')
+      expect(wrapper.findAll('.probe-table tbody tr').map(row => row.attributes('data-probe-sort-id'))).toEqual(['sort-1', 'sort-2', 'sort-3', 'sort-4', 'sort-5'])
+      expect(localStorage.getItem(probeMemberOrderStorageKey)).toBeNull()
+    } finally { storage.mockRestore(); wrapper.unmount() }
+  })
+
+  it('rejects moves outside the current group and synchronizes local preferences between tabs', async () => {
+    sortableInventory()
+    const wrapper = mount(ProbePage)
+    await flushPromises()
+    wrapper.findComponent(ProbeMembers).vm.$emit('reorder', { nodeId: 'sort-4', targetId: 'sort-5' })
+    await flushPromises()
+    expect(localStorage.getItem(probeMemberOrderStorageKey)).toBeNull()
+    localStorage.setItem(probeMemberOrderStorageKey, JSON.stringify({ 'group-gz': ['sort-4', 'sort-3', 'sort-2', 'sort-1'] }))
+    window.dispatchEvent(new StorageEvent('storage', { key: probeMemberOrderStorageKey }))
+    await flushPromises()
+    expect(wrapper.findAll('.probe-section')[0]!.findAll('.probe-table tbody tr').map(row => row.attributes('data-probe-sort-id'))).toEqual(['sort-4', 'sort-3', 'sort-2', 'sort-1'])
+    expect(mocked.updateDeviceGroupMemberWeight).not.toHaveBeenCalled()
+    expect(mocked.deleteNode).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('persists display-only remarks across group changes and remounts, then restores IP when cleared', async () => {
     const originalSample = JSON.stringify(completeProbeSample)
     const options = { global: { stubs: { teleport: true } } }

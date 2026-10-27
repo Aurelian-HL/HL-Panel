@@ -85,7 +85,7 @@ func evaluateCurrent(input Input, evaluator *Evaluator) Status {
 		status.Reason = ReasonFragmentMissing
 		return status
 	}
-	if fragment.count != 1 || fragment.engine != engine || fragment.revision != input.Rule.Revision || !fragment.valid || input.RequireTunnelEntry && !fragment.tunnelEntry || input.RequireTunnelExit && !fragment.tunnelExit {
+	if fragment.count != 1 || fragment.engine != engine || fragment.revision != input.Rule.EffectiveRuntimeRevision() || !fragment.valid || input.RequireTunnelEntry && !fragment.tunnelEntry || input.RequireTunnelExit && !fragment.tunnelExit {
 		status.Reason = ReasonFragmentMismatch
 		return status
 	}

@@ -198,10 +198,15 @@ func TestServiceOwnerDeletionFormat25RestoreReplayAndIsolation(t *testing.T) {
 			t.Fatalf("delete changed protected field %s", key)
 		}
 	}
-	if SnapshotVersion != 25 || !SupportsSnapshotVersion(25) {
+	if !SupportsSnapshotVersion(25) {
 		t.Fatal("changed format25 support")
 	}
-	restored, err := DecodeSnapshot(after)
+	right["Version"] = json.RawMessage("25")
+	legacy, err := json.Marshal(right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := DecodeSnapshot(legacy)
 	if err != nil {
 		t.Fatal("format25 restore", err)
 	}

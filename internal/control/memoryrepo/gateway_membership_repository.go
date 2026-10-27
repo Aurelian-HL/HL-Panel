@@ -75,7 +75,7 @@ func (s *Store) gatewayMembershipStateLocked(poolID string) (gatewaymembership.S
 		input, err := s.ruleNodeDeploymentInputBorrowedLocked(state.Rule.ID, member.NodeID)
 		if err == nil {
 			state.Deployments[member.NodeID] = gatewaymembership.DeploymentEvidence{
-				RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input),
+				RuleRevision: input.Rule.EffectiveRuntimeRevision(), Status: s.evaluateDeploymentLocked(input),
 			}
 		}
 	}
@@ -180,7 +180,7 @@ func (s *Store) validateProtocolHealthLocked(observation gatewaymembership.Proto
 	if err != nil {
 		return "", endpoints.EndpointPoolMember{}, err
 	}
-	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.Revision, Status: s.evaluateDeploymentLocked(input)}
+	evidence := gatewaymembership.DeploymentEvidence{RuleRevision: input.Rule.EffectiveRuntimeRevision(), Status: s.evaluateDeploymentLocked(input)}
 	if !observation.MatchesCurrentDeployment(s.endpointPools[poolID], input.Rule, member, evidence, time.Now().UTC()) {
 		return "", endpoints.EndpointPoolMember{}, faults.ErrValidation
 	}
