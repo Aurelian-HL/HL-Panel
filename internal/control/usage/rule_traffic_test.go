@@ -157,6 +157,34 @@ func TestMonthlyUnlimitedRuleTrafficIsReconciled(t *testing.T) {
 	}
 }
 
+func TestUnlimitedRuleFinalThrottledBytesAreReconciled(t *testing.T) {
+	now := time.Now().UTC()
+	ledger := &stubRepository{queryResult: QueryResult{Totals: Totals{ChargedBytes: 1024}}}
+	quota := &quotaStore{unlimited: true}
+	s := NewService(ledger, stubPolicies{}, func() time.Time { return now }, WithRuleTrafficRepository(quota))
+	if err := s.syncRuleTraffic(context.Background(), "rule-one"); err != nil {
+		t.Fatal(err)
+	}
+	quota.rules = []forwarding.Rule{{ID: "rule-one", Revision: 1, TrafficUsedBytes: 1024}}
+	now = now.Add(time.Second)
+	ledger.queryResult.Totals.ChargedBytes = 2049
+	if err := s.syncRuleTraffic(context.Background(), "rule-one"); err != nil {
+		t.Fatal(err)
+	}
+	if quota.calls != 1 || quota.total != 1024 {
+		t.Fatal("fixture was not throttled")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	quota.cancel = cancel
+	if err := s.RunRuleTraffic(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if quota.calls != 2 || quota.total != 2049 {
+		t.Fatal("unlimited final bytes remained stale", quota.total, quota.calls)
+	}
+}
+
 func TestImportedHistoryIsAddedOnceOnlyToLifetimeUsage(t *testing.T) {
 	for _, monthly := range []bool{false, true} {
 		baseline := forwarding.ImportedTraffic{SourceID: "kl", BatchID: "batch", LineID: 1, ObservedAt: time.Now(), UploadBytes: 100, DownloadBytes: 200}

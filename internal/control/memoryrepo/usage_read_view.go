@@ -124,6 +124,35 @@ func (v *UsageReadView) UsageConfigInput(_ context.Context, nodeID string, gener
 	return input, nil
 }
 
+// UsageConfigGenerations returns detached hot generation IDs, newest first.
+// Persistence uses this to exclude stale archived receipts for the same IDs.
+func (v *UsageReadView) UsageConfigGenerations(nodeID string, beforeGeneration int64) []int64 {
+	versions := make([]int64, 0, len(v.configs[nodeID]))
+	for generation := range v.configs[nodeID] {
+		if generation > 0 && generation < beforeGeneration {
+			versions = append(versions, generation)
+		}
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i] > versions[j] })
+	return versions
+}
+
+func (v *UsageReadView) UsageRuleConfigInput(ctx context.Context, nodeID, ruleID string, beforeGeneration int64) (deploymentreceipts.HistoricalInput, error) {
+	for _, generation := range v.UsageConfigGenerations(nodeID, beforeGeneration) {
+		if err := ctx.Err(); err != nil {
+			return deploymentreceipts.HistoricalInput{}, err
+		}
+		contains, err := deploymentreceipts.ContainsUsageRule(v.configs[nodeID][generation], ruleID)
+		if err != nil {
+			return deploymentreceipts.HistoricalInput{}, err
+		}
+		if contains {
+			return v.UsageConfigInput(ctx, nodeID, generation)
+		}
+	}
+	return deploymentreceipts.HistoricalInput{}, faults.ErrNotFound
+}
+
 func (s *Store) RuleTrafficState(_ context.Context, id string) (forwarding.RuleTrafficState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

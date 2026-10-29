@@ -19,6 +19,15 @@ describe('forwarding target entry', () => {
 })
 
 describe('traffic byte formatting', () => {
+  it('shows sub-KB traffic and binary KB without rounding stored byte counts', () => {
+    expect(byteAmount(0)).toBe('0 B')
+    expect(byteAmount(1)).toBe('1 B')
+    expect(byteAmount(1023)).toBe('1,023 B')
+    expect(byteAmount(1024)).toBe('1 KB')
+    expect(byteAmount(1536)).toBe('1.5 KB')
+    expect(byteAmount(2049)).toBe('2 KB')
+  })
+
   it('uses binary GB and TB boundaries with product labels', () => {
     expect(byteAmount(BYTES_PER_GB)).toBe('1 GB')
     expect(byteAmount(BYTES_PER_TB)).toBe('1 TB')

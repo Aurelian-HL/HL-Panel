@@ -72,6 +72,13 @@ type HistoricalRepository interface {
 	UsageConfigInput(context.Context, string, int64) (HistoricalInput, error)
 }
 
+// HistoricalRuleRepository returns the latest earlier generation containing the
+// rule, including incomplete or invalidated evidence. Callers must verify it;
+// skipping an unverified match in favor of older receipts is not permitted.
+type HistoricalRuleRepository interface {
+	UsageRuleConfigInput(context.Context, string, string, int64) (HistoricalInput, error)
+}
+
 type Repository interface {
 	RuleNodeDeploymentInput(context.Context, string, string) (Input, error)
 }

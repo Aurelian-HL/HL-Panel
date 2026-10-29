@@ -21,6 +21,12 @@ func (a *Agent) usageGeneration() (agentv1.NodeConfigGeneration, error) {
 	if err := json.Unmarshal(desired.Config, &bundle); err != nil {
 		return 0, err
 	}
+	// After the final rule is removed, live engines can still report its last
+	// bytes. Preserve the removal generation so the panel can resolve verified
+	// historical ownership instead of requiring a currently deployed rule.
+	if bundle.SchemaVersion == 1 && len(bundle.Fragments) == 0 {
+		return desired.Generation, nil
+	}
 	for _, fragment := range bundle.Fragments {
 		if fragment.Usage != nil {
 			return desired.Generation, nil

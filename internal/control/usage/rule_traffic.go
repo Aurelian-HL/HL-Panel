@@ -139,7 +139,7 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 	}
 	// Usage reports reconcile immediately in afterIngest. This loop is the
 	// crash-recovery and month-boundary safety net; scanning every five seconds
-	// repeatedly decodes the full control snapshot for every limited rule.
+	// repeatedly decodes the full control snapshot for every rule.
 	// Thirty seconds keeps recovery and monthly reset bounded without turning
 	// the database into a permanent polling workload.
 	tick := time.NewTicker(30 * time.Second)
@@ -152,11 +152,9 @@ func (s *Service) RunRuleTraffic(ctx context.Context, logger *slog.Logger) error
 				if bounded.Err() != nil {
 					break
 				}
-				// Monthly unlimited rules still need reconciliation so a new UTC
-				// month resets their usage period and audit state.
-				if r.TrafficLimitBytes == 0 && !r.TrafficQuotaMonthly && r.ImportedTraffic == (forwarding.ImportedTraffic{}) {
-					continue
-				}
+				// Unlimited rules need the same recovery: their last report may
+				// have been throttled or committed just before a process crash.
+				// Indexed ledger totals and the unchanged-total check avoid idle writes.
 				if syncErr := s.syncRuleTrafficProjection(bounded, r); syncErr != nil && ctx.Err() == nil {
 					logger.Warn("rule traffic reconciliation failed", "rule_id", r.ID, "error", syncErr)
 				}

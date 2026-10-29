@@ -29,13 +29,14 @@ func (p appliedRuleMetadataProvider) ResolveRuleUsageMetadataAt(ctx context.Cont
 		return LegacyRuleMetadata{}, err
 	}
 	var bundle agentv1.ConfigurationBundle
-	if json.Unmarshal(input.Config.Config, &bundle) != nil || input.Config.CreatedAt.After(endedAt) {
+	if json.Unmarshal(input.Config.Config, &bundle) != nil || input.Config.CreatedAt.IsZero() || input.Config.CreatedAt.After(endedAt) {
 		return LegacyRuleMetadata{}, fmt.Errorf("%w: invalid usage bundle or interval", faults.ErrValidation)
 	}
 	var match *agentv1.ConfigurationFragment
 	for i := range bundle.Fragments {
 		f := &bundle.Fragments[i]
-		if f.GroupID != generations.ForwardingFragmentID(f.Engine, ruleID) {
+		if f.GroupID != generations.ForwardingFragmentID(agentv1.EngineXray, ruleID) &&
+			f.GroupID != generations.ForwardingFragmentID(agentv1.EngineGOST, ruleID) {
 			continue
 		}
 		if match != nil {
@@ -43,7 +44,51 @@ func (p appliedRuleMetadataProvider) ResolveRuleUsageMetadataAt(ctx context.Cont
 		}
 		match = f
 	}
-	if match == nil || match.Usage == nil || !deploymentreceipts.VerifiedHistoricalBundle(input, nodeID, int64(generation), match.Engine, bundle) {
+	if match == nil {
+		// Xray keeps counters for removed inbounds, including final bytes of
+		// existing connections. Older reporters stamp those deltas with the new
+		// LKG generation. Resolve only a completely absent rule, and require
+		// real same-attempt receipts for both the removal and latest old rule.
+		// Never use history to rescue bad metadata/receipts in a present rule.
+		history, ok := p.repository.(deploymentreceipts.HistoricalRuleRepository)
+		if !ok || !deploymentreceipts.VerifiedHistoricalTransition(input, nodeID, int64(generation), bundle) {
+			return LegacyRuleMetadata{}, fmt.Errorf("%w: usage configuration is not applied and verified", faults.ErrValidation)
+		}
+		previous, err := history.UsageRuleConfigInput(ctx, nodeID, ruleID, int64(generation))
+		if err != nil {
+			return LegacyRuleMetadata{}, err
+		}
+		if previous.Config.Generation <= 0 || previous.Config.Generation >= int64(generation) ||
+			previous.Config.CreatedAt.IsZero() || previous.Config.CreatedAt.After(input.Config.CreatedAt) {
+			return LegacyRuleMetadata{}, fmt.Errorf("%w: invalid previous usage configuration", faults.ErrValidation)
+		}
+		// Resolve once with the selected evidence, with no recursive fallback.
+		return historicalRuleMetadata(previous, nodeID, ruleID, previous.Config.Generation, endedAt)
+	}
+	return verifiedFragmentMetadata(input, nodeID, ruleID, int64(generation), bundle, match)
+}
+
+func historicalRuleMetadata(input deploymentreceipts.HistoricalInput, nodeID, ruleID string, generation int64, endedAt time.Time) (LegacyRuleMetadata, error) {
+	var bundle agentv1.ConfigurationBundle
+	if json.Unmarshal(input.Config.Config, &bundle) != nil || input.Config.CreatedAt.After(endedAt) {
+		return LegacyRuleMetadata{}, fmt.Errorf("%w: invalid usage bundle or interval", faults.ErrValidation)
+	}
+	var match *agentv1.ConfigurationFragment
+	for i := range bundle.Fragments {
+		f := &bundle.Fragments[i]
+		if f.GroupID == generations.ForwardingFragmentID(agentv1.EngineXray, ruleID) || f.GroupID == generations.ForwardingFragmentID(agentv1.EngineGOST, ruleID) {
+			if match != nil {
+				return LegacyRuleMetadata{}, fmt.Errorf("%w: duplicate usage fragment", faults.ErrValidation)
+			}
+			match = f
+		}
+	}
+	return verifiedFragmentMetadata(input, nodeID, ruleID, generation, bundle, match)
+}
+
+func verifiedFragmentMetadata(input deploymentreceipts.HistoricalInput, nodeID, ruleID string, generation int64, bundle agentv1.ConfigurationBundle, match *agentv1.ConfigurationFragment) (LegacyRuleMetadata, error) {
+	if match == nil || match.Usage == nil || match.GroupID != generations.ForwardingFragmentID(match.Engine, ruleID) ||
+		!deploymentreceipts.VerifiedHistoricalBundle(input, nodeID, generation, match.Engine, bundle) {
 		return LegacyRuleMetadata{}, fmt.Errorf("%w: usage configuration is not applied and verified", faults.ErrValidation)
 	}
 	m := match.Usage
