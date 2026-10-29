@@ -25,6 +25,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--archive-directory', type=Path, required=True)
@@ -269,6 +270,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             def bbr_backup_paths():
                 return set(bbr_backups.glob('network-bbr2-*')) | set(bbr_backups.glob('network-bbr-*'))
 
+            def transaction_paths():
+                program = Path('/opt/hl-panel')
+                return (set(program.glob('.node-update-v*')) | set(program.glob('.node-reinstall-*')) |
+                        set(bbr_backups.glob('update-v*')))
+
             def bbr_state():
                 current = run(['sysctl', '-n', 'net.ipv4.tcp_congestion_control'])
                 assert current.returncode == 0, 'Cannot read the current TCP congestion algorithm'
@@ -324,9 +330,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 assert preserve_variant or expected_bbr is None, 'Supported BBR must not be accepted as an unsupported-kernel skip'
                 assert installed_bbr_state == original_bbr_state, 'Unsupported BBR algorithms changed runtime or persistence'
                 assert not any(path.exists() for path in bbr_configs.values())
-            installation_backups = bbr_backup_paths() - backups_before_install
-            assert len(installation_backups) == (1 if bbr_enabled else 0), 'Fresh installation backup count does not match selected BBR support'
-            installation_bbr_backup = installation_backups.pop() if installation_backups else None
+            assert bbr_backup_paths() == backups_before_install, 'Fresh installation retained a network archive'
+            assert not transaction_paths(), 'Fresh installation retained a completed transaction'
             checks.append('successful token installation enables and persists kernel TCP ' + installed_bbr_algorithm if bbr_enabled else
                           'unsupported kernel preserves the original TCP algorithm and remains installable')
             assert fault_state['enroll_calls'] == 4 and fault_state['lost_response']
@@ -558,6 +563,29 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             run(['systemctl', 'daemon-reload'], check=True)
             try:
                 sys.argv = ['update-node.py','--version',args.version]
+                before_transactions = transaction_paths()
+                original_active = node_updater.active
+                attempts = []
+                def fail_candidate_start():
+                    attempts.append(True)
+                    if len(attempts) == 1:
+                        raise node_updater.UpdateError('disposable candidate start failure')
+                    return original_active()
+                try:
+                    with patch.object(node_updater, 'active', side_effect=fail_candidate_start):
+                        node_updater.main()
+                except node_updater.UpdateError:
+                    pass
+                else:
+                    raise AssertionError('Candidate-start fault was not exercised')
+                assert len(attempts) == 2, 'Failed candidate did not attempt to restore the old service'
+                assert transaction_paths() == before_transactions, 'Recovered update retained its temporary files'
+                assert not node_updater.METRICS_OVERRIDE.exists()
+                assert not tc_dropin.exists(), 'Recovery retained new TC service defaults'
+                assert json.loads(agent_config.read_text()) == legacy_config
+                assert service_unit.read_text() == original_unit.replace(' AF_NETLINK', '')
+                wait_for(real_clients)
+                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
                 node_updater.main()
                 wait_for(real_clients)
                 wait_for(node_sample)
@@ -569,15 +597,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 proc_status = dict(line.split(':', 1) for line in Path('/proc', agent_pid, 'status').read_text().splitlines() if ':' in line)
                 assert int(proc_status['CapEff'].strip(), 16) & (1 << 12), 'Upgraded legacy agent lacks effective CAP_NET_ADMIN'
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
-                backups = sorted(Path('/var/backups/hl-panel-node').glob('update-*'))
-                assert backups
-                run(['bash', str(backups[-1]/'rollback.sh')], check=True)
-                assert not node_updater.METRICS_OVERRIDE.exists()
-                assert not tc_dropin.exists(), 'Rollback retained new TC service defaults'
-                assert json.loads(agent_config.read_text()) == legacy_config
-                assert service_unit.read_text() == original_unit.replace(' AF_NETLINK', '')
-                wait_for(real_clients)
-                assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
+                assert transaction_paths() == before_transactions, 'Successful CLI update retained its temporary files'
             finally:
                 sys.argv = saved_args
                 service_unit.write_text(original_unit)
@@ -586,8 +606,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 tc_dropin.write_bytes(original_tc_dropin)
                 run(['systemctl', 'daemon-reload'], check=True)
                 run(['systemctl', 'restart', 'hl-panel-edge-agent'], check=True)
-            checks.append('verified legacy node metrics upgrade and rollback launcher preserve custom unit, identity and real forwarding')
-            checks.append('legacy JSON without TC upgrades to effective NET_ADMIN and reported speed-limit capability; rollback restores absent defaults and real clients')
+            checks.append('legacy node start failure restores custom unit, absent metrics/TC defaults, identity and real clients without a retained archive')
+            checks.append('legacy JSON without TC upgrades to effective NET_ADMIN and reported speed-limit capability; successful CLI update cleans its transaction')
             limits = run(['systemctl','show','hl-panel-edge-agent',
                           '--property=StartLimitIntervalUSec,StartLimitBurst']).stdout
             assert 'StartLimitIntervalUSec=1min' in limits and 'StartLimitBurst=5' in limits
@@ -629,6 +649,9 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 wait_for(lambda: maintenance('/start',task))
                 maintenance('/start',task)  # Replaying a task must not execute twice.
                 wait_for(worker_verifying,timeout=120)
+                pending = maintenance()['task']
+                pending_directory = Path(pending['backup_directory'])
+                assert pending_directory.is_dir(), 'Unverified update discarded recovery materials'
                 assert run(['systemctl','show','hl-panel-node-update','-p','MainPID','--value'],check=True).stdout.strip()==worker_pid
                 after_pid=run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()
                 assert after_pid!=before_pid
@@ -661,8 +684,10 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                     old_pid=after_pid
                     maintenance('/start',task)
                     assert run(['systemctl','show','hl-panel-edge-agent','-p','MainPID','--value'],check=True).stdout.strip()==old_pid
+                wait_for(lambda: not pending_directory.exists())
+                assert maintenance()['task']['backup_directory'] == '', 'Completed task retained a stale transaction path'
                 assert hashlib.sha256(credential_path.read_bytes()).hexdigest()==identity_digest
-            checks.append('real root socket update survives Agent replacement, preserves identity and real forwarding; task replay, crash lock and explicit rollback verified')
+            checks.append('real root socket update preserves pending recovery, cleans success/recovery, survives Agent replacement; task replay, crash lock and real forwarding verified')
 
             # Two real same-port group switches; both old group memberships
             # must be removed, not merely masked in the UI.
@@ -684,29 +709,28 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             request('POST',f"/device-groups/{switched['id']}/generations",{'engine':'gost',
                 'config':switched_config,'idempotency_key':'switch-gost'},201)
             switch_token = issue(group_id=switched['id'])
-            # Remove the successful fresh-install state through its own public
-            # rollback helper. Otherwise reinstall assertions could pass even
-            # when the installer never invokes BBR configuration on reinstall.
-            if bbr_enabled:
-                rollback_script = 'configure-node-' + installed_bbr_algorithm + '.py'
-                assert run([sys.executable, str(installation_bbr_backup/rollback_script),
-                            '--rollback', str(installation_bbr_backup)]).returncode == 0
-                assert bbr_state() == original_bbr_state
-                assert not any(path.exists() for path in bbr_configs.values())
-                if original_bbr_state[0] == installed_bbr_algorithm:
-                    # This script is gated to an explicitly disposable VM.
-                    # Change only the TCP default to exercise reinstall.
+            # Only this explicitly disposable VM resets its own fixture. Node
+            # installation no longer exposes an archived network rollback tool.
+            def reset_bbr_fixture():
+                if not bbr_enabled:
+                    assert bbr_state() == original_bbr_state
+                    return
+                for algorithm, path in bbr_configs.items():
+                    if path.exists():
+                        assert path.read_bytes() == installed_bbr_state[1][algorithm], 'Refusing to remove an unrelated sysctl file'
+                        path.unlink()
+                default = original_bbr_state[0]
+                if default == installed_bbr_algorithm:
                     available = run(['sysctl', '-n', 'net.ipv4.tcp_available_congestion_control'])
                     assert available.returncode == 0 and 'cubic' in available.stdout.split()
-                    assert run(['sysctl', '-q', '-w', 'net.ipv4.tcp_congestion_control=cubic']).returncode == 0
+                    default = 'cubic'
+                assert run(['sysctl', '-q', '-w', 'net.ipv4.tcp_congestion_control='+default]).returncode == 0
                 assert bbr_state()[0] != installed_bbr_algorithm and not any(path.exists() for path in bbr_configs.values())
-            else:
-                assert bbr_state() == original_bbr_state and not any(path.exists() for path in bbr_configs.values())
+            reset_bbr_fixture()
             # Exercise an actual legacy upgrade with BBR absent, rather than
-            # passing because fresh installation already enabled it. Network
-            # rollback is independent of the program/identity rollback.
-            before_upgrade_bbr = bbr_state()
+            # passing because fresh installation already enabled it.
             backups_before_upgrade_bbr = bbr_backup_paths()
+            before_transactions = transaction_paths()
             try:
                 sys.argv = ['update-node.py','--version',args.version]
                 node_updater.main()
@@ -714,16 +738,11 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 sys.argv = saved_args
             wait_for(real_clients)
             assert bbr_state() == installed_bbr_state, 'Legacy upgrade did not configure the supported BBR algorithm'
-            upgrade_bbr_backups = bbr_backup_paths() - backups_before_upgrade_bbr
-            assert len(upgrade_bbr_backups) == (1 if bbr_enabled else 0)
-            if bbr_enabled:
-                network_backup = upgrade_bbr_backups.pop()
-                rollback_script = 'configure-node-' + installed_bbr_algorithm + '.py'
-                assert run([sys.executable, str(network_backup/rollback_script),
-                            '--rollback', str(network_backup)]).returncode == 0
-                assert bbr_state() == before_upgrade_bbr
+            assert bbr_backup_paths() == backups_before_upgrade_bbr, 'Program upgrade retained a network archive'
+            assert transaction_paths() == before_transactions, 'Program upgrade retained a completed transaction'
+            reset_bbr_fixture()
             assert hashlib.sha256(credential_path.read_bytes()).hexdigest() == identity_digest
-            checks.append('legacy program upgrade configures supported BBR with independent network rollback and preserves node identity')
+            checks.append('legacy program upgrade configures supported BBR, preserves node identity and leaves no completed archives')
             backups_before_reinstall = bbr_backup_paths()
             # A legacy machine may also be migrated using its token command.
             # Remove only this disposable VM's TC configuration fixture.
@@ -742,8 +761,9 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert {algorithm: path.is_file() for algorithm, path in bbr_configs.items()} == {
                 algorithm: bbr_enabled and algorithm == installed_bbr_algorithm for algorithm in bbr_configs}
             reinstall_backups = bbr_backup_paths()
-            assert len(reinstall_backups - backups_before_reinstall) == (1 if bbr_enabled else 0)
-            checks.append('group-switch reinstall restores ' + installed_bbr_algorithm + ' after rollback' if bbr_enabled else
+            assert reinstall_backups == backups_before_reinstall, 'Group-switch reinstall retained a network archive'
+            assert transaction_paths() == before_transactions, 'Group-switch reinstall retained a completed transaction'
+            checks.append('group-switch reinstall enables ' + installed_bbr_algorithm + ' without a retained archive' if bbr_enabled else
                           'group-switch reinstall preserves unsupported-kernel TCP settings')
             assert fault_state['reenroll_calls'] == 3
             fault_state['reenroll_fault'] = False

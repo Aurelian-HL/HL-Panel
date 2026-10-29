@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Root-only fixed-purpose node updater, reachable only through a local socket."""
 import http.server
+import fcntl
 import json
 import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 import socket
 import struct
 import subprocess
@@ -18,7 +20,9 @@ STATE = Path('/var/lib/hl-panel-node-update')
 UUID = re.compile(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}')
 TAG = re.compile(r'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)')
 SHA = re.compile(r'[a-f0-9]{64}')
-BACKUP = re.compile(r'/var/backups/hl-panel-node/update-v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9-]+')
+# Accept the old receipt during an upgrade from an already-running worker.
+# New installers stage replacements privately next to the installed programs.
+BACKUP = re.compile(r'(?:/var/backups/hl-panel-node/update-v|/opt/hl-panel/\.node-update-v)[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_-]+')
 LOCK = threading.RLock()
 ACTIVE = {'running', 'verifying', 'uncertain'}
 EXECUTING = False
@@ -70,6 +74,54 @@ def transition(task, state, phase, backup=''):
         save(task)
 
 
+def cleanup_completed(task):
+    if task.get('state') not in ('succeeded', 'rolled_back'):
+        return
+    value = task.get('backup_directory', '')
+    if not value:
+        return
+    if not BACKUP.fullmatch(value):
+        raise ValueError('invalid transaction')
+    path = Path(value)
+    if path.is_symlink():
+        raise ValueError('unsafe transaction')
+    if path.exists():
+        for directory in (path.parent, path):
+            info = directory.stat()
+            if directory.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+                raise ValueError('unsafe transaction')
+        if path.stat().st_mode & 0o077:
+            raise ValueError('unsafe transaction')
+        # A restarted worker may receive /verified while the surviving updater
+        # still reads release assets. Never delete an in-use transaction.
+        fd = os.open(ROOT/'.node-update.lock', os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
+            shutil.rmtree(path)
+    task['backup_directory'] = ''  # Kept only as a legacy wire field.
+    save(task)
+
+
+def finish(task, state, phase, backup=''):
+    transition(task, state, phase, backup)
+    try:
+        cleanup_completed(task)
+    except (OSError, ValueError):
+        # Cleanup cannot turn a proven successful upgrade into an uncertain one,
+        # or make a malformed directory eligible for recursive deletion.
+        print('Node update completed; temporary-file cleanup deferred.', file=sys.stderr)
+
+
+def retry_cleanup(task):
+    # /status is already polled by the Agent. Retry a deferred cleanup there,
+    # without a new background poller or losing the durable transaction path.
+    if task and task.get('state') in ('succeeded', 'rolled_back') and task.get('backup_directory'):
+        try:
+            cleanup_completed(task)
+        except (OSError, ValueError):
+            pass
+
+
 def execute(task):
     global EXECUTING
     # This thread and root service are independent of the edge-agent process.
@@ -80,7 +132,8 @@ def execute(task):
         with (job / 'private.log').open('wb') as log:
             process = subprocess.run([sys.executable, str(ROOT / 'update-node.py'),
                 '--version', task['version'], '--expected-sha256', task['archive_sha256'],
-                '--result-file', str(result)], stdout=log, stderr=log, timeout=1800)
+                '--result-file', str(result)], stdout=log, stderr=log, timeout=1800,
+                env=dict(os.environ, HL_NODE_TRANSIENT_UPDATE='1'))
         report = json.loads(result.read_text()) if result.is_file() else {}
         backup = report.get('backup_directory', '')
         if backup and not BACKUP.fullmatch(backup):
@@ -89,7 +142,7 @@ def execute(task):
             state = report.get('state', 'uncertain')
             if state not in ('failed', 'rolled_back', 'uncertain'):
                 state = 'uncertain'
-            transition(task, state, 'update_failed', backup)
+            finish(task, state, 'update_failed', backup)
             return
         if report.get('state') != 'verifying' or not backup:
             raise ValueError('missing update result')
@@ -108,7 +161,7 @@ def execute(task):
         with (job / 'private.log').open('ab') as log:
             restored = subprocess.run([sys.executable, str(Path(backup) / 'rollback-runner.py'),
                 '--rollback', backup], stdout=log, stderr=log, timeout=180)
-        transition(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
+        finish(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
     except Exception:
         # A timeout can occur during switching. Never assume the old program won.
         transition(task, 'uncertain', 'interrupted')
@@ -126,7 +179,7 @@ def recover(task):
         with (STATE / task['id'] / 'private.log').open('ab') as log:
             restored = subprocess.run([sys.executable, str(Path(backup) / 'rollback-runner.py'),
                 '--rollback', backup], stdout=log, stderr=log, timeout=180)
-        transition(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
+        finish(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
     except Exception:
         transition(task, 'uncertain', 'interrupted')
     finally:
@@ -173,6 +226,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             with LOCK:
                 task = load()
+                retry_cleanup(task)
                 if self.command == 'GET' and self.path == '/status':
                     self.respond(200, {'capability': 'node-update-v1', 'task': task})
                 elif self.command == 'POST' and self.path == '/start' and valid_request(value):
@@ -196,6 +250,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         threading.Thread(target=execute, args=(dict(task),), daemon=False).start()
                     self.respond(200, {'task': task})
                 elif self.command == 'POST' and self.path == '/verified' and isinstance(value, dict) and set(value) == {'id'}:
+                    if task and task['id'] == value['id'] and task['state'] == 'succeeded':
+                        self.respond(200, {'task': task})
+                        return
                     if not task or task['id'] != value['id'] or task['state'] not in ('verifying', 'uncertain', 'succeeded') or task['phase'] == 'rollback' or not installation_completed(task):
                         self.respond(409, {})
                         return
@@ -204,7 +261,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if version.returncode or task['version'] not in version.stdout.decode().split() or alive.returncode:
                         self.respond(409, {})
                         return
-                    transition(task, 'succeeded', 'verified')
+                    finish(task, 'succeeded', 'verified')
                     self.respond(200, {'task': task})
                 elif self.command == 'POST' and self.path == '/rollback' and uid == 0 and isinstance(value, dict) and set(value) == {'id'}:
                     if EXECUTING or not task or task['id'] != value['id'] or task['state'] != 'uncertain' or not BACKUP.fullmatch(task.get('backup_directory', '')):
@@ -232,6 +289,11 @@ def main():
         raise SystemExit('unsafe directory')
     with LOCK:
         old = load()
+        if old and old['state'] in ('succeeded', 'rolled_back'):
+            try:
+                cleanup_completed(old)
+            except (OSError, ValueError):
+                print('Temporary-file cleanup deferred; check node update logs.', file=sys.stderr)
         if old and old['state'] in ACTIVE:
             # Keep the child's durable backup reference if the worker died
             # before its in-memory task reached the verification stage.

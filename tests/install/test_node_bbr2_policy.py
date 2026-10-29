@@ -26,7 +26,7 @@ class BBR2Tests(unittest.TestCase):
         self.fallback = bbr2.load_bbr_fallback()
         self.fallback_config = self.config_dir / self.fallback.CONFIG.name
         for name, value in dict(
-                CONFIG=self.fallback_config, BACKUPS=self.backups,
+                CONFIG=self.fallback_config,
                 DIRECTORIES=(self.config_dir,),
                 LEGACY=self.root / 'sysctl.conf').items():
             self.stack.enter_context(patch.object(self.fallback, name, value))
@@ -36,7 +36,7 @@ class BBR2Tests(unittest.TestCase):
         # Do not depend on the host having modprobe, and never reach its sysctl.
         self.stack.enter_context(patch.object(bbr2.shutil, 'which', return_value=None))
         for name, value in dict(
-                CONFIG=self.config, BACKUPS=self.backups,
+                CONFIG=self.config,
                 DIRECTORIES=(self.config_dir,),
                 LEGACY=self.root / 'sysctl.conf').items():
             self.stack.enter_context(patch.object(bbr2, name, value))
@@ -64,23 +64,18 @@ class BBR2Tests(unittest.TestCase):
         return ''
 
     def test_enable_writes_and_reads_back_bbr2(self):
-        backup = bbr2.enable()
+        self.assertEqual(bbr2.enable(), 'bbr2')
         self.assertEqual(self.kernel, 'bbr2')
         self.assertEqual(self.config.read_bytes(), bbr2.CONTENT)
-        self.assertTrue(backup.name.startswith('network-bbr2-'))
+        self.assertFalse(self.backups.exists())
         self.assertIn(['sysctl', '-q', '-w', bbr2.KEY + '=bbr2'], self.calls)
-        bbr2.rollback(backup)
-        self.assertEqual(self.kernel, 'cubic')
-        self.assertFalse(self.config.exists())
 
-    def test_existing_bbr_is_upgraded_to_bbr2_and_rollback_restores_it(self):
+    def test_existing_bbr_is_upgraded_to_bbr2_without_archive(self):
         self.kernel = 'bbr'
-        backup = bbr2.enable()
+        self.assertEqual(bbr2.enable(), 'bbr2')
         self.assertEqual(self.kernel, 'bbr2')
-        self.assertIsNotNone(backup)
-        bbr2.rollback(backup)
-        self.assertEqual(self.kernel, 'bbr')
-        self.assertFalse(self.config.exists())
+        self.assertIsNone(bbr2.enable())
+        self.assertFalse(self.backups.exists())
 
     def test_unknown_bbr_variant_is_preserved(self):
         self.kernel = 'bbr3'
@@ -96,19 +91,14 @@ class BBR2Tests(unittest.TestCase):
         self.assertNotIn(['modprobe', 'tcp_bbr'], self.calls)
         self.assertFalse(self.fallback_config.exists())
 
-    def test_bbr2_unavailable_enables_real_bbr_helper_and_rolls_back(self):
+    def test_bbr2_unavailable_enables_real_bbr_helper_without_archive(self):
         self.available = 'reno cubic bbr'
-        backup = bbr2.enable()
+        self.assertEqual(bbr2.enable(), 'bbr')
         self.assertEqual(self.kernel, 'bbr')
         self.assertFalse(self.config.exists())
         self.assertEqual(self.fallback_config.read_bytes(), self.fallback.CONTENT)
-        self.assertTrue(backup.name.startswith('network-bbr-'))
-        self.assertTrue((backup / 'configure-node-bbr.py').is_file())
         self.assertIsNone(bbr2.enable())
-        self.assertEqual(len(list(self.backups.iterdir())), 1)
-        self.fallback.rollback(backup)
-        self.assertEqual(self.kernel, 'cubic')
-        self.assertFalse(self.fallback_config.exists())
+        self.assertFalse(self.backups.exists())
 
     def test_fallback_preserves_operator_conflict(self):
         self.available = 'reno cubic bbr'

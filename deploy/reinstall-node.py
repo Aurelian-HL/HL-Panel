@@ -24,7 +24,6 @@ STATE = Path('/var/lib/hl-panel-edge')
 UNIT = Path('/etc/systemd/system/hl-panel-edge-agent.service')
 CA_FILE = Path('/etc/hl-panel/edge-agent-ca.pem')
 SERVICE = 'hl-panel-edge-agent.service'
-BACKUPS = Path('/var/backups/hl-panel-node')
 
 
 class ReinstallError(Exception):
@@ -116,20 +115,18 @@ def request_reenrollment(origin, context, credential, payload):
     raise ReinstallError('未收到面板确认，当前节点服务和身份保留；重新运行本次命令可安全恢复，勿改用旧组命令')
 
 
-def restore_programs(backup):
-    backup = backup.resolve()
-    require(backup.parent == BACKUPS and backup.name.startswith('reinstall-'), '不是受管重装备份目录')
-    require(not BACKUPS.is_symlink() and BACKUPS.is_dir(), '节点备份目录无效')
-    for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent, BACKUPS):
+def restore_programs(stage):
+    require(stage.parent == ROOT and stage.name.startswith('.node-reinstall-') and not stage.is_symlink(), '不是本次重装临时目录')
+    for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent):
         require(not directory.is_symlink(), '受管目录不能是链接')
     account = pwd.getpwnam('hl-edge')
-    require(not backup.stat().st_mode & 0o077 and backup.stat().st_uid == 0, '备份目录权限不安全')
-    private_file(backup / 'manifest.json', mask=0o077)
+    require(not stage.stat().st_mode & 0o077 and stage.stat().st_uid == 0, '临时目录权限不安全')
+    private_file(stage / 'manifest.json', mask=0o077)
     try:
-        manifest = json.loads((backup / 'manifest.json').read_text())
+        manifest = json.loads((stage / 'manifest.json').read_text())
     except (OSError, ValueError, TypeError):
-        raise ReinstallError('节点回滚清单无效') from None
-    require(isinstance(manifest, dict), '节点回滚清单无效')
+        raise ReinstallError('程序恢复清单无效') from None
+    require(isinstance(manifest, dict), '程序恢复清单无效')
     credential_sha256 = manifest.get('credential_sha256')
     require(isinstance(credential_sha256, str) and re.fullmatch(r'[0-9a-f]{64}', credential_sha256), '节点身份摘要无效')
     require(digest(STATE / 'credentials.json') == credential_sha256, '节点身份不同，拒绝恢复')
@@ -146,20 +143,20 @@ def restore_programs(backup):
         mode = item.get('mode')
         uid = item.get('uid', 0)
         gid = item.get('gid', 0)
-        require(isinstance(destination, str) and destination in allowed and destination not in seen, '备份文件路径无效')
-        require(isinstance(source, str) and re.fullmatch(r'file-[0-9]+', source), '备份文件名无效')
-        require(isinstance(checksum, str) and re.fullmatch(r'[0-9a-f]{64}', checksum), '备份文件摘要无效')
-        require(isinstance(mode, int) and 0 <= mode <= 0o777, '备份文件权限无效')
-        require(isinstance(uid, int) and uid == 0 and isinstance(gid, int) and gid >= 0, '备份文件所有者无效')
+        require(isinstance(destination, str) and destination in allowed and destination not in seen, '临时文件路径无效')
+        require(isinstance(source, str) and re.fullmatch(r'file-[0-9]+', source), '临时文件名无效')
+        require(isinstance(checksum, str) and re.fullmatch(r'[0-9a-f]{64}', checksum), '临时文件摘要无效')
+        require(isinstance(mode, int) and 0 <= mode <= 0o777, '临时文件权限无效')
+        require(isinstance(uid, int) and uid == 0 and isinstance(gid, int) and gid >= 0, '临时文件所有者无效')
         if destination in (str(CONFIG), str(CA_FILE)):
             require(gid == account.pw_gid and mode == 0o640, '节点配置所有者或权限无效')
         else:
             require(gid == 0, '节点程序所有者无效')
-        source_path = backup / source
+        source_path = stage / source
         private_file(source_path, owner=0, mask=0o022)
-        require(digest(source_path) == checksum, '备份文件摘要不符')
+        require(digest(source_path) == checksum, '临时文件摘要不符')
         seen.add(destination)
-    require(str(CONFIG) in seen, '回滚清单缺少节点配置')
+    require(str(CONFIG) in seen, '恢复清单缺少节点配置')
     private_file(CONFIG, mask=0o027)
     if CA_FILE.exists():
         private_file(CA_FILE, mask=0o027)
@@ -167,18 +164,36 @@ def restore_programs(backup):
     for item in items:
         if item['destination'] in (str(CONFIG), str(CA_FILE)):
             continue
-        atomic_install(backup / item['source'], Path(item['destination']), item['mode'], item.get('uid', 0), item.get('gid', 0))
+        atomic_install(stage / item['source'], Path(item['destination']), item['mode'], item.get('uid', 0), item.get('gid', 0))
     # Keep the latest confirmed panel address and trust settings, as well as
     # credentials/usage. A program rollback must not undo a later registration.
-    if (backup / 'maintenance-rollback.py').is_file():
-        private_file(backup / 'maintenance-rollback.py')
-        run([sys.executable, str(backup / 'maintenance-rollback.py'), '--restore', str(backup / 'maintenance')])
+    if (stage / 'maintenance-rollback.py').is_file():
+        private_file(stage / 'maintenance-rollback.py')
+        run([sys.executable, str(stage / 'maintenance-rollback.py'), '--restore', str(stage / 'maintenance')])
     start_service()
 
 
 def reinstall(args):
+    require(ROOT.is_dir() and not ROOT.is_symlink() and ROOT.stat().st_uid == 0 and
+            not ROOT.stat().st_mode & 0o022, '节点程序目录不安全')
+    stage = Path(tempfile.mkdtemp(prefix='.node-reinstall-', dir=ROOT))
+    try:
+        reinstall_staged(args, stage)
+    finally:
+        # Retain an interrupted transaction only if automatic recovery failed.
+        # Successful registration, rejected registration and recovered failures
+        # leave no copied programs, archives or public rollback commands.
+        if not (stage / '.switching').exists():
+            try:
+                shutil.rmtree(stage)
+            except OSError:
+                print('[HL-panel 节点] 临时文件清理未完成：' + str(stage), file=sys.stderr)
+    print('[HL-panel 节点] 重装完成；身份与累计流量保留。')
+
+
+def reinstall_staged(args, stage):
     account = pwd.getpwnam('hl-edge')
-    for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent, BACKUPS):
+    for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent):
         require(not directory.is_symlink(), '受管目录不能是链接')
     require(STATE.is_dir() and STATE.stat().st_uid == account.pw_uid and not STATE.stat().st_mode & 0o077, '节点状态目录不安全')
     private_file(CONFIG)
@@ -209,16 +224,12 @@ def reinstall(args):
     run([sys.executable, str(args.release / 'deploy/install-node-update.py'), str(args.release),
          '--preflight', '--install-missing'])
     run(['systemd-analyze', 'verify', str(args.release / 'deploy/systemd/hl-panel-edge-agent.service')])
-    BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)
-    require(BACKUPS.stat().st_uid == 0 and not BACKUPS.stat().st_mode & 0o077, '备份目录权限不安全')
-    backup = BACKUPS / ('reinstall-' + args.version + '-' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-' + os.urandom(3).hex())
-    backup.mkdir(mode=0o700)
     files = []
     for destination, _, _ in sources:
         if destination.exists():
             name = 'file-' + str(len(files))
-            shutil.copy2(destination, backup / name)
-            files.append({'source': name, 'destination': str(destination), 'sha256': digest(backup / name), 'mode': destination.stat().st_mode & 0o777})
+            shutil.copy2(destination, stage / name)
+            files.append({'source': name, 'destination': str(destination), 'sha256': digest(stage / name), 'mode': destination.stat().st_mode & 0o777})
     # Keep the executable rollback and the control-plane configuration in one
     # integrity-checked manifest. Credentials/state remain intentionally out of
     # scope: the confirmed node identity and usage history must survive.
@@ -229,30 +240,27 @@ def reinstall(args):
             require(info.st_gid == account.pw_gid and info.st_mode & 0o777 == 0o640,
                     '节点配置所有者或权限无效')
             name = 'file-' + str(len(files))
-            shutil.copy2(destination, backup / name)
+            shutil.copy2(destination, stage / name)
             info = destination.stat()
-            files.append({'source': name, 'destination': str(destination), 'sha256': digest(backup / name),
+            files.append({'source': name, 'destination': str(destination), 'sha256': digest(stage / name),
                           'mode': info.st_mode & 0o777, 'uid': info.st_uid, 'gid': info.st_gid})
     manifest = {'credential_sha256': digest(STATE / 'credentials.json'), 'files': files}
     for item in files:
         item.setdefault('uid', 0)
         item.setdefault('gid', 0)
-    (backup / 'manifest.json').write_text(json.dumps(manifest) + '\n')
-    (backup / 'manifest.json').chmod(0o600)
+    (stage / 'manifest.json').write_text(json.dumps(manifest) + '\n')
+    (stage / 'manifest.json').chmod(0o600)
     maintenance = args.release / 'deploy/install-node-update.py'
     private_file(maintenance)
-    shutil.copy2(maintenance, backup / 'maintenance-rollback.py')
-    run([sys.executable, str(maintenance), '--snapshot', str(backup / 'maintenance')])
-    shutil.copy2(args.release / 'deploy/reinstall-node.py', backup / 'reinstall-node.py')
-    (backup / 'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 ' + str(backup / 'reinstall-node.py') + ' --rollback ' + str(backup) + '\n')
-    (backup / 'rollback.sh').chmod(0o700)
+    shutil.copy2(maintenance, stage / 'maintenance-rollback.py')
+    run([sys.executable, str(maintenance), '--snapshot', str(stage / 'maintenance')])
     config['control_plane_url'], config['dial_host'] = args.panel_url, args.node_address
     config['heartbeat_interval'] = '1s'
     config['ca_file'] = str(CA_FILE) if args.ca_file else ''
-    candidate = backup / 'new-config.json'
+    candidate = stage / 'new-config.json'
     candidate.write_text(json.dumps(config) + '\n')
     candidate.chmod(0o600)
-    candidate_ca = backup / 'new-ca.pem'
+    candidate_ca = stage / 'new-ca.pem'
     if args.ca_file:
         shutil.copyfile(args.ca_file, candidate_ca)
         candidate_ca.chmod(0o600)
@@ -262,11 +270,12 @@ def reinstall(args):
             atomic_install(candidate_ca, CA_FILE, 0o640, gid=account.pw_gid)
         atomic_install(candidate, CONFIG, 0o640, gid=account.pw_gid)
 
-    print('[HL-panel 节点] 已备份现有程序，正在确认本次设备组注册…', flush=True)
+    print('[HL-panel 节点] 正在确认本次设备组注册…', flush=True)
     request_reenrollment(args.panel_url, context, credential, {'token': token, 'hostname': socket.gethostname(),
         'dial_host': args.node_address, 'platform': 'linux', 'architecture': 'amd64', 'agent_version': args.version, 'capabilities': []})
     token = ''
     print('[HL-panel 节点] 注册已确认，保留节点身份，更新 Agent、探针及双引擎…', flush=True)
+    (stage / '.switching').touch(mode=0o600)
     try:
         run(['systemctl', 'stop', SERVICE])
         install_confirmed_connection()
@@ -279,12 +288,12 @@ def reinstall(args):
         try:
             run(['systemctl', 'stop', SERVICE])
             install_confirmed_connection()
-            restore_programs(backup)
+            restore_programs(stage)
         except Exception:
-            raise ReinstallError('设备组注册已确认，但程序更新及自动恢复失败；备份：' + str(backup) + '；运行 bash ' + str(backup / 'rollback.sh')) from None
+            raise ReinstallError('设备组注册已确认，但程序自动恢复失败，请检查服务状态；未完成事务：' + str(stage)) from None
+        (stage / '.switching').unlink()
         raise ReinstallError('新程序启动失败，已恢复旧程序；设备组仍采用本次已确认的注册，可重跑本次命令') from None
-    print('备份：' + str(backup))
-    print('程序回滚（不回退设备组或流量）：bash ' + str(backup / 'rollback.sh'))
+    (stage / '.switching').unlink()
 
 
 def main():
@@ -294,7 +303,6 @@ def main():
     parser.add_argument('--node-address')
     parser.add_argument('--version')
     parser.add_argument('--ca-file', default='')
-    parser.add_argument('--rollback', type=Path)
     args = parser.parse_args()
     require(os.geteuid() == 0, '请使用 root 执行')
     fd = os.open(ROOT / '.node-update.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -303,11 +311,8 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ReinstallError('另一个节点更新或重装正在执行，请完成后再运行') from None
-        if args.rollback:
-            restore_programs(args.rollback)
-        else:
-            require(all((args.release, args.panel_url, args.node_address, args.version)), '缺少重装参数')
-            reinstall(args)
+        require(all((args.release, args.panel_url, args.node_address, args.version)), '缺少重装参数')
+        reinstall(args)
 
 
 if __name__ == '__main__':

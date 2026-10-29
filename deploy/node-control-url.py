@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import ssl
 import subprocess
 import sys
@@ -18,7 +17,6 @@ import urllib.request
 ROOT = Path('/opt/hl-panel')
 CONFIG = Path('/etc/hl-panel/edge-agent.json')
 STATE = Path('/var/lib/hl-panel-edge')
-BACKUPS = Path('/var/backups/hl-panel-node')
 SERVICE = 'hl-panel-edge-agent.service'
 
 class MoveError(Exception):
@@ -75,13 +73,6 @@ def move(url, ca_file=''):
         raise MoveError('新面板连接、证书或节点身份校验失败；现有节点配置未改变。请先导入备份，核对地址和证书。') from None
     config['control_plane_url'] = url
     config['ca_file'] = ca_file
-    require(not BACKUPS.is_symlink(), '节点备份目录不安全')
-    BACKUPS.mkdir(mode=0o700, parents=True, exist_ok=True)
-    require(not BACKUPS.stat().st_mode & 0o077, '节点备份目录须为私有目录')
-    backup = Path(tempfile.mkdtemp(prefix='panel-address-', dir=BACKUPS))
-    saved = backup/'edge-agent.json'
-    saved.write_bytes(old); saved.chmod(0o600)
-    with saved.open('rb') as f: os.fsync(f.fileno())
     try:
         atomic_config((json.dumps(config, ensure_ascii=False, indent=2)+'\n').encode(), stat)
         run(['systemctl', 'restart', SERVICE]); time.sleep(2)
@@ -95,7 +86,6 @@ def move(url, ca_file=''):
             raise MoveError('连接配置已恢复，但旧节点服务重启失败，请检查 hl-panel-edge-agent.service') from None
         raise MoveError('节点切换失败，已恢复旧面板连接配置') from None
     print('节点面板地址已切换；节点身份、规则配置及流量游标保留。')
-    print('连接配置备份：'+str(saved))
     print('请在新面板核对节点在线状态及真实转发。')
 
 def main():

@@ -2,7 +2,6 @@
 """Enable the kernel's TCP BBR default without restarting networking or engines."""
 import argparse
 import fnmatch
-import json
 import os
 from pathlib import Path
 import re
@@ -14,7 +13,6 @@ import tempfile
 KEY = 'net.ipv4.tcp_congestion_control'
 AVAILABLE = 'net.ipv4.tcp_available_congestion_control'
 CONFIG = Path('/etc/sysctl.d/90-hl-panel-node-bbr.conf')
-BACKUPS = Path('/var/backups/hl-panel-node')
 DIRECTORIES = tuple(map(Path, ('/etc/sysctl.d', '/run/sysctl.d',
     '/usr/local/lib/sysctl.d', '/usr/lib/sysctl.d', '/lib/sysctl.d')))
 LEGACY = Path('/etc/sysctl.conf')
@@ -110,26 +108,20 @@ def conflict():
     return None
 
 
-def snapshot(previous, old):
-    require(not BACKUPS.is_symlink(), '备份目录是链接')
-    BACKUPS.mkdir(parents=True, exist_ok=True, mode=0o700)
-    trusted(BACKUPS, private=True)
-    directory = Path(tempfile.mkdtemp(prefix='network-bbr-', dir=BACKUPS))
-    info = {'algorithm': previous, 'existed': old is not None}
+def previous_settings(previous, old):
+    # Needed only until the sysctl write/readback succeeds. No archive is kept.
+    info = {'algorithm': previous, 'content': old}
     if old is not None:
         stat = CONFIG.stat()
         info.update(mode=stat.st_mode & 0o777, uid=stat.st_uid, gid=stat.st_gid)
-        atomic(directory / 'previous.conf', old, 0o600)
-    atomic(directory / 'state.json', (json.dumps(info) + '\n').encode(), 0o600)
-    atomic(directory / 'configure-node-bbr.py', Path(__file__).read_bytes(), 0o600)
-    return directory, info
+    return info
 
 
-def restore(directory, info):
+def restore(info):
     failures = []
     try:
-        if info['existed']:
-            atomic(CONFIG, (directory / 'previous.conf').read_bytes(), info['mode'], info['uid'], info['gid'])
+        if info['content'] is not None:
+            atomic(CONFIG, info['content'], info['mode'], info['uid'], info['gid'])
         elif CONFIG.exists():
             CONFIG.unlink()
     except Exception:
@@ -139,7 +131,7 @@ def restore(directory, info):
             write(info['algorithm'])
     except Exception:
         failures.append('运行算法')
-    require(not failures, '未能恢复' + '、'.join(failures) + '；备份：' + str(directory))
+    require(not failures, '未能恢复' + '、'.join(failures) + '，请检查 sysctl 配置与当前算法')
 
 
 def enable():
@@ -171,51 +163,24 @@ def enable():
     if previous == 'bbr' and old == CONTENT:
         print('[HL-panel 节点] TCP BBR 默认值已启用，受管持久配置已存在。')
         return None
-    directory, info = snapshot(previous, old)
+    info = previous_settings(previous, old)
     try:
         atomic(CONFIG, CONTENT)
         write('bbr')
     except Exception:
         try:
-            restore(directory, info)
+            restore(info)
         except Exception:
-            raise BBRError('BBR 设置失败且恢复未完成，请核对备份：' + str(directory)) from None
-        raise BBRError('BBR 设置失败，已恢复原算法及配置；备份：' + str(directory)) from None
+            raise BBRError('BBR 设置失败且恢复未完成，请检查 sysctl 配置与当前算法') from None
+        raise BBRError('BBR 设置失败，已恢复原算法及配置') from None
     print('[HL-panel 节点] TCP BBR 默认值已启用并读回验证；未重启系统、网络或转发引擎。')
     print('BBR 仅影响后续按默认值创建的 TCP socket；现有连接和监听不强制切换，UDP 不受此项控制。')
-    print('BBR 备份：' + str(directory))
-    print('BBR 回滚：python3 ' + str(directory / 'configure-node-bbr.py') + ' --rollback ' + str(directory))
-    return directory
-
-
-def rollback(directory):
-    require(directory.is_absolute() and directory.parent == BACKUPS and
-            directory.name.startswith('network-bbr-'), '仅接受本机 BBR 备份目录')
-    trusted(BACKUPS, private=True)
-    trusted(directory, private=True)
-    state = directory / 'state.json'
-    trusted(state, private=True)
-    info = json.loads(state.read_text())
-    require(type(info.get('existed')) is bool and
-            isinstance(info.get('algorithm'), str) and
-            re.fullmatch(r'[a-zA-Z0-9_-]+', info['algorithm']), '备份状态无效')
-    old = None
-    if info['existed']:
-        trusted(directory / 'previous.conf', private=True)
-        old = (directory / 'previous.conf').read_bytes()
-    trusted(CONFIG.parent)
-    require(not CONFIG.is_symlink(), 'BBR 配置路径是链接，拒绝回滚')
-    current = CONFIG.read_bytes() if CONFIG.exists() else None
-    require(current in (CONTENT, old), 'BBR 文件已被其他操作修改，未覆盖')
-    require(read(KEY) in ('bbr', info['algorithm']), '当前算法已被其他操作修改，未覆盖')
-    restore(directory, info)
-    print('[HL-panel 节点] 已恢复 BBR 变更前的默认算法和受管配置；未重启任何服务。')
+    return 'bbr'
 
 
 def main():
     parser = argparse.ArgumentParser(description='安全设置节点 TCP BBR 默认值')
-    parser.add_argument('--rollback', type=Path)
-    args = parser.parse_args()
+    parser.parse_args()
     require(sys.platform == 'linux' and os.geteuid() == 0, '请在 Linux 节点以 root 执行')
     import fcntl
     descriptor = os.open('/run/hl-panel-node-bbr.lock', os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -223,11 +188,8 @@ def main():
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise BBRError('另一个 BBR 设置或回滚正在执行') from None
-        if args.rollback:
-            rollback(args.rollback)
-        else:
-            enable()
+            raise BBRError('另一个 BBR 设置正在执行') from None
+        enable()
 
 
 if __name__ == '__main__':

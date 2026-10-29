@@ -45,7 +45,7 @@ class NodeMoveTests(unittest.TestCase):
                     self_url = req.full_url
                     if self_url != 'https://new.example.com/api/v1/agent/desired': raise AssertionError('wrong validation route')
                     return Response()
-            with patch.object(move, 'CONFIG', config), patch.object(move, 'STATE', state), patch.object(move, 'BACKUPS', root/'backups'), patch.object(move, 'run', run), patch.object(move.time, 'sleep'), patch.object(move.urllib.request, 'build_opener', return_value=Opener()):
+            with patch.object(move, 'CONFIG', config), patch.object(move, 'STATE', state), patch.object(move, 'run', run), patch.object(move.time, 'sleep'), patch.object(move.urllib.request, 'build_opener', return_value=Opener()):
                 if failure:
                     with self.assertRaises(move.MoveError) as captured: move.move('https://new.example.com')
                     self.assertEqual(json.loads(config.read_text()), original)
@@ -56,11 +56,8 @@ class NodeMoveTests(unittest.TestCase):
                     self.assertEqual(json.loads(config.read_text()), expected)
                     self.assertEqual(calls, [['systemctl','restart',move.SERVICE], ['systemctl','is-active','--quiet',move.SERVICE]])
                 self.assertEqual({p.name:p.read_bytes() for p in state.iterdir()}, before)
-                backups = list((root/'backups').glob('*/edge-agent.json'))
-                self.assertEqual(len(backups), 0 if failure == 'connection' else 1)
-                if backups:
-                    self.assertEqual(json.loads(backups[0].read_text()), original)
-                    self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+                self.assertFalse((root/'backups').exists())
+                self.assertEqual(sorted(p.name for p in root.iterdir()), ['edge-agent.json', 'state'])
 
     def test_success_preserves_identity_engines_and_cursors(self): self.exercise()
     def test_connection_rejection_does_not_write_config(self): self.exercise('connection')

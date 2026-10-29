@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,37 @@ NAMES = ('node-update-worker.py', 'update.py', 'update-node.py')
 UNIT_NAMES = ('hl-panel-node-update.socket', 'hl-panel-node-update.service')
 TC_NAME = '30-traffic-control.conf'
 ASSET_NAMES = ('geoip.dat', 'geosite.dat')
+LEGACY_STAGING = Path('/var/backups/hl-panel-node')
+UPDATE_STATE = Path('/var/lib/hl-panel-node-update')
+
+
+def bridge_legacy_updater(release):
+    """An old updater calls this new installer but keeps its own code in memory."""
+    stage = release.parent
+    if release.name != 'release' or stage.parent != LEGACY_STAGING or (stage/'.switching').exists():
+        return
+    if not re.fullmatch(r'update-v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_-]+', stage.name):
+        raise ValueError('invalid legacy update transaction')
+    safe(LEGACY_STAGING)
+    safe(stage)
+    if stage.stat().st_mode & 0o077:
+        raise ValueError('unsafe legacy update transaction')
+    # Only the managed updater's direct child may start this transition.
+    arguments = Path('/proc')/str(os.getppid())/'cmdline'
+    parent = [arg.decode() for arg in arguments.read_bytes().split(b'\0') if arg]
+    if str(ROOT/'update-node.py') not in parent or '--rollback' in parent:
+        return
+    task = []
+    if '--result-file' in parent:
+        report = Path(parent[parent.index('--result-file')+1])
+        if (report.name != 'result.json' or report.parent.parent != UPDATE_STATE or
+                not re.fullmatch(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}', report.parent.name)):
+            raise ValueError('unsafe legacy update receipt')
+        task.append(report.parent.name)
+    subprocess.Popen([sys.executable, str(release/'deploy/update-node.py'), '--cleanup-task',
+                      *task, '--transaction', str(stage)], stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     close_fds=True, start_new_session=True)
 
 
 def destinations():
@@ -233,6 +265,7 @@ def install(release):
                            check=True, capture_output=True, timeout=360)
             command('systemctl', 'daemon-reload')
             command('systemctl', 'enable', '--now', 'hl-panel-node-update.socket')
+            bridge_legacy_updater(release)
         except Exception:
             restore(backup)
             raise

@@ -118,7 +118,7 @@ class DependencyOnlyRepair(unittest.TestCase):
                             updater.repair_dependencies(release, backup)
                     else:
                         updater.repair_dependencies(release, backup)
-                self.assertTrue((backup/'rollback.sh').is_file())
+                self.assertFalse((backup/'rollback.sh').exists())
                 self.assertFalse(any(argv[0] == 'systemctl' for argv in commands))
                 self.assertFalse(any(str(path) in argv for argv in commands for path in ('xray', 'gost', 'edge-agent')))
                 self.assertEqual(any('--restore' in argv for argv in commands), fail)

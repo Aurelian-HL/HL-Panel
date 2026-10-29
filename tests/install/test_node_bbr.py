@@ -24,7 +24,7 @@ class BBRTests(unittest.TestCase):
         self.config_dir.mkdir()
         self.config = self.config_dir/bbr.CONFIG.name
         self.backups = self.root/'backups'
-        for name, value in dict(CONFIG=self.config, BACKUPS=self.backups,
+        for name, value in dict(CONFIG=self.config,
             DIRECTORIES=(self.config_dir,), LEGACY=self.root/'sysctl.conf').items():
             self.stack.enter_context(patch.object(bbr, name, value))
         # Windows cannot emulate Linux ownership. Permission validation itself is
@@ -64,22 +64,16 @@ class BBRTests(unittest.TestCase):
             raise bbr.BBRError('fake write changed kernel before failure')
         return ''
 
-    def test_enable_readback_persist_idempotence_and_rollback(self):
-        directory = bbr.enable()
+    def test_enable_readback_persist_idempotence_without_archive(self):
+        self.assertEqual(bbr.enable(), 'bbr')
         self.assertEqual(self.kernel, 'bbr')
         self.assertEqual(self.config.read_bytes(), bbr.CONTENT)
-        self.assertTrue((directory/'state.json').is_file())
-        self.assertTrue((directory/'configure-node-bbr.py').is_file())
-        before = list(self.backups.iterdir())
+        before = sorted(p.relative_to(self.root) for p in self.root.rglob('*'))
         self.calls.clear()
         self.assertIsNone(bbr.enable())
         self.assertFalse(any('-w' in args for args in self.calls))
-        self.assertEqual(list(self.backups.iterdir()), before)
-        bbr.rollback(directory)
-        self.assertFalse(self.config.exists())
-        self.assertEqual(self.kernel, 'cubic')
-        bbr.rollback(directory)
-        self.assertEqual(self.kernel, 'cubic')
+        self.assertEqual(sorted(p.relative_to(self.root) for p in self.root.rglob('*')), before)
+        self.assertFalse(self.backups.exists())
 
     def test_builtin_bbr_does_not_require_modprobe(self):
         with patch.object(bbr.shutil, 'which', return_value=None):
@@ -110,19 +104,23 @@ class BBRTests(unittest.TestCase):
         self.assertFalse(self.config.exists())
         self.assertEqual(self.calls, [['sysctl', '-n', bbr.KEY]])
 
-    def test_existing_bbr_is_persisted_and_restored(self):
+    def test_existing_bbr_is_persisted_without_archive(self):
         self.kernel = 'bbr'
-        directory = bbr.enable()
-        bbr.rollback(directory)
+        self.assertEqual(bbr.enable(), 'bbr')
         self.assertEqual(self.kernel, 'bbr')
-        self.assertFalse(self.config.exists())
+        self.assertEqual(self.config.read_bytes(), bbr.CONTENT)
+        self.assertFalse(self.backups.exists())
 
-    def test_existing_managed_file_is_preserved_on_rollback(self):
+    def test_existing_managed_file_is_preserved_on_failure(self):
         self.config.write_bytes(bbr.CONTENT)
-        directory = bbr.enable()
-        bbr.rollback(directory)
+        self.config.chmod(0o600)
+        self.failure = 'partial'
+        with self.assertRaisesRegex(bbr.BBRError, '已恢复'):
+            bbr.enable()
         self.assertEqual(self.config.read_bytes(), bbr.CONTENT)
         self.assertEqual(self.kernel, 'cubic')
+        if __import__('sys').platform != 'win32':
+            self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
 
     def test_custom_file_is_not_overwritten(self):
         self.config.write_text('custom operator config')
@@ -188,13 +186,13 @@ class BBRTests(unittest.TestCase):
         self.assertFalse(self.config.exists())
         self.assertEqual(self.kernel, 'cubic')
 
-    def test_partial_failure_restore_failure_has_backup(self):
+    def test_partial_failure_restore_failure_reports_algorithm_check(self):
         self.failure = 'restore'
-        with self.assertRaisesRegex(bbr.BBRError, '恢复未完成'):
+        with self.assertRaisesRegex(bbr.BBRError, '恢复未完成.*检查 sysctl 配置与当前算法'):
             bbr.enable()
         self.assertFalse(self.config.exists())
         self.assertEqual(self.kernel, 'bbr')
-        self.assertEqual(len(list(self.backups.iterdir())), 1)
+        self.assertFalse(self.backups.exists())
 
     def test_persistence_failure_does_not_change_kernel(self):
         original = bbr.atomic
@@ -222,21 +220,13 @@ class BBRTests(unittest.TestCase):
             bbr.enable()
         self.assertEqual(self.kernel, 'cubic')
 
-    def test_rollback_rejects_later_admin_changes(self):
-        directory = bbr.enable()
-        self.kernel = 'reno'
-        with self.assertRaises(bbr.BBRError):
-            bbr.rollback(directory)
-        self.assertEqual(self.kernel, 'reno')
-        self.kernel = 'bbr'
+    def test_repeated_enable_preserves_later_admin_changes(self):
+        bbr.enable()
         self.config.write_text('operator change')
         with self.assertRaises(bbr.BBRError):
-            bbr.rollback(directory)
+            bbr.enable()
         self.assertEqual(self.config.read_text(), 'operator change')
-
-    def test_rollback_requires_local_backup_path(self):
-        with self.assertRaises(bbr.BBRError):
-            bbr.rollback(self.root/'other')
+        self.assertEqual(self.kernel, 'bbr')
 
     @unittest.skipIf(__import__('sys').platform == 'win32', 'Windows symlink privilege differs')
     def test_symlink_config_is_not_followed(self):

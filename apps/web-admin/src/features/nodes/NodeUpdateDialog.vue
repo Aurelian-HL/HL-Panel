@@ -82,8 +82,7 @@ onUnmounted(() => { disposed = true; clearTimeout(timer) })
           <strong>{{ labels[status.task.state] || status.task.state }} · {{ status.task.target_version }}</strong>
           <p>{{ status.task.message }}</p>
           <small>任务 {{ status.task.id }}</small>
-          <p v-if="status.task.backup_directory">节点备份：<code>{{ status.task.backup_directory }}</code></p>
-          <p v-if="status.task.state === 'uncertain'">任务保持锁定。请在节点检查更新服务日志和备份，核实后恢复；系统不会自动重复安装。</p>
+          <p v-if="status.task.state === 'uncertain'">任务保持锁定。请在节点检查更新服务日志，核实当前运行状态；系统不会自动重复安装。</p>
           <button v-if="status.task.state === 'queued'" type="button" class="button button--secondary" :disabled="submitting" @click="cancel">取消未领取任务</button>
         </section>
         <template v-if="status.available">

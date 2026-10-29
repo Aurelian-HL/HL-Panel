@@ -114,6 +114,7 @@ jobs:
           python3 tests/install/test_node_bootstrap.py
           python3 -m py_compile deploy/node-update-worker.py deploy/install-node-update.py
           sudo python3 tests/install/test_node_update_worker.py
+          sudo python3 tests/install/test_node_transactions.py
           python3 -m py_compile deploy/configure-node-bbr2.py
           python3 -m py_compile deploy/configure-node-bbr.py
           python3 tests/install/test_node_bbr.py

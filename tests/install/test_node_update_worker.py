@@ -1,12 +1,20 @@
 """Fixed-purpose worker and maintenance rollback, on isolated temporary paths."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import re
+import struct
+import subprocess
+import sys
+import time
 import types
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 DEPLOY=Path(__file__).resolve().parents[2]/'deploy'
 def module(name,file):
@@ -113,5 +121,199 @@ class Maintenance(unittest.TestCase):
                 self.assertEqual(list(program.iterdir()),[program/'node-engines'])
                 self.assertEqual(list((program/'node-engines').iterdir()),[])
                 self.assertEqual(list(units.iterdir()),[dropin.parent])
+
+
+@unittest.skipUnless(getattr(os, 'geteuid', lambda: -1)() == 0, 'root-owned cleanup paths')
+class CompletedTransactions(unittest.TestCase):
+    def setUp(self):
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.program = self.root/'program'
+        self.program.mkdir()
+        self.state = self.root/'state'
+        self.state.mkdir()
+        self.stage = self.program/'.node-update-v0.1.999-fixture'
+        self.stage.mkdir(mode=0o700)
+        (self.stage/'program').write_text('saved program')
+        self.stack.enter_context(patch.object(worker, 'ROOT', self.program))
+        self.stack.enter_context(patch.object(worker, 'STATE', self.state))
+        self.stack.enter_context(patch.object(worker, 'BACKUP', re.compile(re.escape(str(self.stage)))))
+        self.task = {'id': 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'state': 'verifying',
+                     'phase': 'verify', 'backup_directory': str(self.stage)}
+
+    def test_success_and_recovery_remove_stage_and_keep_terminal_receipt(self):
+        for state in ('succeeded', 'rolled_back'):
+            if not self.stage.exists():
+                self.stage.mkdir(mode=0o700)
+            self.task['backup_directory'] = str(self.stage)
+            worker.finish(self.task, state, 'verified')
+            self.assertFalse(self.stage.exists())
+            self.assertEqual(worker.load()['state'], state)
+            self.assertEqual(worker.load()['backup_directory'], '')
+
+    def test_uncertain_never_removes_stage(self):
+        worker.finish(self.task, 'uncertain', 'interrupted')
+        self.assertTrue(self.stage.exists())
+        self.assertEqual(worker.load()['backup_directory'], str(self.stage))
+
+    def test_cleanup_failure_cannot_change_success(self):
+        with patch.object(worker.shutil, 'rmtree', side_effect=OSError('fixture disk busy')), contextlib.redirect_stderr(io.StringIO()):
+            worker.finish(self.task, 'succeeded', 'verified')
+        self.assertTrue(self.stage.exists())
+        self.assertEqual(worker.load()['state'], 'succeeded')
+        worker.cleanup_completed(worker.load())
+        self.assertFalse(self.stage.exists())
+
+    def test_symlink_or_shared_directory_is_not_deleted(self):
+        self.stage.chmod(0o755)
+        with contextlib.redirect_stderr(io.StringIO()):
+            worker.finish(self.task, 'succeeded', 'verified')
+        self.assertTrue((self.stage/'program').exists())
+        self.stage.chmod(0o700)
+        moved = self.program/'retained'
+        self.stage.rename(moved)
+        self.stage.symlink_to(moved, target_is_directory=True)
+        with contextlib.redirect_stderr(io.StringIO()):
+            worker.finish(self.task, 'succeeded', 'verified')
+        self.assertTrue((moved/'program').exists())
+
+    def test_active_updater_lock_defers_cleanup(self):
+        import fcntl
+        with (self.program/'.node-update.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with contextlib.redirect_stderr(io.StringIO()):
+                worker.finish(self.task, 'succeeded', 'verified')
+            self.assertTrue(self.stage.exists())
+        worker.cleanup_completed(worker.load())
+        self.assertFalse(self.stage.exists())
+
+    def test_verified_retry_is_idempotent_after_cleanup(self):
+        worker.finish(self.task, 'succeeded', 'verified')
+        handler = worker.Handler.__new__(worker.Handler)
+        handler.connection = Mock()
+        handler.connection.getsockopt.return_value = struct.pack('3i', 1, 0, 0)
+        handler.command, handler.path = 'POST', '/verified'
+        handler.respond = Mock()
+        with patch.object(worker.subprocess, 'run') as command:
+            handler.handle_request({'id': self.task['id']})
+        self.assertEqual(handler.respond.call_args.args[0], 200)
+        command.assert_not_called()
+
+    def test_status_retries_cleanup_after_updater_releases_lock(self):
+        import fcntl
+        with (self.program/'.node-update.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX|fcntl.LOCK_NB)
+            with contextlib.redirect_stderr(io.StringIO()):
+                worker.finish(self.task, 'succeeded', 'verified')
+        handler = worker.Handler.__new__(worker.Handler)
+        handler.connection = Mock()
+        handler.connection.getsockopt.return_value = struct.pack('3i', 1, 0, 0)
+        handler.command, handler.path = 'GET', '/status'
+        handler.respond = Mock()
+        handler.handle_request(None)
+        self.assertEqual(handler.respond.call_args.args[0], 200)
+        self.assertFalse(self.stage.exists())
+        self.assertEqual(worker.load()['backup_directory'], '')
+
+
+@unittest.skipUnless(getattr(os, 'geteuid', lambda: -1)() == 0, 'root-owned legacy fixtures')
+class LegacyBridge(unittest.TestCase):
+    def test_real_legacy_parent_and_finalizer_obey_update_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            program = root/'program'
+            program.mkdir()
+            legacy = root/'old-archives'
+            legacy.mkdir(mode=0o755)
+            stage = legacy/'update-v0.1.999-fixture'
+            stage.mkdir(mode=0o700)
+            release = stage/'release'
+            (release/'deploy').mkdir(parents=True)
+            state = root/'tasks'
+            state.mkdir()
+            task = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
+            (state/'task.json').write_text(json.dumps({'id': task, 'state': 'succeeded',
+                'backup_directory': str(stage)}))
+            (state/'task.json').chmod(0o600)
+            # This shim only redirects managed paths into this disposable fixture;
+            # parent detection, flock, the subprocess and finalizer are real.
+            load = ('import importlib.util,sys,os\nfrom pathlib import Path\n'
+                    f'sys.path.insert(0, {str(DEPLOY)!r})\n')
+            finalizer = release/'deploy/update-node.py'
+            finalizer.write_text(load +
+                f'spec=importlib.util.spec_from_file_location("fixture_updater", {str(DEPLOY/"update-node.py")!r})\n'
+                'module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n' +
+                f'module.ROOT=Path({str(program)!r});module.LEGACY_STAGING=Path({str(legacy)!r});module.UPDATE_STATE=Path({str(state)!r})\n' +
+                f'Path({str(root/"finalizer.pid")!r}).write_text(str(os.getpid()))\n' +
+                'module.main()\n' +
+                f'Path({str(root/"finished")!r}).touch()\n')
+            bridge = release/'deploy/install-node-update.py'
+            bridge.write_text(load +
+                f'spec=importlib.util.spec_from_file_location("fixture_installer", {str(DEPLOY/"install-node-update.py")!r})\n'
+                'module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n' +
+                f'module.ROOT=Path({str(program)!r});module.LEGACY_STAGING=Path({str(legacy)!r});module.UPDATE_STATE=Path({str(state)!r})\n' +
+                f'module.bridge_legacy_updater(Path({str(release)!r}))\n')
+            parent_script = program/'update-node.py'
+            parent_script.write_text('import fcntl,subprocess,sys,time\nfrom pathlib import Path\n' +
+                f'with Path({str(program/".node-update.lock")!r}).open("w") as lock:\n'
+                ' fcntl.flock(lock,fcntl.LOCK_EX)\n' +
+                f' subprocess.run([sys.executable,{str(bridge)!r}],check=True)\n' +
+                f' while not Path({str(root/"release-lock")!r}).exists(): time.sleep(0.01)\n')
+            parent = subprocess.Popen([sys.executable, str(parent_script), '--result-file',
+                str(state/task/'result.json')], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            def wait_for(path):
+                deadline = time.monotonic()+8
+                while not path.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(path.exists(), str(path))
+            try:
+                wait_for(root/'finalizer.pid')
+                # Even terminal state cannot delete a release the old process uses.
+                time.sleep(0.1)
+                self.assertTrue(stage.is_dir())
+                (root/'release-lock').touch()
+                _, error = parent.communicate(timeout=8)
+                self.assertEqual(parent.returncode, 0, error.decode())
+                wait_for(root/'finished')
+                self.assertFalse(stage.exists())
+                self.assertFalse(legacy.exists())
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.communicate(timeout=5)
+                if not (root/'finished').exists() and (root/'finalizer.pid').exists():
+                    try:
+                        os.kill(int((root/'finalizer.pid').read_text()), 15)
+                    except ProcessLookupError:
+                        pass
+
+    def test_first_old_updater_starts_finalizer_for_its_own_task(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root/'old-archives'
+            stage = legacy/'update-v0.1.999-fixture'
+            release = stage/'release'
+            legacy.mkdir(mode=0o755)
+            stage.mkdir(mode=0o700)
+            release.mkdir()
+            task = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'
+            state = root/'tasks'
+            parent = ('python3\0/opt/hl-panel/update-node.py\0--version\0v0.1.999\0'
+                      '--result-file\0'+str(state/task/'result.json')+'\0').encode()
+            with patch.object(installer, 'LEGACY_STAGING', legacy), patch.object(installer, 'UPDATE_STATE', state), patch.object(Path, 'read_bytes', return_value=parent), patch.object(installer.subprocess, 'Popen') as spawn:
+                installer.bridge_legacy_updater(release)
+                self.assertIn(task, spawn.call_args.args[0])
+                self.assertIn(str(stage), spawn.call_args.args[0])
+                # New updater already started its own finalizer before switching.
+                spawn.reset_mock()
+                (stage/'.switching').touch()
+                installer.bridge_legacy_updater(release)
+                spawn.assert_not_called()
+
+    def test_unmanaged_release_does_not_spawn_cleanup(self):
+        with patch.object(installer.subprocess, 'Popen') as spawn:
+            installer.bridge_legacy_updater(Path('/tmp/unrelated/release'))
+        spawn.assert_not_called()
 
 if __name__=='__main__':unittest.main()

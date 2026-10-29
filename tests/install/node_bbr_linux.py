@@ -55,7 +55,7 @@ with open('/run/hl-panel-node-bbr.lock', 'a') as lock:
     fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     busy = subprocess.run([sys.executable, str(repo/'deploy/configure-node-bbr2.py')],
                           capture_output=True, text=True, timeout=20)
-    assert busy.returncode != 0 and '另一个 BBR2 设置或回滚正在执行' in busy.stderr
+    assert busy.returncode != 0 and '另一个 BBR2 设置正在执行' in busy.stderr
     assert bbr2.read(bbr2.KEY) == original and not bbr2.CONFIG.exists() and not bbr.CONFIG.exists()
 checks.append('CLI rejects concurrent configuration without changing runtime or persistence')
 listener = socket.socket()
@@ -66,24 +66,21 @@ server, _ = listener.accept()
 server.settimeout(5)
 algorithm_option = getattr(socket, 'TCP_CONGESTION', 13)
 before = server.getsockopt(socket.IPPROTO_TCP, algorithm_option, 32)
-backup = None
 selected = None
 try:
     client.sendall(b'before')
     assert receive(server, 6) == b'before'
-    backup = bbr2.enable()
-    # Pick the rollback helper before a failed verification can interrupt us.
-    if backup is not None:
-        selected = bbr2 if backup.name.startswith('network-bbr2-') else bbr
+    configured = bbr2.enable()
     algorithm = bbr2.read(bbr2.KEY)
-    if backup is None:
+    if configured is None:
         assert algorithm == original and not bbr2.CONFIG.exists() and not bbr.CONFIG.exists()
         available = bbr2.read(bbr2.AVAILABLE).split()
         assert (original.startswith('bbr') and original not in ('bbr', 'bbr2')) or not {'bbr2', 'bbr'}.intersection(available)
         print(json.dumps({'status': 'skipped', 'algorithm': algorithm, 'reason': 'no supported BBR algorithm or operator-selected variant preserved', 'checks': checks}, indent=2))
         raise RuntimeError('BBR acceptance incomplete: isolated runner must enable a supported BBR algorithm')
     assert algorithm in ('bbr2', 'bbr'), 'configuration must enable a supported BBR algorithm'
-    assert selected is (bbr2 if algorithm == 'bbr2' else bbr)
+    assert configured == algorithm
+    selected = bbr2 if algorithm == 'bbr2' else bbr
     other = bbr if algorithm == 'bbr2' else bbr2
     assert selected.CONFIG.read_bytes() == selected.CONTENT and not other.CONFIG.exists()
     checks.append('real kernel ' + algorithm + ' default written and read back')
@@ -106,8 +103,13 @@ try:
     checks.append('managed persistence file reloads ' + algorithm + ' through real sysctl')
 finally:
     try:
-        if backup is not None:
-            selected.rollback(backup)
+        # Fixture cleanup belongs to this explicitly disposable test VM.
+        # The product no longer creates network archives or a rollback CLI.
+        bbr2.write(original)
+        for helper in (bbr2, bbr):
+            if helper.CONFIG.exists():
+                assert helper.CONFIG.read_bytes() == helper.CONTENT
+                helper.CONFIG.unlink()
     finally:
         listener.close()
         client.close()
@@ -116,5 +118,5 @@ assert bbr2.read(bbr2.KEY) == original
 assert not bbr2.CONFIG.exists()
 assert not bbr.CONFIG.exists()
 assert run(['tc', 'qdisc', 'show']) == queues
-checks.append('rollback restores original runtime default and removes new managed config')
+checks.append('test cleanup restores original runtime default and removes new managed config')
 print(json.dumps({'status':'passed', 'algorithm': algorithm, 'bbr2_verified': algorithm == 'bbr2', 'checks':checks}, indent=2))
