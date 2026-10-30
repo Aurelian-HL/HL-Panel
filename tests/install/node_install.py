@@ -311,9 +311,26 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             assert not any(path.exists() for path in bbr_configs.values()), 'failed enrollment must not change BBR settings'
             assert run(['systemctl','is-active','--quiet','hl-panel-edge-agent']).returncode != 0
             checks.append('expired token stops service and removes one-use secret')
+            # A failed older installation must be taken over by the same public
+            # command, even with a different binary, invalid config and stale
+            # token file. Keep private enrollment recovery state untouched.
+            program_root = Path('/opt/hl-panel')
+            (program_root/'node-engines').mkdir(parents=True, exist_ok=True)
+            (program_root/'edge-agent').write_text('unfinished older program')
+            (program_root/'enroll-node.sh').write_text('unfinished older installer')
+            (program_root/'node-engines/xray').write_text('unfinished older core')
+            (program_root/'node-engines/geoip.dat').write_text('corrupt older resource')
+            config_root = Path('/etc/hl-panel')
+            config_root.mkdir(mode=0o750, exist_ok=True)
+            (config_root/'edge-agent.json').write_text('invalid old configuration')
+            (config_root/'edge-agent-enrollment.env').write_text('stale fixture token')
+            recovery_path = Path('/var/lib/hl-panel-edge/enrollment-attempt.json')
+            recovery_before = recovery_path.read_bytes()
             token = issue()
             fault_state['enabled'] = True
             assert install(token).returncode == 0, 'Complete one-command node installation failed'
+            assert recovery_before, 'Failed install did not retain enrollment recovery state'
+            checks.append('same public command replaces incomplete old programs, invalid config and stale token without manual cleanup')
             verify_expected_gost(Path('/opt/hl-panel/node-engines/gost'), 'installed')
             installed_bbr_state = bbr_state()
             installed_bbr_algorithm = installed_bbr_state[0]

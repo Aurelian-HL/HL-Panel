@@ -151,6 +151,7 @@ try {
         'check-panel-license.py',
         'install-node.sh',
         'reinstall-node.py',
+        'reset-unenrolled-node.py',
         'configure-node-bbr2.py',
         'configure-node-bbr.py',
         'configure-node-traffic-control.py',

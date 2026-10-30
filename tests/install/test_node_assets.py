@@ -76,6 +76,14 @@ class AssetRepair(unittest.TestCase):
         self.assertEqual(empty.read_bytes(), b'')
         self.assertFalse((self.root / 'node-engines/geosite.dat').exists())
 
+    def test_unenrolled_candidate_preflight_uses_official_resources_without_touching_residue(self):
+        existing = self.root / 'node-engines/geoip.dat'
+        existing.write_bytes(b'corrupt unfinished resource')
+        plan = installer.preflight(self.release, candidate_only=True)
+        self.assertEqual(plan['geoip.dat'], self.release / 'bin/geoip.dat')
+        self.assertEqual(existing.read_bytes(), b'corrupt unfinished resource')
+        self.assertFalse(any(call.args[0][0] == 'systemctl' for call in self.commands.call_args_list))
+
     def test_corrupt_retained_resource_rejects_without_overwriting_it(self):
         existing = self.root / 'node-engines/geoip.dat'
         existing.write_bytes(b'corrupt')

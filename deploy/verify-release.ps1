@@ -32,6 +32,7 @@ $required = @(
     'deploy/check-panel-license.py',
     'deploy/install-node.sh',
     'deploy/reinstall-node.py',
+    'deploy/reset-unenrolled-node.py',
     'deploy/configure-node-bbr2.py',
     'deploy/configure-node-bbr.py',
     'deploy/configure-node-traffic-control.py',

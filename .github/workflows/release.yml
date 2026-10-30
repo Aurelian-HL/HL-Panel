@@ -115,6 +115,7 @@ jobs:
           python3 -m py_compile deploy/node-update-worker.py deploy/install-node-update.py
           sudo python3 tests/install/test_node_update_worker.py
           sudo python3 tests/install/test_node_transactions.py
+          sudo python3 tests/install/test_unenrolled_install.py
           python3 -m py_compile deploy/configure-node-bbr2.py
           python3 -m py_compile deploy/configure-node-bbr.py
           python3 tests/install/test_node_bbr.py
@@ -209,6 +210,7 @@ jobs:
             deploy/check-panel-license.py
             deploy/install-node.sh
             deploy/reinstall-node.py
+            deploy/reset-unenrolled-node.py
             deploy/configure-node-bbr2.py
             deploy/configure-node-bbr.py
             deploy/configure-node-traffic-control.py

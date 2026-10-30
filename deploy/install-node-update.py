@@ -146,7 +146,7 @@ def restore(backup):
         command('systemctl', 'start', 'hl-panel-node-update.socket')
 
 
-def asset_plan(release):
+def asset_plan(release, candidate_only=False):
     """Only missing/empty resources are repaired; existing custom data is retained."""
     planned = {}
     for name in ASSET_NAMES:
@@ -154,6 +154,9 @@ def asset_plan(release):
         if not source.is_file() or source.stat().st_size == 0:
             raise ValueError('release is missing nonempty Xray resource: ' + name)
         safe(source)
+        if candidate_only:
+            planned[name] = source
+            continue
         dest = ROOT / 'node-engines' / name
         if dest.exists() or dest.is_symlink():
             safe_parent(dest)
@@ -164,14 +167,14 @@ def asset_plan(release):
     return planned
 
 
-def preflight(release, install_missing=False):
+def preflight(release, install_missing=False, candidate_only=False):
     """No service stops, enrollment changes, or interface/filter writes."""
     binary = release / 'bin/xray'
     safe(binary)
     identity = subprocess.run([str(binary), 'version'], check=True, capture_output=True, timeout=15)
     if not identity.stdout.startswith(b'Xray 26.7.28 '):
         raise ValueError('Xray must remain pinned to 26.7.28')
-    planned = asset_plan(release)
+    planned = asset_plan(release, candidate_only=candidate_only)
     # Exercise the parser with the exact mix of retained and repaired data.
     # This detects truncation/corruption instead of treating file existence as health.
     with tempfile.TemporaryDirectory(prefix='hl-node-resource-check-') as directory:
@@ -277,9 +280,12 @@ if __name__ == '__main__':
     parser.add_argument('--snapshot', type=Path)
     parser.add_argument('--restore', type=Path)
     parser.add_argument('--preflight', action='store_true')
+    parser.add_argument('--candidate-only', action='store_true')
     parser.add_argument('--repair-assets', action='store_true')
     parser.add_argument('--install-missing', action='store_true')
     args = parser.parse_args()
+    if args.candidate_only and not args.preflight:
+        parser.error('--candidate-only requires --preflight')
     if os.geteuid() != 0:
         raise SystemExit('root required')
     if args.snapshot:
@@ -288,7 +294,7 @@ if __name__ == '__main__':
         restore(args.restore)
     elif args.release:
         if args.preflight:
-            preflight(args.release, install_missing=args.install_missing)
+            preflight(args.release, install_missing=args.install_missing, candidate_only=args.candidate_only)
             print('[HL-panel 节点] 依赖与 Xray 资源预检通过，未停止节点服务。')
         elif args.repair_assets:
             repair_assets(args.release)

@@ -98,7 +98,7 @@ command -v curl >/dev/null || packages+=(curl)
 [[ -s /etc/ssl/certs/ca-certificates.crt ]] || packages+=(ca-certificates)
 if ! command -v ip >/dev/null || ! command -v tc >/dev/null; then packages+=(iproute2); fi
 command -v useradd >/dev/null || packages+=(passwd)
-command -v runuser >/dev/null || packages+=(util-linux)
+if ! command -v runuser >/dev/null || ! command -v flock >/dev/null; then packages+=(util-linux); fi
 command -v systemd-analyze >/dev/null || packages+=(systemd)
 command -v sysctl >/dev/null || packages+=(procps)
 command -v modprobe >/dev/null || packages+=(kmod)
@@ -167,7 +167,7 @@ install_ready=0
 installed_ca=0
 created_tc_dropin=0
 cleanup_install() {
-  if [[ "$created_install" == 1 && "$install_ready" == 0 ]]; then
+  if [[ "$created_install" == 1 && "$install_ready" == 0 && ! -e /var/lib/hl-panel-edge/credentials.json && ! -L /var/lib/hl-panel-edge/credentials.json ]]; then
     rm -f /opt/hl-panel/edge-agent /opt/hl-panel/enroll-node.sh /etc/hl-panel/edge-agent.json /etc/systemd/system/hl-panel-edge-agent.service
     rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost /opt/hl-panel/node-engines/geoip.dat /opt/hl-panel/node-engines/geosite.dat
     if [[ "$installed_ca" == 1 ]]; then
@@ -228,7 +228,7 @@ for line in (target/'SHA256SUMS').read_text().splitlines():
     require((target/name).is_file() and digest(target/name) == expected, '文件摘要校验失败')
     verified.add(name)
 require({str(p.relative_to(target)) for p in target.rglob('*') if p.is_file()} == verified | {'SHA256SUMS'}, '存在未校验文件')
-for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/configure-node-bbr2.py', 'deploy/configure-node-bbr.py', 'deploy/configure-node-traffic-control.py', 'deploy/systemd/hl-panel-edge-agent.service'):
+for name in ('bin/edge-agent', 'bin/xray', 'bin/gost', 'deploy/edge-agent/install.sh', 'deploy/edge-agent/enroll.sh', 'deploy/reset-unenrolled-node.py', 'deploy/configure-node-bbr2.py', 'deploy/configure-node-bbr.py', 'deploy/configure-node-traffic-control.py', 'deploy/systemd/hl-panel-edge-agent.service'):
     require(name in verified, '缺少节点安装文件：' + name)
 (target/'bin/edge-agent').chmod(0o755)
 PY
@@ -246,8 +246,8 @@ result = subprocess.run([sys.argv[1], 'version'], capture_output=True, timeout=1
 if result.returncode or not result.stdout.startswith(b'Xray 26.7.28 '):
     raise SystemExit('Xray 版本未通过旧客户端兼容验收；要求 26.7.28，未修改节点。')
 PY
-python3 "$release/deploy/install-node-update.py" "$release" --preflight
 if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
+  python3 "$release/deploy/install-node-update.py" "$release" --preflight
   [[ -f "$release/deploy/reinstall-node.py" ]] || { echo '该版本不支持重装换组，请先更新面板后重新复制安装命令。' >&2; exit 1; }
   echo '[HL-panel 节点] 发现已有节点，按本次有效命令重新安装并切换设备组…'
   HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" python3 "$release/deploy/reinstall-node.py" \
@@ -257,57 +257,22 @@ if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
   echo '[HL-panel 节点] 完成，请返回面板查看在线状态。'
   exit 0
 fi
-for directory in /opt/hl-panel /opt/hl-panel/node-engines /etc/hl-panel /var/lib/hl-panel-edge; do
-  [[ ! -L "$directory" ]] || { echo '安装目录是链接，拒绝修改。' >&2; exit 1; }
-done
 # Check the exact bundled executables before creating an installation.
+python3 "$release/deploy/install-node-update.py" "$release" --preflight --candidate-only
 "$release/bin/xray" version >/dev/null
 "$release/bin/gost" -V >/dev/null
-if [[ -e /etc/hl-panel/edge-agent.json || -e /opt/hl-panel/edge-agent || -e /opt/hl-panel/enroll-node.sh || -e /etc/systemd/system/hl-panel-edge-agent.service ]]; then
-  [[ -f /opt/hl-panel/enroll-node.sh && -f /opt/hl-panel/edge-agent && -f /etc/systemd/system/hl-panel-edge-agent.service ]] || { echo '发现不完整的旧安装，未覆盖任何文件；请检查已有安装。' >&2; exit 1; }
-  python3 - "$origin" "$release" <<'PY'
-import hashlib, json, pathlib, sys
-path = pathlib.Path('/etc/hl-panel/edge-agent.json')
-if not path.is_file() or path.is_symlink() or path.stat().st_uid != 0 or path.stat().st_mode & 0o022:
-    raise SystemExit('现有配置不安全，拒绝重新注册')
-config = json.loads(path.read_text())
-if config.get('control_plane_url') != sys.argv[1]:
-    raise SystemExit('现有节点属于其他面板；未覆盖配置或身份')
-expected = {'engine_mode':'mixed', 'xray_auto_start':True, 'gost_auto_start':True,
-            'data_dir':'/var/lib/hl-panel-edge', 'xray_binary_path':'/opt/hl-panel/node-engines/xray',
-            'gost_binary_path':'/opt/hl-panel/node-engines/gost'}
-if any(config.get(k) != v for k,v in expected.items()):
-    raise SystemExit('现有引擎配置不匹配，未覆盖；请检查原安装')
-release = pathlib.Path(sys.argv[2])
-for installed, source in [('/opt/hl-panel/edge-agent','bin/edge-agent'),
-        ('/opt/hl-panel/node-engines/xray','bin/xray'), ('/opt/hl-panel/node-engines/gost','bin/gost'),
-        ('/opt/hl-panel/enroll-node.sh','deploy/edge-agent/enroll.sh'),
-        ('/etc/systemd/system/hl-panel-edge-agent.service','deploy/systemd/hl-panel-edge-agent.service')]:
-    p = pathlib.Path(installed)
-    if not p.is_file() or p.is_symlink() or p.stat().st_uid != 0 or p.stat().st_mode & 0o022:
-        raise SystemExit('现有安装文件不安全，拒绝继续注册')
-    if hashlib.sha256(p.read_bytes()).digest() != hashlib.sha256((release/source).read_bytes()).digest():
-        raise SystemExit('现有安装版本不同；请指定原 --version 重试，不覆盖安装')
-PY
-  # Resume only after validating installation identity/version; repair missing
-  # resource files without relaxing executable or credential checks.
-  python3 "$release/deploy/install-node-update.py" "$release" --repair-assets
-  echo '[HL-panel 节点] 安装文件已存在，继续尚未完成的注册。'
-else
-  [[ ! -e /opt/hl-panel/node-engines ]] || { echo '已有引擎目录，拒绝覆盖。' >&2; exit 1; }
-  created_install=1
-  install -d -m 0755 -o root -g root /opt/hl-panel/node-engines
-  install -m 0755 -o root -g root "$release/bin/xray" /opt/hl-panel/node-engines/xray
-  install -m 0755 -o root -g root "$release/bin/gost" /opt/hl-panel/node-engines/gost
-  install -m 0644 -o root -g root "$release/bin/geoip.dat" /opt/hl-panel/node-engines/geoip.dat
-  install -m 0644 -o root -g root "$release/bin/geosite.dat" /opt/hl-panel/node-engines/geosite.dat
-  if ! sh "$release/deploy/edge-agent/install.sh" "$release/bin/edge-agent" "$release/deploy/systemd/hl-panel-edge-agent.service" "$origin" mixed /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost true; then
-    rm -f /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost /opt/hl-panel/node-engines/geoip.dat /opt/hl-panel/node-engines/geosite.dat
-    rmdir /opt/hl-panel/node-engines
-    exit 1
-  fi
-  install -m 0700 -o root -g root "$release/deploy/edge-agent/enroll.sh" /opt/hl-panel/enroll-node.sh
-fi
+python3 "$release/deploy/reset-unenrolled-node.py" --prepare-lock
+exec {node_install_lock}<> /opt/hl-panel/.node-update.lock
+flock -n "$node_install_lock" || { echo '已有节点安装或更新正在执行，请稍后重跑同一条命令。' >&2; exit 1; }
+python3 "$release/deploy/reset-unenrolled-node.py"
+created_install=1
+install -d -m 0755 -o root -g root /opt/hl-panel/node-engines
+install -m 0755 -o root -g root "$release/bin/xray" /opt/hl-panel/node-engines/xray
+install -m 0755 -o root -g root "$release/bin/gost" /opt/hl-panel/node-engines/gost
+install -m 0644 -o root -g root "$release/bin/geoip.dat" /opt/hl-panel/node-engines/geoip.dat
+install -m 0644 -o root -g root "$release/bin/geosite.dat" /opt/hl-panel/node-engines/geosite.dat
+sh "$release/deploy/edge-agent/install.sh" "$release/bin/edge-agent" "$release/deploy/systemd/hl-panel-edge-agent.service" "$origin" mixed /opt/hl-panel/node-engines/xray /opt/hl-panel/node-engines/gost true
+install -m 0700 -o root -g root "$release/deploy/edge-agent/enroll.sh" /opt/hl-panel/enroll-node.sh
 if [[ -n "$ca_file" ]]; then
   install -m 0640 -o root -g hl-edge "$ca_file" /etc/hl-panel/edge-agent-ca.pem
   installed_ca=1
