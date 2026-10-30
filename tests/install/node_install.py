@@ -331,7 +331,7 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             # command, even with a different binary, invalid config and stale
             # token file. Keep private enrollment recovery state untouched.
             program_root = Path('/opt/hl-panel')
-            (program_root/'node-engines').mkdir(parents=True, exist_ok=True)
+            (program_root/'node-engines').mkdir(mode=0o755, parents=True, exist_ok=True)
             (program_root/'edge-agent').write_text('unfinished older program')
             (program_root/'enroll-node.sh').write_text('unfinished older installer')
             (program_root/'node-engines/xray').write_text('unfinished older core')
