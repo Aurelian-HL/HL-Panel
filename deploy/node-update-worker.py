@@ -221,7 +221,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         global EXECUTING
         try:
             _, uid, _ = struct.unpack('3i', self.connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-            if uid not in (0, pwd.getpwnam('hl-edge').pw_uid):
+            if uid != 0 and uid != pwd.getpwnam('hl-edge').pw_uid:
                 self.respond(403, {})
                 return
             with LOCK:

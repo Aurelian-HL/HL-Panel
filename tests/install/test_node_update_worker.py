@@ -24,6 +24,22 @@ worker=module('node_worker','node-update-worker.py')
 installer=module('node_maintenance','install-node-update.py')
 
 class Worker(unittest.TestCase):
+    def test_socket_authorization_requires_root_or_agent_uid(self):
+        for uid, expected in ((0, 200), (45678, 200), (45679, 403)):
+            with self.subTest(uid=uid):
+                handler = worker.Handler.__new__(worker.Handler)
+                handler.connection = Mock()
+                handler.connection.getsockopt.return_value = struct.pack('3i', 1, uid, 0)
+                handler.command, handler.path = 'GET', '/status'
+                handler.respond = Mock()
+                with patch.object(worker.pwd, 'getpwnam', return_value=types.SimpleNamespace(pw_uid=45678)) as lookup, patch.object(worker, 'load', return_value=None):
+                    if uid == 0:
+                        lookup.side_effect = KeyError('agent account not yet installed')
+                    handler.handle_request(None)
+                self.assertEqual(handler.respond.call_args.args[0], expected)
+                if uid == 0:
+                    lookup.assert_not_called()
+
     @unittest.skipUnless(getattr(os,'geteuid',lambda:-1)()==0,'root-owned receipts')
     def test_same_version_requires_completed_installation_receipt(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(worker,'STATE',Path(tmp)):
