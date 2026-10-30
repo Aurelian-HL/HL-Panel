@@ -253,7 +253,7 @@ def main():
         move = importlib.util.module_from_spec(spec); spec.loader.exec_module(move)
         # Substitute only the fixture paths and unit; TLS, API, config writes and
         # systemctl restart are real. Production paths are never inspected.
-        move.CONFIG, move.STATE, move.BACKUPS, move.SERVICE = config_path, state, root/'node-backups', unit+'.service'
+        move.CONFIG, move.STATE, move.SERVICE = config_path, state, unit+'.service'
         move.move(target['url'], str(cert))
         migrated = wait_for(lambda: applied(target, restored_token))
         assert migrated['id'] == registered['id'] and migrated['desired_generation'] == original['desired_generation']

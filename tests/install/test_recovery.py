@@ -172,7 +172,6 @@ class NodeRecoveryTests(IsolatedFiles):
         self.state.mkdir(mode=0o700)
         self.unit = self.root / 'units/edge-agent.service'
         self.unit.parent.mkdir()
-        self.backups = self.root / 'backups'
         self.old_config = {'control_plane_url': 'https://old.example.com',
             'dial_host': '192.0.2.1', 'ca_file': str(self.ca),
             'data_dir': str(self.state), 'engine_mode': 'mixed',
@@ -199,15 +198,15 @@ class NodeRecoveryTests(IsolatedFiles):
             (self.programs / relative).write_text('old ' + relative)
         self.unit.write_text('old service unit')
         for key, path in (('ROOT', self.programs), ('CONFIG', self.config),
-                          ('STATE', self.state), ('UNIT', self.unit), ('CA_FILE', self.ca),
-                          ('BACKUPS', self.backups)):
+                          ('STATE', self.state), ('UNIT', self.unit), ('CA_FILE', self.ca)):
             self.replace(node, key, path)
         self.replace(node.pwd, 'getpwnam', lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0), create=True)
         # Ownership is an OS boundary; these tests target connection restoration.
         self.replace(node, 'private_file', lambda *_args, **_kwargs: None)
         original_require = node.require
         def require(condition, message):
-            if message in ('节点状态目录不安全', '备份目录权限不安全', '节点配置所有者或权限无效'):
+            if os.name == 'nt' and message in ('节点状态目录不安全', '节点程序目录不安全',
+                                               '临时目录权限不安全', '节点配置所有者或权限无效'):
                 return
             original_require(condition, message)
         self.replace(node, 'require', require)
@@ -254,7 +253,7 @@ class NodeRecoveryTests(IsolatedFiles):
         self.assertEqual({path.name: path.read_bytes() for path in self.state.iterdir()}, self.before)
         self.assertEqual(len(attempts), 2)
 
-    def test_public_domain_reinstall_uses_system_trust_and_manual_rollback_keeps_latest_connection(self):
+    def test_public_domain_reinstall_uses_system_trust_and_cleans_transaction(self):
         self.replace(node, 'start_service', lambda: None)
         args = argparse.Namespace(release=self.release, version='v1.0.1',
             panel_url='https://new.example.com', node_address='192.0.2.2', ca_file='')
@@ -262,11 +261,21 @@ class NodeRecoveryTests(IsolatedFiles):
         self.context.assert_called_once_with(cafile=None)
         current = json.loads(self.config.read_text())
         self.assertEqual(current['ca_file'], '')
+        self.assertFalse(list(self.programs.glob('.node-reinstall-*')))
+        self.assertEqual({path.name: path.read_bytes() for path in self.state.iterdir()}, self.before)
+
+    def test_unfinished_transaction_restore_keeps_latest_confirmed_connection(self):
+        self.replace(node, 'start_service', lambda: None)
+        args = argparse.Namespace(release=self.release, version='v1.0.1',
+            panel_url='https://new.example.com', node_address='192.0.2.2', ca_file='')
+        stage = Path(tempfile.mkdtemp(prefix='.node-reinstall-', dir=self.programs))
+        node.reinstall_staged(args, stage)
+        current = json.loads(self.config.read_text())
         current.update(control_plane_url='https://latest.example.com', dial_host='192.0.2.3')
         self.config.write_text(json.dumps(current))
-        backup = next(self.backups.glob('reinstall-*'))
-        node.restore_programs(backup)
+        node.restore_programs(stage)
         self.assertEqual(json.loads(self.config.read_text()), current)
+        self.assertEqual((self.programs / 'edge-agent').read_text(), 'old edge-agent')
         self.assertEqual({path.name: path.read_bytes() for path in self.state.iterdir()}, self.before)
 
     def test_write_failure_retries_confirmed_connection_before_old_program_start(self):
