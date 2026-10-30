@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import tarfile
@@ -87,6 +88,19 @@ def verify_expected_gost(path, stage):
 
 
 try:
+    # Hosted runners may grant the unprivileged runner write access to /opt.
+    # This isolated installation test needs the normal root-owned system
+    # directory; keep the production installer's ancestor checks intact.
+    # Never change shared directories outside this explicitly disposable VM.
+    opt = Path('/opt')
+    opt_info = opt.lstat()
+    assert stat.S_ISDIR(opt_info.st_mode) and not opt.is_symlink()
+    transcript.append('Disposable /opt before setup: ' + json.dumps({
+        'uid': opt_info.st_uid, 'gid': opt_info.st_gid,
+        'mode': oct(stat.S_IMODE(opt_info.st_mode))}))
+    if opt_info.st_uid != 0 or opt_info.st_mode & 0o022:
+        os.chown(opt, 0, 0)
+        opt.chmod(stat.S_IMODE(opt_info.st_mode) & ~0o022)
     with tempfile.TemporaryDirectory(prefix='hl-node-acceptance-') as temporary:
         work = Path(temporary)
         release = work / 'release'
@@ -306,6 +320,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             rejected_install_preserves_bbr(expired, work/'missing.pem')
             assert not Path('/opt/hl-panel/edge-agent').exists()
             rejected_install_preserves_bbr(expired)
+            recovery_path = Path('/var/lib/hl-panel-edge/enrollment-attempt.json')
+            assert recovery_path.is_file(), 'Expired-token installation failed before enrollment; see node-install.log'
             assert not Path('/etc/hl-panel/edge-agent-enrollment.env').exists()
             assert not Path('/var/lib/hl-panel-edge/credentials.json').exists()
             assert not any(path.exists() for path in bbr_configs.values()), 'failed enrollment must not change BBR settings'
@@ -324,7 +340,6 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             config_root.mkdir(mode=0o750, exist_ok=True)
             (config_root/'edge-agent.json').write_text('invalid old configuration')
             (config_root/'edge-agent-enrollment.env').write_text('stale fixture token')
-            recovery_path = Path('/var/lib/hl-panel-edge/enrollment-attempt.json')
             recovery_before = recovery_path.read_bytes()
             token = issue()
             fault_state['enabled'] = True

@@ -37,7 +37,8 @@ def safe_directory(path, state=False):
         if state and parent == STATE:
             require(not info.st_mode & 0o077, '节点状态目录权限不安全；未清理旧安装')
         else:
-            require(info.st_uid == 0 and not info.st_mode & 0o022, '安装目录权限不安全；未清理旧安装')
+            require(info.st_uid == 0 and not info.st_mode & 0o022,
+                    f'安装目录权限不安全：{parent}（uid={info.st_uid}，mode={stat.S_IMODE(info.st_mode):04o}）；未清理旧安装')
 
 
 def validate():
