@@ -480,6 +480,15 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
             spec = importlib.util.spec_from_file_location('node_updater', repo / 'deploy/update-node.py')
             node_updater = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(node_updater)
+            # Keep real subprocess behavior while recording sanitized helper
+            # diagnostics; a generic updater error otherwise hides the failing
+            # recovery step on the disposable VM.
+            def updater_command(command):
+                result = run(command)
+                if result.returncode:
+                    raise node_updater.UpdateError('Isolated updater command failed: ' + Path(command[0]).name)
+                return result.stdout.encode()
+            node_updater.run = updater_command
             # The real worker deliberately hides /home and has a private /tmp.
             # Keep only this disposable VM's download fixture in shared /var/lib;
             # do not relax the production service's filesystem protections.
@@ -574,8 +583,8 @@ else: os.execv(os.environ['HL_PANEL_REAL_CURL'],['curl',*values])
                 try:
                     with patch.object(node_updater, 'active', side_effect=fail_candidate_start):
                         node_updater.main()
-                except node_updater.UpdateError:
-                    pass
+                except node_updater.UpdateError as error:
+                    assert str(error) == 'disposable candidate start failure', 'Updater failed outside the injected start fault: ' + str(error)
                 else:
                     raise AssertionError('Candidate-start fault was not exercised')
                 assert len(attempts) == 2, 'Failed candidate did not attempt to restore the old service'
