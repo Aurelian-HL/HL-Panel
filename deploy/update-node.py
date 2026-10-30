@@ -240,6 +240,7 @@ def metrics_update(backup):
     require(not METRICS_OVERRIDE.parent.is_symlink() and info.st_uid == os.geteuid() and not info.st_mode & 0o022,
             '节点服务配置目录必须归更新用户所有且不能被其他用户修改')
     (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
+    (backup/'host-metrics-added').chmod(0o600)
     METRICS_OVERRIDE.write_text(METRICS_CONTENT)
     METRICS_OVERRIDE.chmod(0o644)
     run(['systemctl', 'daemon-reload'])
@@ -390,6 +391,7 @@ def update_programs(args, config, target, backup, legacy):
         shutil.copy2(source,backup/name)
     shutil.copy2(Path(__file__), backup/'rollback-runner.py')
     (backup/'manifest.json').write_text(json.dumps(manifest)+'\n')
+    (backup/'manifest.json').chmod(0o600)
     if legacy:
         # If the compatibility finalizer cannot start, fail before the service
         # switch. An already-running old worker cannot clean completed files.

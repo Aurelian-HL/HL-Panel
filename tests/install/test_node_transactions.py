@@ -95,6 +95,7 @@ class UpdateTransactions(unittest.TestCase):
             path = release/name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('new '+name)
+            path.chmod(0o755 if name.startswith('bin/') else 0o644)
 
     def invoke(self, worker=False):
         argv = ['update-node.py', '--version', 'v0.1.999']
@@ -185,6 +186,34 @@ class UpdateTransactions(unittest.TestCase):
         self.assertTrue((stages[0]/'manifest.json').is_file())
         self.assertEqual(json.loads(self.report.read_text())['state'], 'uncertain')
         self.assert_state_unchanged()
+
+    def test_start_failure_recovers_with_permissive_system_umask(self):
+        for mask in (0o000, 0o002):
+            with self.subTest(umask=oct(mask)):
+                attempts = []
+                def active():
+                    stage, = self.stages()
+                    for name in ('manifest.json', 'host-metrics-added', 'new-edge-agent.json'):
+                        self.assertEqual((stage/name).stat().st_mode & 0o777, 0o600)
+                        updater.private_regular(stage/name)
+                    attempts.append(True)
+                    if len(attempts) == 1:
+                        raise updater.UpdateError('fixture failed start')
+                self.active.side_effect = active
+                previous = os.umask(mask)
+                try:
+                    with self.assertRaisesRegex(updater.UpdateError, 'fixture failed start'):
+                        self.invoke(worker=True)
+                finally:
+                    os.umask(previous)
+                self.assertEqual(len(attempts), 2)
+                self.assertFalse(self.stages())
+                self.assertEqual(json.loads(self.report.read_text())['state'], 'rolled_back')
+                self.assertFalse(updater.METRICS_OVERRIDE.exists())
+                for name, content in self.original_files.items():
+                    self.assertEqual((self.root/name).read_bytes(), content)
+                self.assertEqual(json.loads(self.config.read_text()), self.original_config)
+                self.assert_state_unchanged()
 
     def test_old_worker_new_updater_accepts_0755_parent(self):
         with patch.dict(os.environ, {'HL_NODE_TRANSIENT_UPDATE': ''}):
