@@ -24,8 +24,8 @@ command -v curl >/dev/null || bootstrap_packages+=(curl)
 [[ -s /etc/ssl/certs/ca-certificates.crt ]] || bootstrap_packages+=(ca-certificates)
 if ((${#bootstrap_packages[@]})); then
   [[ $(id -u) == 0 ]] && command -v apt-get >/dev/null || { echo '请使用 root 并预装 curl、ca-certificates。' >&2; exit 1; }
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=2 update
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "${bootstrap_packages[@]}"
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o Acquire::Retries=2 update
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "${bootstrap_packages[@]}"
 fi
 if [[ "$version" == "latest" ]]; then
   [[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }
@@ -47,5 +47,5 @@ curl --fail --silent --show-error --location --retry 2 --connect-timeout 15 --ma
   --proto '=https' --proto-redir '=https' \
   "https://raw.githubusercontent.com/$repository/$version/deploy/install-node.sh" --output "$temporary/install-node.sh"
 bash -n "$temporary/install-node.sh"
-printf '[HL-panel 节点] 安装正式版本 %s（自动获取最新正式版，脚本与安装包使用同一标签）\n' "$version"
+printf '[HL-panel 节点] 安装正式版本 %s\n' "$version"
 bash "$temporary/install-node.sh" "${arguments[@]}" --repo "$repository" --version "$version"

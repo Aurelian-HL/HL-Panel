@@ -4,7 +4,7 @@ import { Clipboard } from '@lucide/vue'
 import { toast } from '@/composables/toast'
 import { nodeInstallCommand, nodeRepository } from './nodeInstall'
 
-const props = defineProps<{ offline?: boolean; token: string }>()
+const props = defineProps<{ token: string }>()
 const copied = ref(false)
 const instruction = computed(() => {
   try { return { command: nodeInstallCommand(window.location.origin, props.token), error: '' } }
@@ -20,30 +20,23 @@ async function copyCommand() {
 </script>
 
 <template>
-<p class="text-secondary">此令牌安装命令会同时安装节点更新服务。安装后可在节点操作中直接更新，无需保存服务器密码。</p>
   <section class="node-install" aria-label="节点安装步骤">
-    <h3>{{ offline ? '离线安装节点' : '一条命令安装并注册节点' }}</h3>
-    <template v-if="!offline">
-      <p>通过 SSH 登录目标节点，使用 root 执行。命令已包含此令牌，自动安装 HL Agent、主机探针、Xray 和 GOST，引擎由 Agent 管理。支持 Linux amd64 / systemd，需预装 curl。</p>
-      <p v-if="instruction.error" class="form-error" role="alert">{{ instruction.error }}</p>
-      <template v-else>
-        <pre data-testid="node-install-command"><code>{{ instruction.command }}</code></pre>
-        <button class="button button--secondary" type="button" @click="copyCommand"><Clipboard :size="15" />{{ copied ? '安装命令已复制' : '复制安装命令' }}</button>
-      </template>
-    </template>
+    <h3>复制命令，在节点服务器执行</h3>
+    <p>使用 root 登录 Linux amd64 / systemd 服务器，粘贴执行即可。自动补齐依赖、安装转发与探针，并加入当前设备组。</p>
+    <p v-if="instruction.error" class="form-error" role="alert">{{ instruction.error }}</p>
     <template v-else>
-      <p>从正式发布页下载同一版本的安装包和 .sha256 文件，在可联网的机器解压。将安装包、摘要文件和 deploy/install-node.sh 上传到节点同一目录。</p>
-      <pre><code>bash install-node.sh --version v版本号 --panel-url https://你的面板域名 --token '{{ token }}' --archive ./hl-panel-linux-amd64.tar.gz --sha256 ./hl-panel-linux-amd64.tar.gz.sha256</code></pre>
-      <p>将版本号与面板地址替换为实际值。离线指无需连接 GitHub；节点仍须连接面板，并预装 python3、CA 证书及 systemd。</p>
+      <pre data-testid="node-install-command"><code>{{ instruction.command }}</code></pre>
+      <button class="button button--primary" type="button" @click="copyCommand"><Clipboard :size="15" />{{ copied ? '已复制' : '复制安装命令' }}</button>
     </template>
-    <p>无需再次输入令牌。令牌仅限这一台节点使用；同机重跑本次命令可安全恢复，过期、失效或换组需生成新命令。命令含一次性秘密，请勿公开分享，执行后清除对应命令历史。</p>
-    <p>已有节点支持直接重新安装，以本次有效注册的设备组为准。换组时在目标组生成新命令，在原机执行即可；保留节点身份与累计流量，自动撤下旧组成员及规则，切换时连接会短暂中断。</p>
-    <h3>返回面板确认在线</h3>
-    <p>安装会注册 HL Agent、启用开机自启，并上报 CPU、主机内存、根磁盘、网络和连接数。约 30 秒后刷新设备组和探针；CPU 与速率从第二次采样开始显示。</p>
-    <p>引擎已配置为 mixed 并允许自动启动；面板下发有效转发规则后启动相应进程。安装不会自行创建业务规则或开通专线。已有哪吒无需重装，关联是可选项。</p>
-    <details><summary>安装失败或没有上线</summary><p>下载和短暂连接失败会自动重试，注册最多等待 90 秒。失败后保留安装与恢复状态，检查网络和 HTTPS 证书后重跑同一命令；仅令牌过期或失效时重新生成。安装版本默认跟随当前面板，已注册机器保留原身份。</p><pre><code>systemctl status hl-panel-edge-agent --no-pager
-journalctl -u hl-panel-edge-agent -n 50 --no-pager</code></pre><p>纯 IP 自签名证书需先安装可信 CA，不能关闭证书校验。不要分享包含注册凭据的文件。</p></details>
-    <a :href="`${nodeRepository}/releases/latest`" target="_blank" rel="noopener noreferrer">查看官方安装包与版本</a>
+    <p>已安装的依赖自动跳过；BBR 按内核能力启用，安装成功后自动清理临时文件。</p>
+    <p>一台机器一条命令，请勿分享。重跑保留节点身份和累计流量；换组或重装会短暂中断该节点连接。</p>
+    <details>
+      <summary>安装失败或未上线</summary>
+      <p>检查服务器网络及面板 HTTPS 证书后重跑本次命令；令牌过期或失效时重新生成。默认安装最新正式版，完成后返回面板查看在线状态。</p>
+      <pre><code>systemctl status hl-panel-edge-agent --no-pager
+journalctl -u hl-panel-edge-agent -n 30 --no-pager</code></pre>
+      <a :href="`${nodeRepository}/releases/latest`" target="_blank" rel="noopener noreferrer">查看正式版本</a>
+    </details>
   </section>
 </template>
 

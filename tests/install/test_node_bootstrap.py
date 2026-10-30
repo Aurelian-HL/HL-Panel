@@ -64,6 +64,13 @@ class NodeBootstrapTest(unittest.TestCase):
         self.assertIsNotNone(bash, 'Bash is required')
         with tempfile.TemporaryDirectory(prefix='hl-bootstrap-') as directory:
             log = Path(directory) / 'downloads.log'
+            # The fixture must not depend on the host's Linux certificate path.
+            certificate = Path(directory) / 'ca-certificates.crt'
+            if settings.pop('FIX_MISSING_CA', '0') != '1':
+                certificate.write_text('fixture certificate bundle', encoding='utf-8')
+            bootstrap = Path(directory) / 'install-node.sh'
+            bootstrap.write_text(BOOTSTRAP.read_text(encoding='utf-8').replace(
+                '/etc/ssl/certs/ca-certificates.crt', certificate.as_posix()), encoding='utf-8')
             environment = os.environ.copy()
             environment.update(FIX_LOG=log.as_posix(),
                                FIX_RESOLVED_URL=f'{REPOSITORY}/releases/tag/{resolved}')
@@ -72,7 +79,7 @@ class NodeBootstrapTest(unittest.TestCase):
             if version is not None:
                 arguments += ['--version', version]
             result = subprocess.run([bash, '-c', WRAPPER, 'test-bootstrap',
-                                     BOOTSTRAP.as_posix(), *arguments],
+                                     bootstrap.as_posix(), *arguments],
                                     env=environment, capture_output=True, text=True,
                                     encoding='utf-8', errors='replace', timeout=15)
             downloads = log.read_text(encoding='utf-8') if log.exists() else ''
@@ -147,6 +154,15 @@ class NodeBootstrapTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('https://', log)
         self.assertNotIn('DELEGATE_ARG:', result.stdout)
+
+    def test_missing_certificates_are_installed_without_reinstalling_curl(self):
+        result, log = self.run_bootstrap(FIX_MISSING_CA='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line for line in log.splitlines() if line.startswith('PACKAGES:')]
+        self.assertEqual(len(calls), 2)
+        self.assertIn('--no-install-recommends ca-certificates', calls[1])
+        self.assertNotIn(' curl', calls[1])
+        self.assertIn('DELEGATE_ARG:', result.stdout)
 
 
 if __name__ == '__main__':

@@ -38,10 +38,10 @@ fi
 install_missing_packages() {
   command -v apt-get >/dev/null || { echo "缺少依赖：$*；当前自动补齐支持 Debian/Ubuntu 的 apt-get，尚未修改节点身份。" >&2; exit 1; }
   if [[ "$apt_refreshed" == 0 ]]; then
-    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o Acquire::Retries=2 update
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o Acquire::Retries=2 update
     apt_refreshed=1
   fi
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "$@"
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "$@"
 }
 
 ensure_time_synchronization() {
@@ -254,8 +254,7 @@ if [[ -e /var/lib/hl-panel-edge/credentials.json ]]; then
     --release "$release" --panel-url "$origin" --node-address "$node_address" --version "$version" --ca-file "$ca_file"
   unset enrollment_token
   configure_tcp_bbr
-  echo '[HL-panel 节点] 重装完成，节点身份与流量历史保留，旧组已撤下，以本次命令的设备组为准。'
-  echo '请返回面板刷新设备组成员与探针，并核对新组规则下发结果。'
+  echo '[HL-panel 节点] 完成，请返回面板查看在线状态。'
   exit 0
 fi
 for directory in /opt/hl-panel /opt/hl-panel/node-engines /etc/hl-panel /var/lib/hl-panel-edge; do
@@ -344,7 +343,4 @@ HL_INSTALL_ENROLLMENT_TOKEN="$enrollment_token" sh /opt/hl-panel/enroll-node.sh
 unset enrollment_token
 install_ready=1
 configure_tcp_bbr
-echo '[HL-panel 节点] 服务已注册并启动。请回面板刷新设备组成员与探针，等待最多 30 秒核对在线状态。'
-echo '状态：systemctl status hl-panel-edge-agent --no-pager'
-echo '排障：journalctl -u hl-panel-edge-agent -n 50 --no-pager'
-echo '已安装主机探针、Xray 和 GOST（mixed 自动启动）。请在面板创建并下发转发规则后验收业务。'
+echo '[HL-panel 节点] 安装完成，请返回面板查看在线状态。'

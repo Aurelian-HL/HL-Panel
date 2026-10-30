@@ -8,7 +8,7 @@ import { formatDateTime } from '@/lib/displayFormatters'
 import { networkDirectPolicy } from '@/lib/forwardingRoutes'
 import { formatPortRanges } from '@/lib/portRanges'
 
-export type GroupIntegrationMode = 'online' | 'overseas' | 'offline' | 'config'
+export type GroupIntegrationMode = 'online' | 'config'
 
 const props = defineProps<{ groups: DeviceGroup[]; networks: GroupNetwork[]; disabled?: boolean }>()
 const emit = defineEmits<{ addMember: [group: DeviceGroup]; configureNetwork: [group: DeviceGroup]; edit: [group: DeviceGroup]; integrate: [group: DeviceGroup, mode: GroupIntegrationMode]; remove: [group: DeviceGroup] }>()
@@ -28,8 +28,8 @@ async function toggleIntegrationMenu(group: DeviceGroup, event: MouseEvent): Pro
   await nextTick()
   if (openMenuGroup.value?.id !== group.id) return
   const rect = anchor.getBoundingClientRect()
-  const width = Math.min(270, window.innerWidth - 24)
-  const height = menuElement.value?.offsetHeight || 160
+  const width = Math.min(180, window.innerWidth - 24)
+  const height = menuElement.value?.offsetHeight || 48
   const top = window.innerHeight - rect.bottom >= height + 6
     ? rect.bottom + 6
     : Math.max(12, rect.top - height - 6)
@@ -111,10 +111,7 @@ const strategyLabels: Record<LoadBalancingStrategy, string> = {
     </div>
     <Teleport to="body">
       <div v-if="openMenuGroup" ref="menuElement" class="integration-menu__items" :style="menuStyle" role="menu" @keydown.esc="closeIntegrationMenu">
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'online')">自动探测线路（安装器待发布）</button>
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'overseas')">海外节点安装</button>
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'offline')">离线部署</button>
-        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'config')">查看节点记录（调试用）</button>
+        <button type="button" role="menuitem" @click="selectIntegration(openMenuGroup, 'online')">自动探测线路</button>
       </div>
     </Teleport>
   </fieldset>

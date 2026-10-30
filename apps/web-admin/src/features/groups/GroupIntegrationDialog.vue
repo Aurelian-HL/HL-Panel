@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Clipboard, KeyRound, LoaderCircle, RefreshCw, Trash2 } from '@lucide/vue'
+import { KeyRound, LoaderCircle, RefreshCw, Trash2 } from '@lucide/vue'
 
 import { api, type DeviceGroup, type DeviceGroupMember, type EnrollmentTokenResponse, type PendingEnrollmentToken } from '@/api'
 import { probeApi, type ProbeMember, type ProbeUpstreamStatus } from '@/api/probe'
@@ -10,7 +10,7 @@ import { displayError, formatDateTime } from '@/lib/displayFormatters'
 import { toast } from '@/composables/toast'
 import { useMutationKey } from '@/composables/useMutationKey'
 
-export type GroupIntegrationMode = 'online' | 'overseas' | 'offline' | 'config'
+export type GroupIntegrationMode = 'online' | 'config'
 
 const props = defineProps<{ group: DeviceGroup; mode?: GroupIntegrationMode }>()
 defineEmits<{ close: [] }>()
@@ -19,7 +19,6 @@ const ttl = ref(900)
 const busy = ref(false)
 const error = ref('')
 const token = ref<EnrollmentTokenResponse | null>(null)
-const copied = ref(false)
 const selectedNezhaId = ref<number | ''>('')
 const issuedNezhaId = ref<number | null>(null)
 const probeServers = ref<ProbeMember[]>([])
@@ -125,20 +124,8 @@ function issueAnother(): void {
   token.value = null
   selectedNezhaId.value = ''
   issuedNezhaId.value = null
-  copied.value = false
   void loadProbeServers()
   void loadPendingTokens()
-}
-
-async function copy(): Promise<void> {
-  if (!token.value) return
-  try {
-    await navigator.clipboard.writeText(token.value.token)
-    copied.value = true
-    window.setTimeout(() => { copied.value = false }, 1600)
-  } catch {
-    toast.error('复制失败', '请手动选中令牌复制')
-  }
 }
 
 onMounted(() => {
@@ -153,12 +140,6 @@ onMounted(() => {
 <template>
   <BaseModal :title="mode === 'config' ? '节点配置（调试用）' : '节点对接'" :description="`${group.name} · ${group.kind === 'ENTRY' ? '入口组' : '出口组'}`" width="large" @close="$emit('close')">
     <div class="integration-dialog">
-      <div v-if="mode !== 'config'" class="integration-tabs" role="tablist" aria-label="对接方式">
-        <button type="button" :class="{ active: mode === 'online' }" role="tab" @click="mode = 'online'">在线安装</button>
-        <button type="button" :class="{ active: mode === 'overseas' }" role="tab" @click="mode = 'overseas'">海外主线路</button>
-        <button type="button" :class="{ active: mode === 'offline' }" role="tab" @click="mode = 'offline'">离线部署</button>
-      </div>
-
       <section v-if="mode === 'config'" class="integration-panel">
         <div class="integration-panel__heading"><KeyRound :size="18" /><div><h3>当前设备组节点记录</h3><p>这里展示控制面保存的成员、拨号地址和调度参数，仅供排查；不代表节点已经应用最新配置或线路健康。</p></div></div>
         <div class="config-summary"><span>组修订 <strong>{{ group.current_generation }}</strong></span><span>有效成员 <strong>{{ members.filter((item) => !item.retired_at).length }}</strong></span></div>
@@ -181,13 +162,11 @@ onMounted(() => {
           <p v-else-if="!availableProbeServers.length" class="form-note">没有可关联的哪吒机器；已关联或已预留令牌的机器不会重复列出。</p>
           <p v-if="selectedNezhaId !== ''" class="integration-note">选中的哪吒 Agent 已负责主机监控；这枚令牌用于安装和注册独立的 HL 转发 Agent。注册成功后才建立关联。</p>
           <p class="integration-note">生成令牌后会显示一条完整安装命令，包含令牌、HL Agent、主机探针、Xray 和 GOST，无需分开安装。</p>
-          <p v-if="mode === 'overseas'" class="integration-note">海外节点使用同一安装流程；注册后再配置入口、出口和线路，安装不会自动开通专线。</p>
           <p v-if="error" class="form-error" role="alert">{{ error }}</p>
         </template>
         <template v-else>
           <div class="integration-panel__heading"><KeyRound :size="18" /><div><h3>注册令牌已生成</h3><p>{{ token.name }} · {{ formatDateTime(token.expires_at) }} 到期</p></div></div>
-          <NodeInstallInstructions :offline="mode === 'offline'" :token="token.token" />
-          <div class="secret-value"><code>{{ token.token }}</code><button class="button button--secondary" type="button" @click="copy"><Clipboard :size="15" />{{ copied ? '已复制' : '复制令牌' }}</button></div>
+          <NodeInstallInstructions :token="token.token" />
           <p class="integration-warning">关闭后无法再次查看。该令牌已绑定 {{ group.name }}{{ issuedNezhaId ? ` 和哪吒 #${issuedNezhaId}` : '' }}；当前仅为待注册，HL Agent 注册成功后才自动入组{{ issuedNezhaId ? '并关联哪吒监控' : '' }}。</p>
           <button class="button button--secondary" type="button" @click="issueAnother"><KeyRound :size="15" />为下一台机器发令牌</button>
         </template>
@@ -216,9 +195,6 @@ onMounted(() => {
 
 <style scoped>
 .integration-dialog { display: grid; gap: 16px; }
-.integration-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-bottom: 1px solid var(--gray-200); }
-.integration-tabs button { min-height: 40px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--gray-600); font-size: 13px; cursor: pointer; }
-.integration-tabs button.active { border-bottom-color: var(--gold-500); color: var(--navy-900); font-weight: 650; }
 .integration-panel { display: grid; gap: 16px; }
 .integration-panel__heading { display: flex; gap: 10px; align-items: flex-start; color: var(--navy-800); }
 .integration-panel__heading svg { flex: 0 0 auto; margin-top: 2px; color: var(--gold-600); }
@@ -245,5 +221,4 @@ onMounted(() => {
 .pending-token-list__actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
 .pending-token-list .button { flex: 0 0 auto; min-height: 30px; padding: 4px 8px; font-size: 11px; }
 @media (max-width: 640px) { .pending-token-list li { align-items: stretch; flex-direction: column; } .pending-token-list .button { align-self: flex-start; } }
-@media (max-width: 640px) { .integration-tabs button { font-size: 12px; } }
 </style>

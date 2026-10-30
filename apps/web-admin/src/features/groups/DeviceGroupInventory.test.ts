@@ -18,13 +18,13 @@ describe('DeviceGroupInventory', () => {
     await flushPromises()
     const menu = document.body.querySelector('[role="menu"]')!
     expect(wrapper.find('[role="menu"]').exists()).toBe(false)
-    expect(menu.textContent).toContain('自动探测线路（安装器待发布）')
-    expect(menu.textContent).toContain('查看节点记录（调试用）')
+    expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(1)
+    expect(menu.textContent?.trim()).toBe('自动探测线路')
 
-    ;(menu.querySelectorAll('[role="menuitem"]')[3] as HTMLButtonElement).click()
+    ;(menu.querySelector('[role="menuitem"]') as HTMLButtonElement).click()
     await flushPromises()
 
-    expect(wrapper.emitted('integrate')).toEqual([[group, 'config']])
+    expect(wrapper.emitted('integrate')).toEqual([[group, 'online']])
     expect(document.body.querySelector('[role="menu"]')).toBeNull()
     wrapper.unmount()
   })
@@ -38,7 +38,7 @@ describe('DeviceGroupInventory', () => {
     await flushPromises()
 
     const menu = document.body.querySelector('[role="menu"]') as HTMLElement
-    expect(menu.style.top).toBe(`${window.innerHeight - 206}px`)
+    expect(menu.style.top).toBe(`${window.innerHeight - 94}px`)
     expect(menu.style.visibility).not.toBe('hidden')
     expect(document.body.querySelectorAll('[role="menu"]')).toHaveLength(1)
     wrapper.unmount()

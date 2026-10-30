@@ -99,7 +99,7 @@ describe('GroupIntegrationDialog', () => {
 
   it('lists only non-secret pending tokens and revokes after confirmation', async () => {
     mocked.getPendingGroupEnrollmentTokens.mockResolvedValue({ items: [{ id: 'token-1', name: '待装节点', group_id: group.id, created_at: '2026-10-04T07:00:00Z', expires_at: '2026-10-04T08:00:00Z' }] })
-    const wrapper = mount(GroupIntegrationDialog, { props: { group, mode: 'offline' }, global: { stubs: { Teleport: true } } })
+    const wrapper = mount(GroupIntegrationDialog, { props: { group }, global: { stubs: { Teleport: true } } })
     await flushPromises()
     expect(mocked.getPendingGroupEnrollmentTokens).toHaveBeenCalledWith(group.id)
     expect(wrapper.text()).toContain('待装节点')
