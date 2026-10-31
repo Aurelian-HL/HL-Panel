@@ -25,6 +25,11 @@ type reservation struct {
 
 // Every callback executes in one transaction together with audit and replay data.
 type transaction interface {
+	StockBatch(context.Context, string, bool) (stockBatch, error)
+	SaveStockBatch(context.Context, stockBatch) error
+	StockCode(context.Context, string) (stockCode, error)
+	SaveStockCode(context.Context, stockCode) error
+	StockAudit(context.Context, string, string, p.StockActionRequest, time.Time) error
 	Get(context.Context, string) (license, error)
 	ByCode(context.Context, string) (license, error)
 	ByDomain(context.Context, string) (license, error)
@@ -37,6 +42,10 @@ type transaction interface {
 	Audit(context.Context, p.AuditEvent) error
 }
 type repository interface {
+	Transact(context.Context, func(transaction) error) error
+	StockCode(context.Context, string) (stockCode, error)
+	StockBatches(context.Context, time.Time, int) ([]p.StockBatch, error)
+	Redemptions(context.Context, string) ([]p.RedemptionRecord, error)
 	Run(context.Context, string, string, func(transaction) ([]byte, error)) ([]byte, bool, error)
 	Replay(context.Context, string, string) ([]byte, bool, error)
 	Reservation(context.Context, string) (reservation, error)

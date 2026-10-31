@@ -48,6 +48,10 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
+	if r.URL.Path == p.StockPath || strings.HasPrefix(r.URL.Path, p.StockPath+"/") {
+		s.serveStock(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, p.ManagementPath) {
 		if !s.authenticated(r) {
 			errorResponse(w, problem("unauthorized", "management authentication required", 401))
@@ -122,6 +126,12 @@ func (s *Service) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			operation = "free-install-prepare"
 		case p.PublicPath + "/free/install/commit":
 			operation = "free-install-commit"
+		case p.PublicPath + "/shop/catalog":
+			operation = "shop-catalog"
+		case p.PublicPath + "/redemption/prepare":
+			operation = "redeem-prepare"
+		case p.PublicPath + "/redemption/commit":
+			operation = "redeem-commit"
 		}
 		if operation != "" {
 			var signed p.InstanceRequest

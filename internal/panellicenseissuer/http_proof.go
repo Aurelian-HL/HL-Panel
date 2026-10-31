@@ -2,11 +2,14 @@ package panellicenseissuer
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	p "github.com/hongle/hl-panel/internal/panellicense"
@@ -25,6 +28,8 @@ type proofIPResolver interface {
 type httpProofVerifier struct {
 	resolver proofIPResolver
 	dial     func(context.Context, string, string) (net.Conn, error)
+	// Private fixture seam only. Production always uses system certificate roots.
+	roots *x509.CertPool
 }
 
 func newHTTPProofVerifier() *httpProofVerifier {
@@ -77,17 +82,31 @@ func (v *httpProofVerifier) VerifyHTTPProof(ctx context.Context, domain, path, v
 		value[:14] != "hl-license-v2=" || !validFreeNonce(value[14:]) {
 		return ErrHTTP
 	}
+	_, err = v.verifyProof(ctx, domain, path, value, false)
+	return err
+}
+
+func (v *httpProofVerifier) VerifyRedemptionProof(ctx context.Context, domain, path, value string) ([]string, error) {
+	normalized, err := p.NormalizeDomain(domain)
+	a := p.RedemptionAttempt{Challenge: p.Challenge{Purpose: p.RedemptionPurpose, VerificationMethod: "https-01", ReservationID: strings.TrimPrefix(path, p.InstallProofPath), HTTPPath: path, HTTPValue: value}, CodeHash: strings.Repeat("0", 64)}
+	if err != nil || normalized != domain || !p.ValidRedemptionProof(a) {
+		return nil, ErrHTTP
+	}
+	return v.verifyProof(ctx, domain, path, value, true)
+}
+
+func (v *httpProofVerifier) verifyProof(ctx context.Context, domain, path, value string, secure bool) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	addresses, err := v.resolver.LookupNetIP(ctx, "ip", domain)
 	if err != nil || len(addresses) == 0 || len(addresses) > 32 {
-		return ErrHTTP
+		return nil, ErrHTTP
 	}
 	// Reject the entire DNS answer if even one address is unsafe. Resolve once,
 	// then pin the checked address so DNS rebinding cannot change the dial target.
 	for _, address := range addresses {
 		if !publicProofIP(address) {
-			return ErrHTTP
+			return nil, ErrHTTP
 		}
 	}
 	// Give every validated address a chance within the same overall budget.
@@ -96,26 +115,36 @@ func (v *httpProofVerifier) VerifyHTTPProof(ctx context.Context, domain, path, v
 	deadline, _ := ctx.Deadline()
 	for index, address := range addresses {
 		if ctx.Err() != nil {
-			return ErrHTTP
+			return nil, ErrHTTP
 		}
 		budget := time.Until(deadline) / time.Duration(len(addresses)-index)
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, budget)
-		err := v.verifyHTTPProofAddress(attemptCtx, domain, path, value, address)
+		err := v.verifyProofAddress(attemptCtx, domain, path, value, address, secure)
 		attemptCancel()
 		if err == nil {
-			return nil
+			return []string{address.Unmap().String()}, nil
 		}
 	}
-	return ErrHTTP
+	return nil, ErrHTTP
 }
 
 func (v *httpProofVerifier) verifyHTTPProofAddress(ctx context.Context, domain, path, value string, address netip.Addr) error {
-	target := net.JoinHostPort(address.Unmap().String(), "80")
+	return v.verifyProofAddress(ctx, domain, path, value, address, false)
+}
+
+func (v *httpProofVerifier) verifyProofAddress(ctx context.Context, domain, path, value string, address netip.Addr, secure bool) error {
+	port, scheme := "80", "http"
+	if secure {
+		port, scheme = "443", "https"
+	}
+	target := net.JoinHostPort(address.Unmap().String(), port)
 	transport := &http.Transport{
 		Proxy: nil, DisableKeepAlives: true, DisableCompression: true,
 		MaxResponseHeaderBytes: 4096, ResponseHeaderTimeout: 5 * time.Second,
+		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12, ServerName: domain, RootCAs: v.roots},
+		TLSHandshakeTimeout: 5 * time.Second,
 		DialContext: func(_ context.Context, network, address string) (net.Conn, error) {
-			if network != "tcp" || address != net.JoinHostPort(domain, "80") {
+			if network != "tcp" || address != net.JoinHostPort(domain, port) {
 				return nil, errors.New("unexpected proof dial target")
 			}
 			// Transport may detach its dial context from the request deadline.
@@ -126,7 +155,7 @@ func (v *httpProofVerifier) verifyHTTPProofAddress(ctx context.Context, domain, 
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+domain+path, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, scheme+"://"+domain+path, nil)
 	if err != nil {
 		return ErrHTTP
 	}

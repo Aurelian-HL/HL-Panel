@@ -6,6 +6,7 @@ export interface PanelLicenseStatus {
   status: 'active' | 'expired' | 'revoked' | 'stale' | 'unactivated' | 'unconfigured' | 'upgrade_required'
   management_allowed: boolean
   auto_registration?: boolean
+  redemption_pending?: boolean
   domain: string
   license_id?: string
   revision?: number
@@ -22,6 +23,13 @@ export interface PanelLicenseStatus {
   renewal_url: string
 }
 export interface LicenseChallenge { dns_name: string; dns_value: string; expires_at: string; purpose?: 'free-registration' }
+export interface LicenseShopProduct {
+  id: string
+  name: string
+  term: { kind: string; months?: number; days?: number }
+  price_label?: string
+  purchase_url?: string
+}
 export const panelLicenseApi = {
   status: () => http.request<PanelLicenseStatus>('/license/status', { cache: 'no-store' }),
   sync: () => http.request<PanelLicenseStatus>('/license/sync', { method: 'POST' }),
@@ -29,4 +37,7 @@ export const panelLicenseApi = {
   prepare: (code: string) => http.request<LicenseChallenge>('/license/activation/prepare', { method: 'POST', body: JSON.stringify({ code }) }),
   registerFree: () => http.request<LicenseChallenge>('/license/free/prepare', { method: 'POST' }),
   commit: () => http.request<PanelLicenseStatus>('/license/activation/commit', { method: 'POST' }),
+  shop: () => http.request<{ items: LicenseShopProduct[]; redemption_enabled: boolean; message?: string }>('/license/shop', { cache: 'no-store', timeoutMs: 15_000 }),
+  redeem: (code: string) => http.request<PanelLicenseStatus>('/license/redemption', { method: 'POST', body: JSON.stringify({ code }), timeoutMs: 25_000 }),
+  resumeRedemption: () => http.request<PanelLicenseStatus>('/license/redemption/resume', { method: 'POST', timeoutMs: 15_000 }),
 }

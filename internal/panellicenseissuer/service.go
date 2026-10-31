@@ -31,6 +31,10 @@ type Config struct {
 	// HTTPVerifier is an embedding/test seam, never an operator-configurable
 	// network bypass. The command always uses the strict public HTTP-01 verifier.
 	HTTPVerifier HTTPProofVerifier
+	// Independent 32-byte AES key used only for recoverable inventory exports.
+	ExportKey          []byte
+	Products           []p.ShopProduct
+	RedemptionVerifier RedemptionProofVerifier
 }
 type Service struct {
 	store  repository
@@ -62,6 +66,20 @@ func newService(store repository, config Config) (*Service, error) {
 	}
 	if config.HTTPVerifier == nil {
 		config.HTTPVerifier = newHTTPProofVerifier()
+	}
+	if len(config.ExportKey) != 0 && len(config.ExportKey) != 32 {
+		return nil, errors.New("inventory export key must contain 32 bytes")
+	}
+	config.ExportKey = append([]byte(nil), config.ExportKey...)
+	if config.Products == nil {
+		config.Products = p.DefaultShopProducts()
+	}
+	if err := validateProducts(config.Products); err != nil {
+		return nil, err
+	}
+	config.Products = append([]p.ShopProduct(nil), config.Products...)
+	if config.RedemptionVerifier == nil {
+		config.RedemptionVerifier = newHTTPProofVerifier()
 	}
 	config.SigningKey = append(ed25519.PrivateKey(nil), config.SigningKey...)
 	return &Service{store: store, config: config}, nil

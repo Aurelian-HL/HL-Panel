@@ -11,12 +11,18 @@ import (
 
 func (s *Service) Public(ctx context.Context, operation string, signed p.InstanceRequest) (p.Envelope, error) {
 	var empty p.Envelope
-	if operation != "prepare" && operation != "commit" && operation != "sync" && operation != "free-prepare" && operation != "free-commit" && operation != "free-install-prepare" && operation != "free-install-commit" {
+	if operation != "prepare" && operation != "commit" && operation != "sync" && operation != "free-prepare" && operation != "free-commit" && operation != "free-install-prepare" && operation != "free-install-commit" && operation != "shop-catalog" && operation != "redeem-prepare" && operation != "redeem-commit" {
 		return empty, invalid("unknown activation operation")
 	}
 	r, err := p.VerifyRequest(operation, signed, s.now())
 	if err != nil {
 		return empty, invalid("invalid signed instance request")
+	}
+	if operation == "shop-catalog" {
+		return s.shopCatalog(r)
+	}
+	if operation == "redeem-prepare" || operation == "redeem-commit" {
+		return s.redemptionPublic(ctx, operation, r, signed)
 	}
 	if operation == "free-prepare" || operation == "free-commit" {
 		return s.freePublic(ctx, operation, r, signed)

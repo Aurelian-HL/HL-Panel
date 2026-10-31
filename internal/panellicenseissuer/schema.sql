@@ -32,3 +32,26 @@ CREATE TABLE IF NOT EXISTS hl_license_v2.audit (
  document jsonb NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_license_time ON hl_license_v2.audit(license_id, at, id);
+
+-- Inventory is separate from domain-bound legacy codes. No plaintext card code
+-- is retained: the short-lived export is encrypted under an independent key.
+CREATE TABLE IF NOT EXISTS hl_license_v2.stock_batches (
+ id text PRIMARY KEY,
+ disabled boolean NOT NULL DEFAULT false,
+ export_expires_at timestamptz NOT NULL,
+ export_ciphertext bytea,
+ document jsonb NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hl_license_v2.stock_codes (
+ code_hash text PRIMARY KEY,
+ batch_id text NOT NULL REFERENCES hl_license_v2.stock_batches(id),
+ code_prefix text NOT NULL,
+ redemption jsonb
+);
+CREATE INDEX IF NOT EXISTS stock_codes_batch ON hl_license_v2.stock_codes(batch_id);
+CREATE TABLE IF NOT EXISTS hl_license_v2.stock_audit (
+ id bigserial PRIMARY KEY,
+ batch_id text NOT NULL REFERENCES hl_license_v2.stock_batches(id),
+ at timestamptz NOT NULL,
+ document jsonb NOT NULL
+);

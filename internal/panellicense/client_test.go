@@ -314,6 +314,8 @@ func TestExpiredGuardPreservesRuntimeAndRejectsBusinessMutations(t *testing.T) {
 		{"GET", "/api/v1/agent/desired", true}, {"POST", "/api/v1/agent/heartbeat", true},
 		{"POST", "/api/v1/usage/reports", true}, {"POST", "/api/v1/agent/apply-results", true},
 		{"POST", "/api/v1/license/sync", true}, {"PUT", "/api/v1/auth/password", true},
+		{"GET", "/api/v1/license/shop", true}, {"POST", "/api/v1/license/redemption", true},
+		{"POST", "/api/v1/license/redemption/resume", true},
 		{"POST", "/api/v1/forward-rules", false}, {"PUT", "/api/v1/forward-rules/existing", false},
 		{"DELETE", "/api/v1/customers/existing", false}, {"POST", "/api/v1/agent/enroll", false},
 		{"POST", "/api/v1/agent/update-task/claim", false},

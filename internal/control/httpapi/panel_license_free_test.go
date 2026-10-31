@@ -90,6 +90,7 @@ func TestFreeLicenseHTTPAdministratorBoundaryAndUsageFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/v1/license/shop"}, {"POST", "/api/v1/license/redemption"}, {"POST", "/api/v1/license/redemption/resume"},
 		{"GET", "/api/v1/license/status"}, {"POST", "/api/v1/license/free/prepare"}, {"POST", "/api/v1/license/activation/prepare"}, {"POST", "/api/v1/license/activation/commit"}, {"POST", "/api/v1/license/sync"}, {"POST", "/api/v1/license/reminders/dismiss"},
 	} {
 		for _, token := range []string{"", customer.AccessToken} {

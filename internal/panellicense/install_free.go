@@ -29,6 +29,7 @@ func ValidInstallProof(c Challenge) bool {
 
 func (c *Client) installEligibleLocked() bool {
 	return c.config.AutoRegisterFree && !c.registrationBlocked && c.configurationError == nil &&
+		c.redemption == nil &&
 		c.claims == nil && c.legacyClaims == nil &&
 		(c.challenge == nil || c.challenge.Purpose == InstallFreePurpose)
 }
@@ -54,7 +55,11 @@ func (c *Client) ReconcileInstallation(ctx context.Context) error {
 func (c *Client) reconcile(ctx context.Context) error {
 	c.mu.RLock()
 	eligible := c.installEligibleLocked()
+	pending := c.redemption != nil
 	c.mu.RUnlock()
+	if pending {
+		return c.ResumeRedemption(ctx)
+	}
 	if !eligible {
 		return c.Sync(ctx)
 	}

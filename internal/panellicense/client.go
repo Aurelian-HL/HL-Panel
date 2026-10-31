@@ -35,6 +35,7 @@ type Config struct {
 type cachedState struct {
 	Envelope   *Envelope         `json:"envelope,omitempty"`
 	Challenge  *Envelope         `json:"challenge,omitempty"`
+	Redemption *Envelope         `json:"redemption,omitempty"`
 	Dismissals map[string]string `json:"dismissals,omitempty"`
 }
 
@@ -48,6 +49,7 @@ type Client struct {
 	claims              *Claims
 	legacyClaims        *Claims // Verified identity only; never grants management or quota.
 	challenge           *Challenge
+	redemption          *RedemptionAttempt
 	lastError           string
 	lastAttempt         time.Time
 	configurationError  error
@@ -82,6 +84,7 @@ type Status struct {
 	ReminderDue       bool       `json:"reminder_due"`
 	RenewalURL        string     `json:"renewal_url"`
 	AutoRegistration  bool       `json:"auto_registration,omitempty"`
+	RedemptionPending bool       `json:"redemption_pending,omitempty"`
 }
 
 // ValidateConfig checks trust and identity without creating state or keys.
@@ -212,6 +215,16 @@ func (c *Client) restore(data []byte) error {
 	if c.state.Dismissals == nil {
 		c.state.Dismissals = make(map[string]string)
 	}
+	if c.state.Redemption != nil {
+		var attempt RedemptionAttempt
+		if err := Verify(*c.state.Redemption, c.config.Keys, &attempt); err != nil {
+			return err
+		}
+		if err := c.validateRedemption(attempt, "", false); err != nil {
+			return err
+		}
+		c.redemption = &attempt
+	}
 	return nil
 }
 
@@ -281,8 +294,11 @@ func (c *Client) call(ctx context.Context, operation, path string, r Request) (E
 		return Envelope{}, errors.New("授权服务暂时无法连接，将继续重试")
 	}
 	defer response.Body.Close()
+	if operation == "shop-catalog" && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusNotImplemented) {
+		return Envelope{}, ErrShopNotOpen
+	}
 	if response.StatusCode != http.StatusOK {
-		return Envelope{}, errors.New("授权服务未接受请求，请检查授权码、DNS 证明或实例绑定")
+		return Envelope{}, issuerError(response)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 131073))
 	if err != nil || len(data) > 131072 {
@@ -326,6 +342,9 @@ func (c *Client) saveLocked() error {
 	return os.Rename(name, filepath.Join(c.config.Directory, "state.json"))
 }
 func (c *Client) accept(envelope Envelope, requestID string) error {
+	return c.acceptResult(envelope, requestID, false)
+}
+func (c *Client) acceptResult(envelope Envelope, requestID string, redeemed bool) error {
 	var s Claims
 	if err := Verify(envelope, c.config.Keys, &s); err != nil {
 		return err
@@ -371,6 +390,9 @@ func (c *Client) accept(envelope Envelope, requestID string) error {
 	previous := c.state
 	c.state.Envelope = &envelope
 	c.state.Challenge = nil
+	if redeemed {
+		c.state.Redemption = nil
+	}
 	if err := c.saveLocked(); err != nil {
 		c.state = previous
 		return err
@@ -378,6 +400,9 @@ func (c *Client) accept(envelope Envelope, requestID string) error {
 	c.claims = &s
 	c.legacyClaims = nil
 	c.challenge = nil
+	if redeemed {
+		c.redemption = nil
+	}
 	c.lastError = ""
 	return nil
 }
@@ -393,6 +418,12 @@ func (c *Client) prepare(ctx context.Context, code string, mode string) (Challen
 	}
 	c.flight.Lock()
 	defer c.flight.Unlock()
+	c.mu.RLock()
+	pending := c.redemption != nil
+	c.mu.RUnlock()
+	if pending {
+		return Challenge{}, ErrRedemptionPending
+	}
 	if mode == "install" {
 		c.mu.RLock()
 		eligible := c.installEligibleLocked()
@@ -462,7 +493,11 @@ func (c *Client) commit(ctx context.Context, installOnly bool) error {
 	challenge := c.challenge
 	proof := c.state.Challenge
 	eligible := c.installEligibleLocked()
+	pending := c.redemption != nil
 	c.mu.RUnlock()
+	if pending {
+		return ErrRedemptionPending
+	}
 	if installOnly && (!eligible || challenge == nil || challenge.Purpose != InstallFreePurpose) {
 		return errors.New("自动登记不得提交其他授权流程")
 	}
@@ -553,7 +588,10 @@ func (c *Client) Run(ctx context.Context) {
 			}
 		} else {
 			c.mu.RLock()
-			delay = c.claims.RefreshAfter.Sub(c.config.Now())
+			delay = time.Minute
+			if c.claims != nil {
+				delay = c.claims.RefreshAfter.Sub(c.config.Now())
+			}
 			c.mu.RUnlock()
 			if delay < 10*time.Second {
 				delay = 10 * time.Second
@@ -570,6 +608,7 @@ func (c *Client) Status(actor string) Status {
 	now := c.config.Now()
 	s := Status{Enabled: true, Status: "unactivated", Domain: c.config.Domain, RenewalURL: "https://ht.hongle.work/", LastError: c.lastError}
 	s.AutoRegistration = c.installEligibleLocked()
+	s.RedemptionPending = c.redemption != nil
 	if c.configurationError != nil {
 		s.Status = "unconfigured"
 		return s

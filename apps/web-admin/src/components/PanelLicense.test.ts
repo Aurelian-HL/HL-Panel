@@ -126,6 +126,41 @@ describe('Panel license UI', () => {
     await dismiss.trigger('click'); await flushPromises()
     expect(wrapper.find('[role=alertdialog]').exists()).toBe(false); wrapper.unmount()
   })
+  it('keeps a newly applied redemption when an older status request completes', async () => {
+    let resolve!: (s: PanelLicenseStatus) => void
+    vi.mocked(panelLicenseApi.status).mockReturnValueOnce(new Promise(done => { resolve = done }))
+    const pending = store.refresh()
+    expect(store.apply(sample, store.generation())).toBe(true)
+    resolve({ ...sample, status: 'expired', management_allowed: false }); await pending
+    expect(store.status.value).toEqual(sample)
+  })
+  it('ignores an older status failure after a successful redemption', async () => {
+    let reject!: (error: Error) => void
+    vi.mocked(panelLicenseApi.status).mockReturnValueOnce(new Promise((_done, fail) => { reject = fail }))
+    const pending = store.refresh()
+    store.apply(sample, store.generation())
+    reject(new Error('stale request failed')); await pending
+    expect(store.status.value).toEqual(sample)
+    expect(store.error.value).toBe('')
+  })
+  it('starts a fresh read after redemption without an old response clearing that read', async () => {
+    let resolveOld!: (s: PanelLicenseStatus) => void
+    let resolveNew!: (s: PanelLicenseStatus) => void
+    vi.mocked(panelLicenseApi.status)
+      .mockReturnValueOnce(new Promise(done => { resolveOld = done }))
+      .mockReturnValueOnce(new Promise(done => { resolveNew = done }))
+    const oldRead = store.refresh()
+    store.apply(sample, store.generation())
+    const newRead = store.refresh()
+    const callsAfterApply = vi.mocked(panelLicenseApi.status).mock.calls.length
+    resolveOld({ ...sample, status: 'expired' }); await oldRead
+    const duplicateRead = store.refresh()
+    const callsAfterOldRead = vi.mocked(panelLicenseApi.status).mock.calls.length
+    resolveNew({ ...sample, reminder_due: false }); await Promise.all([newRead, duplicateRead])
+    expect(callsAfterApply).toBe(2)
+    expect(callsAfterOldRead).toBe(2)
+    expect(store.status.value?.reminder_due).toBe(false)
+  })
   it('discards a response from the previous administrator session', async () => {
     let resolve!: (s: PanelLicenseStatus) => void
     vi.mocked(panelLicenseApi.status).mockReturnValueOnce(new Promise(done => { resolve = done }))

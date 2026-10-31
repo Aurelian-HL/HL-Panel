@@ -14,7 +14,7 @@ func Guard(client *Client, next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, InstallProofPath) {
-			client.ServeInstallProof(w, r)
+			client.ServeProof(w, r)
 			return
 		}
 		if !client.Status("").ManagementAllowed && !OperationAllowed(r) {
@@ -43,6 +43,7 @@ func OperationAllowed(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/api/v1/auth/login", "/api/v1/customer/auth/login", "/api/v1/customer/auth/logout",
 		"/api/v1/license/sync", "/api/v1/license/free/prepare", "/api/v1/license/activation/prepare", "/api/v1/license/activation/commit", "/api/v1/license/reminders/dismiss",
+		"/api/v1/license/redemption", "/api/v1/license/redemption/resume",
 		"/api/v1/agent/heartbeat", "/api/v1/agent/control-results", "/api/v1/agent/apply-results", "/api/v1/agent/update-task/result",
 		"/api/v1/usage/reports", "/api/v1/usage/enforcement/results", "/api/v1/gateway/membership":
 		return true

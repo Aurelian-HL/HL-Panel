@@ -31,6 +31,7 @@ export const router = createRouter({
         { path: 'overview', name: 'overview', component: OverviewPage },
         { path: 'migration', name: 'migration', component: () => import('@/pages/PanelMigrationPage.vue') },
         { path: 'userinfo', name: 'userinfo', component: ProfilePage },
+        { path: 'shop', name: 'shop', component: () => import('@/pages/ShopPage.vue') },
         { path: 'forward-rules', name: 'forward-rules', component: ForwardRulesPage },
         { path: 'subscriptions', name: 'subscriptions', component: SubscriptionsPage },
         { path: 'rule-groups', name: 'rule-groups', component: RuleGroupsPage },

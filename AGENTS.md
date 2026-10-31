@@ -62,6 +62,14 @@ renewals, orders, wallet/recharge/payment, redemption codes,
 invitations/rebates, and push channels/Telegram. Remove their dependent routes,
 settings, metrics, permissions, storage, and dead actions.
 
+Authorized exception (2026-10-31): a sidebar license shop, independently issued
+single-use redemption inventory and external card-store purchase links are in
+scope. Payments and order fulfillment remain outside HL. Develop and validate
+locally; this authorization does not publish or upgrade production services.
+The user's subsequent explicit update instruction authorizes publishing a new
+release and upgrading hlpanel.hongle.cc only. Do not upgrade nodes or the
+protected issuer/HT services as part of that panel update.
+
 Normal workflows must not require raw engine JSON or a separately maintained
 endpoint candidate file. VLESS is an ingress option in the same product flow,
 not a replacement for existing forwarding functionality or ten client URIs.
