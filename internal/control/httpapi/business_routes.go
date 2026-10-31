@@ -23,6 +23,7 @@ func (api *API) registerBusinessRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/v1/forwarding-rules/export", api.requireAdministrator(api.exportForwardingRules))
 		mux.HandleFunc("POST /api/v1/forwarding-rules/import/preview", api.requireAdministrator(api.previewForwardingImport))
 		mux.HandleFunc("POST /api/v1/forwarding-rules/import", api.requireAdministrator(api.importForwardingRules))
+		mux.HandleFunc("POST /api/v1/forwarding-rules/batch-create", api.requireAdministrator(api.batchCreateForwardingRules))
 		mux.HandleFunc("GET /api/v1/forwarding-rules/{id}", api.requireAdministrator(api.getForwardingRule))
 		mux.HandleFunc("GET /api/v1/forwarding-rules/{id}/connection", api.requireAdministrator(api.getForwardingRuleConnection))
 		mux.HandleFunc("GET /api/v1/forwarding-rules/{id}/configuration", api.requireAdministrator(api.getForwardingRuleConfiguration))

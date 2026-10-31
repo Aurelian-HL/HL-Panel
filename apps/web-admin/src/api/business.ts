@@ -1,6 +1,7 @@
 import { HttpClient } from './http'
 import type { Customer, CustomerInput, ForwardExportDocument, ForwardImportPreview, ForwardImportResult, ForwardRule, ForwardRuleInput, ForwardTransferRequest, ForwardingConnection, ForwardingTargetProbe, GroupNetwork, GroupNetworkInput, RuleBatchInput, RuleBatchResult, RuleGroup, RuleGroupInput, UserGroup, UserGroupInput, VlessIdentity, VlessIdentityMutation } from './businessTypes'
 import type { DeviceGroup } from './types'
+import type { RuleBatchCreateInput, RuleBatchCreateResult } from './businessTypes'
 
 const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '/api/v1').replace(/\/$/, '')
 const http = new HttpClient(baseUrl, () => sessionStorage.getItem('ny_admin_access_token'))
@@ -53,6 +54,9 @@ export const businessApi = {
     return http.request<VlessIdentityMutation>(`/vless/identities/${encodeURIComponent(id)}/revoke`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ revision }) })
   },
   async saveRule(input: ForwardRuleInput, id: string | null, key: string) { return (await write<{ rule: ForwardRule }>('/forwarding-rules', input, id, key)).rule },
+  async batchCreateRules(input: RuleBatchCreateInput, key: string) {
+    return (await http.request<{ result: RuleBatchCreateResult }>('/forwarding-rules/batch-create', { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify(input) })).result
+  },
   async probeTarget(input: { host: string; port: number }) { return (await http.request<{ probe: ForwardingTargetProbe }>('/forwarding-target-probes', { method: 'POST', body: JSON.stringify(input) })).probe },
   async ruleGroups() { return list<RuleGroup>(await http.request('/rule-groups')) },
   async saveRuleGroup(input: RuleGroupInput, id: string | null, key: string) { return (await write<{ rule_group: RuleGroup }>('/rule-groups', input, id, key)).rule_group },

@@ -3,6 +3,7 @@ package postgressnapshot
 import (
 	"context"
 	"database/sql"
+	"maps"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/customers"
@@ -17,8 +18,13 @@ var _ forwarding.Repository = (*Store)(nil)
 var _ groupconfig.Repository = (*Store)(nil)
 var _ rulegroups.Repository = (*Store)(nil)
 
+// These mutations affect only their private memory store. Prepare their
+// potentially expensive validation/compilation before the short commit lock.
+
 func (s *Store) ListCustomers(ctx context.Context) ([]customers.Customer, error) {
-	return transact(ctx, s, false, func(state *memoryrepo.Store) ([]customers.Customer, error) { return state.ListCustomers(ctx) })
+	return readUsage(ctx, s, func(ctx context.Context, _ *sql.Tx, view *memoryrepo.UsageReadView) ([]customers.Customer, error) {
+		return view.ListCustomers(ctx)
+	})
 }
 
 func (s *Store) Customer(ctx context.Context, id string) (customers.Customer, error) {
@@ -32,7 +38,7 @@ func (s *Store) SaveCustomer(ctx context.Context, input customers.SaveCustomerIn
 		item     customers.Customer
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.SaveCustomer(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -52,7 +58,7 @@ func (s *Store) SaveUserGroup(ctx context.Context, input customers.SaveUserGroup
 		item     customers.UserGroup
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.SaveUserGroup(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -72,7 +78,7 @@ func (s *Store) UpdateGroupNetwork(ctx context.Context, input groupconfig.Update
 		item     groupconfig.GroupNetwork
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.UpdateGroupNetwork(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -96,7 +102,7 @@ func (s *Store) CreateForwardingRule(ctx context.Context, input forwarding.Creat
 		item     forwarding.Rule
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.CreateForwardingRule(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -108,7 +114,7 @@ func (s *Store) UpdateForwardingRule(ctx context.Context, input forwarding.Updat
 		item     forwarding.Rule
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.UpdateForwardingRule(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -126,8 +132,12 @@ func (s *Store) ImportForwardingRules(ctx context.Context, input forwarding.Impo
 		item     forwarding.ImportResult
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
-		item, replayed, err := state.ImportForwardingRules(ctx, input, event)
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
+		// Import adds audit metadata. Each preparation owns its copy so a stale
+		// attempt cannot mutate the caller or contaminate a recomputed audit.
+		privateEvent := event
+		privateEvent.Metadata = maps.Clone(event.Metadata)
+		item, replayed, err := state.ImportForwardingRules(ctx, input, privateEvent)
 		return result{item, replayed}, err
 	})
 	return value.item, value.replayed, err
@@ -158,7 +168,7 @@ func (s *Store) SaveRuleGroup(ctx context.Context, input rulegroups.SaveInput, e
 		item     rulegroups.RuleGroup
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.SaveRuleGroup(ctx, input, event)
 		return result{item, replayed}, err
 	})
@@ -170,7 +180,7 @@ func (s *Store) BatchUpdateRules(ctx context.Context, input rulegroups.BatchInpu
 		item     rulegroups.BatchResult
 		replayed bool
 	}
-	value, err := transact(ctx, s, true, func(state *memoryrepo.Store) (result, error) {
+	value, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (result, error) {
 		item, replayed, err := state.BatchUpdateRules(ctx, input, event)
 		return result{item, replayed}, err
 	})

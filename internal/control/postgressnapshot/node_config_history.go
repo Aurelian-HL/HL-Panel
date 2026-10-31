@@ -88,16 +88,39 @@ func encodePreparedHotSnapshot(state *memoryrepo.Store) ([]byte, *memoryrepo.Sto
 }
 
 func persistNodeConfigHistory(ctx context.Context, tx *sql.Tx, history []memoryrepo.NodeConfigHistory) error {
+	prepared, err := prepareNodeConfigHistory(history)
+	if err != nil {
+		return err
+	}
+	return persistPreparedNodeConfigHistory(ctx, tx, prepared)
+}
+
+type preparedNodeConfigHistory struct {
+	nodeID     string
+	generation int64
+	payload    []byte
+}
+
+// Validate and encode on private state before taking the commit lock.
+func prepareNodeConfigHistory(history []memoryrepo.NodeConfigHistory) ([]preparedNodeConfigHistory, error) {
+	prepared := make([]preparedNodeConfigHistory, 0, len(history))
 	for _, h := range history {
 		if err := memoryrepo.ValidateNodeConfigHistory(h, h.Config.NodeID, h.Config.Generation); err != nil {
-			return err
+			return nil, err
 		}
 		raw, err := json.Marshal(h)
 		if err != nil {
-			return errors.New("node configuration history encoding failed")
+			return nil, errors.New("node configuration history encoding failed")
 		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO hl_panel_node_config_history(node_id,generation,payload) VALUES($1,$2,$3)
-		 ON CONFLICT(node_id,generation) DO UPDATE SET payload=excluded.payload`, h.Config.NodeID, h.Config.Generation, raw); err != nil {
+		prepared = append(prepared, preparedNodeConfigHistory{nodeID: h.Config.NodeID, generation: h.Config.Generation, payload: raw})
+	}
+	return prepared, nil
+}
+
+func persistPreparedNodeConfigHistory(ctx context.Context, tx *sql.Tx, history []preparedNodeConfigHistory) error {
+	for _, h := range history {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO hl_panel_node_config_history(node_id,generation,payload) VALUES($1,$2,$3)
+		 ON CONFLICT(node_id,generation) DO UPDATE SET payload=excluded.payload`, h.nodeID, h.generation, h.payload); err != nil {
 			return snapshotFailure(ctx, "history_write", err)
 		}
 	}

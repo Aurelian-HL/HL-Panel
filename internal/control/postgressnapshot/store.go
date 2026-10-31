@@ -40,7 +40,9 @@ const (
 	defaultMaxIdleConns = 8
 )
 
-// Writes always load private state inside a row-locked database transaction.
+// Writes mutate private state. Replayable business operations prepare outside
+// the commit lock and revalidate MVCC identity before writing; other operations
+// retain a row-locked transaction and single-execution semantics.
 // Reads reuse a validated snapshot only while its database row identity matches.
 // Database errors are intentionally redacted to avoid leaking DSNs or payloads.
 type Store struct {
@@ -48,6 +50,7 @@ type Store struct {
 	panelQuota     panelquota.Provider
 	db             *sql.DB
 	writeGate      snapshotWriteGate
+	prepareBudget  snapshotPreparationBudget
 	preparedWrite  preparedSnapshotWrite // single-use; protected by writeGate
 	desiredChanges generations.ChangeSignals
 	readMu         sync.Mutex
@@ -453,17 +456,7 @@ func transact[T any](parent context.Context, s *Store, write bool, operation fun
 			s.readCache = committedCache
 		}
 		s.readMu.Unlock()
-		after := state.DesiredGenerationIndex()
-		for id, generation := range after {
-			if generation != before[id] {
-				s.desiredChanges.Notify(id)
-			}
-		}
-		for id := range before {
-			if _, exists := after[id]; !exists {
-				s.desiredChanges.Notify(id)
-			}
-		}
+		s.notifyDesiredChanges(before, state.DesiredGenerationIndex())
 	}
 	return result, nil
 }

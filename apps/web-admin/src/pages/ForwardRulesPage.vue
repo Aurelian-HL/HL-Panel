@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Download, FolderInput, FolderTree, Pause, Play, Plus, RefreshCw, Search, Trash2, Upload } from '@lucide/vue'
 import { RouterLink } from 'vue-router'
 import type { DeviceGroup } from '@/api'
-import { businessApi, type ForwardRule, type GroupNetwork, type RuleBatchOperation, type RuleGroup } from '@/api/business'
+import { businessApi, type ForwardRule, type GroupNetwork, type RuleBatchOperation, type RuleBatchCreateResult, type RuleGroup } from '@/api/business'
 import { subscriptionApi } from '@/api/subscriptions'
 import { downloadSubscriptionPackage } from '@/lib/subscriptionDownload'
 import { ApiError } from '@/api/http'
@@ -12,6 +12,7 @@ import ForwardRuleEditor from '@/features/forwarding/ForwardRuleEditor.vue'
 import ForwardRuleInventory from '@/features/forwarding/ForwardRuleInventory.vue'
 import ConfirmRuleDeletion from '@/features/forwarding/ConfirmRuleDeletion.vue'
 import ForwardRuleTransferDialog from '@/features/forwarding/ForwardRuleTransferDialog.vue'
+import ForwardRuleBatchCreateDialog from '@/features/forwarding/ForwardRuleBatchCreateDialog.vue'
 import { loadRuleTraffic } from '@/features/forwarding/ruleTraffic'
 import { useRuleConnectionSnapshot } from '@/features/forwarding/useRuleConnectionSnapshot'
 import { toast } from '@/composables/toast'
@@ -47,6 +48,7 @@ const copying = ref(false)
 const busyId = ref('')
 const downloadBusyId = ref('')
 const transferDialog = ref(false)
+const batchCreateDialog = ref(false)
 const exportBusy = ref(false)
 const trafficByRule = ref<Record<string, number>>({})
 const mutationKey = useMutationKey()
@@ -71,7 +73,7 @@ function invalidateSession(): void {
   rules.value = []; devices.value = []; networks.value = []; ruleGroups.value = []
   trafficByRule.value = {}
   selectedIds.value = []; deletionCandidates.value = []
-  closeEditor(); transferDialog.value = false
+  closeEditor(); transferDialog.value = false; batchCreateDialog.value = false
 }
 const deviceNames = computed(() => new Map(devices.value.map((group) => [group.id, group.name])))
 const searchIndex = computed(() => new Map(rules.value.map((item) => {
@@ -238,6 +240,19 @@ function startCreate(): void {
   copying.value = false
   editor.value = true
 }
+function startBatchCreate(): void {
+  if (!ready.value || resourcesLoading.value || refreshing.value || batchBusy.value || busyId.value || exportBusy.value) return
+  actionError.value = ''
+  batchCreateDialog.value = true
+}
+function batchCreated(result: RuleBatchCreateResult): void {
+  batchCreateDialog.value = false
+  actionError.value = ''
+  rules.value = [...result.items, ...rules.value]
+  loading.value = false
+  toast.success('已保存 ' + result.created + ' 条规则', '等待节点应用配置，可在规则列表查看状态')
+  void load()
+}
 function openExisting(rule: ForwardRule, copy = false): void {
   if (!ready.value || resourcesLoading.value || refreshing.value || batchBusy.value || busyId.value) return
   const current = rules.value.find((item) => item.id === rule.id)
@@ -358,7 +373,14 @@ onUnmounted(() => {
 </script>
 <template>
   <div class="page-stack">
-    <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions"><RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button><button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button><button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading || refreshing }" />刷新</button><button class="button button--primary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button></div></header>
+    <header class="page-heading"><h2>转发规则</h2><div class="page-heading__actions">
+      <RouterLink class="button button--secondary" to="/rule-groups"><FolderTree :size="15" />规则分组</RouterLink>
+      <button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="exportRules"><Download :size="15" />{{ exportBusy ? '导出中' : '导出' }}</button>
+      <button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="transferDialog = true"><Upload :size="15" />导入</button>
+      <button class="button button--secondary" :disabled="loading || refreshing || !!busyId || batchBusy || exportBusy" @click="load"><RefreshCw :size="16" :class="{ spin: loading || refreshing }" />刷新</button>
+      <button class="button button--secondary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startBatchCreate"><Plus :size="16" />批量创建</button>
+      <button class="button button--primary" :disabled="loading || resourcesLoading || refreshing || !!busyId || batchBusy || exportBusy" @click="startCreate"><Plus :size="16" />添加规则</button>
+    </div></header>
     <section class="toolbar business-toolbar"><label class="search-field"><Search :size="17" /><input v-model="query" placeholder="搜索规则、目标或设备组" /></label><label class="toolbar-select"><span>规则分组</span><select v-model="groupFilter"><option value="all">全部分组</option><option value="ungrouped">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><small class="connection-refresh-note">在线状态每 5 分钟更新</small><div class="segmented-control rule-connection-filter" aria-label="连接状态筛选" title="人数按已绑定规则的客户账号去重；任一规则在线即计为在线，未采样计入不在线；每 5 分钟更新"><button :class="{ active: connectionFilter === 'all' }" @click="connectionFilter = 'all'">全部连接</button><button :class="{ active: connectionFilter === 'online' }" @click="connectionFilter = 'online'">在线 {{ connectionCounts.onlineCustomers }} 人</button><button :class="{ active: connectionFilter === 'offline' }" @click="connectionFilter = 'offline'">不在线 {{ connectionCounts.offlineCustomers }} 人</button></div><div class="segmented-control" aria-label="规则开关筛选"><button :class="{ active: filter === 'all' }" @click="filter = 'all'">全部 {{ rules.length }}</button><button :class="{ active: filter === 'enabled' }" @click="filter = 'enabled'">已启用</button><button :class="{ active: filter === 'paused' }" @click="filter = 'paused'">已暂停</button></div></section>
     <section v-if="ready && rules.length" class="rule-batch-toolbar" aria-label="规则批量操作"><label><input type="checkbox" :checked="allFilteredSelected" :disabled="refreshing || batchBusy || !!busyId" @change="selectFiltered(($event.target as HTMLInputElement).checked)" />选择当前结果</label><span>{{ selectedIds.length }} 条已选择</span><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('pause')"><Pause :size="14" />暂停</button><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('resume')"><Play :size="14" />恢复</button><label class="rule-batch-move"><select v-model="moveGroupId" :disabled="refreshing || batchBusy || !!busyId"><option value="">未分组</option><option v-for="group in ruleGroups" :key="group.id" :value="group.id">{{ group.name }}</option></select><button class="button button--secondary" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="batch('move_group')"><FolderInput :size="14" />移动</button></label><button class="button button--danger" :disabled="refreshing || !selectedIds.length || batchBusy || !!busyId" @click="requestDelete([...selectedRules])"><Trash2 :size="14" />删除</button></section>
     <p v-if="actionError" class="form-error" role="alert">{{ actionError }}</p>
@@ -377,6 +399,7 @@ onUnmounted(() => {
     <ForwardRuleEditor v-if="editor" :key="`${selected?.id ?? 'new'}:${copying ? 'copy' : 'edit'}`" :rule="selected" :copy="copying" :devices="devices" :networks="networks" :rule-groups="ruleGroups" @close="closeEditor" @saved="saved" @unauthorized="invalidateSession" />
     <ConfirmRuleDeletion v-if="deletionCandidates.length" :rules="deletionCandidates" :busy="batchBusy" @close="deletionCandidates = []" @confirm="confirmDelete" />
     <ForwardRuleTransferDialog v-if="transferDialog" :devices="devices" :networks="networks" :rule-groups="ruleGroups" @close="transferDialog = false" @imported="imported" @unauthorized="invalidateSession" />
+    <ForwardRuleBatchCreateDialog v-if="batchCreateDialog" :devices="devices" :networks="networks" :rule-groups="ruleGroups" @close="batchCreateDialog = false" @saved="batchCreated" @unauthorized="invalidateSession" />
   </div>
 </template>
 

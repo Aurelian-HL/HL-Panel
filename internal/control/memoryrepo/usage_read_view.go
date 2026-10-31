@@ -93,6 +93,22 @@ func (v *UsageReadView) Customer(_ context.Context, id string) (customers.Custom
 	return cloneCustomer(c), nil
 }
 
+// ListCustomers returns private copies without reconstructing the entire store.
+// Keep the repository's username/ID ordering and detached login credentials.
+func (v *UsageReadView) ListCustomers(_ context.Context) ([]customers.Customer, error) {
+	items := make([]customers.Customer, 0, len(v.customers))
+	for _, c := range v.customers {
+		items = append(items, cloneCustomer(c))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Username == items[j].Username {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].Username < items[j].Username
+	})
+	return items, nil
+}
+
 func (v *UsageReadView) RuleTrafficState(_ context.Context, id string) (forwarding.RuleTrafficState, error) {
 	r, ok := v.rules[id]
 	if !ok {

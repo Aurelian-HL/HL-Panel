@@ -172,6 +172,9 @@ export interface RuleGroup extends RuleGroupInput {
   updated_at: string
 }
 
+export interface RuleBatchCreateInput { rules: ForwardRuleInput[] }
+export interface RuleBatchCreateResult { created: number; items: ForwardRule[] }
+
 export type RuleBatchOperation = 'pause' | 'resume' | 'move_group' | 'delete'
 export interface RuleBatchInput {
   operation: RuleBatchOperation

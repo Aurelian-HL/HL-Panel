@@ -58,33 +58,7 @@ func (s *Store) provisionVLESSIdentityLocked(input vlessidentity.ProvisionInput,
 		return vlessidentity.Binding{}, false, fmt.Errorf("%w: invalid VLESS provision mutation", faults.ErrValidation)
 	}
 	record := cloneVLESSCredentialRecord(input.Record)
-	if !imported && record.Binding.ImportedFrom != nil {
-		return vlessidentity.Binding{}, false, fmt.Errorf("%w: ordinary provision cannot import identity provenance", faults.ErrValidation)
-	}
-	if record.Binding.Revision != 1 {
-		return vlessidentity.Binding{}, false, fmt.Errorf("%w: initial VLESS binding revision must be one", faults.ErrValidation)
-	}
-	if _, exists := s.vlessBindings[record.Binding.ID]; exists {
-		return vlessidentity.Binding{}, false, faults.ErrConflict
-	}
-	if !s.vlessBindingOwnedByAdministratorLocked(record.Binding, input.CreatedBy) {
-		return vlessidentity.Binding{}, false, faults.ErrNotFound
-	}
-	if imported && !s.forwardRules[record.Binding.ForwardingRuleID].Paused {
-		return vlessidentity.Binding{}, false, fmt.Errorf("%w: imported identity requires a paused rule", faults.ErrConflict)
-	}
-	for _, existing := range s.vlessBindings {
-		if imported && existing.Binding.ImportedFrom != nil && *existing.Binding.ImportedFrom == *record.Binding.ImportedFrom {
-			return vlessidentity.Binding{}, false, fmt.Errorf("%w: source identity already imported", faults.ErrConflict)
-		}
-		if imported && existing.Binding.State == vlessidentity.StateActive && strings.EqualFold(existing.CredentialUUID, record.CredentialUUID) {
-			return vlessidentity.Binding{}, false, fmt.Errorf("%w: imported credential already has an active binding", faults.ErrConflict)
-		}
-		if existing.Binding.State == vlessidentity.StateActive && sameVLESSTuple(existing.Binding, record.Binding) {
-			return vlessidentity.Binding{}, false, fmt.Errorf("%w: an active VLESS binding already exists for this customer, rule, and endpoint", faults.ErrConflict)
-		}
-	}
-	if err := s.validateVLESSCredentialRecordLocked(record); err != nil {
+	if err := s.validateNewVLESSCredentialLocked(record, input.CreatedBy, imported); err != nil {
 		return vlessidentity.Binding{}, false, err
 	}
 	public := cloneVLESSBinding(record.Binding)
@@ -103,6 +77,40 @@ func (s *Store) provisionVLESSIdentityLocked(input vlessidentity.ProvisionInput,
 	}
 	s.appendAuditLocked(event)
 	return public, false, nil
+}
+
+// validateNewVLESSCredentialLocked is shared by single and atomic batch creates.
+func (s *Store) validateNewVLESSCredentialLocked(record vlessidentity.CredentialRecord, administratorID string, imported bool) error {
+	if !imported && record.Binding.ImportedFrom != nil {
+		return fmt.Errorf("%w: ordinary provision cannot import identity provenance", faults.ErrValidation)
+	}
+	if record.Binding.Revision != 1 {
+		return fmt.Errorf("%w: initial VLESS binding revision must be one", faults.ErrValidation)
+	}
+	if _, exists := s.vlessBindings[record.Binding.ID]; exists {
+		return faults.ErrConflict
+	}
+	if !s.vlessBindingOwnedByAdministratorLocked(record.Binding, administratorID) {
+		return faults.ErrNotFound
+	}
+	if imported && !s.forwardRules[record.Binding.ForwardingRuleID].Paused {
+		return fmt.Errorf("%w: imported identity requires a paused rule", faults.ErrConflict)
+	}
+	for _, existing := range s.vlessBindings {
+		if imported && existing.Binding.ImportedFrom != nil && *existing.Binding.ImportedFrom == *record.Binding.ImportedFrom {
+			return fmt.Errorf("%w: source identity already imported", faults.ErrConflict)
+		}
+		if imported && existing.Binding.State == vlessidentity.StateActive && strings.EqualFold(existing.CredentialUUID, record.CredentialUUID) {
+			return fmt.Errorf("%w: imported credential already has an active binding", faults.ErrConflict)
+		}
+		if existing.Binding.State == vlessidentity.StateActive && sameVLESSTuple(existing.Binding, record.Binding) {
+			return fmt.Errorf("%w: an active VLESS binding already exists for this customer, rule, and endpoint", faults.ErrConflict)
+		}
+	}
+	if err := s.validateVLESSCredentialRecordLocked(record); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) List(_ context.Context) ([]vlessidentity.Binding, error) {

@@ -30,26 +30,45 @@ func (s *Store) CreateEndpointPool(_ context.Context, input endpoints.CreatePool
 		pool.HealthyCandidateCount = 0
 		return cloneEndpointPool(pool), true, nil
 	}
+	pool, err := s.stageEndpointPoolLocked(input)
+	if err != nil {
+		return endpoints.EndpointPool{}, false, err
+	}
+	s.endpointCreateKeys[key] = pool.ID
+	s.endpointCreateHashes[key] = input.RequestSHA256
+	s.appendAuditLocked(event)
+	return cloneEndpointPool(pool), false, nil
+}
+
+// stageEndpointPoolLocked validates and projects membership without auditing or
+// compiling. A compound caller commits its own audit and idempotency record.
+func (s *Store) stageEndpointPoolLocked(input endpoints.CreatePoolInput) (endpoints.EndpointPool, error) {
+	if input.ID == "" {
+		return endpoints.EndpointPool{}, faults.ErrValidation
+	}
+	if _, exists := s.endpointPools[input.ID]; exists {
+		return endpoints.EndpointPool{}, faults.ErrConflict
+	}
 	if _, exists := s.deviceGroups[input.GroupID]; !exists {
-		return endpoints.EndpointPool{}, false, faults.ErrNotFound
+		return endpoints.EndpointPool{}, faults.ErrNotFound
 	}
 	if input.CreatedBy == "" {
-		return endpoints.EndpointPool{}, false, faults.ErrValidation
+		return endpoints.EndpointPool{}, faults.ErrValidation
 	}
 	if input.RuleID != "" {
 		rule, exists := s.forwardRules[input.RuleID]
 		if !exists || (!rule.OwnedByAdministrator(input.CreatedBy) && !s.delegatedRuleManagedByLocked(rule, input.CreatedBy)) {
-			return endpoints.EndpointPool{}, false, faults.ErrNotFound
+			return endpoints.EndpointPool{}, faults.ErrNotFound
 		}
 		network, configured := s.groupNetworks[input.GroupID]
 		if !configured || network.ConnectHost != input.Hostname || !network.ContainsPort(input.Port) {
-			return endpoints.EndpointPool{}, false, fmt.Errorf("%w: bound endpoint must use its entry group's configured address and allowed listener port", faults.ErrValidation)
+			return endpoints.EndpointPool{}, fmt.Errorf("%w: bound endpoint must use its entry group's configured address and allowed listener port", faults.ErrValidation)
 		}
 		if rule.EntryGroupID != input.GroupID || rule.ListenPort != input.Port ||
 			(input.Protocol == "vless" && rule.EffectiveIngressProtocol() != forwarding.IngressVLESSReality) ||
 			(input.Protocol == "tcp" && rule.EffectiveIngressProtocol() != forwarding.IngressTCP) ||
 			(input.Protocol == "socks5" && rule.EffectiveIngressProtocol() != forwarding.IngressSOCKS5) {
-			return endpoints.EndpointPool{}, false, fmt.Errorf("%w: endpoint pool rule must match device group, protocol and listener port", faults.ErrValidation)
+			return endpoints.EndpointPool{}, fmt.Errorf("%w: endpoint pool rule must match device group, protocol and listener port", faults.ErrValidation)
 		}
 	}
 	for _, pool := range s.endpointPools {
@@ -58,13 +77,13 @@ func (s *Store) CreateEndpointPool(_ context.Context, input endpoints.CreatePool
 			// protocol-health publisher is keyed by rule and node, so allowing
 			// multiple pools for the same rule would make a valid observation
 			// land in an arbitrary pool and mix device-group membership.
-			return endpoints.EndpointPool{}, false, fmt.Errorf("%w: forwarding rule already has a stable endpoint", faults.ErrConflict)
+			return endpoints.EndpointPool{}, fmt.Errorf("%w: forwarding rule already has a stable endpoint", faults.ErrConflict)
 		}
 		if pool.Name == input.Name && pool.GroupID == input.GroupID {
-			return endpoints.EndpointPool{}, false, fmt.Errorf("%w: endpoint pool name already exists in group", faults.ErrConflict)
+			return endpoints.EndpointPool{}, fmt.Errorf("%w: endpoint pool name already exists in group", faults.ErrConflict)
 		}
 		if pool.Protocol == input.Protocol && pool.Hostname == input.Hostname && pool.Port == input.Port {
-			return endpoints.EndpointPool{}, false, fmt.Errorf("%w: stable endpoint is already allocated", faults.ErrConflict)
+			return endpoints.EndpointPool{}, fmt.Errorf("%w: stable endpoint is already allocated", faults.ErrConflict)
 		}
 	}
 	pool := endpoints.EndpointPool{
@@ -87,10 +106,7 @@ func (s *Store) CreateEndpointPool(_ context.Context, input endpoints.CreatePool
 	pool.MemberCount = len(members)
 	s.endpointPools[pool.ID] = pool
 	s.endpointMembers[pool.ID] = members
-	s.endpointCreateKeys[key] = pool.ID
-	s.endpointCreateHashes[key] = input.RequestSHA256
-	s.appendAuditLocked(event)
-	return cloneEndpointPool(pool), false, nil
+	return cloneEndpointPool(pool), nil
 }
 
 func (s *Store) DeleteEndpointPool(_ context.Context, input endpoints.DeletePoolInput, event audit.Event) (bool, error) {

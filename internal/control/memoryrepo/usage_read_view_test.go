@@ -3,14 +3,49 @@ package memoryrepo
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/hongle/hl-panel/internal/control/auth"
 	"github.com/hongle/hl-panel/internal/control/customers"
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/generations"
 	"github.com/hongle/hl-panel/internal/protocol/agentv1"
 )
+
+func TestUsageCustomerListMatchesRepositoryAndOwnsReturnedData(t *testing.T) {
+	ctx := context.Background()
+	store := New(auth.Administrator{})
+	empty, err := store.UsageReadView().ListCustomers(ctx)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatal("empty inventory must remain a non-nil slice", err)
+	}
+	expires := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	seedCustomer(store, customers.Customer{ID: "z", Username: "same", DisplayName: "panel", PasswordHash: []byte{1, 2}, ExpiresAt: &expires, TrafficUsedBytes: 123})
+	seedCustomer(store, customers.Customer{ID: "a", Username: "same", DisplayName: "service", TrafficUsedBytes: 456})
+	seedCustomer(store, customers.Customer{ID: "b", Username: "first"})
+	want, err := store.ListCustomers(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := store.UsageReadView()
+	store.customers["a"] = customers.Customer{ID: "a", Username: "changed"}
+	store.panelAccounts["z"].PasswordHash[0] = 9
+	delete(store.customers, "b")
+	for i := 0; i < 2; i++ {
+		got, err := view.ListCustomers(ctx)
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatal("list changed ordering, accounting, account kind or private fields", err)
+		}
+		if got[0].ID != "b" || got[1].ID != "a" || got[2].ID != "z" || got[1].AccountKind != customers.AccountService || got[2].AccountKind != customers.AccountPanel {
+			t.Fatal("unexpected list contract")
+		}
+		got[0].DisplayName = "caller mutation"
+		got[2].PasswordHash[0] = 8
+		*got[2].ExpiresAt = expires.Add(time.Hour)
+	}
+}
 
 func TestUsageReadViewOwnsDetachedAccountingEvidence(t *testing.T) {
 	f := newVLESSBundleFixture(t, true)

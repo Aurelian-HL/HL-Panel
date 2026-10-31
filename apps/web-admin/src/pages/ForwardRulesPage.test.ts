@@ -16,6 +16,7 @@ const mocked = vi.hoisted(() => ({
   ruleGroups: vi.fn(),
   saveRule: vi.fn(),
   batchRules: vi.fn(),
+  batchCreateRules: vi.fn(),
   previewRuleImport: vi.fn(),
   importRules: vi.fn(),
   exportRules: vi.fn(),
@@ -58,6 +59,30 @@ beforeEach(() => {
 afterEach(() => { config.global.plugins = [] })
 
 describe('ForwardRulesPage', () => {
+  it('opens batch creation beside add and merges the saved rules', async () => {
+    const success = vi.spyOn(toast, 'success').mockImplementation(() => {})
+    const created: ForwardRule = { id: 'batch-created', name: '192.0.2.10', customer_id: '', rule_group_id: '', entry_group_id: device.id, exit_group_id: '', egress_mode: 'DIRECT', protocol: 'tcp', listen_port: 10001, targets: [], selection_policy: 'round_robin', paused: false, description: '', revision: 1, status: 'pending_activation' }
+    mocked.realityTargets.mockResolvedValue({ items: [{ server_name: 'www.apple.com', destination: 'www.apple.com:443' }] })
+    mocked.probeReality.mockImplementation(async value => ({ ...value, compatible: true }))
+    mocked.batchCreateRules.mockImplementation(async () => {
+      mocked.rules.mockResolvedValue({ items: [created] })
+      return { created: 1, items: [created] }
+    })
+    const wrapper = mount(ForwardRulesPage, { global: { stubs: { Teleport: true } } })
+    try {
+      await flushPromises()
+      await wrapper.findAll('button').find(item => item.text() === '批量创建')!.trigger('click')
+      await flushPromises()
+      await wrapper.get('#forward-rule-batch-create select[required]').setValue(device.id)
+      await wrapper.get('#forward-rule-batch-create textarea').setValue('192.0.2.10:1080:user:isolated-password')
+      await wrapper.get('#forward-rule-batch-create').trigger('submit')
+      await flushPromises()
+      expect(mocked.batchCreateRules).toHaveBeenCalledTimes(1)
+      expect(wrapper.find('#forward-rule-batch-create').exists()).toBe(false)
+      expect(wrapper.getComponent(ForwardRuleInventory).props('rules').map((item: ForwardRule) => item.id)).toContain(created.id)
+      expect(success).toHaveBeenCalledWith('已保存 1 条规则', '等待节点应用配置，可在规则列表查看状态')
+    } finally { wrapper.unmount(); success.mockRestore() }
+  })
   it('keeps badges, filters and customer counts fixed while traffic polls until the five-minute boundary', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')

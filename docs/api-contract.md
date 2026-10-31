@@ -230,6 +230,40 @@ silently emitted as a GOST or plain TCP DIRECT listener. Rules missing the
 public Reality fields continue to use `ingress_status:
 "pending_reality_parameters"` instead.
 
+### Batch creation from SK5 endpoints
+
+`POST /forwarding-rules/batch-create` requires an administrator session and
+`Idempotency-Key`. The body is `{ "rules": [<structured rule>, ...] }`, with
+1 to 500 entries. Each entry must be a new VLESS + Reality / TCP rule with
+`vless_outbound_mode: "SOCKS5"`, `egress_mode: "DIRECT"`, an authorized entry
+device group, complete SOCKS5 host/port/username/password, and `listen_port: 0`.
+The server allocates ports and generates separate Reality and client/probe
+credentials for every rule. The administrator owns these rules; this operation
+does not create panel accounts. Client-supplied customer ownership is ignored.
+
+`name` may be empty or omitted in this batch API; it defaults to the trimmed
+`vless_socks5_host`. The web form accepts one endpoint per line, optionally
+preceded by a nickname and whitespace:
+
+```text
+192.0.2.10:1080:username:password
+Customer nickname 192.0.2.11:1080:username:password
+```
+
+The response is `{ "result": { "created": 2, "items": [...] } }`. Rule items
+contain public rule projections only, never SOCKS5 passwords or private keys.
+Every rule, credential, endpoint pool, and desired node configuration is
+committed atomically; a rejected entry or failed database commit saves none of
+the batch and emits no node notification. Each affected node is compiled once
+per batch. Existing listener fragments are preserved. Repeating the same
+request and key returns the original rules; changing the request while
+reusing the key returns a conflict. A single audit event records the batch
+count without credentials.
+
+Saving a batch confirms durable control-plane state. Node application and
+actual forwarding are separate and retain their normal status reporting;
+the page must not report a saved batch as already applied.
+
 ### Endpoint pool semantics
 
 The first supported endpoint mode is `SINGLE_SERVICE_ENDPOINT`. A customer
@@ -414,6 +448,14 @@ Only `404`, `405`, or `501` enables sequential legacy endpoint fallback; other
 errors retain the queue for retry. A partial legacy success retries the same
 pair, relying on phase idempotency. Prepare, validate, failure, and rollback
 reports retain the single-result endpoint.
+
+## External business-system data boundary
+
+External integrations provision service identities and forwarding rules with
+runtime inputs only. Customer contacts, commercial expiry and payment data
+remain in the business system. See
+[the HT / HL minimal data contract](ht-rule-data-boundary-20261030.md) for the
+existing endpoints, minimal JSON, retry compatibility and display-only updates.
 
 ## Administrator service-owner deletion
 

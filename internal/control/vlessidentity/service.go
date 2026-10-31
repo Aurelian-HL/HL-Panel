@@ -52,19 +52,12 @@ func (service *Service) Provision(ctx context.Context, administratorID string, r
 	if !validIdempotencyKey(idempotencyKey) {
 		return Binding{}, false, fmt.Errorf("%w: Idempotency-Key must contain 1 to 128 non-space characters", faults.ErrValidation)
 	}
-	uuid, err := canonicalUUID(service.random)
-	if err != nil {
-		return Binding{}, false, errors.New("generate VLESS identity")
-	}
-	bindingID, err := idgen.New("vbind")
+	now := service.now().UTC()
+	record, err := PrepareCredential(request.CustomerID, request.ForwardingRuleID, request.EndpointPoolID, now, service.random)
 	if err != nil {
 		return Binding{}, false, err
 	}
-	now := service.now().UTC()
-	binding := Binding{
-		ID: bindingID, CustomerID: request.CustomerID, ForwardingRuleID: request.ForwardingRuleID,
-		EndpointPoolID: request.EndpointPoolID, State: StateActive, Revision: 1, CreatedAt: now, UpdatedAt: now,
-	}
+	binding := record.Binding
 	event, err := audit.NewEvent(now, "administrator", administratorID, "vless_identity.provision", "vless_identity_binding", binding.ID, "succeeded", map[string]any{
 		"customer_id": request.CustomerID, "forwarding_rule_id": request.ForwardingRuleID,
 		"endpoint_pool_id": request.EndpointPoolID, "revision": binding.Revision,
@@ -73,10 +66,31 @@ func (service *Service) Provision(ctx context.Context, administratorID string, r
 		return Binding{}, false, err
 	}
 	result, replayed, err := service.repository.Provision(ctx, ProvisionInput{
-		Record: CredentialRecord{Binding: binding, CredentialUUID: uuid}, ExpectedRevision: request.Revision,
+		Record: record, ExpectedRevision: request.Revision,
 		IdempotencyKey: idempotencyKey, RequestSHA256: digest("provision", request.CustomerID, request.ForwardingRuleID, request.EndpointPoolID, "0"), CreatedBy: administratorID,
 	}, event)
 	return result, replayed, err
+}
+
+// PrepareCredential constructs private material without writing or compiling.
+// Compound operations persist it atomically with the rule and stable endpoint.
+func PrepareCredential(customerID, ruleID, poolID string, now time.Time, random io.Reader) (CredentialRecord, error) {
+	if !validIdentifier(customerID) || !validIdentifier(ruleID) || !validIdentifier(poolID) || now.IsZero() {
+		return CredentialRecord{}, faults.ErrValidation
+	}
+	if random == nil {
+		random = rand.Reader
+	}
+	uuid, err := canonicalUUID(random)
+	if err != nil {
+		return CredentialRecord{}, errors.New("generate VLESS identity")
+	}
+	id, err := idgen.New("vbind")
+	if err != nil {
+		return CredentialRecord{}, err
+	}
+	return CredentialRecord{Binding: Binding{ID: id, CustomerID: customerID, ForwardingRuleID: ruleID,
+		EndpointPoolID: poolID, State: StateActive, Revision: 1, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}, CredentialUUID: uuid}, nil
 }
 
 func (service *Service) List(ctx context.Context, administratorID string) ([]Binding, error) {
