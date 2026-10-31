@@ -302,6 +302,106 @@ func TestPreparedTransactionBoundsRecomputationBeforeSerializedFallback(t *testi
 	}
 }
 
+func TestPreparedTransactionReservesFallbackBudgetDuringTelemetry(t *testing.T) {
+	s, _, proof := protocolHealthFixture(t)
+	if err := s.PublishProtocolHealth(context.Background(), proof); err != nil {
+		t.Fatal(err)
+	}
+	stop, ready, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var lastTotal int64
+	lastProof := proof
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		samples := 0
+		for {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			case <-ticker.C:
+				total := lastTotal + 1
+				if err := s.ApplyRuleTraffic(context.Background(), forwarding.RuleTrafficProjection{RuleID: proof.RuleID, ExpectedRevision: proof.RuleRevision, TotalBytes: total, At: time.Now().UTC()}); err != nil {
+					done <- err
+					return
+				}
+				lastTotal = total
+				next := lastProof
+				next.VerifiedAt = next.VerifiedAt.Add(time.Millisecond)
+				next.LeaseExpiresAt = next.LeaseExpiresAt.Add(time.Millisecond)
+				if err := s.PublishProtocolHealth(context.Background(), next); err != nil {
+					done <- err
+					return
+				}
+				lastProof = next
+				samples++
+				if samples == 1 {
+					close(ready)
+				}
+			}
+		}
+	}()
+	joined := false
+	defer func() {
+		if !joined {
+			close(stop)
+			<-done
+		}
+	}()
+	select {
+	case <-ready:
+	case err := <-done:
+		joined = true
+		t.Fatal("telemetry failed before preparation", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("telemetry did not start")
+	}
+	// Model a slower CPU with a sizeable private computation, not a held DB
+	// lock. Three computations cannot fit this budget; two comfortably can.
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	calls := 0
+	_, err := transactPrepared(ctx, s, func(state *memoryrepo.Store) (struct{}, error) {
+		calls++
+		timer := time.NewTimer(550 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return struct{}{}, ctx.Err()
+		}
+		return struct{}{}, state.AppendAudit(ctx, audit.Event{ID: "telemetry-budget"})
+	})
+	// Stop and join the sampler before inspecting its last accepted values.
+	close(stop)
+	sampleErr := <-done
+	joined = true
+	if sampleErr != nil {
+		t.Fatal("telemetry failed", sampleErr)
+	}
+	if err != nil || calls != 2 {
+		t.Fatal("speculative recomputation exhausted the commit budget", calls, err)
+	}
+	rule, readErr := s.ForwardingRule(context.Background(), proof.RuleID)
+	if readErr != nil || lastTotal < 2 || rule.TrafficUsedBytes != lastTotal {
+		t.Fatal("successful fallback lost concurrent traffic", readErr)
+	}
+	assertHealth(t, s, lastProof)
+	events, readErr := s.AuditEvents(context.Background())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	count := 0
+	for _, event := range events {
+		if event.ID == "telemetry-budget" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatal("discarded preparation leaked an audit entry", count)
+	}
+}
+
 func TestPreparedTransactionImportOwnsAuditMetadata(t *testing.T) {
 	s, _, _ := protocolHealthFixture(t)
 	ctx := context.Background()

@@ -9,11 +9,34 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/faults"
 	"github.com/hongle/hl-panel/internal/control/panelquota"
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestPreparedFailureTimingPreservesClassificationWithoutMutatingCause(t *testing.T) {
+	original := snapshotFailure(context.Background(), "snapshot_lock", context.DeadlineExceeded)
+	err := withPreparedTiming(original, preparedTransactionTiming{attempts: 1, prepare: 600 * time.Millisecond, check: 20 * time.Millisecond, fallback: 800 * time.Millisecond})
+	var failure *snapshotTransactionFailure
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &failure) || failure.stage != "snapshot_lock" || failure.outcome != "not_committed" {
+		t.Fatal("timing changed the failure classification", err)
+	}
+	if !strings.HasSuffix(failure.SafePersistenceDiagnostic(), "prepare_attempts=1 prepare_ms=600 prepared_check_ms=20 fallback_ms=800") {
+		t.Fatal("timing diagnostic is incomplete", err)
+	}
+	if strings.Contains(original.Error(), "prepare_attempts") {
+		t.Fatal("annotating timing mutated the original failure")
+	}
+	if withPreparedTiming(nil, preparedTransactionTiming{}) != nil {
+		t.Fatal("successful request became a failure")
+	}
+	rejection := fmt.Errorf("%w: existing validation", faults.ErrValidation)
+	if withPreparedTiming(rejection, preparedTransactionTiming{}) != rejection {
+		t.Fatal("timing changed a public business rejection")
+	}
+}
 
 func TestSnapshotFailureRedactsCausesAndPreservesStage(t *testing.T) {
 	const secret = "isolated-secret-password-payload"

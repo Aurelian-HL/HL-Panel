@@ -14,11 +14,12 @@ import (
 // masquerade as a client validation or authentication failure. Only locally
 // authored stages and bounded categories reach diagnostic logs.
 type snapshotTransactionFailure struct {
-	stage    string
-	category string
-	sqlState string
-	outcome  string
-	cause    error
+	stage          string
+	category       string
+	sqlState       string
+	outcome        string
+	cause          error
+	preparedTiming *preparedTransactionTiming
 }
 
 func (e *snapshotTransactionFailure) Error() string {
@@ -28,7 +29,12 @@ func (e *snapshotTransactionFailure) Error() string {
 func (e *snapshotTransactionFailure) Unwrap() error { return e.cause }
 
 func (e *snapshotTransactionFailure) SafePersistenceDiagnostic() string {
-	return fmt.Sprintf("stage=%s category=%s sql_state=%s outcome=%s", e.stage, e.category, e.sqlState, e.outcome)
+	result := fmt.Sprintf("stage=%s category=%s sql_state=%s outcome=%s", e.stage, e.category, e.sqlState, e.outcome)
+	if timing := e.preparedTiming; timing != nil {
+		result += fmt.Sprintf(" prepare_attempts=%d prepare_ms=%d prepared_check_ms=%d fallback_ms=%d",
+			timing.attempts, timing.prepare.Milliseconds(), timing.check.Milliseconds(), timing.fallback.Milliseconds())
+	}
+	return result
 }
 
 func snapshotFailure(ctx context.Context, stage string, cause error) error {

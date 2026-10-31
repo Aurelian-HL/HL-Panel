@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/hongle/hl-panel/internal/control/audit"
 	"github.com/hongle/hl-panel/internal/control/memoryrepo"
@@ -60,22 +61,57 @@ func transactPrepared[T any](parent context.Context, s *Store, operation func(*m
 	var zero T
 	ctx, cancel := context.WithTimeout(parent, operationTimeout)
 	defer cancel()
+	var timing preparedTransactionTiming
 	for range 2 {
+		started := time.Now()
+		timing.attempts++
 		prepared, err := prepareTransaction(ctx, s, operation)
+		timing.prepare += time.Since(started)
 		if err != nil {
-			return prepared.result, err
+			return prepared.result, withPreparedTiming(err, timing)
 		}
+		checkStarted := time.Now()
 		committed, err := commitPreparedTransaction(ctx, s, prepared)
+		timing.check += time.Since(checkStarted)
 		if err != nil {
-			return zero, err
+			return zero, withPreparedTiming(err, timing)
 		}
 		if committed {
 			return prepared.result, nil
 		}
+		// A stale build has made no business write. Another speculative build
+		// may also become stale under telemetry, so reserve an observed attempt
+		// for it, another for serialized fallback, and one for contention/CPU
+		// variation. Do not spend the remaining deadline on avoidable rebuilds.
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline)/3 <= time.Since(started) {
+			break
+		}
 	}
 	// Bound wasted CPU under sustained writes. The original serialized path
 	// remains a fallback, within the same overall request deadline.
-	return transact(ctx, s, true, operation)
+	started := time.Now()
+	result, err := transact(ctx, s, true, operation)
+	timing.fallback = time.Since(started)
+	return result, withPreparedTiming(err, timing)
+}
+
+type preparedTransactionTiming struct {
+	attempts int
+	prepare  time.Duration
+	check    time.Duration
+	fallback time.Duration
+}
+
+func withPreparedTiming(err error, timing preparedTransactionTiming) error {
+	var failure *snapshotTransactionFailure
+	if !errors.As(err, &failure) {
+		return err
+	}
+	// Keep the original classification and cancellation identity. Only bounded
+	// counts and timings are added; no callback, payload or SQL text is logged.
+	annotated := *failure
+	annotated.preparedTiming = &timing
+	return &annotated
 }
 
 func prepareTransaction[T any](ctx context.Context, s *Store, operation func(*memoryrepo.Store) (T, error)) (preparedTransaction[T], error) {
