@@ -1,0 +1,724 @@
+#!/usr/bin/env python3
+"""Root-only, fixed-origin release updates; preserves configuration and data."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import platform
+import grp
+from pathlib import Path, PurePosixPath
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import time
+from datetime import datetime, timezone
+import urllib.parse
+import urllib.request
+
+ROOT = Path('/opt/hl-panel')
+CONFIG = Path('/etc/hl-panel')
+STATE = Path('/var/lib/hl-panel')
+BACKUPS = Path('/var/backups/hl-panel')
+SYSTEMD_UNITS = Path('/etc/systemd/system')
+SERVICE = 'hl-panel-control-api.service'
+API = 'https://api.github.com/repos/Aurelian-HL/HL-Panel'
+REPO = 'https://github.com/Aurelian-HL/HL-Panel'
+# Installed binaries may carry a build channel suffix (for example
+# ``v0.1.95-vless-business-20261016``). Release targets remain plain semver,
+# while comparisons use the numeric prefix so those builds can be upgraded.
+TAG = re.compile(r'^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$')
+WRAPPER = '#!/usr/bin/env bash\n# Managed by HL-panel.\nset -Eeuo pipefail\nexec python3 /opt/hl-panel/current/deploy/update.py "$@"\n'
+APP_LOCATIONS = Path('/etc/nginx/snippets/hl-panel-app-locations.conf')
+API_PROXY = Path('/etc/nginx/snippets/hl-panel-api-proxy.conf')
+MIGRATION_PROXY = Path('/etc/nginx/snippets/hl-panel-migration-proxy.conf')
+PROC_OVERRIDE = Path('/etc/systemd/system/hl-panel-control-api.service.d/20-host-metrics.conf')
+LEGACY_PROC_OVERRIDE_CONTENT = '# Managed by HL-panel: allow read-only host metrics.\n[Service]\nProcSubset=all\n'
+PROC_OVERRIDE_CONTENT = LEGACY_PROC_OVERRIDE_CONTENT + 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n'
+SUBSCRIPTION_LOCATION = '''location ^~ /api/v1/public/subscriptions/ {
+    access_log off;
+    include /etc/nginx/snippets/hl-panel-api-proxy.conf;
+}'''
+MIGRATION_LOCATION = '''location ^~ /api/v1/panel/migration/ {
+    client_max_body_size 65m;
+    include /etc/nginx/snippets/hl-panel-migration-proxy.conf;
+    access_log off;
+}'''
+PANEL_ACCOUNT_LOCATION = '''location ^~ /account/ {
+    try_files $uri $uri/ /account/index.html;
+    add_header Cache-Control "no-store" always;
+    include /etc/nginx/snippets/hl-panel-security-headers.conf;
+}'''
+PANEL_ACCOUNT_ASSETS_LOCATION = '''location ^~ /account/assets/ {
+    try_files $uri =404;
+    include /etc/nginx/snippets/hl-panel-security-headers.conf;
+}'''
+
+
+class UpdateError(RuntimeError):
+    pass
+
+
+def require(value, message):
+    if not value:
+        raise UpdateError(message)
+
+
+def run(arguments, *, output=None, input_file=None):
+    result = subprocess.run(arguments, stdin=input_file, stdout=output or subprocess.PIPE, stderr=subprocess.PIPE)
+    require(result.returncode == 0, '命令失败：' + Path(arguments[0]).name + '；未输出私有配置，请查看服务日志。')
+    return result.stdout if output is None else None
+
+
+def run_best_effort(arguments):
+    """Run a cleanup/state command without masking the real rollback error."""
+    try:
+        subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError:
+        pass
+
+
+def check_candidate_license(destination):
+    helper = destination/'deploy/check-panel-license.py'
+    if not helper.is_file():
+        return  # Releases before licensing v2 have no such preflight.
+    result = subprocess.run([sys.executable, str(helper), '--binary', str(destination/'bin/control-api'),
+                             '--env-file', str(CONFIG/'control-api.env')],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+    require(result.returncode == 0,
+            '升级前授权检查未通过，当前服务未停止。请先使用已校验发行包的 deploy/setup-panel-license.sh --domain 管理域名 完成授权接入；不要删除身份或重装现有面板。')
+    print('[HL-panel 更新] 本机签名授权身份已通过候选版本校验。', flush=True)
+
+
+def cleanup_incomplete_update(backup, destination, stop_attempted):
+    """Remove only artifacts created before the durable rollback journal exists."""
+    if stop_attempted:
+        run_best_effort(['systemctl', 'start', SERVICE])
+    if destination is not None and destination.parent == ROOT / 'releases' and destination.name.startswith('v'):
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination, ignore_errors=True)
+    if backup.parent == BACKUPS and backup.name.startswith('v'):
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup, ignore_errors=True)
+
+
+def write_json_atomic(path, value):
+    pending = path.with_name('.' + path.name + '-' + str(os.getpid()))
+    require(not pending.exists() and not pending.is_symlink(), '更新日志临时文件已被占用')
+    try:
+        pending.write_text(json.dumps(value, indent=2) + '\n')
+        pending.chmod(0o600)
+        pending.replace(path)
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+def request(url, limit=2*1024*1024):
+    # Every URL is constructed from the fixed repository. GitHub asset redirects
+    # carry no authentication headers and retain standard TLS verification.
+    req = urllib.request.Request(url, headers={'User-Agent': 'HL-panel-updater', 'Accept': 'application/vnd.github+json'})
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as response:
+                data = response.read(limit+1)
+            require(len(data)<=limit, '下载内容超过允许大小')
+            return data
+        except (OSError, urllib.error.URLError):
+            if attempt == 1:
+                raise UpdateError('无法下载 GitHub 正式发布；尚未切换程序，请稍后重试。') from None
+
+
+def version_tuple(value):
+    match = TAG.fullmatch(value)
+    require(match is not None, '仅支持 v数字.数字.数字 的正式版本')
+    return tuple(int(part) for part in match.groups())
+
+
+def private_regular(path):
+    require(path.is_file() and not path.is_symlink(), '缺少受管配置：' + str(path))
+    info = path.stat()
+    require(info.st_uid == 0 and not (info.st_mode & 0o022), '配置必须归 root 所有且不能被其他用户修改')
+
+
+def configuration():
+    private_regular(CONFIG/'control-api.env')
+    values = {}
+    for line in (CONFIG/'control-api.env').read_text().splitlines():
+        if not line or line.startswith('#'):
+            continue
+        key, value = line.split('=',1)
+        parts = shlex.split(value)
+        require(len(parts)<=1, '服务配置格式无效')
+        values[key] = parts[0] if parts else ''
+    require(values.get('CONTROL_ALLOW_VOLATILE_STORE') == 'false', '更新只支持持久化 PostgreSQL 实例')
+    require(values.get('CONTROL_DATABASE_URL_FILE') == str(CONFIG/'database-url'), '不支持非受管数据库路径')
+    private_regular(CONFIG/'database-url')
+    dsn = urllib.parse.urlsplit((CONFIG/'database-url').read_text().strip())
+    require(dsn.scheme in ('postgres','postgresql') and dsn.hostname in ('127.0.0.1','localhost') and dsn.port in (None,5432), '自动更新仅支持安装器创建的本机 PostgreSQL；未修改任何数据')
+    database = urllib.parse.unquote(dsn.path.lstrip('/'))
+    require(database == 'hl_panel_control', '数据库不属于受管 HL-panel 实例')
+    listen = values.get('CONTROL_LISTEN_ADDRESS','')
+    require(re.fullmatch(r'127\.0\.0\.1:[0-9]{1,5}',listen), 'API 监听配置无效')
+    return database, 'http://' + listen
+
+
+def current_info(origin):
+    # Never proxy local health requests to an external system proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(origin+'/api/v1/public/site-info',timeout=5) as response:
+        return json.load(response)
+
+
+def check_service_launch():
+    """Reject stale or pinned systemd commands before taking the panel offline."""
+    try:
+        result = subprocess.run(['systemctl', 'show', SERVICE, '--property=ExecStart',
+                                 '--property=NeedDaemonReload'],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        raise UpdateError('无法检查面板启动配置，当前服务未停止。') from None
+    require(result.returncode == 0, '无法检查面板启动配置，当前服务未停止。')
+    properties = dict(line.split('=', 1) for line in result.stdout.decode().splitlines() if '=' in line)
+    require(properties.get('NeedDaemonReload') == 'no',
+            'systemd 配置尚未重载，当前服务未停止。请先执行 systemctl daemon-reload 后重试更新。')
+    paths = re.findall(r'\{ path=([^ ;]+) ;', properties.get('ExecStart', ''))
+    expected = str(ROOT/'current/bin/control-api')
+    require(paths == [expected],
+            '面板启动命令固定到其他程序或使用自定义启动器，当前服务未停止。'
+            '请检查 '+SERVICE+' 及其覆盖配置，将 ExecStart 的程序路径设为 '+expected+
+            '，保留需要的参数，再执行 systemctl daemon-reload 后重试；更新器不会覆盖自定义启动配置。')
+
+
+def check_running_binary():
+    """The service PID must execute the verified release behind current."""
+    pid = run(['systemctl', 'show', SERVICE, '--property=MainPID', '--value']).decode().strip()
+    require(re.fullmatch(r'[1-9][0-9]*', pid), '面板服务没有有效运行进程')
+    try:
+        matches = (Path('/proc')/pid/'exe').samefile(ROOT/'current/bin/control-api')
+    except OSError:
+        matches = False
+    require(matches, '面板运行程序与当前发行包不一致，请检查 systemd 启动配置')
+
+
+def healthy(origin, version):
+    for _ in range(30):
+        try:
+            if current_info(origin).get('platform_version') == version:
+                run(['systemctl','is-active','--quiet',SERVICE])
+                check_running_binary()
+                return
+        except (OSError, ValueError, UpdateError):
+            pass
+        time.sleep(1)
+    raise UpdateError('新版本启动、版本或运行程序核验失败，请检查面板服务日志和 systemd 启动配置')
+
+
+def digest(path):
+    checksum = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024*1024), b''):
+            checksum.update(chunk)
+    return checksum.hexdigest()
+
+
+def extract_verified(archive, destination):
+    with tarfile.open(archive,'r:gz') as source:
+        names = set()
+        total = 0
+        for entry in source.getmembers():
+            name = entry.name.removeprefix('./').rstrip('/')
+            if name in ('','.') and entry.isdir():
+                continue
+            parts = PurePosixPath(name)
+            require(name and not parts.is_absolute() and all(part not in ('','.','..') for part in name.split('/')) and ':' not in name and '\\' not in name, '安装包路径不安全')
+            require(entry.isfile() or entry.isdir(), '安装包不允许链接或特殊文件')
+            require(name not in names,'安装包包含重复路径')
+            names.add(name)
+            total += entry.size
+            require(total<=1024*1024*1024, '安装包解压大小过大')
+        source.extractall(destination,filter='data') if sys.version_info >= (3,12) else source.extractall(destination)
+    manifest = destination/'SHA256SUMS'
+    require(manifest.is_file(),'安装包缺少文件摘要')
+    verified = set()
+    for line in manifest.read_text().splitlines():
+        expected, name = line.split('  ',1)
+        name = name.removeprefix('./')
+        require(re.fullmatch('[0-9a-f]{64}',expected) and name in names and name not in verified,'文件摘要格式无效')
+        path = destination/name
+        require(path.is_file() and digest(path)==expected,'安装包文件摘要校验失败')
+        verified.add(name)
+    files={str(path.relative_to(destination)) for path in destination.rglob('*') if path.is_file()}
+    require(files==verified|{'SHA256SUMS'},'安装包包含未校验文件')
+    for asset in ('bin/control-api','bin/usage-migrate','bin/edge-agent','web-admin/index.html','deploy/update.py',
+                  'deploy/panel-update-worker.py','deploy/systemd/hl-panel-update.socket','deploy/systemd/hl-panel-update.service'):
+        require(asset in verified,'安装包缺少必需资产：'+asset)
+    for path in destination.rglob('*'):
+        path.chmod(0o755 if path.is_dir() or str(path.relative_to(destination)).startswith('bin/') else 0o644)
+    # The updater's private umask must not make the release root inaccessible
+    # to the unprivileged service and Nginx users.
+    destination.chmod(0o755)
+
+
+def switch(target):
+    pending=ROOT/('.next-current-'+str(os.getpid()))
+    require(not pending.exists() and not pending.is_symlink(),'更新链接已被占用')
+    pending.symlink_to(target)
+    pending.replace(ROOT/'current')
+
+
+def subscription_nginx_update(destination, backup):
+    """Add bounded managed locations; preserve custom domains/TLS/routes."""
+    packaged = destination/'deploy/nginx/snippets/hl-panel-app-locations.conf'
+    if not packaged.is_file():
+        return
+    packaged_text = packaged.read_text()
+    private_regular(APP_LOCATIONS)
+    current = APP_LOCATIONS.read_text()
+    additions = []
+    for location, path in [(SUBSCRIPTION_LOCATION, '/api/v1/public/subscriptions/'), (MIGRATION_LOCATION, '/api/v1/panel/migration/'),
+                           (PANEL_ACCOUNT_LOCATION, '/account/'), (PANEL_ACCOUNT_ASSETS_LOCATION, '/account/assets/')]:
+        if location in packaged_text and location not in current:
+            require(path not in current, '自定义 Nginx 路由已存在；现有配置未覆盖，请核对：'+path)
+            additions.append(location)
+    if not additions:
+        return
+    proxy = None
+    if MIGRATION_LOCATION in additions:
+        require(not MIGRATION_PROXY.exists() and not MIGRATION_PROXY.is_symlink(), '迁移代理配置已被占用，现有配置未覆盖')
+        private_regular(API_PROXY)
+        proxy = API_PROXY.read_text()
+        for directive in ('proxy_read_timeout', 'proxy_send_timeout'):
+            proxy, count = re.subn(r'(?m)^\s*'+directive+r'\s+[^;]+;', directive+' 120s;', proxy)
+            require(count == 1, '自定义 API 超时配置不兼容，现有配置未覆盖')
+    saved = backup/'nginx-app-locations.conf'
+    shutil.copyfile(APP_LOCATIONS, saved)
+    pending = APP_LOCATIONS.with_name('.hl-panel-app-locations-'+str(os.getpid()))
+    try:
+        if proxy is not None:
+            (backup/'migration-proxy-added').write_text('hl-panel-migration-proxy.conf\n')
+            MIGRATION_PROXY.write_text(proxy)
+            MIGRATION_PROXY.chmod(0o644)
+        pending.write_text(current.rstrip()+'\n\n'+'\n\n'.join(additions)+'\n')
+        pending.chmod(0o644)
+        pending.replace(APP_LOCATIONS)
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+    except Exception:
+        shutil.copyfile(saved, APP_LOCATIONS)
+        APP_LOCATIONS.chmod(0o644)
+        if (backup/'migration-proxy-added').is_file() and MIGRATION_PROXY.exists():
+            MIGRATION_PROXY.unlink()
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+        raise
+    finally:
+        if pending.exists():
+            pending.unlink()
+
+
+def restore_subscription_nginx(backup):
+    saved = backup/'nginx-app-locations.conf'
+    if saved.is_file():
+        private_regular(saved)
+        shutil.copyfile(saved, APP_LOCATIONS)
+        APP_LOCATIONS.chmod(0o644)
+        if (backup/'migration-proxy-added').is_file() and MIGRATION_PROXY.exists():
+            private_regular(MIGRATION_PROXY)
+            MIGRATION_PROXY.unlink()
+        run(['nginx','-t'])
+        run(['systemctl','reload','nginx'])
+
+
+def host_metrics_update(destination, backup):
+    """A bounded drop-in preserves the administrator's existing service unit."""
+    packaged = destination/'deploy/systemd/hl-panel-control-api.service'
+    if not packaged.is_file() or '\nProcSubset=all\n' not in packaged.read_text():
+        return
+    require(not PROC_OVERRIDE.is_symlink(), '面板指标服务配置不能为链接')
+    if PROC_OVERRIDE.exists():
+        private_regular(PROC_OVERRIDE)
+        existing = PROC_OVERRIDE.read_text()
+        if existing == PROC_OVERRIDE_CONTENT:
+            return
+        require(existing == LEGACY_PROC_OVERRIDE_CONTENT,
+                '面板指标服务配置路径已被自定义文件占用，现有文件未覆盖')
+    PROC_OVERRIDE.parent.mkdir(mode=0o755, exist_ok=True)
+    require(not PROC_OVERRIDE.parent.is_symlink(), '面板服务配置目录不能为链接')
+    directory_info = PROC_OVERRIDE.parent.stat()
+    require(directory_info.st_uid == os.geteuid() and not directory_info.st_mode & 0o022,
+            '面板服务配置目录必须归更新用户所有且不能被其他用户修改')
+    if PROC_OVERRIDE.exists():
+        shutil.copyfile(PROC_OVERRIDE, backup/'host-metrics-previous.conf')
+    else:
+        (backup/'host-metrics-added').write_text('20-host-metrics.conf\n')
+    PROC_OVERRIDE.write_text(PROC_OVERRIDE_CONTENT)
+    PROC_OVERRIDE.chmod(0o644)
+    run(['systemctl','daemon-reload'])
+
+
+def migration_domain_access(backup):
+    # domain.conf contains only public installation settings; allow the panel
+    # service to read them without granting access to root secrets.
+    path = CONFIG/'domain.conf'
+    if path.exists():
+        private_regular(path)
+        allowed = {'DOMAIN', 'PUBLIC_IP', 'IP_HTTPS_PORT', 'CERTBOT_CERT_NAME'}
+        lines = [line for line in path.read_text().splitlines() if line and not line.startswith('#')]
+        require(all('=' in line and line.split('=', 1)[0] in allowed for line in lines),
+                '域名配置包含未知字段，拒绝扩大读取权限')
+        info = path.stat()
+        (backup/'domain-access.json').write_text(json.dumps({'uid': info.st_uid, 'gid': info.st_gid, 'mode': info.st_mode & 0o777}))
+        os.chown(path, 0, grp.getgrnam('hlpanel').gr_gid)
+        path.chmod(0o640)
+
+
+def restore_domain_access(backup):
+    metadata = backup/'domain-access.json'
+    if metadata.is_file():
+        private_regular(metadata)
+        try:
+            original = json.loads(metadata.read_text())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise UpdateError('域名配置权限恢复记录无效') from None
+        require(isinstance(original, dict) and set(original) == {'uid', 'gid', 'mode'}, '域名配置权限恢复记录无效')
+        require(all(isinstance(original[key], int) and not isinstance(original[key], bool) and original[key] >= 0 for key in ('uid', 'gid')), '域名配置权限恢复记录无效')
+        require(isinstance(original['mode'], int) and not isinstance(original['mode'], bool) and 0 <= original['mode'] <= 0o777, '域名配置权限恢复记录无效')
+        path = CONFIG/'domain.conf'
+        private_regular(path)
+        os.chown(path, original['uid'], original['gid'])
+        path.chmod(original['mode'])
+
+
+def restore_host_metrics(backup):
+    previous = backup/'host-metrics-previous.conf'
+    if previous.is_file():
+        private_regular(previous)
+        require(previous.read_text() == LEGACY_PROC_OVERRIDE_CONTENT, '面板指标配置备份内容无效')
+        if PROC_OVERRIDE.exists():
+            private_regular(PROC_OVERRIDE)
+            require(PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT, '面板指标配置已被修改，拒绝覆盖')
+        shutil.copyfile(previous, PROC_OVERRIDE)
+        PROC_OVERRIDE.chmod(0o644)
+        run(['systemctl','daemon-reload'])
+        return
+    if (backup/'host-metrics-added').is_file():
+        if PROC_OVERRIDE.exists():
+            private_regular(PROC_OVERRIDE)
+            require(PROC_OVERRIDE.read_text() == PROC_OVERRIDE_CONTENT, '面板指标配置已被修改，拒绝覆盖')
+            PROC_OVERRIDE.unlink()
+        run(['systemctl','daemon-reload'])
+
+
+def web_update_channel(destination, backup):
+    """Install only the fixed-purpose, locally permissioned update units."""
+    sources = [destination/'deploy/systemd'/name for name in ('hl-panel-update.socket', 'hl-panel-update.service')]
+    require(all(path.is_file() for path in sources), '发布包缺少网页更新服务')
+    changes = []
+    for source in sources:
+        target = SYSTEMD_UNITS/source.name
+        if target.exists() or target.is_symlink():
+            private_regular(target)
+            require(target.read_text().startswith('# Managed by HL-panel:'), '网页更新服务路径已被其他配置占用，未覆盖')
+            shutil.copyfile(target, backup/source.name)
+            changes.append({'name': source.name, 'added': False, 'enabled': systemd_enabled_state(source.name), 'active': systemd_active_state(source.name)})
+        else:
+            changes.append({'name': source.name, 'added': True, 'enabled': 'not-found', 'active': False})
+    # Capture both runtime states before changing either unit, including an
+    # unchanged socket that the update later enables or the rollback stops.
+    write_json_atomic(backup/'web-update-units.json', changes)
+    for source in sources:
+        target = SYSTEMD_UNITS/source.name
+        if target.exists() and target.read_bytes() == source.read_bytes():
+            continue
+        pending = target.with_name('.'+target.name+'-'+str(os.getpid()))
+        try:
+            shutil.copyfile(source, pending)
+            pending.chmod(0o644)
+            pending.replace(target)
+        finally:
+            if pending.exists():
+                pending.unlink()
+    run(['systemctl','daemon-reload'])
+
+
+def systemd_enabled_state(name):
+    result = subprocess.run(['systemctl', 'is-enabled', name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    value = result.stdout.strip().splitlines()
+    return value[0] if value else ('not-found' if result.returncode != 0 else 'unknown')
+
+
+def systemd_active_state(name):
+    result = subprocess.run(['systemctl', 'is-active', '--quiet', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return result.returncode == 0
+
+
+def inside_update_worker():
+    try:
+        cgroups = Path('/proc/self/cgroup').read_text().splitlines()
+    except OSError:
+        return False
+    return any('hl-panel-update.service' in line.split(':', 2)[-1].split('/') for line in cgroups)
+
+
+def restore_systemd_unit_state(name, enabled, active, *, preserve_runtime=False):
+    enabled_states = {'enabled', 'enabled-runtime', 'linked', 'linked-runtime'}
+    masked_states = {'masked', 'masked-runtime'}
+    if enabled in masked_states:
+        run(['systemctl', 'unmask', name])
+        mask_command = ['systemctl', 'mask']
+        if enabled == 'masked-runtime':
+            mask_command.append('--runtime')
+        run(mask_command + [name])
+    elif enabled in enabled_states:
+        run(['systemctl', 'unmask', name])
+        enable_command = ['systemctl', 'enable']
+        if enabled == 'enabled-runtime':
+            enable_command.append('--runtime')
+        run(enable_command + [name])
+    elif enabled in {'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}:
+        run(['systemctl', 'unmask', name])
+        disable_command = ['systemctl', 'disable']
+        if enabled == 'disabled-runtime':
+            disable_command.append('--runtime')
+        run(disable_command + [name])
+    else:
+        raise UpdateError('网页更新服务状态记录无效')
+    if not preserve_runtime:
+        run(['systemctl', 'start' if active else 'stop', name])
+
+
+def restore_web_update_channel(backup):
+    journal = backup/'web-update-units.json'
+    if not journal.is_file():
+        return
+    private_regular(journal)
+    try:
+        changes = json.loads(journal.read_text())
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise UpdateError('网页更新服务恢复记录无效') from None
+    require(isinstance(changes, list) and changes, '网页更新服务恢复记录无效')
+    allowed = {'hl-panel-update.socket', 'hl-panel-update.service'}
+    preserve_runtime = inside_update_worker()
+    for change in changes:
+        require(isinstance(change, dict) and set(change) == {'name', 'added', 'enabled', 'active'}, '网页更新服务恢复记录无效')
+        require(change['name'] in allowed and isinstance(change['added'], bool) and isinstance(change['enabled'], str) and isinstance(change['active'], bool), '网页更新服务恢复记录无效')
+        require(change['enabled'] in {'enabled', 'enabled-runtime', 'linked', 'linked-runtime', 'masked', 'masked-runtime', 'disabled', 'disabled-runtime', 'not-found', 'unknown', 'static', 'indirect', 'generated', 'transient', 'alias'}, '网页更新服务状态记录无效')
+        if preserve_runtime:
+            require(not change['added'] and change['active'], '运行中的网页更新服务恢复记录不一致')
+        target = SYSTEMD_UNITS/change['name']
+        if target.exists() or target.is_symlink():
+            private_regular(target)
+        if not change['added']:
+            private_regular(backup/change['name'])
+    # The updater is a child in the web worker's cgroup. Stopping that service
+    # would kill the rollback itself; keep its existing live socket/process.
+    if not preserve_runtime:
+        for change in changes:
+            if not (SYSTEMD_UNITS/change['name']).exists():
+                continue
+            if change['name'] == 'hl-panel-update.socket':
+                run(['systemctl','disable','--now',change['name']])
+            else:
+                run(['systemctl','stop',change['name']])
+    for change in changes:
+        target = SYSTEMD_UNITS/change['name']
+        if change['added']:
+            target.unlink(missing_ok=True)
+        else:
+            shutil.copyfile(backup/change['name'], target)
+            target.chmod(0o644)
+    run(['systemctl','daemon-reload'])
+    for change in changes:
+        if not change['added']:
+            restore_systemd_unit_state(change['name'], change['enabled'], change['active'], preserve_runtime=preserve_runtime)
+
+
+def remove_upgrade_only_usage_objects(database, manifest):
+    # pg_restore --clean only removes objects present in the saved archive.
+    # New derived tables/functions must also disappear when rolling back to a
+    # version before they existed, or the next upgrade sees unmanaged objects.
+    def saved_table(name):
+        return re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+'+re.escape(name)+r'\s', manifest) is not None
+    statements = []
+    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic', 'hl_panel_protocol_health'):
+        if not saved_table(name):
+            statements.append('DROP TABLE IF EXISTS public.'+name)
+    for name in ('usage_rule_totals', 'usage_query_totals'):
+        if saved_table(name):
+            continue
+        for suffix in ('insert', 'delete', 'update_1_remove', 'update_2_add', 'truncate'):
+            statements.append('DROP TRIGGER IF EXISTS '+name+'_'+suffix+' ON public.usage_events')
+        for suffix in ('added', 'removed', 'cleared'):
+            statements.append('DROP FUNCTION IF EXISTS public.'+name+'_'+suffix+'()')
+        statements.append('DROP TABLE IF EXISTS public.'+name)
+    if statements:
+        run(['runuser','-u','postgres','--','psql','-X','-v','ON_ERROR_STOP=1','--dbname='+database,
+             '-c','BEGIN; '+'; '.join(statements)+'; COMMIT;'])
+
+
+def rollback(backup):
+    # Finish restoring even when a second stop signal arrives during rollback.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    backup=backup.resolve()
+    require(backup.parent==BACKUPS and backup.stat().st_uid==0 and not backup.stat().st_mode&0o077,'备份路径必须是 root 私有的 HL-panel 备份目录')
+    private_regular(backup/'update-state.json')
+    state=json.loads((backup/'update-state.json').read_text())
+    old=Path(state['previous_target'])
+    require(old.parent==ROOT/'releases' and (old/'bin/control-api').is_file(),'旧版本路径无效')
+    database,origin=configuration()
+    require(digest(backup/'database.dump')==state['database_sha256'],'数据库备份摘要不一致，拒绝恢复')
+    try:
+        run(['systemctl','stop',SERVICE])
+        restore_subscription_nginx(backup)
+        restore_host_metrics(backup)
+        restore_web_update_channel(backup)
+        restore_domain_access(backup)
+        with (backup/'database.dump').open('rb') as stream:
+            run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--single-transaction','--dbname='+database],input_file=stream)
+        manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
+        remove_upgrade_only_usage_objects(database, manifest)
+        switch(old)
+        run(['systemctl','start',SERVICE])
+        healthy(origin,state['previous_version'])
+        print('[HL-panel 更新] 已恢复升级前程序和数据库。')
+    except Exception:
+        # Do not serve an incompletely restored database/configuration, including
+        # a service that started but failed the old-version health check.
+        run_best_effort(['systemctl', 'stop', SERVICE])
+        raise
+
+
+def main():
+    parser=argparse.ArgumentParser(description='保留数据更新 HL-panel；不会重装或重置管理员密码')
+    parser.add_argument('--version',default='latest')
+    parser.add_argument('--check',action='store_true')
+    parser.add_argument('--rollback',type=Path)
+    args=parser.parse_args()
+    require(os.geteuid()==0,'请使用 root 执行')
+    require(platform.machine() in ('x86_64','amd64'),'自动更新仅支持 Linux amd64')
+    os.umask(0o077)
+    # One updater at a time, including a manual rollback.
+    require(ROOT.is_dir() and not ROOT.is_symlink() and ROOT.stat().st_uid==0 and not ROOT.stat().st_mode&0o022,'未找到 root 管理的 HL-panel 程序目录')
+    descriptor=os.open(ROOT/'.update.lock',os.O_WRONLY|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'a') as lock:
+        try:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise UpdateError('已有更新任务运行，请勿重复执行') from None
+        if args.rollback:
+            rollback(args.rollback)
+            return
+        require((ROOT/'current').is_symlink(),'未发现现有 HL-panel；请使用全新安装命令')
+        previous=(ROOT/'current').resolve()
+        require(previous.parent==ROOT/'releases','当前程序不在受管发布目录')
+        database,origin=configuration()
+        run(['systemctl','is-active','--quiet',SERVICE])
+        old_version=current_info(origin)['platform_version']
+        version_tuple(old_version)
+        target=args.version
+        if target=='latest':
+            target=json.loads(request(API+'/releases/latest'))['tag_name']
+        target_version=version_tuple(target)
+        metadata=json.loads(request(API+'/releases/tags/'+target))
+        require(metadata.get('tag_name')==target and not metadata.get('draft') and not metadata.get('prerelease') and metadata.get('published_at'),'目标不是 GitHub 正式发布')
+        if args.check:
+            print(json.dumps({'current_version':old_version,'target_version':target,'update_available':target_version>version_tuple(old_version)}))
+            return
+        if target_version==version_tuple(old_version):
+            print('[HL-panel 更新] 已是目标正式版本，无需更新。')
+            return
+        require(target_version>version_tuple(old_version),'不允许降级；请使用对应备份中的回滚命令')
+        check_service_launch()
+        updater=Path('/usr/local/sbin/hl-panel-update')
+        if updater.exists() or updater.is_symlink():
+            private_regular(updater)
+            require('# Managed by HL-panel.' in updater.read_text(),'更新命令路径已被其他程序占用')
+        stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+os.urandom(3).hex()
+        backup=BACKUPS/(target+'-'+stamp)
+        backup.mkdir(parents=True,mode=0o700)
+        backup.parent.chmod(0o700)
+        print('[HL-panel 更新] 本次备份目录：'+str(backup),flush=True)
+        archive=backup/'release.tar.gz'
+        destination=None
+        stop_attempted=False
+        try:
+            base=REPO+'/releases/download/'+target+'/'
+            assets={item['name'] for item in metadata.get('assets',[])}
+            require({'hl-panel-linux-amd64.tar.gz','hl-panel-linux-amd64.tar.gz.sha256'}<=assets,'发布包不完整')
+            print('[HL-panel 更新] 下载同标签安装包，当前服务继续运行。',flush=True)
+            archive.write_bytes(request(base+'hl-panel-linux-amd64.tar.gz',256*1024*1024))
+            checksum=request(base+'hl-panel-linux-amd64.tar.gz.sha256',4096).decode().strip().split()
+            require(len(checksum)==2 and checksum[1]=='hl-panel-linux-amd64.tar.gz' and re.fullmatch('[0-9a-f]{64}',checksum[0]),'发布包摘要格式无效')
+            require(digest(archive)==checksum[0],'发布包 SHA256 校验失败')
+            destination=ROOT/'releases'/(target+'-'+stamp)
+            destination.mkdir(mode=0o755)
+            extract_verified(archive,destination)
+            # Run verified candidate logic while the old service still runs.
+            check_candidate_license(destination)
+            # Recheck after download/preflight: startup settings may have changed.
+            check_service_launch()
+            # Domains, TLS and custom routes remain intact. A bounded subscription
+            # location is added below, with its own backup and rollback.
+            # Runtime/schema changes are handled by the verified new binaries.
+            with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
+                saved.add(CONFIG,arcname='etc/hl-panel')
+                if STATE.is_dir():
+                    saved.add(STATE,arcname='var/lib/hl-panel')
+            print('[HL-panel 更新] 暂停本面板，备份数据库；账号、规则和证书全部保留。',flush=True)
+            stop_attempted=True
+            run(['systemctl','stop',SERVICE])
+            with (backup/'database.dump').open('wb') as stream:
+                run(['runuser','-u','postgres','--','pg_dump','-Fc','--dbname='+database],output=stream)
+            require((backup/'database.dump').stat().st_size>0,'数据库备份为空')
+            with (backup/'database-manifest.txt').open('wb') as stream:
+                run(['pg_restore','--list',str(backup/'database.dump')],output=stream)
+            state={'previous_target':str(previous),'previous_version':old_version,'target_version':target,
+                   'database_sha256':digest(backup/'database.dump'),'config_sha256':digest(backup/'config-state.tar.gz'),
+                   'release_sha256':checksum[0],'created_at_utc':datetime.now(timezone.utc).isoformat()}
+            (backup/'update-state.json').write_text(json.dumps(state,indent=2)+'\n')
+            shutil.copyfile(__file__,backup/'rollback.py')
+            (backup/'rollback.sh').write_text('#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 '+shlex.quote(str(backup/'rollback.py'))+' --rollback '+shlex.quote(str(backup))+'\n')
+            (backup/'rollback.sh').chmod(0o700)
+            print('[HL-panel 更新] 手动回滚命令：bash '+str(backup/'rollback.sh'),flush=True)
+            run([str(destination/'bin/usage-migrate'),'apply','-dsn-file',str(CONFIG/'database-url')])
+            run([str(destination/'bin/usage-migrate'),'verify','-dsn-file',str(CONFIG/'database-url')])
+            subscription_nginx_update(destination, backup)
+            host_metrics_update(destination, backup)
+            migration_domain_access(backup)
+            web_update_channel(destination, backup)
+            switch(destination)
+            run(['systemctl','enable','--now','hl-panel-update.socket'])
+            run(['systemctl','start',SERVICE])
+            healthy(origin,target)
+        except Exception:
+            if (backup/'update-state.json').is_file():
+                print('[HL-panel 更新] 新版本未通过检查，正在恢复升级前程序与数据库。',flush=True)
+                rollback(backup)
+            else:
+                cleanup_incomplete_update(backup, destination, stop_attempted)
+            raise
+        updater.write_text(WRAPPER)
+        updater.chmod(0o755)
+        print('[HL-panel 更新] 成功：'+old_version+' → '+target)
+        print('备份目录：'+str(backup))
+        print('回滚命令：bash '+str(backup/'rollback.sh'))
+        print('账号、已修改密码、规则、数据库、域名与证书均保留；请刷新面板。')
+
+
+if __name__=='__main__':
+    def interrupted(*_):
+        raise UpdateError('更新被中断；已进入恢复流程，请核对备份与服务状态')
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        main()
+    except UpdateError as error:
+        print('[HL-panel 更新] 错误：'+str(error),file=sys.stderr)
+        sys.exit(1)
+    except Exception:
+        print('[HL-panel 更新] 操作失败；未输出私有数据。请核对备份目录与面板服务状态。',file=sys.stderr)
+        sys.exit(1)
