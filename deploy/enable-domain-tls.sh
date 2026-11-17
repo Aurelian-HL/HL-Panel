@@ -8,6 +8,21 @@ RENEWED_LINEAGE=""
 
 fail() { printf '[HL-panel TLS] 错误：%s\n' "$*" >&2; exit 1; }
 
+validate_domain_certificate() {
+  local certificate="$1" private_key="$2" certificate_key_hash private_key_hash
+  [[ -s "$certificate" && -s "$private_key" ]] || fail "待启用证书或私钥为空"
+  openssl x509 -in "$certificate" -noout -checkhost "$DOMAIN" >/dev/null || fail "证书不包含 $DOMAIN"
+  # Verify the staged full chain against the host's CA store, including leaf and
+  # intermediate validity periods and server-auth usage. nginx -t alone does
+  # not reject an expired certificate or an incomplete/untrusted chain.
+  openssl verify -purpose sslserver -verify_hostname "$DOMAIN" \
+    -untrusted "$certificate" "$certificate" >/dev/null || fail "证书有效期、用途或完整信任链校验失败；保留当前证书，请检查系统时间、CA 证书包和 Certbot fullchain.pem"
+  certificate_key_hash="$(openssl x509 -in "$certificate" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | awk '{print $1}')" || fail "无法读取证书公钥"
+  # Renewal must fail promptly instead of waiting for a private-key passphrase.
+  private_key_hash="$(openssl pkey -in "$private_key" -passin pass: -pubout -outform DER | sha256sum | awk '{print $1}')" || fail "无法读取证书私钥"
+  [[ "$certificate_key_hash" == "$private_key_hash" ]] || fail "证书与私钥不匹配"
+}
+
 resolve_domain_records() {
   python3 - "$DOMAIN" "$1" <<'PY'
 import socket
@@ -90,10 +105,6 @@ fi
 CERT_FILE="$LIVE_DIR/fullchain.pem"
 KEY_FILE="$LIVE_DIR/privkey.pem"
 [[ -s "$CERT_FILE" && -s "$KEY_FILE" ]] || fail "Certbot 未生成完整证书"
-openssl x509 -in "$CERT_FILE" -noout -checkhost "$DOMAIN" >/dev/null || fail "证书不包含 $DOMAIN"
-CERT_KEY_HASH="$(openssl x509 -in "$CERT_FILE" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | awk '{print $1}')"
-PRIVATE_KEY_HASH="$(openssl pkey -in "$KEY_FILE" -pubout -outform DER | sha256sum | awk '{print $1}')"
-[[ "$CERT_KEY_HASH" == "$PRIVATE_KEY_HASH" ]] || fail "证书与私钥不匹配"
 
 [[ -L "$CURRENT_LINK" ]] || fail "域名证书活动路径不是受管软链接"
 OLD_TARGET="$(readlink "$CURRENT_LINK")"
@@ -126,6 +137,7 @@ cleanup_pending() {
 trap cleanup_pending EXIT
 install -o root -g root -m 0644 "$CERT_FILE" "$CERT_DIR/fullchain.pem"
 install -o root -g root -m 0600 "$KEY_FILE" "$CERT_DIR/privkey.pem"
+validate_domain_certificate "$CERT_DIR/fullchain.pem" "$CERT_DIR/privkey.pem"
 chmod 0755 "$CERT_DIR"
 
 NEXT_LINK="$TLS_DIR/.domain-current-$$"
