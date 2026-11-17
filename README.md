@@ -1,25 +1,46 @@
-# HL-Panel
+<p align="center">
+  <img src="assets/hl-panel-banner.webp" alt="HL-Panel：遥遥领先，持续进化。规则与设备组统一编排。" width="100%" />
+</p>
 
-[![正式版本](https://img.shields.io/github/v/release/Aurelian-HL/HL-Panel)](https://github.com/Aurelian-HL/HL-Panel/releases/latest) [![平台](https://img.shields.io/badge/Linux-amd64-334155)](#安装要求) [![技术栈](https://img.shields.io/badge/Go-Vue%203%20%2B%20PostgreSQL-475569)](#项目组成)
+<h1 align="center">HL-Panel</h1>
 
-**遥遥领先，持续进化。**
+<p align="center">
+  <strong>遥遥领先，持续进化。</strong><br />
+  我们的目标：让同行永远追着下一版。
+</p>
 
-> **我们的目标：让同行永远追着下一版。**
+<p align="center">
+  <a href="https://github.com/Aurelian-HL/HL-Panel/releases/latest"><img src="https://img.shields.io/github/v/release/Aurelian-HL/HL-Panel?style=flat-square&amp;color=1d3557" alt="最新正式发行" /></a>
+  <a href="https://github.com/Aurelian-HL/HL-Panel/releases"><img src="https://img.shields.io/github/downloads/Aurelian-HL/HL-Panel/total?style=flat-square&amp;color=b4945a" alt="正式发行累计下载" /></a>
+  <a href="#安装要求"><img src="https://img.shields.io/badge/Linux-amd64-475569?style=flat-square" alt="Linux amd64" /></a>
+  <a href="#项目组成"><img src="https://img.shields.io/badge/Go-Vue%203%20%2B%20PostgreSQL-64748b?style=flat-square" alt="Go、Vue 3 与 PostgreSQL" /></a>
+</p>
 
-**把一组服务器，变成一套统一掌控的转发体系。** HL-Panel 面向 VPS，将规则、设备组、节点、订阅与流量计量收进同一套控制台。从一行 SK5 到批量开通，从单机转发到入口、出口设备组与组间隧道，让复杂部署有清晰路径，让日常管理更直接。
+<p align="center">
+  <a href="#快速开始">🚀 快速开始</a> ·
+  <a href="#功能一览">✨ 功能一览</a> ·
+  <a href="#下一步更新计划">🧭 更新计划</a> ·
+  <a href="#面板与节点更新">📦 安装更新</a> ·
+  <a href="#免费版与授权">🔑 免费与授权</a> ·
+  <a href="#常见问题">💬 常见问题</a>
+</p>
 
-**用实力撑起野心，用持续迭代拉开距离。**
+**把一组服务器，变成一套统一掌控的转发体系。** 面向 VPS，将规则、设备组、节点、订阅与流量计量收进同一套控制台。从一行 SK5 到批量开通，从单机转发到入口、出口设备组与组间隧道，让复杂部署有清晰路径，让日常管理更直接。
 
-- **一行开通，一批 500 条。** 填写昵称与完整 SOCKS5 地址、端口、账号、密码，即可生成 VLESS + Reality 客户端连接；批量创建最多 500 条，昵称留空自动使用上游 IP。
-- **一次编排，组内协同。** 统一管理入口与出口设备组，配置成员、权重与优先级，组合 TCP / UDP、直连、SOCKS5 落地与组间隧道。
-- **一条命令，节点就位。** 自动探测线路、按需补齐依赖；面板与节点独立更新，节点维护任务进度可查。
-- **用量有据，状态可查。** 整数 bytes 累计、重复上报去重、UTC 月汇总，结合探针采样与配置应用回执，掌握运行状态。
+<table>
+  <tr>
+    <td width="50%"><strong>🚀 一行开通，一批 500 条</strong><br />填写昵称与完整 SK5，批量生成 VLESS + Reality 客户端连接；昵称留空使用上游 IP。</td>
+    <td width="50%"><strong>🔗 一次编排，组内协同</strong><br />统一管理成员、权重与优先级，组合 TCP / UDP、直连、SOCKS5 落地和组间隧道。</td>
+  </tr>
+  <tr>
+    <td><strong>🛠 一条命令，节点就位</strong><br />自动探测线路，按需补齐依赖；面板与节点独立更新，维护进度可查。</td>
+    <td><strong>📊 用量有据，状态可查</strong><br />整数 bytes 累计、重复上报去重、UTC 月汇总，结合探针和配置应用回执。</td>
+  </tr>
+</table>
 
-更快开通、更清晰管理、更可靠转发，是 HL-Panel 持续进化的方向。领先的目标，交给每一个版本去兑现。
+**用实力撑起野心，用持续迭代拉开距离。** 更快开通、更清晰管理、更可靠转发，是 HL-Panel 持续进化的方向。领先的目标，交给每一个版本去兑现。
 
 本仓库公开安装与更新脚本、正式二进制发行包。应用源码、开发历史与构建记录在独立私有仓库维护；GitHub 的 **Source code** 压缩包仅含公开交付文件，安装请使用 Release 中的 `hl-panel-linux-amd64.tar.gz`。服务器安装与更新无需源码仓库凭据。
-
-[快速开始](#快速开始) · [功能一览](#功能一览) · [更新方法](#面板与节点更新) · [免费版与授权](#免费版与授权) · [常见问题](#常见问题) · [正式发布](https://github.com/Aurelian-HL/HL-Panel/releases)
 
 ## 功能一览
 
@@ -122,6 +143,18 @@ apt-get update && apt-get install -y curl ca-certificates
 
 保存后核对节点的配置应用状态，再在客户端导入在线订阅、导入包或二维码。直连、SOCKS5 落地、跨组转发需要各自的目标与网络可达；订阅下载成功不等于线路已连通。
 
+## 下一步更新计划
+
+> **计划透明，交付有据。** 以下是待推进事项，不属于当前版本新增功能。详细状态、操作范围与验收条件见 [更新路线图](ROADMAP.md)。
+
+| 批次 | 重点 | 当前状态 | 交付要求 |
+| --- | --- | --- | --- |
+| **A · 数据可信** | 规则在线统计；苹果设备间歇 HTTPS 失败排查 | 🛠 统计有本地修改；🔎 HTTPS 根因待定位 | 数字、筛选与行状态一致；原失败设备复测 |
+| **B · 更快更稳** | 规则与节点变更连续性回归；下发各阶段耗时优化 | 🧪 待补充系统验收；🧭 性能优化规划 | 未修改规则连接连续；P50 / P95 / P99 实测对照 |
+| **C · 链路与交付** | UDP 公网全链路；安装维护；独立发行验签 | 🧪 UDP 待公网验收；🧭 验签未实现 | 真实双向传输、准确计量、安装升级验证 |
+
+批次表示优先顺序，不承诺未经验证的发布日期、性能倍数或零中断效果。最新正式包以 [Releases](https://github.com/Aurelian-HL/HL-Panel/releases/latest) 为准。
+
 ## 面板与节点更新
 
 **面板和节点独立更新。** 面板升级不会自动把所有节点一起升级。
@@ -168,9 +201,12 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update-no
 
 当前使用汇总存储，**不永久积攒每次上报的明细**。旧明细由后台按批整理，保留累计值与必要防重状态；不再提供任意分钟、小时、日期区间的原始历史明细查询。数据库可复用空间不代表操作系统文件立即缩小。
 
-连接数、速率和在线状态来自节点采样，存在采集与刷新间隔，不能当作逐秒人数或独立自然人数。探针在线、业务端口可达、代理认证成功和实际访问成功应分别判断。
+连接数与速率来自节点采样；**规则页的在线筛选当前采用 5 分钟快照，并非逐秒实时人数**。当前版本部分统计按规则绑定的客户归属去重，多条规则共用归属时可能被合并；按规则自身状态统计的修复列入 [下一批计划](ROADMAP.md#a1--修正规则在线统计)，尚未发行。探针在线、业务端口可达、代理认证成功和实际访问成功应分别判断。
 
 ## 生效与兼容边界
+
+<details>
+<summary><strong>展开查看更新、协议、订阅同步与程序保护边界</strong></summary>
 
 - 配置下发有期望代次和应用回执；保存、领取、校验、应用需分别确认。节点遇到不可达的控制面或无效新配置时保留最后有效配置。
 - 规则与成员变动尽量只应用受影响配置，但**不承诺所有操作、所有协议均零重启或长连接迁移**。节点升级、换组与引擎替换需考虑连接重连。
@@ -179,12 +215,15 @@ curl -fsSL https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/main/update-no
 - 订阅生成读取当前规则配置；外部运营系统的缓存与同步仍取决于双方接口流程，不能把 HL 修改成功等同于第三方订阅立即刷新。
 - 安装包提供 SHA-256 与内部文件摘要校验；摘要校验不等于独立发行签名。自有程序采用混淆构建，不能保证不可逆向。
 
+</details>
+
 ## 常见问题
 
 | 问题 | 检查方向 |
 | --- | --- |
 | 更新面板后节点版本没变 | 面板与节点独立更新。到设备探针的“更新”查看目标版本与接入状态。 |
 | 安装后节点在线，但规则不能用 | 核对业务端口、防火墙、配置应用回执、上游 SK5 认证和真实客户端；心跳只是管理链路正常。 |
+| 在线统计一直为 1，或与规则行状态不同 | 当前版本可能按共用客户归属合并；按规则统计的修复待发，不代表只有一个真实用户连接。见 [路线图](ROADMAP.md#a1--修正规则在线统计)。 |
 | 部分苹果设备订阅提示 SSL 失败 | 对照同一网络下 Safari 与客户端的结果，记录失败时间；核对实际解析、证书链及 TLS / HTTP 协议。不能仅凭错误提示判定手机时间或运营商问题，也不要关闭证书验证。 |
 | 域名证书首次签发失败 | 修好 DNS、80 端口及签发条件后，在面板机执行 `hl-panel-enable-domain-tls`，再验收公网 HTTPS。 |
 | IP HTTPS 入口有证书警告 | IP 入口默认使用自签证书，与域名 443 证书不同。节点和客户端应使用受信任的 HTTPS 入口。 |
