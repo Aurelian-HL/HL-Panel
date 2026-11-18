@@ -22,6 +22,16 @@ SERVICE = 'hl-panel-edge-agent.service'
 METRICS_OVERRIDE = Path('/etc/systemd/system/hl-panel-edge-agent.service.d/20-host-metrics.conf')
 METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nRestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK\n'
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
+MAINTENANCE_UNITS = ('hl-panel-node-update.socket', 'hl-panel-node-update.service',
+                     'hl-panel-port-reservation.socket', 'hl-panel-port-reservation@.service')
+
+
+def verify_maintenance_assets(release):
+    required = ('deploy/install-node-update.py', 'deploy/node-update-worker.py',
+                'deploy/reserve-node-ports.py') + tuple('deploy/systemd/'+name for name in MAINTENANCE_UNITS)
+    for asset in required:
+        require((release/asset).is_file(), '发布包缺少节点维护资产；当前节点未停止')
+    run(['systemd-analyze', 'verify', *(str(release/'deploy/systemd'/name) for name in MAINTENANCE_UNITS)])
 
 
 RESULT_FILE = None
@@ -349,9 +359,7 @@ def update_programs(args, config, target, backup, legacy):
     release.mkdir()
     extract_verified(archive,release)
     require((release/'deploy/update-node.py').is_file(),'此版本未提供节点升级器')
-    for asset in ('deploy/install-node-update.py','deploy/node-update-worker.py',
-                  'deploy/systemd/hl-panel-node-update.socket','deploy/systemd/hl-panel-node-update.service'):
-        require((release/asset).is_file(), '发布包缺少节点更新服务资产；当前节点未停止')
+    verify_maintenance_assets(release)
     verify_xray_version(release/'bin/xray')
     run([str(release/'bin/gost'),'-V'])
     maintenance = release/'deploy/install-node-update.py'
@@ -361,9 +369,6 @@ def update_programs(args, config, target, backup, legacy):
         run([sys.executable, str(maintenance), str(release), '--preflight', '--install-missing'])
     except UpdateError:
         raise UpdateError('节点依赖或 Xray 资源预检失败；请检查软件源、iproute2/systemd/procps/kmod 和 GeoIP/GeoSite 资源；当前转发服务未停止') from None
-    run(['systemd-analyze', 'verify',
-         str(release/'deploy/systemd/hl-panel-node-update.socket'),
-         str(release/'deploy/systemd/hl-panel-node-update.service')])
     if args.repair:
         repair_dependencies(release, backup)
         return

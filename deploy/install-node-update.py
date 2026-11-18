@@ -13,8 +13,9 @@ import tempfile
 
 ROOT = Path('/opt/hl-panel')
 UNITS = Path('/etc/systemd/system')
-NAMES = ('node-update-worker.py', 'update.py', 'update-node.py')
-UNIT_NAMES = ('hl-panel-node-update.socket', 'hl-panel-node-update.service')
+NAMES = ('node-update-worker.py', 'update.py', 'update-node.py', 'reserve-node-ports.py')
+UNIT_NAMES = ('hl-panel-node-update.socket', 'hl-panel-node-update.service',
+              'hl-panel-port-reservation.socket', 'hl-panel-port-reservation@.service')
 TC_NAME = '30-traffic-control.conf'
 ASSET_NAMES = ('geoip.dat', 'geosite.dat')
 LEGACY_STAGING = Path('/var/backups/hl-panel-node')
@@ -100,6 +101,7 @@ def snapshot(backup):
             manifest[name] = None
     for field, args in [('enabled', ['is-enabled', '--quiet']), ('active', ['is-active', '--quiet'])]:
         manifest[field] = subprocess.run(['systemctl', *args, 'hl-panel-node-update.socket'], capture_output=True, timeout=10).returncode == 0
+        manifest['reservation_'+field] = subprocess.run(['systemctl', *args, 'hl-panel-port-reservation.socket'], capture_output=True, timeout=10).returncode == 0
     (backup / 'manifest.json').write_text(json.dumps(manifest))
     (backup / 'manifest.json').chmod(0o600)
 
@@ -125,6 +127,13 @@ def restore(backup):
         command('systemctl', 'stop', 'hl-panel-node-update.socket')
     if not manifest['enabled']:
         command('systemctl', 'disable', 'hl-panel-node-update.socket')
+    # Old snapshots did not manage this socket. A failed pre-install repair
+    # may also have captured its absence without ever installing it.
+    if 'reservation_active' in manifest and (UNITS / 'hl-panel-port-reservation.socket').exists():
+        if not manifest['reservation_active']:
+            command('systemctl', 'stop', 'hl-panel-port-reservation.socket')
+        if not manifest['reservation_enabled']:
+            command('systemctl', 'disable', 'hl-panel-port-reservation.socket')
     for name, dest, _ in destinations():
         if name not in manifest:
             continue
@@ -144,6 +153,10 @@ def restore(backup):
         command('systemctl', 'enable', 'hl-panel-node-update.socket')
     if manifest['active']:
         command('systemctl', 'start', 'hl-panel-node-update.socket')
+    if manifest.get('reservation_enabled', False):
+        command('systemctl', 'enable', 'hl-panel-port-reservation.socket')
+    if manifest.get('reservation_active', False):
+        command('systemctl', 'start', 'hl-panel-port-reservation.socket')
 
 
 def asset_plan(release, candidate_only=False):
@@ -251,7 +264,7 @@ def install(release):
         if dest.exists() or dest.is_symlink():
             safe(dest)
     planned = preflight(release, install_missing=True)
-    command('systemd-analyze', 'verify', str(sources[UNIT_NAMES[0]]), str(sources[UNIT_NAMES[1]]))
+    command('systemd-analyze', 'verify', *(str(sources[name]) for name in UNIT_NAMES))
     with tempfile.TemporaryDirectory(prefix='hl-node-maintenance-') as directory:
         backup = Path(directory) / 'backup'
         snapshot(backup)
@@ -267,6 +280,7 @@ def install(release):
             subprocess.run([sys.executable, '-I', str(helper), '--service-defaults', '--install-missing'],
                            check=True, capture_output=True, timeout=360)
             command('systemctl', 'daemon-reload')
+            command('systemctl', 'enable', '--now', 'hl-panel-port-reservation.socket')
             command('systemctl', 'enable', '--now', 'hl-panel-node-update.socket')
             bridge_legacy_updater(release)
         except Exception:
