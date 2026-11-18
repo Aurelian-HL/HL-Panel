@@ -17,6 +17,8 @@ NAMES = ('node-update-worker.py', 'update.py', 'update-node.py', 'reserve-node-p
 UNIT_NAMES = ('hl-panel-node-update.socket', 'hl-panel-node-update.service',
               'hl-panel-port-reservation.socket', 'hl-panel-port-reservation@.service')
 TC_NAME = '30-traffic-control.conf'
+SHUTDOWN_NAME = '20-graceful-shutdown.conf'
+SHUTDOWN_CONTENT = b'[Service]\nKillMode=mixed\nTimeoutStopSec=15s\n'
 ASSET_NAMES = ('geoip.dat', 'geosite.dat')
 LEGACY_STAGING = Path('/var/backups/hl-panel-node')
 UPDATE_STATE = Path('/var/lib/hl-panel-node-update')
@@ -55,11 +57,12 @@ def destinations():
     return ([(name, ROOT / name, 0o755) for name in NAMES] +
             [(name, UNITS / name, 0o644) for name in UNIT_NAMES] +
             [(name, ROOT / 'node-engines' / name, 0o644) for name in ASSET_NAMES] +
-            [(TC_NAME, UNITS / 'hl-panel-edge-agent.service.d' / TC_NAME, 0o644)])
+            [(name, UNITS / 'hl-panel-edge-agent.service.d' / name, 0o644)
+             for name in (TC_NAME, SHUTDOWN_NAME)])
 
 
 def safe_parent(dest):
-    if dest.name == TC_NAME and not dest.parent.exists() and not dest.parent.is_symlink():
+    if dest.name in (TC_NAME, SHUTDOWN_NAME) and not dest.parent.exists() and not dest.parent.is_symlink():
         safe(dest.parent.parent)
     else:
         safe(dest.parent)
@@ -75,10 +78,14 @@ def command(*args):
 
 
 def replace(source, destination, mode):
+    replace_data(source.read_bytes(), destination, mode)
+
+
+def replace_data(data, destination, mode):
     fd, name = tempfile.mkstemp(dir=destination.parent)
     try:
         with os.fdopen(fd, 'wb') as out:
-            out.write(source.read_bytes())
+            out.write(data)
             out.flush()
             os.fsync(out.fileno())
         os.chmod(name, mode)
@@ -142,7 +149,7 @@ def restore(backup):
             if dest.exists():
                 dest.unlink()
         else:
-            if name == TC_NAME and not dest.parent.exists():
+            if name in (TC_NAME, SHUTDOWN_NAME) and not dest.parent.exists():
                 dest.parent.mkdir(mode=0o755)
             replace(backup / name, dest, saved['mode'])
     tc_directory = UNITS / 'hl-panel-edge-agent.service.d'
@@ -256,7 +263,7 @@ def install(release):
     if not helper.is_file():
         raise ValueError('missing traffic-control provisioner')
     for name, dest, _ in destinations():
-        if name != TC_NAME:
+        if name not in (TC_NAME, SHUTDOWN_NAME):
             safe(sources[name])
             if not sources[name].is_file():
                 raise ValueError('invalid release')
@@ -270,6 +277,10 @@ def install(release):
         snapshot(backup)
         try:
             for name, dest, mode in destinations():
+                if name == SHUTDOWN_NAME:
+                    dest.parent.mkdir(mode=0o755, exist_ok=True)
+                    replace_data(SHUTDOWN_CONTENT, dest, mode)
+                    continue
                 if name != TC_NAME:
                     if name in ASSET_NAMES and planned[name] == dest:
                         continue
