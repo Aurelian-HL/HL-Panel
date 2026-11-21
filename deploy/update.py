@@ -167,6 +167,67 @@ def configuration():
     return database, 'http://' + listen
 
 
+def backup_service_archive_key(backup):
+    """Keep custom recovery keys with the matching database rollback point."""
+    key = STATE/'service-restore.key'
+    for line in (CONFIG/'control-api.env').read_text().splitlines():
+        if line.startswith('CONTROL_SERVICE_ARCHIVE_KEY_FILE='):
+            parts = shlex.split(line.split('=', 1)[1])
+            require(len(parts) == 1, '恢复密钥路径格式无效')
+            key = Path(parts[0])
+    require(key.is_absolute() and '..' not in key.parts, '恢复密钥必须使用绝对路径')
+    if not key.exists() and not key.is_symlink():
+        return
+    info = key.lstat()
+    require(key.is_file() and not key.is_symlink() and info.st_size == 32 and not info.st_mode & 0o077,
+            '恢复密钥必须是私有的 32 字节常规文件')
+    require(key.parent.resolve() == key.parent and not key.parent.stat().st_mode & 0o022,
+            '恢复密钥目录权限不安全')
+    shutil.copyfile(key, backup/'service-restore.key')
+    (backup/'service-restore.key').chmod(0o600)
+    (backup/'service-restore-key.json').write_text(json.dumps({
+        'path': str(key), 'uid': info.st_uid, 'gid': info.st_gid,
+        'sha256': digest(backup/'service-restore.key')
+    }))
+
+
+def restore_service_archive_key(backup):
+    metadata = backup/'service-restore-key.json'
+    if not metadata.exists():
+        return
+    private_regular(metadata)
+    saved = backup/'service-restore.key'
+    private_regular(saved)
+    record = json.loads(metadata.read_text())
+    key = Path(record['path'])
+    require(key.is_absolute() and '..' not in key.parts and key.parent.resolve() == key.parent,
+            '恢复密钥回滚路径无效')
+    require(not key.parent.stat().st_mode & 0o022 and not key.is_symlink(), '恢复密钥目录权限不安全')
+    require(saved.stat().st_size == 32 and digest(saved) == record['sha256'], '恢复密钥校验失败')
+    if key.is_file() and digest(key) == record['sha256']:
+        os.chown(key, record['uid'], record['gid'])
+        key.chmod(0o600)
+        return
+    temporary = key.with_name(key.name+'.rollback-'+os.urandom(5).hex())
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(saved.read_bytes())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chown(temporary, record['uid'], record['gid'])
+        temporary.chmod(0o600)
+        os.replace(temporary, key)
+        directory = os.open(key.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
 def current_info(origin):
     # Never proxy local health requests to an external system proxy.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -545,7 +606,8 @@ def remove_upgrade_only_usage_objects(database, manifest):
     def saved_table(name):
         return re.search(r'(?m)^\d+;\s+\d+\s+\d+\s+TABLE\s+public\s+'+re.escape(name)+r'\s', manifest) is not None
     statements = []
-    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic', 'hl_panel_protocol_health'):
+    for name in ('hl_panel_audit_journal', 'hl_panel_rule_traffic', 'hl_panel_protocol_health',
+                 'hl_panel_host_traffic', 'hl_panel_service_archives', 'hl_panel_service_archive_key'):
         if not saved_table(name):
             statements.append('DROP TABLE IF EXISTS public.'+name)
     for name in ('usage_rule_totals', 'usage_query_totals'):
@@ -591,6 +653,7 @@ def rollback(backup):
             run(['runuser','-u','postgres','--','pg_restore','--clean','--if-exists','--exit-on-error','--single-transaction','--dbname='+database],input_file=stream)
         manifest = run(['pg_restore','--list',str(backup/'database.dump')]).decode('utf-8')
         remove_upgrade_only_usage_objects(database, manifest)
+        restore_service_archive_key(backup)
         switch(old)
         run(['systemctl','start',SERVICE])
         healthy(origin,state['previous_version'])
@@ -674,13 +737,17 @@ def main():
             # Domains, TLS and custom routes remain intact. A bounded subscription
             # location is added below, with its own backup and rollback.
             # Runtime/schema changes are handled by the verified new binaries.
+            print('[HL-panel 更新] 暂停本面板，备份数据库；账号、规则和证书全部保留。',flush=True)
+            stop_attempted=True
+            run(['systemctl','stop',SERVICE])
+            # Freeze the writer before copying state. Otherwise the archive key
+            # could first appear after the filesystem backup but before pg_dump,
+            # leaving committed encrypted sources without their matching key.
             with tarfile.open(backup/'config-state.tar.gz','w:gz') as saved:
                 saved.add(CONFIG,arcname='etc/hl-panel')
                 if STATE.is_dir():
                     saved.add(STATE,arcname='var/lib/hl-panel')
-            print('[HL-panel 更新] 暂停本面板，备份数据库；账号、规则和证书全部保留。',flush=True)
-            stop_attempted=True
-            run(['systemctl','stop',SERVICE])
+            backup_service_archive_key(backup)
             with (backup/'database.dump').open('wb') as stream:
                 run(['runuser','-u','postgres','--','pg_dump','-Fc','--dbname='+database],output=stream)
             require((backup/'database.dump').stat().st_size>0,'数据库备份为空')

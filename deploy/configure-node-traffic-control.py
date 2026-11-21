@@ -44,7 +44,7 @@ def replace(path, content, mode, owner):
 
 
 def ensure_tools(install_missing=False):
-    packages = {'ip': 'iproute2', 'tc': 'iproute2', 'systemd-analyze': 'systemd',
+    packages = {'ip': 'iproute2', 'tc': 'iproute2', 'ss': 'iproute2', 'systemd-analyze': 'systemd',
                 'sysctl': 'procps', 'modprobe': 'kmod'}
     binaries = {name: shutil.which(name) for name in packages}
     if not all(binaries.values()) and install_missing:
@@ -102,11 +102,12 @@ def configure(config=CONFIG, dropin=DROPIN, service_defaults=False, install_miss
     # Empty custom fields may intentionally disable this feature. Do not
     # silently replace an administrator's explicit configuration.
     explicit = any(key.startswith('traffic_control_') for key in value)
-    if explicit and not value.get('traffic_control_interface'):
-        return {'configured': False, 'preserved_existing_interface': True}
     if explicit:
-        interface = value['traffic_control_interface']
-        if not isinstance(interface, str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface) or interface == 'lo':
+        # Explicitly disabling TC must not also disable the independent,
+        # fixed-purpose TCP withdrawal operation. Keep the JSON untouched,
+        # but install its required capability-only service drop-in.
+        interface = value.get('traffic_control_interface') or ''
+        if not isinstance(interface, str) or (interface and (not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface) or interface == 'lo')):
             raise ValueError('invalid explicit traffic-control interface')
         binary = value.get('traffic_control_binary') or binaries['tc']
     else:
