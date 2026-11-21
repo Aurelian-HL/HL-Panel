@@ -203,7 +203,7 @@ apt-get update && apt-get install -y curl ca-certificates
 
 ## 近期修复与交付状态
 
-> 本轮交付：**v0.1.180**，更新日期 **2026-11-22**。安装包、完整构建结果及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。面板与 Agent 都要升级，才能启用完整的多 IP 上报和连接清理。
+> 本轮交付：**v0.1.181**，更新日期 **2026-11-22**。安装包、完整构建结果及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。面板与 Agent 都要升级，才能启用完整的多 IP 上报和连接清理。
 
 | 项目 | 已完成的工作 | 尚待完成 |
 | --- | --- | --- |
