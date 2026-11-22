@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 import pwd
@@ -21,6 +22,7 @@ TASK_ID = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]
 TAG = re.compile(r'^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$')
 RAW = 'https://raw.githubusercontent.com/Aurelian-HL/HL-Panel/'
 TERMINAL = {'succeeded', 'failed'}
+UPDATE_TIMEOUT_SECONDS = 1200
 
 
 def utc():
@@ -35,6 +37,35 @@ def load_updater():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def update_output_lines(process, log, timeout):
+    # A child can inherit stdout after the updater exits. Reading its pipe to
+    # EOF would then block past the update deadline. Follow the regular log
+    # file instead, so both process status and the deadline remain observable.
+    deadline = time.monotonic() + timeout
+    pending = b''
+    with log.open('rb') as stream:
+        while True:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            chunk = stream.read(64 * 1024)
+            if chunk:
+                pending += chunk
+                lines = pending.split(b'\n')
+                pending = lines.pop()
+                for line in lines:
+                    yield line + b'\n'
+                # An unbroken diagnostic line must not grow memory forever.
+                if len(pending) >= 64 * 1024:
+                    yield pending
+                    pending = b''
+            elif process.poll() is not None:
+                if pending:
+                    yield pending
+                return
+            else:
+                time.sleep(0.05)
 
 
 class TaskStore:
@@ -118,15 +149,10 @@ class TaskStore:
         environment = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C.UTF-8', 'PYTHONUNBUFFERED': '1'}
         # The child survives API restarts. It receives no password, URL or shell text.
         with log.open('xb') as output:
-            process = subprocess.Popen(['/usr/bin/python3', '-I', str(script), '--version', version], stdout=subprocess.PIPE,
+            process = subprocess.Popen(['/usr/bin/python3', '-I', str(script), '--version', version], stdout=output,
                                        stderr=subprocess.STDOUT, env=environment, cwd='/opt/hl-panel')
-            deadline = threading.Timer(1200, process.terminate)
-            deadline.daemon = True
-            deadline.start()
             try:
-                for line in iter(process.stdout.readline, b''):
-                    output.write(line)
-                    output.flush()
+                for line in update_output_lines(process, log, UPDATE_TIMEOUT_SECONDS):
                     text = line.decode('utf-8', errors='replace')
                     if '本次备份目录：' in text:
                         backup = text.split('本次备份目录：', 1)[1].strip()
@@ -140,7 +166,6 @@ class TaskStore:
                         self.change(identifier, phase='rollback', message='新版本检查未通过，正在恢复原程序和数据库')
                 code = process.wait(timeout=30)
             finally:
-                deadline.cancel()
                 if process.poll() is None:
                     process.terminate()
                     try:
@@ -148,7 +173,6 @@ class TaskStore:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-                process.stdout.close()
         if code:
             raise RuntimeError('Update failed')
         _, origin = updater.configuration()

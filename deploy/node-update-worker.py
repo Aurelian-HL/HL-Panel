@@ -8,6 +8,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -58,12 +59,31 @@ def valid_request(value):
             TAG.fullmatch(value['version']) and SHA.fullmatch(value['archive_sha256']))
 
 
+def update_report(task):
+    identifier = task.get('id', '')
+    if not isinstance(identifier, str) or not UUID.fullmatch(identifier):
+        return {}
+    report = STATE / task['id'] / 'result.json'
+    try:
+        if not report.is_file() or report.is_symlink():
+            return {}
+        info = report.stat()
+        if info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 16384:
+            return {}
+        value = json.loads(report.read_text())
+        if not isinstance(value, dict) or value.get('state') not in ('failed', 'uncertain', 'verifying', 'rolled_back', 'succeeded'):
+            return {}
+        backup = value.get('backup_directory', '')
+        if not isinstance(backup, str) or (backup and not BACKUP.fullmatch(backup)):
+            return {}
+        return value
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
 def installation_completed(task):
     # Same-version repair cannot be proved by a matching old binary alone.
-    report = STATE / task['id'] / 'result.json'
-    if not report.is_file() or report.is_symlink() or report.stat().st_uid != 0 or report.stat().st_mode & 0o077:
-        return False
-    value = json.loads(report.read_text())
+    value = update_report(task)
     return (value.get('state') == 'verifying' and BACKUP.fullmatch(task.get('backup_directory', '')) and
             value.get('backup_directory') == task['backup_directory'])
 
@@ -122,6 +142,46 @@ def retry_cleanup(task):
             pass
 
 
+def stop_update_program(process):
+    # Only the session created by run_update_program is signalled. systemd's
+    # independently started Agent and forwarding services are outside it.
+    kill_group = getattr(os, 'killpg', None)
+    if kill_group is not None:
+        try:
+            kill_group(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
+    if kill_group is not None:
+        # The leader may exit first while a helper ignores SIGTERM. Finish
+        # the whole isolated group before making recovery available.
+        try:
+            kill_group(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    elif process.poll() is None:
+        process.kill()
+    process.wait(timeout=5)
+
+
+def run_update_program(arguments, log, timeout, env=None):
+    process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=log,
+                               stderr=log, env=env, start_new_session=True)
+    try:
+        code = process.wait(timeout=timeout)
+    except BaseException:
+        stop_update_program(process)
+        raise
+    if code:
+        stop_update_program(process)
+    return subprocess.CompletedProcess(arguments, code)
+
+
 def execute(task):
     global EXECUTING
     # This thread and root service are independent of the edge-agent process.
@@ -130,11 +190,11 @@ def execute(task):
     try:
         job.mkdir(mode=0o700, exist_ok=False)
         with (job / 'private.log').open('wb') as log:
-            process = subprocess.run([sys.executable, str(ROOT / 'update-node.py'),
+            process = run_update_program([sys.executable, str(ROOT / 'update-node.py'),
                 '--version', task['version'], '--expected-sha256', task['archive_sha256'],
-                '--result-file', str(result)], stdout=log, stderr=log, timeout=1800,
+                '--result-file', str(result)], log, timeout=1800,
                 env=dict(os.environ, HL_NODE_TRANSIENT_UPDATE='1'))
-        report = json.loads(result.read_text()) if result.is_file() else {}
+        report = update_report(task)
         backup = report.get('backup_directory', '')
         if backup and not BACKUP.fullmatch(backup):
             raise ValueError('invalid backup')
@@ -159,12 +219,16 @@ def execute(task):
                 return
             transition(task, 'running', 'rollback', backup)
         with (job / 'private.log').open('ab') as log:
-            restored = subprocess.run([sys.executable, str(Path(backup) / 'rollback-runner.py'),
-                '--rollback', backup], stdout=log, stderr=log, timeout=180)
+            restored = run_update_program([sys.executable, str(Path(backup) / 'rollback-runner.py'),
+                '--rollback', backup], log, timeout=180)
         finish(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
     except Exception:
         # A timeout can occur during switching. Never assume the old program won.
-        transition(task, 'uncertain', 'interrupted')
+        # The child writes this reference before stopping the service. Preserve
+        # it even when a timeout prevents the normal completion read, so the
+        # explicit recovery path remains available without restarting the worker.
+        report = update_report(task)
+        transition(task, 'uncertain', 'interrupted', report.get('backup_directory', ''))
     finally:
         with LOCK:
             EXECUTING = False
@@ -177,8 +241,8 @@ def recover(task):
         if not BACKUP.fullmatch(backup):
             raise ValueError('missing backup')
         with (STATE / task['id'] / 'private.log').open('ab') as log:
-            restored = subprocess.run([sys.executable, str(Path(backup) / 'rollback-runner.py'),
-                '--rollback', backup], stdout=log, stderr=log, timeout=180)
+            restored = run_update_program([sys.executable, str(Path(backup) / 'rollback-runner.py'),
+                '--rollback', backup], log, timeout=180)
         finish(task, 'rolled_back' if restored.returncode == 0 else 'uncertain', 'rollback', backup)
     except Exception:
         transition(task, 'uncertain', 'interrupted')
@@ -297,11 +361,9 @@ def main():
         if old and old['state'] in ACTIVE:
             # Keep the child's durable backup reference if the worker died
             # before its in-memory task reached the verification stage.
-            report = STATE / old['id'] / 'result.json'
-            if report.is_file() and not report.is_symlink() and report.stat().st_uid == 0:
-                backup = json.loads(report.read_text()).get('backup_directory', '')
-                if BACKUP.fullmatch(backup):
-                    old['backup_directory'] = backup
+            backup = update_report(old).get('backup_directory', '')
+            if backup:
+                old['backup_directory'] = backup
             transition(old, 'uncertain', 'rollback' if old.get('phase') == 'rollback' else 'interrupted')
     server = Server('/run/hl-panel-node-update.sock', Handler, bind_and_activate=False)
     server.socket.close()
