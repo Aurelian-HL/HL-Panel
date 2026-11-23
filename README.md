@@ -44,7 +44,7 @@
 
 **实际效果取决于部署方式。** 组内规则同步、统一入口负载和入口高可用分别解决不同问题，下面说明各自能力、配置前提和故障边界。
 
-本仓库为私有应用源码仓库，保存源码、开发历史与构建验收记录。面向用户的安装与更新脚本、正式二进制包由 [公开发行仓库](https://github.com/Aurelian-HL/HL-Panel) 提供；该公开仓库的 **Source code** 压缩包仅含公开交付文件。安装请使用公开 Release 中的 `hl-panel-linux-amd64.tar.gz`，服务器无需私有源码仓库凭据。
+本仓库为 **HL-Panel 公开发行仓库**，提供安装与更新脚本、使用说明和正式二进制包。应用源码及开发历史保存在独立私有仓库；此处的 **Source code** 压缩包仅含公开交付文件。安装请使用公开 Release 中的 `hl-panel-linux-amd64.tar.gz`，服务器无需私有源码仓库凭据。
 
 ## 适合哪些场景
 
@@ -66,7 +66,7 @@
 | 批量开通 | 每行“昵称 + SK5”，昵称留空使用上游 IP；一批最多 500 条，支持批量暂停、恢复、分组和删除 |
 | 协议与落地 | TCP / UDP 转发、VLESS Reality + Vision TCP 入口；VLESS 可选择直连或 SOCKS5 落地，组间支持隧道转发 |
 | 设备组 | 入口组、出口组、成员管理、权重与优先级、注册入组、重装换组、退役及节点清理 |
-| Reality 配置 | 创建时检测候选 Target / SNI；支持重新检测和手动修改，订阅按已保存的规则配置生成 |
+| Reality 配置 | 创建时检测候选 Target / SNI；节点后台实测并选择更快的可用握手目标，失败自动换选；保留原 SNI、账号、端口和订阅 |
 | 订阅管理 | 单规则订阅、多线路订阅、TXT / YAML、ZIP 导入包、在线订阅与节点二维码 |
 | 子账号与用户组 | 子账号共用面板登录入口；管理员可设置设备组权限、规则数量、速率、总用量及到期提醒，支持删除 |
 | 流量计量 | 按整数 bytes 累计客户、规则与设备组用量，保留 UTC 月汇总；支持规则额度及按月重置 |
@@ -203,7 +203,9 @@ apt-get update && apt-get install -y curl ca-certificates
 
 ## 近期修复与交付状态
 
-> 本轮版本：**v0.1.189**，更新日期 **2026-11-23**。安装包及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。本版补齐共享网关同步隔离、旧网关更新与 IPv4 探测；需要分别核对面板、Agent 和独立网关的实际版本。Xray / GOST 核心版本不变。正式包在本地构建，不要求购买 GitHub 构建额度。
+> 本轮版本：**v0.1.190**，更新日期 **2026-11-23**。安装包及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。本版新增节点 Reality 握手目标自动择优与故障换选，需要配套更新 Agent 才生效。Xray / GOST 核心版本不变。正式包在本地构建，不要求购买 GitHub 构建额度。
+
+**握手目标由各节点自己实测。** 初次选择连续两次握手成功且延迟最低的候选；当前目标失败时自动换选。正常运行时，更快候选需连续两轮明显胜出才切换，避免微小波动反复切换。原账号、端口、SNI、订阅和出口保持不变，后台检测不阻塞保存与下发。这里比较的是握手耗时，不代表客户下载带宽；后台轮询存在检测时间，不能承诺瞬时切换。
 
 | 项目 | 已完成的工作 | 尚待完成 |
 | --- | --- | --- |
@@ -221,7 +223,7 @@ apt-get update && apt-get install -y curl ca-certificates
 | 苹果订阅 HTTPS | 完成证书链、TLS / HTTP 抽测；补充候选证书激活前的有效期及信任链校验 | 偶发失败根因、原设备复测；存量证书助手的升级衔接 |
 | 探针界面 | 设权 / 查看 / 更新入口统一，多地址详情与权重快捷档适配桌面和手机 | 第三方探针配额及覆盖不足时明确显示未测，不能当作正常 |
 
-验证说明：[v0.1.189 更新说明](docs/release-v0.1.189.md) · [v0.1.188 更新说明](docs/release-v0.1.188.md) · [流量补报](docs/release-v0.1.184.md) · [取消周期验证](docs/release-v0.1.183.md) · [在线统计](docs/rule-online-counts-verification-20261118.md) · [维护连续性与数据库](docs/maintenance-verification-20261118.md) · [苹果订阅 HTTPS](docs/ios-subscription-tls-verification-20261118.md)。
+验证说明：[v0.1.190 更新说明](docs/release-v0.1.190.md) · [v0.1.189 更新说明](docs/release-v0.1.189.md) · [流量补报](docs/release-v0.1.184.md) · [取消周期验证](docs/release-v0.1.183.md) · [在线统计](docs/rule-online-counts-verification-20261118.md) · [维护连续性与数据库](docs/maintenance-verification-20261118.md) · [苹果订阅 HTTPS](docs/ios-subscription-tls-verification-20261118.md)。
 
 ## 下一步更新计划
 
