@@ -27,7 +27,7 @@ MAINTENANCE_UNITS = ('hl-panel-node-update.socket', 'hl-panel-node-update.servic
 
 
 def verify_maintenance_assets(release):
-    required = ('deploy/install-node-update.py', 'deploy/node-update-worker.py',
+    required = ('deploy/install-node-update.py', 'deploy/node-update-worker.py', 'deploy/update-legacy-gateway.py',
                 'deploy/reserve-node-ports.py') + tuple('deploy/systemd/'+name for name in MAINTENANCE_UNITS)
     for asset in required:
         require((release/asset).is_file(), '发布包缺少节点维护资产；当前节点未停止')
@@ -278,6 +278,9 @@ def rollback(backup):
     require(manifest['credential_sha256'] == digest(STATE/'credentials.json'), '当前节点身份不同；拒绝回滚')
     for name in FILES:
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
+    if (backup/'legacy-gateway-rollback.py').is_file():
+        private_regular(backup/'legacy-gateway-rollback.py')
+        run([sys.executable, str(backup/'legacy-gateway-rollback.py'), '--restore', str(backup/'legacy-gateway')])
     if (backup/'maintenance-rollback.py').is_file():
         private_regular(backup/'maintenance-rollback.py')
         run([sys.executable,str(backup/'maintenance-rollback.py'),'--restore',str(backup/'maintenance')])
@@ -372,6 +375,8 @@ def update_programs(args, config, target, backup, legacy):
     if args.repair:
         repair_dependencies(release, backup)
         return
+    legacy_gateway = release/'deploy/update-legacy-gateway.py'
+    run([sys.executable, str(legacy_gateway), '--preflight', '--release', str(release)])
     credential=digest(STATE/'credentials.json')
     shutil.copy2(CONFIG, backup/'edge-agent.json')
     config['heartbeat_interval'] = '1s'
@@ -395,6 +400,8 @@ def update_programs(args, config, target, backup, legacy):
         source=ROOT/name if (ROOT/name).is_file() else release/'deploy'/name
         shutil.copy2(source,backup/name)
     shutil.copy2(Path(__file__), backup/'rollback-runner.py')
+    run([sys.executable, str(legacy_gateway), '--prepare', str(backup/'legacy-gateway'), '--release', str(release)])
+    shutil.copy2(legacy_gateway, backup/'legacy-gateway-rollback.py')
     (backup/'manifest.json').write_text(json.dumps(manifest)+'\n')
     (backup/'manifest.json').chmod(0o600)
     if legacy:
@@ -418,6 +425,7 @@ def update_programs(args, config, target, backup, legacy):
         start_service()
         active()
         require(digest(STATE/'credentials.json')==credential,'节点身份发生变化')
+        run([sys.executable, str(legacy_gateway), '--apply', str(backup/'legacy-gateway'), '--release', str(release)])
     except Exception:
         rollback(backup)
         result('rolled_back', backup)
