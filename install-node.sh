@@ -19,6 +19,10 @@ while (($#)); do
   esac
 done
 [[ "$repository" == Aurelian-HL/HL-Panel ]] || { echo 'Invalid repository' >&2; exit 2; }
+[[ $(id -u) == 0 ]] || { echo '请使用 root 执行节点安装。' >&2; exit 1; }
+[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo '当前正式安装包支持 Linux amd64（x86_64）。' >&2; exit 1; }
+[[ "$version" == latest || "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag' >&2; exit 2; }
+[[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }
 bootstrap_packages=()
 command -v curl >/dev/null || bootstrap_packages+=(curl)
 [[ -s /etc/ssl/certs/ca-certificates.crt ]] || bootstrap_packages+=(ca-certificates)

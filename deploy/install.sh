@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+set +x
 
 REPOSITORY="${HL_PANEL_REPOSITORY:-Aurelian-HL/HL-Panel}"
 VERSION="latest"
@@ -529,7 +530,6 @@ cleanup() {
     fi
     remove_owned_files
     systemctl daemon-reload >/dev/null 2>&1 || true
-    restore_unit_state postgresql "$POSTGRESQL_ACTIVE_BEFORE" "$POSTGRESQL_ENABLED_BEFORE"
     restore_unit_state nginx "$NGINX_ACTIVE_BEFORE" "$NGINX_ENABLED_BEFORE"
     if [[ "$NGINX_RELOAD_ATTEMPTED" == true ]] && command -v nginx >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
       nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true
@@ -551,6 +551,9 @@ cleanup() {
         runuser -u postgres -- dropuser --if-exists hl_panel_app >/dev/null 2>&1 || log "警告：本次新建角色 hl_panel_app 未能自动删除"
       fi
     fi
+    # New machines had PostgreSQL stopped before installation. Keep it alive
+    # until this install's marked database/role are removed, then restore it.
+    restore_unit_state postgresql "$POSTGRESQL_ACTIVE_BEFORE" "$POSTGRESQL_ENABLED_BEFORE"
     if [[ "$CONFIG_DIR_CREATED" == true ]]; then rm -rf -- "$CONFIG_DIR"; fi
     if [[ "$STATE_DIR_CREATED" == true ]]; then rm -rf -- "$STATE_DIR"; fi
     if [[ "$ACME_WEBROOT_CREATED" == true ]]; then rm -rf -- "$ACME_WEBROOT"; fi
@@ -569,9 +572,9 @@ cleanup() {
 trap cleanup EXIT
 WORK_DIR="$(mktemp -d /tmp/hl-panel-install.XXXXXX)"
 
-export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
 log "安装运行依赖"
-apt-get update
+apt-get -o Acquire::Retries=2 update
 TIME_SYNC_PACKAGE=""
 if ! systemctl list-unit-files --type=service --no-legend 2>/dev/null \
   | awk '{print $1}' \
@@ -579,10 +582,11 @@ if ! systemctl list-unit-files --type=service --no-legend 2>/dev/null \
   TIME_SYNC_PACKAGE="systemd-timesyncd"
 fi
 if command -v nginx >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
+  apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends ca-certificates curl openssl tar python3 certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
 else
-  apt-get install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
+  apt-get -o DPkg::Lock::Timeout=60 install -y --no-install-recommends ca-certificates curl openssl tar python3 nginx-core certbot postgresql postgresql-client $TIME_SYNC_PACKAGE
 fi
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else "需要 Python 3.9 或更新版本；尚未创建面板实例")'
 ensure_time_synchronization
 ensure_nginx_compatibility
 systemctl enable --now postgresql
@@ -611,30 +615,61 @@ else
   RELEASE_BASE="https://github.com/$REPOSITORY/releases/download/$VERSION"
 fi
 ARCHIVE="$WORK_DIR/hl-panel-linux-amd64.tar.gz"
-curl --fail --location --silent --show-error --retry 3 "$RELEASE_BASE/hl-panel-linux-amd64.tar.gz" -o "$ARCHIVE"
-curl --fail --location --silent --show-error --retry 3 "$RELEASE_BASE/hl-panel-linux-amd64.tar.gz.sha256" -o "$ARCHIVE.sha256"
+curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 300 --max-filesize 268435456 "$RELEASE_BASE/hl-panel-linux-amd64.tar.gz" -o "$ARCHIVE"
+curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 15 --max-time 60 --max-filesize 4096 "$RELEASE_BASE/hl-panel-linux-amd64.tar.gz.sha256" -o "$ARCHIVE.sha256"
 EXPECTED_SHA="$(awk 'NR == 1 {print $1}' "$ARCHIVE.sha256")"
 [[ "$EXPECTED_SHA" =~ ^[a-fA-F0-9]{64}$ ]] || fail "release SHA256 文件格式无效"
 ACTUAL_SHA="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
 [[ "${ACTUAL_SHA,,}" == "${EXPECTED_SHA,,}" ]] || fail "release 压缩包 SHA256 不匹配"
 
-tar -tzf "$ARCHIVE" > "$WORK_DIR/archive.list"
-if awk '
-  { path=$0; sub(/^\.\//, "", path); if (path ~ /^\// || path == ".." || path ~ /(^|\/)\.\.(\/|$)/) bad=1 }
-  END { exit bad ? 0 : 1 }
-' "$WORK_DIR/archive.list"; then
-  fail "release 压缩包包含不安全路径"
-fi
-
 mkdir -p "$WORK_DIR/release"
-tar -xzf "$ARCHIVE" -C "$WORK_DIR/release" --no-same-owner
+python3 - "$ARCHIVE" "$WORK_DIR/release" <<'PY'
+import hashlib, pathlib, re, sys, tarfile
+archive, target = map(pathlib.Path, sys.argv[1:])
+def require(condition, message):
+    if not condition: raise SystemExit(message)
+def digest(path):
+    h = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024*1024), b''): h.update(block)
+    return h.hexdigest()
+require(archive.stat().st_size <= 256*1024*1024, '安装包过大；未创建面板实例')
+names = set()
+with tarfile.open(archive, 'r:gz') as source:
+    total = 0
+    entries = source.getmembers()
+    require(len(entries) <= 20000, '安装包文件数量过多')
+    for entry in entries:
+        name = entry.name.removeprefix('./').rstrip('/')
+        if name in ('', '.') and entry.isdir(): continue
+        require(name and not name.startswith('/') and all(p not in ('', '.', '..') for p in name.split('/')) and ':' not in name and '\\' not in name, '安装包路径不安全')
+        require(entry.isfile() or entry.isdir(), '安装包包含链接或特殊文件')
+        require(name not in names, '安装包包含重复路径')
+        names.add(name)
+        total += entry.size
+        require(total <= 1024*1024*1024, '安装包解压大小过大')
+        entry.mode &= 0o777
+        entry.uid = entry.gid = 0
+        entry.uname = entry.gname = ''
+    if sys.version_info >= (3,12): source.extractall(target, filter='data')
+    else: source.extractall(target)
+require((target/'SHA256SUMS').is_file(), '缺少文件校验清单')
+verified = set()
+for line in (target/'SHA256SUMS').read_text().splitlines():
+    fields = line.split('  ', 1)
+    require(len(fields) == 2, '文件摘要清单无效')
+    expected, name = fields
+    name = name.removeprefix('./')
+    require(re.fullmatch('[0-9a-f]{64}', expected) and name in names and name not in verified, '文件摘要清单无效')
+    require((target/name).is_file() and digest(target/name) == expected, '文件摘要校验失败')
+    verified.add(name)
+require({p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_file()} == verified | {'SHA256SUMS'}, '存在未校验文件')
+PY
 RELEASE_DIR="$WORK_DIR/release"
 [[ -x "$RELEASE_DIR/bin/control-api" ]] || fail "release 缺少 bin/control-api"
 [[ -x "$RELEASE_DIR/bin/usage-migrate" ]] || fail "release 缺少 bin/usage-migrate"
 [[ -x "$RELEASE_DIR/bin/edge-agent" ]] || fail "release 缺少 bin/edge-agent"
 [[ -s "$RELEASE_DIR/web-admin/index.html" ]] || fail "release 缺少管理端页面"
-[[ -f "$RELEASE_DIR/SHA256SUMS" ]] || fail "release 缺少 SHA256SUMS"
-(cd "$RELEASE_DIR" && sha256sum --check --status SHA256SUMS) || fail "release 内部文件校验失败"
 grep -Fq '__HL_PANEL_IP_HTTPS_PORT__' "$RELEASE_DIR/deploy/nginx/hl-panel.conf.template" \
   || fail "所选 release 不支持独立 IP HTTPS 端口；请使用包含此功能的新版 release 和同标签 install.sh"
 

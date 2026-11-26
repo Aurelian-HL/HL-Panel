@@ -12,6 +12,20 @@ import struct
 RESERVED = Path('/proc/sys/net/ipv4/ip_local_reserved_ports')
 LOCK = Path('/run/hl-panel-port-reservation/merge.lock')
 MAX_REQUEST = 196608
+MAX_RESERVED_PORT_BYTES = 65535 * 6
+
+
+def read_reserved_ports():
+    # proc_do_large_bitmap only renders the list during the first read.
+    # Buffered read_text() can stop after 8 KiB even when more ports exist.
+    descriptor = os.open(RESERVED, os.O_RDONLY)
+    try:
+        raw = os.read(descriptor, MAX_RESERVED_PORT_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(raw) > MAX_RESERVED_PORT_BYTES:
+        raise ValueError('reserved port list exceeds its maximum size')
+    return raw.decode('ascii')
 
 
 def parse_ports(value):
@@ -50,11 +64,11 @@ def reserve(ports):
     # This directory is root-owned and created by systemd RuntimeDirectory.
     with os.fdopen(os.open(LOCK, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        existing = parse_ports(RESERVED.read_text())
+        existing = parse_ports(read_reserved_ports())
         merged = existing | requested
         if merged != existing:
             RESERVED.write_text(format_ports(merged)+'\n')
-        if not merged <= parse_ports(RESERVED.read_text()):
+        if not merged <= parse_ports(read_reserved_ports()):
             raise ValueError('concurrent reservation change')
 
 
