@@ -24,6 +24,7 @@ STATE = Path('/var/lib/hl-panel-edge')
 UNIT = Path('/etc/systemd/system/hl-panel-edge-agent.service')
 CA_FILE = Path('/etc/hl-panel/edge-agent-ca.pem')
 SERVICE = 'hl-panel-edge-agent.service'
+USAGE_ROLLBACK_GUARD = 3
 
 
 class ReinstallError(Exception):
@@ -46,7 +47,10 @@ def digest(path):
 
 
 def run(arguments):
-    result = subprocess.run(arguments, capture_output=True)
+    options = {'capture_output': True}
+    if len(arguments) > 1 and arguments[0] == sys.executable and Path(arguments[1]).name == 'install-node-update.py':
+        options['env'] = dict(os.environ, HL_NODE_USAGE_ROLLBACK_GUARD=str(USAGE_ROLLBACK_GUARD) + ':' + str(os.getpid()))
+    result = subprocess.run(arguments, **options)
     require(result.returncode == 0, '节点服务或程序检查失败；未输出私有配置')
     return result.stdout
 
@@ -115,6 +119,36 @@ def request_reenrollment(origin, context, credential, payload):
     raise ReinstallError('未收到面板确认，当前节点服务和身份保留；重新运行本次命令可安全恢复，勿改用旧组命令')
 
 
+def require_usage_rollback_compatible(binary):
+    """Keep the same format gate as update-node.py, including old bootstraps."""
+    path = STATE/'usage-journal.json'
+    require(not path.is_symlink(), '计量账本不能为链接；保留当前程序和回滚目录')
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(8 * 1024 * 1024 + 1)
+        require(len(raw) <= 8 * 1024 * 1024, '计量账本超出检查范围；保留当前程序和回滚目录')
+        journal = json.loads(raw)
+    except FileNotFoundError:
+        for suffix in ('.segments', '.checkpoints'):
+            directory = path.with_name(path.name + suffix)
+            require(not directory.is_symlink() and (not directory.exists() or
+                    (directory.is_dir() and not any(directory.iterdir()))),
+                    '计量主文件缺失但分片仍存在；保留当前程序和回滚目录')
+        return
+    except (OSError, ValueError):
+        raise ReinstallError('无法确认计量格式；保留当前程序和回滚目录') from None
+    version = journal.get('version') if isinstance(journal, dict) else None
+    require(type(version) is int and version in (1, 2, 3), '未知计量格式；保留当前程序和回滚目录')
+    if version < 3:
+        return
+    try:
+        result = subprocess.run([str(binary), '--usage-journal-version'], capture_output=True, timeout=10)
+        compatible = result.returncode == 0 and result.stdout.strip() == b'3'
+    except (OSError, subprocess.TimeoutExpired):
+        compatible = False
+    require(compatible, '当前计量含 V3 压缩检查点，旧程序不兼容；保留当前程序、账本及回滚目录，需使用支持 V3 的修复版恢复')
+
+
 def restore_programs(stage):
     require(stage.parent == ROOT and stage.name.startswith('.node-reinstall-') and not stage.is_symlink(), '不是本次重装临时目录')
     for directory in (ROOT, ROOT / 'node-engines', CONFIG.parent, STATE, UNIT.parent):
@@ -157,10 +191,18 @@ def restore_programs(stage):
         require(digest(source_path) == checksum, '临时文件摘要不符')
         seen.add(destination)
     require(str(CONFIG) in seen, '恢复清单缺少节点配置')
+    agent_backups = [stage / item['source'] for item in items if item['destination'] == str(ROOT / 'edge-agent')]
+    require(len(agent_backups) == 1, '恢复清单缺少 Agent 程序')
+    require_usage_rollback_compatible(agent_backups[0])
     private_file(CONFIG, mask=0o027)
     if CA_FILE.exists():
         private_file(CA_FILE, mask=0o027)
     run(['systemctl', 'stop', SERVICE])
+    try:
+        require_usage_rollback_compatible(agent_backups[0])
+    except Exception:
+        start_service()
+        raise
     for item in items:
         if item['destination'] in (str(CONFIG), str(CA_FILE)):
             continue
@@ -218,6 +260,8 @@ def reinstall_staged(args, stage):
         require((args.release / source).is_file(), '安装包缺少重装文件')
         if destination.exists():
             private_file(destination)
+    # Reject an incompatible candidate before changing the confirmed registration.
+    require_usage_rollback_compatible(args.release / 'bin/edge-agent')
     require(run([str(args.release / 'bin/xray'), 'version']).startswith(b'Xray 26.7.28 '),
             'Xray 版本未通过旧客户端兼容验收；要求 26.7.28，当前节点未停止')
     run([str(args.release / 'bin/gost'), '-V'])
@@ -278,6 +322,7 @@ def reinstall_staged(args, stage):
     (stage / '.switching').touch(mode=0o600)
     try:
         run(['systemctl', 'stop', SERVICE])
+        require_usage_rollback_compatible(args.release / 'bin/edge-agent')
         install_confirmed_connection()
         for destination, source, mode in sources:
             atomic_install(args.release / source, destination, mode)
@@ -286,7 +331,11 @@ def reinstall_staged(args, stage):
         require(digest(STATE / 'credentials.json') == manifest['credential_sha256'], '重装意外改变节点身份')
     except Exception:
         try:
-            run(['systemctl', 'stop', SERVICE])
+            # Inspect before interrupting a candidate that has already written
+            # V3 samples. The second check in restore_programs closes the
+            # shutdown race without rewinding confirmed registration.
+            agent_backup = next(item for item in files if item['destination'] == str(ROOT / 'edge-agent'))
+            require_usage_rollback_compatible(stage / agent_backup['source'])
             install_confirmed_connection()
             restore_programs(stage)
         except Exception:

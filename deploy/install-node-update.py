@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Transactional installation of the fixed-purpose, local node updater."""
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -22,6 +23,108 @@ SHUTDOWN_CONTENT = b'[Service]\nKillMode=mixed\nTimeoutStopSec=15s\n'
 ASSET_NAMES = ('geoip.dat', 'geosite.dat')
 LEGACY_STAGING = Path('/var/backups/hl-panel-node')
 UPDATE_STATE = Path('/var/lib/hl-panel-node-update')
+UPDATER_BACKUPS = Path('/var/backups/hl-panel-node-updater')
+
+
+def bootstrap_usage_upgrade_runner(release, script, arguments):
+    """Stage only a guarded runner; the old interpreter must exit and retry.
+
+    This is deliberately not an Agent update. Old workers cannot safely install
+    the V3 writer in the same invocation, even after these disk files change.
+    """
+    stage = release.parent
+    managed_stage = ((stage.parent == ROOT and re.fullmatch(r'\.node-update-v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_-]+', stage.name)) or
+                     (stage.parent == LEGACY_STAGING and re.fullmatch(r'update-v[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9_-]+', stage.name)))
+    if script != ROOT / 'update-node.py' or '--rollback' in arguments or release.name != 'release' or not managed_stage:
+        return False
+    for path in (ROOT, stage.parent, stage, release, release / 'deploy'):
+        safe(path)
+    if (stage / '.switching').exists():
+        return False
+    info = release / 'BUILD-INFO.json'
+    safe(info)
+    metadata = json.loads(info.read_text())
+    version = metadata.get('version', '')
+    if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', version) or metadata.get('verification_only') is not False:
+        raise ValueError('invalid guarded updater release')
+    old, new = {}, {}
+    for name in ('update.py', 'update-node.py'):
+        source, destination = release / 'deploy' / name, ROOT / name
+        safe(source)
+        safe(destination)
+        for path, target in ((source, new), (destination, old)):
+            with path.open('rb') as stream:
+                data = stream.read(1024 * 1024 + 1)
+            if len(data) > 1024 * 1024:
+                raise ValueError('oversized guarded updater')
+            ast.parse(data)
+            target[name] = data
+    tree = ast.parse(new['update-node.py'])
+    if not any(isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'USAGE_ROLLBACK_GUARD' for t in node.targets)
+               and isinstance(node.value, ast.Constant) and type(node.value.value) is int and node.value.value >= 3 for node in tree.body):
+        raise ValueError('candidate updater lacks usage guard')
+    if old == new:
+        return True
+    UPDATER_BACKUPS.mkdir(mode=0o700, exist_ok=True)
+    safe(UPDATER_BACKUPS.parent)
+    safe(UPDATER_BACKUPS)
+    if UPDATER_BACKUPS.stat().st_mode & 0o077:
+        raise ValueError('unsafe updater backup directory')
+    backup = Path(tempfile.mkdtemp(prefix=version + '-', dir=UPDATER_BACKUPS))
+    for name, data in old.items():
+        (backup / name).write_bytes(data)
+        (backup / name).chmod(0o600)
+    manifest = {name: hashlib.sha256(data).hexdigest() for name, data in old.items()}
+    (backup / 'SHA256.json').write_text(json.dumps(manifest))
+    (backup / 'SHA256.json').chmod(0o600)
+    changed = []
+    try:
+        for name, data in new.items():
+            changed.append(name)
+            replace_data(data, ROOT / name, 0o755)
+    except Exception:
+        for name in reversed(changed):
+            replace_data(old[name], ROOT / name, 0o755)
+        raise
+    return True
+
+
+def require_usage_upgrade_runner(release=None, bootstrap=False):
+    """Reject old in-memory updaters before they can switch to a V3 writer.
+
+    Replacing a Python script on disk does not replace the old process's
+    rollback implementation. The current tag's update-node.sh downloads the
+    guarded runner and is the safe bootstrap for a first V3 upgrade.
+    """
+    parent = Path('/proc') / str(os.getppid())
+    arguments = [value.decode() for value in (parent / 'cmdline').read_bytes().split(b'\0') if value]
+    for argument in arguments:
+        script = Path(argument)
+        if script.name not in ('update-node.py', 'reinstall-node.py'):
+            continue
+        # Disk contents can be newer than the code running in the parent.
+        # Only the guarded parent's subprocess call can issue its own PID
+        # marker. An inherited marker from an earlier process is not valid.
+        live_guard = os.environ.get('HL_NODE_USAGE_ROLLBACK_GUARD') == '3:' + str(os.getppid())
+        if not script.is_absolute():
+            script = parent / 'cwd' / script
+        try:
+            with script.open('rb') as stream:
+                raw = stream.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError('oversized updater')
+            tree = ast.parse(raw)
+            guarded = any(isinstance(node, ast.Assign) and
+                          any(isinstance(target, ast.Name) and target.id == 'USAGE_ROLLBACK_GUARD' for target in node.targets) and
+                          isinstance(node.value, ast.Constant) and type(node.value.value) is int and node.value.value >= 3
+                          for node in tree.body)
+        except (OSError, SyntaxError, ValueError):
+            guarded = False
+        if not guarded or not live_guard:
+            if bootstrap and release is not None and bootstrap_usage_upgrade_runner(release, script, arguments):
+                raise ValueError('维护更新器已安全接续，请重试本次更新；当前节点未停止，计量与转发程序未改变')
+            raise ValueError('当前更新器不支持 V3 计量账本安全回滚；请使用本版本的 update-node.sh 重新更新，当前节点未停止')
+        return
 
 
 def bridge_legacy_updater(release):
@@ -313,6 +416,8 @@ if __name__ == '__main__':
         parser.error('--candidate-only requires --preflight')
     if os.geteuid() != 0:
         raise SystemExit('root required')
+    if args.release:
+        require_usage_upgrade_runner(args.release, bootstrap=args.preflight)
     if args.snapshot:
         snapshot(args.snapshot)
     elif args.restore:

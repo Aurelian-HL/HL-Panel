@@ -24,6 +24,7 @@ METRICS_CONTENT = '# Managed by HL-panel: allow interface metrics.\n[Service]\nR
 FILES = {'edge-agent':'bin/edge-agent', 'node-engines/xray':'bin/xray', 'node-engines/gost':'bin/gost'}
 MAINTENANCE_UNITS = ('hl-panel-node-update.socket', 'hl-panel-node-update.service',
                      'hl-panel-port-reservation.socket', 'hl-panel-port-reservation@.service')
+USAGE_ROLLBACK_GUARD = 3
 
 
 def verify_maintenance_assets(release):
@@ -191,7 +192,10 @@ def private_credentials():
 
 
 def run(args):
-    result = subprocess.run(args, capture_output=True)
+    options = {'capture_output': True}
+    if len(args) > 1 and args[0] == sys.executable and Path(args[1]).name == 'install-node-update.py':
+        options['env'] = dict(os.environ, HL_NODE_USAGE_ROLLBACK_GUARD=str(USAGE_ROLLBACK_GUARD) + ':' + str(os.getpid()))
+    result = subprocess.run(args, **options)
     require(result.returncode == 0, '节点服务操作失败；未输出私有配置')
     return result.stdout
 
@@ -270,6 +274,36 @@ def restore_metrics(backup):
     run(['systemctl', 'daemon-reload'])
 
 
+def require_usage_rollback_compatible(binary):
+    """Never give compressed durable checkpoints to a pre-V3 Agent."""
+    path = STATE/'usage-journal.json'
+    require(not path.is_symlink(), '计量账本不能为链接；保留当前程序和回滚目录')
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(8 * 1024 * 1024 + 1)
+        require(len(raw) <= 8 * 1024 * 1024, '计量账本超出检查范围；保留当前程序和回滚目录')
+        journal = json.loads(raw)
+    except FileNotFoundError:
+        for suffix in ('.segments', '.checkpoints'):
+            directory = path.with_name(path.name + suffix)
+            require(not directory.is_symlink() and (not directory.exists() or
+                    (directory.is_dir() and not any(directory.iterdir()))),
+                    '计量主文件缺失但分片仍存在；保留当前程序和回滚目录')
+        return
+    except (OSError, ValueError):
+        raise UpdateError('无法确认计量格式；保留当前程序和回滚目录') from None
+    version = journal.get('version') if isinstance(journal, dict) else None
+    require(type(version) is int and version in (1, 2, 3), '未知计量格式；保留当前程序和回滚目录')
+    if version < 3:
+        return
+    try:
+        result = subprocess.run([str(binary), '--usage-journal-version'], capture_output=True, timeout=10)
+        compatible = result.returncode == 0 and result.stdout.strip() == b'3'
+    except (OSError, subprocess.TimeoutExpired):
+        compatible = False
+    require(compatible, '当前计量含 V3 压缩检查点，旧程序不兼容；保留当前程序、账本及回滚目录，需使用支持 V3 的修复版恢复')
+
+
 def rollback(backup):
     private_credentials()
     transaction_path(backup)
@@ -278,6 +312,14 @@ def rollback(backup):
     require(manifest['credential_sha256'] == digest(STATE/'credentials.json'), '当前节点身份不同；拒绝回滚')
     for name in FILES:
         require(digest(backup/name) == manifest['files'][name], '备份文件摘要不符')
+    require_usage_rollback_compatible(backup/'edge-agent')
+    run(['systemctl','stop',SERVICE])
+    try:
+        # Shutdown may append a final V3 checkpoint after the first inspection.
+        require_usage_rollback_compatible(backup/'edge-agent')
+    except Exception:
+        start_service()  # Keep the still-installed journal-compatible program.
+        raise
     if (backup/'legacy-gateway-rollback.py').is_file():
         private_regular(backup/'legacy-gateway-rollback.py')
         run([sys.executable, str(backup/'legacy-gateway-rollback.py'), '--restore', str(backup/'legacy-gateway')])
@@ -285,7 +327,6 @@ def rollback(backup):
         private_regular(backup/'maintenance-rollback.py')
         run([sys.executable,str(backup/'maintenance-rollback.py'),'--restore',str(backup/'maintenance')])
     restore_metrics(backup)
-    run(['systemctl','stop',SERVICE])
     if (backup/'edge-agent.json').exists():
         private_regular(backup/'edge-agent.json')
         install_config(backup/'edge-agent.json')
@@ -375,6 +416,8 @@ def update_programs(args, config, target, backup, legacy):
     if args.repair:
         repair_dependencies(release, backup)
         return
+    # Explicit downgrades must obey the same durable-format contract as rollback.
+    require_usage_rollback_compatible(release/'bin/edge-agent')
     legacy_gateway = release/'deploy/update-legacy-gateway.py'
     run([sys.executable, str(legacy_gateway), '--preflight', '--release', str(release)])
     credential=digest(STATE/'credentials.json')
@@ -415,6 +458,8 @@ def update_programs(args, config, target, backup, legacy):
     result('uncertain', backup)
     try:
         run(['systemctl','stop',SERVICE])
+        # The running Agent may have written its first V3 checkpoint at shutdown.
+        require_usage_rollback_compatible(release/'bin/edge-agent')
         metrics_update(backup)
         for name,source in FILES.items():
             install(release/source,ROOT/name)
