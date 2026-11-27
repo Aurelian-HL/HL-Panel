@@ -23,13 +23,36 @@ done
 [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]] || { echo '当前正式安装包支持 Linux amd64（x86_64）。' >&2; exit 1; }
 [[ "$version" == latest || "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag' >&2; exit 2; }
 [[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }
+# BEGIN HL_APT_LOCK_WAIT
+hl_apt() (
+  log="$(mktemp)" || exit 1;
+  trap 'rm -f -- "$log"' EXIT;
+  waited=0;
+  while :; do
+    if LC_ALL=C DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=0 "$@" >"$log" 2>&1; then
+      cat "$log"; exit 0;
+    else status=$?; fi;
+    if ! grep -Eq 'Could not get lock .*(held by process|Resource temporarily unavailable)|Unable to (acquire the dpkg frontend lock|lock the administration directory) .*is another process using it' "$log"; then
+      cat "$log" >&2; exit "$status";
+    fi;
+    if [ "$waited" -ge 300 ]; then
+      cat "$log" >&2;
+      echo '[HL-panel] 软件包管理器占用已等待 300 秒，请等待系统更新结束后重试；未删除系统锁。' >&2;
+      exit "$status";
+    fi;
+    echo '[HL-panel] 系统正在更新软件包，5 秒后自动重试，请勿重复执行安装命令。' >&2;
+    sleep 5 || exit 1;
+    waited=$((waited+5));
+  done;
+)
+# END HL_APT_LOCK_WAIT
 bootstrap_packages=()
 command -v curl >/dev/null || bootstrap_packages+=(curl)
 [[ -s /etc/ssl/certs/ca-certificates.crt ]] || bootstrap_packages+=(ca-certificates)
 if ((${#bootstrap_packages[@]})); then
   [[ $(id -u) == 0 ]] && command -v apt-get >/dev/null || { echo '请使用 root 并预装 curl、ca-certificates。' >&2; exit 1; }
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o Acquire::Retries=2 update
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "${bootstrap_packages[@]}"
+  hl_apt -qq -o Acquire::Retries=2 update
+  hl_apt -qq --reinstall install -y --no-install-recommends "${bootstrap_packages[@]}"
 fi
 if [[ "$version" == "latest" ]]; then
   [[ "$origin" =~ ^https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || { echo '请使用含 HTTPS 面板地址的完整安装命令。' >&2; exit 2; }

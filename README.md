@@ -199,7 +199,7 @@ HL 负责线路、规则、节点和转发。外部运营后台可通过接口�
 
 ## 近期修复与交付状态
 
-> 本轮源码版本：**v0.1.194**，更新日期 **2026-11-27**。安装包及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。本版隔离历史流量积压与规则切换，修复统计缺项和延迟出口计数导致的重复用量，增加压缩暂存及安全回退保护。面板与 Agent 分别升级；首次节点升级使用本版本新更新入口。Xray / GOST 核心版本不变，正式包本地构建，不使用付费 GitHub 构建。
+> 本轮源码版本：**v0.1.195**，更新日期 **2026-11-27**。安装包及下载以 [正式发行记录](https://github.com/Aurelian-HL/HL-Panel/releases) 为准。本版修复新机系统更新占锁导致节点安装命令需重复执行的问题，三处安装入口会限时自动等待并继续；更新面板后重新复制安装命令。延续 v0.1.194 计量隔离保护；已验收旧节点无需为此重启，Xray/GOST 核心版本不变，正式包本地构建，不使用付费 GitHub 构建。
 
 **握手目标由各节点自己实测。** 初次选择连续两次握手成功且延迟最低的候选；当前目标失败时自动换选。正常运行时，更快候选需连续两轮明显胜出才切换，避免微小波动反复切换。原账号、端口、SNI、订阅和出口保持不变，后台检测不阻塞保存与下发。这里比较的是握手耗时，不代表客户下载带宽；后台轮询存在检测时间，不能承诺瞬时切换。
 
@@ -223,7 +223,7 @@ HL 负责线路、规则、节点和转发。外部运营后台可通过接口�
 | 苹果订阅 HTTPS | 完成证书链、TLS / HTTP 抽测；补充候选证书激活前的有效期及信任链校验 | 偶发失败根因、原设备复测；存量证书助手的升级衔接 |
 | 探针界面 | 设权 / 查看 / 更新入口统一，多地址详情与权重快捷档适配桌面和手机 | 第三方探针配额及覆盖不足时明确显示未测，不能当作正常 |
 
-验证说明：[v0.1.194 更新说明](docs/release-v0.1.194.md) · [v0.1.193](docs/release-v0.1.193.md) · [v0.1.192](docs/release-v0.1.192.md) · [v0.1.191 握手候选](docs/release-v0.1.191.md) · [v0.1.190 自动择优](docs/release-v0.1.190.md) · [流量补报](docs/release-v0.1.184.md) · [取消周期验证](docs/release-v0.1.183.md) · [在线统计](docs/rule-online-counts-verification-20261118.md) · [维护连续性与数据库](docs/maintenance-verification-20261118.md) · [苹果订阅 HTTPS](docs/ios-subscription-tls-verification-20261118.md)。
+验证说明：[v0.1.195 更新说明](docs/release-v0.1.195.md) · [v0.1.194](docs/release-v0.1.194.md) · [v0.1.193](docs/release-v0.1.193.md) · [v0.1.192](docs/release-v0.1.192.md) · [v0.1.191 握手候选](docs/release-v0.1.191.md) · [v0.1.190 自动择优](docs/release-v0.1.190.md) · [流量补报](docs/release-v0.1.184.md) · [取消周期验证](docs/release-v0.1.183.md) · [在线统计](docs/rule-online-counts-verification-20261118.md) · [维护连续性与数据库](docs/maintenance-verification-20261118.md) · [苹果订阅 HTTPS](docs/ios-subscription-tls-verification-20261118.md)。
 
 ## 下一步更新计划
 

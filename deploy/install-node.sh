@@ -35,13 +35,37 @@ if [[ -n "$ca_file" ]]; then
   [[ -f "$ca_file" && ! -L "$ca_file" ]] || { echo 'CA 文件不存在或是链接；未修改节点。' >&2; exit 2; }
 fi
 
+# BEGIN HL_APT_LOCK_WAIT
+hl_apt() (
+  log="$(mktemp)" || exit 1;
+  trap 'rm -f -- "$log"' EXIT;
+  waited=0;
+  while :; do
+    if LC_ALL=C DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=0 "$@" >"$log" 2>&1; then
+      cat "$log"; exit 0;
+    else status=$?; fi;
+    if ! grep -Eq 'Could not get lock .*(held by process|Resource temporarily unavailable)|Unable to (acquire the dpkg frontend lock|lock the administration directory) .*is another process using it' "$log"; then
+      cat "$log" >&2; exit "$status";
+    fi;
+    if [ "$waited" -ge 300 ]; then
+      cat "$log" >&2;
+      echo '[HL-panel] 软件包管理器占用已等待 300 秒，请等待系统更新结束后重试；未删除系统锁。' >&2;
+      exit "$status";
+    fi;
+    echo '[HL-panel] 系统正在更新软件包，5 秒后自动重试，请勿重复执行安装命令。' >&2;
+    sleep 5 || exit 1;
+    waited=$((waited+5));
+  done;
+)
+# END HL_APT_LOCK_WAIT
+
 install_missing_packages() {
   command -v apt-get >/dev/null || { echo "缺少依赖：$*；当前自动补齐支持 Debian/Ubuntu 的 apt-get，尚未修改节点身份。" >&2; exit 1; }
   if [[ "$apt_refreshed" == 0 ]]; then
-    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o Acquire::Retries=2 update
+    hl_apt -qq -o Acquire::Retries=2 update || return $?
     apt_refreshed=1
   fi
-  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -qq -o DPkg::Lock::Timeout=60 --reinstall install -y --no-install-recommends "$@"
+  hl_apt -qq --reinstall install -y --no-install-recommends "$@"
 }
 
 ensure_time_synchronization() {
@@ -64,7 +88,7 @@ ensure_time_synchronization() {
     fi
   done
   if [[ -z "$provider" && -z "$archive" && -x "$(command -v apt-get 2>/dev/null || true)" ]]; then
-    if install_missing_packages systemd-timesyncd >/dev/null 2>&1; then
+    if install_missing_packages systemd-timesyncd; then
       provider="systemd-timesyncd.service"
     else
       echo '[HL-panel 节点] 警告：无法安装 systemd-timesyncd，安装继续；请手动配置 NTP' >&2
